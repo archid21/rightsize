@@ -18,6 +18,9 @@ import {
   parseShare,
   plan,
   share,
+  cacheTtlMs,
+  idleCost,
+  parseIdleWarning,
   paceOf,
   pacedRules,
   sizeSubagent,
@@ -337,4 +340,14 @@ test('moves the thresholds by pace', async () => {
   expect(at('hot')).toEqual([85, 97])
   expect(at('cool')).toEqual([50, 80])
   expect(at('max')).toEqual([95, 100])
+})
+
+test('idle resume: the rewrite over a warm read, the cache life, and the warning bar', async () => {
+  const c = idleCost(DEFAULT_PRICES.opus, 100_000)
+  expect(near(c.resend, 0.78)).toBe(true)
+  expect(near(c.compact, 0.4)).toBe(true)
+  expect(cacheTtlMs('{"cacheTtl":"5m"}')).toBe(300_000)
+  expect(cacheTtlMs('{}')).toBe(3_600_000)
+  expect(cacheTtlMs('not json')).toBe(3_600_000)
+  expect([parseIdleWarning('over $0.50'), parseIdleWarning('over $1'), parseIdleWarning('off'), parseIdleWarning(undefined)]).toEqual([0.5, 1, null, 0.1])
 })

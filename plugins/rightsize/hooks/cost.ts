@@ -80,6 +80,15 @@ export function parsePrices(raw: string): Prices {
   return out
 }
 
+/** How long a cache write lives: prices.json's cacheTtl, 1 hour unless it says 5m. */
+export function cacheTtlMs(raw: string) {
+  try {
+    return (JSON.parse(raw) as { cacheTtl?: unknown }).cacheTtl === '5m' ? 5 * 60_000 : 60 * 60_000
+  } catch {
+    return 60 * 60_000
+  }
+}
+
 export type Tokens = { input?: number; output?: number; cacheRead?: number; cacheWrite?: number }
 export const dollars = (p: Price, t: Tokens) =>
   ((t.input ?? 0) * p.input + (t.output ?? 0) * p.output + (t.cacheRead ?? 0) * p.cacheRead + (t.cacheWrite ?? 0) * p.cacheWrite) / 1e6
@@ -287,6 +296,23 @@ export function parseShare(v: unknown, fallback: number) {
   const m = typeof v === 'string' ? /^(\d{1,3})%$/.exec(v.trim()) : null
   const n = m ? Number(m[1]) / 100 : NaN
   return n > 0 && n <= 1 ? n : fallback
+}
+
+// ---- Idle resume -------------------------------------------------------------
+
+/** Over this, Claude Code compacts an idle session itself before the cache expires. */
+export const IDLE_MAX_CONTEXT = 200_000
+
+/** Sending into an expired cache: what writing the conversation again costs over reading it warm, and what /compact's read costs. */
+export function idleCost(p: Price, context: number) {
+  return { resend: dollars(p, { cacheWrite: context }) - dollars(p, { cacheRead: context }), compact: dollars(p, { input: context }) }
+}
+
+/** "over $0.50" from /config as 0.5; "off" as null; anything else, the default. */
+export function parseIdleWarning(v: unknown): number | null {
+  if (v === 'off') return null
+  const m = typeof v === 'string' ? /^over \$(\d+(?:\.\d+)?)$/.exec(v.trim()) : null
+  return m ? Number(m[1]) : 0.1
 }
 
 // ---- Pacing ----------------------------------------------------------------

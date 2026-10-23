@@ -41,6 +41,10 @@ export type RunLine = {
   /** A workflow ran in the session by this turn's end: its agents' cost may be in this turn's. */
   afterWorkflow?: boolean
   durationMs?: number
+  /** Main-chat requests in the turn. */
+  requests?: number
+  /** Tokens every request carried that the person can trim (MCP tools, memory, agents, skills), and what re-reading them cost. */
+  fixed?: { tokens: number; mcp: number; memory: number; agents: number; skills: number; cost: number; servers?: Record<string, number> }
   before?: Windows
   after?: Windows
 }
@@ -235,6 +239,32 @@ export function wentWrong(lines: readonly RunLine[], switches: readonly SwitchLi
   return out
 }
 
+const k = (n: number) => (n >= 1000 ? `${Math.round(n / 1000)}K` : `${Math.round(n)}`)
+
+/** The context every request carried, by part, request-weighted, and what re-reading it cost. */
+export function fixedLines(lines: readonly RunLine[]) {
+  const runs = lines.filter(l => isRun(l) && l.fixed && num(l.requests) > 0)
+  const requests = runs.reduce((n, l) => n + num(l.requests), 0)
+  const cost = runs.reduce((n, l) => n + num(l.fixed?.cost), 0)
+  if (!requests || cost < 0.005) return []
+  const avg = (part: 'tokens' | 'mcp' | 'memory' | 'agents' | 'skills') => runs.reduce((n, l) => n + num(l.fixed?.[part]) * num(l.requests), 0) / requests
+  const servers = Object.entries(runs[runs.length - 1]?.fixed?.servers ?? {})
+  const mcp = `MCP tools ~${k(avg('mcp'))}${servers.length ? ` (${servers.map(([n, t]) => `${n} ${k(t)}`).join(', ')})` : ''}`
+  const parts = [
+    [avg('mcp'), mcp],
+    [avg('memory'), `CLAUDE.md and memory ~${k(avg('memory'))}`],
+    [avg('skills'), `skills and commands ~${k(avg('skills'))}`],
+    [avg('agents'), `agent descriptions ~${k(avg('agents'))}`],
+  ] as const
+  const listed = parts.filter(([t]) => t >= 500).sort((a, b) => b[0] - a[0]).map(([, text]) => text)
+  const spent = runs.reduce((n, l) => n + num(l.actual), 0)
+  const pct = spent > 0 ? ` (~${Math.round((cost / spent) * 100)}% of what those turns cost)` : ''
+  return [
+    `Fixed context (last 30 days): ~${k(avg('tokens'))} tokens rode along on every request${listed.length ? `: ${listed.join(', ')}` : ''}.`,
+    `  Re-reading it cost at least ~${money(cost)} over ${plural(requests, 'request')}${pct}. rightsize can't trim it: disconnect MCP servers you don't use (/mcp), trim CLAUDE.md, or turn off unused plugins.`,
+  ]
+}
+
 export function buildReport(
   lines: readonly RunLine[],
   switches: readonly SwitchLine[],
@@ -250,6 +280,8 @@ export function buildReport(
     ...period('Last 30 days', month, opts.subscription),
     '',
   ]
+  const fixed = fixedLines(month)
+  if (fixed.length) out.push(...fixed, '')
   const wrong = wentWrong(month, switches.filter(since(30)))
   out.push('What went wrong (last 30 days):', ...(wrong.length ? wrong.map(w => `- ${w}`) : ['- Nothing yet.']))
   return out.join('\n')

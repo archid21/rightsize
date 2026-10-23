@@ -84,6 +84,18 @@
         "off"
       ]
     },
+    "idleWarning": {
+      "type": "string",
+      "title": "Idle warning",
+      "description": "On API billing, when a session under 200K tokens sat idle past the cache's life (1 hour, or 5 minutes when prices.json says 5m), ask before the next prompt writes the whole conversation to the cache again, when that costs over this much more than a warm cache. You can send it or hold it to /clear or /compact first. Subscriptions are left to Claude Code's own warning.",
+      "default": "over $0.10",
+      "options": [
+        "over $0.10",
+        "over $0.50",
+        "over $1",
+        "off"
+      ]
+    },
     "band": {
       "type": "string",
       "title": "Band",

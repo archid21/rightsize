@@ -57,6 +57,8 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
     windowStep: 0,
     ratingUsage: {} as Record<string, number>,
     spawned: [] as { description: string; model?: string }[],
+    /** What /context would break the window into; undefined: no breakdown. */
+    breakdown: undefined as Record<string, unknown> | undefined,
   }
   on('session.start', async ($, e) => ({ cwd: e.cwd }) as never)
   on('command.register', async () => ({ value: undefined }) as never)
@@ -64,7 +66,10 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
   on('settings.read', async () => ({ value: {} }) as never)
   on('session.messages', async () => ({ value: [] }) as never)
   on('session.id', async () => ({ value: 'sess-1' }) as never)
-  on('session.usage', async () => ({ value: { startedAt: 0, context: {}, rateLimits: h.rateLimits, ...(h.ledger === undefined ? {} : { cost: { usd: h.ledger } }) } }) as never)
+  on('session.usage', async ($, e) => {
+    const breakdown = (e as { breakdown?: string }).breakdown && h.breakdown ? { breakdown: h.breakdown } : {}
+    return { value: { startedAt: 0, context: { window: 200_000, ...breakdown }, rateLimits: h.rateLimits, ...(h.ledger === undefined ? {} : { cost: { usd: h.ledger } }) } } as never
+  })
   on('fs.exists', async ($, e) => {
     const { path } = e as { path: string }
     return { value: path.endsWith('/prices.json') ? h.pricesFile !== '' : path in h.files } as never
@@ -676,6 +681,115 @@ for (const surface of ['desktop', 'terminal'] as const) {
     for (let i = 0; i < 3; i++) await d.bash('fail x')
     await d.step('t1', 1)
     expect(last(h.sent)?.effort).toBe('medium')
+  })
+
+  test(`logs the fixed context each request carried, and the report shows what it cost (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    const d = drive($, h)
+    h.breakdown = {
+      mcpTools: [
+        { name: 'mcp__linear__a', serverName: 'linear', tokens: 9000, isLoaded: true },
+        { name: 'mcp__linear__b', serverName: 'linear', tokens: 3000, isLoaded: true },
+        { name: 'mcp__github__a', serverName: 'github', tokens: 8000, isLoaded: true },
+        { name: 'mcp__vercel__a', serverName: 'vercel', tokens: 50000, isLoaded: false },
+      ],
+      memoryFiles: [{ path: '/home/test/.claude/CLAUDE.md', type: 'User', tokens: 6000 }],
+      agents: [{ agentType: 'x', source: 'plugin', tokens: 1000 }],
+      skills: { totalSkills: 3, includedSkills: 3, tokens: 2000, skillFrontmatter: [] },
+      slashCommands: { totalCommands: 4, includedCommands: 4, tokens: 1000 },
+    }
+    await d.start(surface)
+    h.rating = NO_CHANGE
+    await d.submit(LOOKUP)
+    await d.step('t1', 0)
+    await d.step('t1', 1)
+    await d.complete('t1')
+    const runs = (h.files['/home/test/.claude/mods-logs/rightsize-runs.jsonl'] ?? '').trim().split('\n')
+    const line = JSON.parse(last(runs) ?? '{}') as { requests?: number; fixed?: unknown }
+    expect(line.requests).toBe(2)
+    // Deferred MCP tools are not in the context: 20K MCP, 6K memory, 1K agents, 3K skills and commands.
+    expect(line.fixed).toEqual({ tokens: 30000, mcp: 20000, memory: 6000, agents: 1000, skills: 3000, servers: { linear: 12000, github: 8000 }, cost: 0.012 })
+    h.now = Date.now()
+    expect((await d.command('report')).text ?? '').toContain('Fixed context (last 30 days): ~30K tokens rode along on every request: MCP tools ~20K (linear 12K, github 8K), CLAUDE.md and memory ~6K, skills and commands ~3K, agent descriptions ~1K.')
+  })
+
+  const MIN = 60_000
+  const idleSetup = async ($: unknown, on: Parameters<TestBody>[1], surface: string, opts: { store?: Record<string, unknown> } = {}) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', ...(opts.store ? { store: opts.store } : {}) })
+    const d = drive($, h)
+    await d.start(surface)
+    h.rating = NO_CHANGE
+    await d.step('t0')
+    await d.complete('t0')
+    return { h, d }
+  }
+
+  test(`idle past the cache: asks before a prompt rewrites the whole cache, and can hold it (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const { h, d } = await idleSetup($, on, surface)
+    h.now += 30 * MIN
+    await d.submit('continue')
+    expect(h.asked.length, 'inside the hour the cache lives').toBe(0)
+    await d.step('t1')
+    await d.complete('t1')
+
+    h.now += 2 * 60 * MIN
+    h.answers = { Idle: 'Hold it: I will /clear or /compact first' }
+    const sent = h.submitted.length
+    const out = (await d.submit('continue')) as { drop?: string }
+    expect(h.asked.map(a => a.question)).toEqual([
+      'This session sat idle for 2 hours, so its cache has likely expired. Sending writes the whole conversation (~21K tokens) to the cache again: about $0.16 more on Opus than a warm cache. /clear costs nothing; /compact about $0.08.',
+    ])
+    expect(out.drop).toBe('rightsize held this prompt and put it back in the box. Run /clear or /compact, then send it.')
+    expect(h.submitted.length, 'held: nothing entered').toBe(sent)
+    expect(last(h.filled)).toBe('continue')
+
+    await d.submit('continue')
+    expect(h.asked.length, 'one question per idle gap').toBe(1)
+    expect(h.submitted.length).toBe(sent + 1)
+  })
+
+  test(`idle guard after a resume reads the last turn from the store (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const { h, d } = await idleSetup($, on, surface)
+    // Claude Code exits and the session is resumed 3 days later.
+    await d.start(surface)
+    h.now += 3 * 24 * 60 * MIN
+    h.answers = { Idle: 'Send it' }
+    await d.submit('continue')
+    expect(h.asked[0]?.question).toContain('sat idle for 3 days')
+    expect(last(h.submitted)?.text, 'sent').toBe('continue')
+  })
+
+  test(`no idle guard past 200K tokens: Claude Code compacts those itself (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    const d = drive($, h)
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+    h.store.lastTurns = { 'sess-1': { at: h.now, context: 250_000 } }
+    // Resumed later: the store is all it has.
+    await d.start(surface)
+    h.now += 3 * 60 * MIN
+    await d.submit('continue')
+    expect(h.asked.length).toBe(0)
+  })
+
+  test(`no idle guard on a subscription (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    h.rateLimits = [{ kind: 'five_hour', percentUsed: 10 }]
+    const d = drive($, h)
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+    h.now += 3 * 60 * MIN
+    await d.submit('continue')
+    expect(h.asked.length).toBe(0)
+  })
+
+  test(`Idle warning in /config sets the bar (${surface})`, { timeoutMs: 30000, options: { idleWarning: 'over $1' } }, async ($, on) => {
+    const { h, d } = await idleSetup($, on, surface)
+    h.now += 3 * 60 * MIN
+    await d.submit('continue')
+    expect(h.asked.length, '$0.16 is under $1').toBe(0)
   })
 
   test(`a workflow pauses hand-offs and learning for the session, and the report lists it (${surface})`, { timeoutMs: 30000 }, async ($, on) => {

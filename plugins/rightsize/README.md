@@ -46,6 +46,7 @@ A one-row band above the prompt (CLI and desktop app) shows what the mod did, wi
   - **Claude's subagents** (cheaper when it fits or off): whether a general-purpose subagent Claude starts without naming a model runs on the cheapest weaker model that fits, at that model's level.
   - **Budget pacing** (on or off): on a subscription, move the thresholds by how fast the 5-hour and 7-day windows are being used. Running out early, it hands off and lowers more readily; with much left near a reset, it puts quality first; over 90% used, it saves all it can and skips raises.
   - **Raise when stuck** (on or off): raise effort one level for the rest of a turn when Claude looks stuck (a tool call failing twice, 3 failing, one call running 3 times, or 3x the rated steps), following your Raising rule.
+  - **Idle warning** (over $0.10, over $0.50, over $1 or off): on API billing, ask before a prompt sent after the cache expired writes the whole conversation again, when that costs over this much.
   - **Band** (when it acts, always or off): when the band above the prompt shows. "when it acts", the default, shows it only when the mod changes something.
   - **Price check** (monthly, check now or off): how often `prices.json` is compared with Anthropic's pricing page.
 - `prices.json` holds the price table, in dollars per 1M tokens.

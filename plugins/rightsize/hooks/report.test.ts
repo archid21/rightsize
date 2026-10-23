@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { type RunLine, buildReport, counterfactual, parseLines, totals, wentWrong } from './report'
+import { type RunLine, buildReport, counterfactual, fixedLines, parseLines, totals, wentWrong } from './report'
 
 const NOW = Date.parse('2026-10-23T18:00:00.000Z')
 const ago = (days: number) => new Date(NOW - days * 24 * 60 * 60 * 1000).toISOString()
@@ -76,4 +76,14 @@ test('turns during or after a workflow claim no saving and get their own line', 
 test('reads the log, skipping a torn first line', async () => {
   const lines = parseLines<RunLine>(`{"at":"x","actu\n${JSON.stringify(run({}))}\n\nnot json\n`)
   expect(lines.length).toBe(1)
+})
+
+test('fixed context: request-weighted, the biggest parts first, nothing when it cost nothing', async () => {
+  const f = (tokens: number, requests: number, cost: number) => run({ requests, actual: 1, fixed: { tokens, mcp: tokens - 4000, memory: 4000, agents: 0, skills: 0, cost, servers: { linear: tokens - 4000 } } })
+  expect(fixedLines([f(14000, 10, 0.5), f(24000, 30, 1.5)])).toEqual([
+    'Fixed context (last 30 days): ~22K tokens rode along on every request: MCP tools ~18K (linear 20K), CLAUDE.md and memory ~4K.',
+    "  Re-reading it cost at least ~$2.00 over 40 requests (~100% of what those turns cost). rightsize can't trim it: disconnect MCP servers you don't use (/mcp), trim CLAUDE.md, or turn off unused plugins.",
+  ])
+  expect(fixedLines([f(14000, 10, 0.001)])).toEqual([])
+  expect(fixedLines([run({})])).toEqual([])
 })

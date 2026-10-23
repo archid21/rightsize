@@ -10,6 +10,7 @@ import {
   DEFAULT_LEVEL,
   DEFAULT_PRICES,
   DEFAULT_RULES,
+  IDLE_MAX_CONTEXT,
   NORMAL_PACE,
   SWITCH_KEY,
   TIERS,
@@ -21,7 +22,10 @@ import {
   type Rating,
   type Rules,
   type Situation,
+  cacheTtlMs,
   contextOf,
+  idleCost,
+  parseIdleWarning,
   delegateCost,
   delegateKeys,
   mainKeys,
@@ -208,6 +212,8 @@ type Run = {
   /** The level the rest of the turn runs at after a mid-turn raise. */
   raisedTo?: Level
   escalations: { step: number; from: Level; to: Level; why: string }[]
+  /** Main-chat requests in the turn: each re-reads the fixed context. */
+  requests: number
 }
 
 let home = ''
@@ -248,6 +254,13 @@ let pacing = true
 let paceNow: Pace = NORMAL_PACE
 /** Raise effort mid-turn when the turn shows it is struggling. */
 let escalation = true
+/** Warn before sending into an expired cache when that costs over this many dollars; null: off. */
+let idleWarning: number | null = 0.1
+let cacheTtl = 60 * 60_000
+/** When this session's last main turn ended, in this process; 0 before one did (a resume reads the store). */
+let lastTurnAt = 0
+/** The idle gap already warned about: the person's answer stands for it. */
+let idleWarnedFor = 0
 /** Claude's own subagents moved to a cheaper model, by id: the level their steps run at, past the turn that started them. */
 const resizedLevel = new Map<string, Level>()
 
@@ -665,6 +678,7 @@ function startRun(r: Rating, s: Situation, d: Decision, p: Plan, base: Level, ov
     pace: paceNow,
     signals: noSignals(),
     escalations: [],
+    requests: 0,
   }
 }
 
@@ -790,6 +804,22 @@ function windows(limits: readonly { kind: string; percentUsed: number }[] | unde
   return Object.fromEntries(limits.map(l => [l.kind, l.percentUsed]))
 }
 
+/** What every request carries that the person can trim and rightsize can't: MCP tools, memory files, agents, skills and commands. */
+async function fixedContext($: EngineInterface) {
+  const b = (await $.session.usage({ breakdown: 'summary' }).catch(() => undefined))?.context.breakdown
+  if (!b) return undefined
+  const sum = (xs: readonly { tokens: number }[]) => xs.reduce((n, x) => n + x.tokens, 0)
+  const loaded = b.mcpTools.filter(t => t.isLoaded)
+  const byServer = new Map<string, number>()
+  for (const t of loaded) byServer.set(t.serverName, (byServer.get(t.serverName) ?? 0) + t.tokens)
+  const mcp = sum(loaded)
+  const memory = sum(b.memoryFiles)
+  const agents = sum(b.agents)
+  const skills = (b.skills?.tokens ?? 0) + (b.slashCommands?.tokens ?? 0)
+  const servers = Object.fromEntries([...byServer.entries()].sort((a, c) => c[1] - a[1]).slice(0, 3))
+  return { tokens: mcp + memory + agents + skills, mcp, memory, agents, skills, servers }
+}
+
 async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs: number) {
   const r = run.rating
   const delegated = run.delegate !== undefined && run.delegated
@@ -816,6 +846,7 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
   }
   // Every rated turn is logged, changed or not and stopped or not, for /rightsize report.
   if (actual > 0 || run.overhead > 0) {
+    const fixed = await fixedContext($)
     const line: RunLine & Record<string, unknown> = {
       at: new Date().toISOString(),
       kind: 'run',
@@ -847,6 +878,9 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
       overhead: round(run.overhead),
       missCost: round(run.missCost),
       agentCalls: run.agentCalls,
+      requests: run.requests,
+      // Each request reads the fixed context from the cache, at least.
+      ...(fixed ? { fixed: { ...fixed, cost: round((run.requests * fixed.tokens * prices[run.tier].cacheRead) / 1e6) } } : {}),
       ...(run.workflows ? { workflows: run.workflows } : {}),
       ...(workflowSeen ? { afterWorkflow: true } : {}),
       durationMs,
@@ -903,6 +937,56 @@ async function escalate($: EngineInterface, run: Run, sign: Struggle, from: Leve
   await log($, `raised mid-turn ${cur} → ${to} at step ${step}: ${sign.why}`)
 }
 
+// ---- Idle resume -------------------------------------------------------------
+
+/** Each recent session's last turn, so a resume days later knows how long it sat. */
+const LAST_TURNS = 'lastTurns'
+type LastTurn = { at: number; context: number }
+
+async function lastTurns($: EngineInterface): Promise<Record<string, LastTurn>> {
+  const v = await $.store.get(LAST_TURNS).catch(() => undefined)
+  return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, LastTurn>) : {}
+}
+
+async function rememberTurn($: EngineInterface) {
+  lastTurnAt = await $.clock.now()
+  if (!sessionId) return
+  const all = { ...(await lastTurns($)), [sessionId]: { at: lastTurnAt, context: lastContext } }
+  const recent = Object.entries(all).sort((a, b) => b[1].at - a[1].at).slice(0, 20)
+  await $.store.set(LAST_TURNS, Object.fromEntries(recent)).catch(() => undefined)
+}
+
+const idleFor = (ms: number) => {
+  const m = Math.round(ms / 60_000)
+  return m < 120 ? `${m} minutes` : m < 48 * 60 ? `${Math.round(m / 60)} hours` : `${Math.round(m / 1440)} days`
+}
+
+// After the cache expired, the next request writes the whole conversation again. On
+// a subscription Claude Code warns about this itself, and past 200K tokens it
+// compacts an idle session before the cache expires, so this is for API billing under that.
+async function holdIdle($: EngineInterface): Promise<boolean> {
+  if (idleWarning === null || billing !== 'api' || billingBy === null) return false
+  const last: LastTurn | undefined = lastTurnAt ? { at: lastTurnAt, context: lastContext } : (await lastTurns($))[sessionId]
+  if (!last || last.at === idleWarnedFor) return false
+  const idle = (await $.clock.now()) - last.at
+  const context = lastContext || last.context
+  if (idle < cacheTtl || !context || context >= IDLE_MAX_CONTEXT) return false
+  const s = await situation($)
+  const c = idleCost(prices[s.tier], context)
+  if (c.resend < idleWarning) return false
+  idleWarnedFor = last.at
+  const a = await pick($, {
+    header: 'Idle',
+    question: `This session sat idle for ${idleFor(idle)}, so its cache has likely expired. Sending writes the whole conversation (~${Math.round(context / 1000)}K tokens) to the cache again: about ${money(c.resend)} more on ${TIER_NAME[s.tier]} than a warm cache. /clear costs nothing; /compact about ${money(c.compact)}.`,
+    options: [
+      ['Send it', false],
+      ['Hold it: I will /clear or /compact first', true],
+    ],
+  })
+  await log($, `idle ${idleFor(idle)} with ${context} tokens: ${a ? 'held' : 'sent'}`)
+  return a === true
+}
+
 async function summary($: EngineInterface) {
   const c = await choices($)
   const said = (v: string | undefined) => v ?? 'not asked yet'
@@ -933,6 +1017,7 @@ export const register: Register = (on, options) => {
   if (opts.subagents === 'off') subagentMode = 'off'
   if (opts.pacing === 'off') pacing = false
   if (opts.escalation === 'off') escalation = false
+  idleWarning = parseIdleWarning(opts.idleWarning)
 
   on('config.set', { key: 'rightsize.band' }, async ($, e, next) => {
     const result = await next(e)
@@ -966,10 +1051,14 @@ export const register: Register = (on, options) => {
     lastContext = 0
     workflowSeen = false
     resizedLevel.clear()
+    lastTurnAt = 0
+    idleWarnedFor = 0
     await $.command.register({ name: CMD, description: 'Rightsize: status, report, settings, undo or clear' })
     await setBandMode($, bandMode)
     await setBand($, null)
-    prices = parsePrices(await readText($, `${$.plugin.root}/prices.json`))
+    const priceFile = await readText($, `${$.plugin.root}/prices.json`)
+    prices = parsePrices(priceFile)
+    cacheTtl = cacheTtlMs(priceFile)
     if (priceCheck === 'check now') {
       // Set by hand in settings: check once, then back to monthly.
       void runCheck($, 'manual').then(msg => $.ui.toast(msg))
@@ -1049,7 +1138,12 @@ export const register: Register = (on, options) => {
       skipOnce = null
       return next(e)
     }
-    if (text.startsWith('/') || words(text) < MIN_WORDS) return next(e)
+    if (text.startsWith('/')) return next(e)
+    if (await holdIdle($)) {
+      await $.prompt.fill({ text: e.text, mode: 'replace' }).catch(() => null)
+      return { drop: 'rightsize held this prompt and put it back in the box. Run /clear or /compact, then send it.' }
+    }
+    if (words(text) < MIN_WORDS) return next(e)
     if (brainDumpWillCatch(text, await readSwitches($))) return next(e)
 
     await knowBilling($, true)
@@ -1167,7 +1261,10 @@ export const register: Register = (on, options) => {
       lastContext = contextOf(u)
       await $.state.set({ plugin: 'rightsize', key: 'context' }, lastContext)
       await $.state.set({ plugin: 'rightsize', key: 'seenModel' }, u.model)
-      if (run) run.mainCost += usageCost(prices, u.model, u)
+      if (run) {
+        run.mainCost += usageCost(prices, u.model, u)
+        run.requests += 1
+      }
     }
     return out
   })
@@ -1242,7 +1339,10 @@ export const register: Register = (on, options) => {
 
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)
-    if (e.agentId === undefined) await knowBilling($, false)
+    if (e.agentId === undefined) {
+      await knowBilling($, false)
+      await rememberTurn($)
+    }
     if (e.agentId === undefined && active && active.turnId === e.turnId) {
       const run = active
       active = null

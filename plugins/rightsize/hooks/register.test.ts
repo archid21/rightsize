@@ -499,6 +499,81 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.ratings, 'no rating call either').toBe(before)
   })
 
+  // Hands off to Haiku at 77% of staying: over the 70% default, under the 85% a hot pace allows.
+  const NEAR = '{"fit":{"haiku":"medium","sonnet":"medium","opus":"medium","fable":"medium"},"size":"small","type":"search","read":25000,"write":1000,"steps":10,"reason":"list call sites"}'
+  const HOUR = 3600_000
+  const at = (h: { now: number }, ms: number) => new Date(h.now + ms).toISOString()
+
+  test(`budget pacing: a window running hot hands off what the default threshold keeps (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { calibration: FREE_SWITCHES } })
+    const d = drive($, h)
+    // 80% used with 3 of 5 hours gone; the 7-day window is too new to say anything.
+    h.rateLimits = [
+      { kind: 'five_hour', percentUsed: 80, resetsAt: at(h, 2 * HOUR) },
+      { kind: 'seven_day', percentUsed: 20, resetsAt: at(h, 160 * HOUR) },
+    ] as typeof h.rateLimits
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+    h.rating = NEAR
+    h.answers = { Cheaper: 'Send it to a cheaper subagent (Recommended)', Remember: 'Just this session' }
+    await d.submit(SEARCH)
+    expect(last(h.submitted)?.context?.join('\n') ?? '').toContain('model "haiku"')
+    expect(await bandText($, surface)).toContain('The 5-hour window is on pace to run out before it resets, so rightsize saves harder.')
+    await d.step('t1')
+    await d.complete('t1')
+    const runs = (h.files['/home/test/.claude/mods-logs/rightsize-runs.jsonl'] ?? '').trim().split('\n')
+    expect((JSON.parse(last(runs) ?? '{}') as { pace?: unknown }).pace).toEqual({ mode: 'hot', window: 'five_hour', pace: 1.33, used: 80 })
+    expect((await d.command('')).text ?? '').toContain('Budget pacing: on. The 5-hour window')
+  })
+
+  test(`budget pacing off in /config: the same window changes nothing (${surface})`, { timeoutMs: 30000, options: { pacing: 'off' } }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { calibration: FREE_SWITCHES } })
+    const d = drive($, h)
+    h.rateLimits = [{ kind: 'five_hour', percentUsed: 80, resetsAt: at(h, 2 * HOUR) }] as typeof h.rateLimits
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+    h.rating = NEAR
+    await d.submit(SEARCH)
+    expect(last(h.submitted)?.context ?? []).toEqual([])
+    expect(h.asked.length).toBe(0)
+    expect((await d.command('')).text ?? '').toContain('Budget pacing: off.')
+  })
+
+  test(`budget pacing: a window nearly used up skips a raise and says why (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    const d = drive($, h)
+    h.rateLimits = [{ kind: 'five_hour', percentUsed: 93, resetsAt: at(h, 4 * HOUR) }] as typeof h.rateLimits
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+    h.rating = '{"fit":{"haiku":"no","sonnet":"no","opus":"high","fable":"medium"},"size":"small","type":"debug","read":8000,"write":800,"steps":6,"reason":"race"}'
+    h.answers = { Raising: 'Raise automatically (Recommended)', Remember: 'Just this session' }
+    await d.submit(DEBUG)
+    expect(h.asked.length, 'no raise to ask about').toBe(0)
+    await d.step('t1')
+    expect(last(h.sent)?.effort).toBe('medium')
+    expect(await bandText($, surface)).toBe('rightsize: Kept medium on Opus instead of raising to high. 93% of the 5-hour window is used, so rightsize saves all it can.')
+  })
+
+  test(`budget pacing: when much of a window will go unused, "Ask" raises without asking (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    const d = drive($, h)
+    // 30% of the week used, 6 hours before it resets.
+    h.rateLimits = [{ kind: 'seven_day', percentUsed: 30, resetsAt: at(h, 6 * HOUR) }] as typeof h.rateLimits
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+    h.rating = '{"fit":{"haiku":"no","sonnet":"no","opus":"high","fable":"medium"},"size":"small","type":"debug","read":8000,"write":800,"steps":6,"reason":"race"}'
+    h.answers = { Raising: 'Ask me each time', Remember: 'Just this session' }
+    await d.submit(DEBUG)
+    expect(h.asked.map(a => a.header), 'the Raising rule, but no per-prompt question').toEqual(['Raising', 'Remember'])
+    await d.step('t1')
+    expect(last(h.sent)?.effort).toBe('high')
+    expect(await bandText($, surface)).toContain('Much of the 7-day window will go unused, so rightsize puts quality first.')
+  })
+
   test(`a workflow pauses hand-offs and learning for the session, and the report lists it (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { model: 'claude-fable-5-1', effort: 'high' })
     const d = drive($, h)

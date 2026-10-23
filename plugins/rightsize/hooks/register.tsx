@@ -10,10 +10,12 @@ import {
   DEFAULT_LEVEL,
   DEFAULT_PRICES,
   DEFAULT_RULES,
+  NORMAL_PACE,
   SWITCH_KEY,
   TIERS,
   TIER_NAME,
   type Calibration,
+  type Pace,
   type Plan,
   type Prices,
   type Rating,
@@ -32,6 +34,9 @@ import {
   parseCalibration,
   parsePrices,
   parseShare,
+  paceNote,
+  paceOf,
+  pacedRules,
   plan,
   ratioSample,
   rawDelegateCost,
@@ -193,6 +198,8 @@ type Run = {
   agentCalls: number
   /** Rate-limit windows when the turn's first request went out. */
   before?: Windows
+  /** How fast the tighter usage window was being used when the prompt was rated. */
+  pace: Pace
 }
 
 let home = ''
@@ -227,6 +234,10 @@ let skipOnce: string | null = null
  */
 let workflowSeen = false
 let subagentMode: SubagentMode = 'cheaper when it fits'
+/** Budget pacing: move the thresholds by how fast the usage windows are being used. */
+let pacing = true
+/** The pace the prompt being rated was decided at. */
+let paceNow: Pace = NORMAL_PACE
 /** Claude's own subagents moved to a cheaper model, by id: the level their steps run at, past the turn that started them. */
 const resizedLevel = new Map<string, Level>()
 
@@ -536,6 +547,8 @@ async function resolveEffort($: EngineInterface, p: Plan, r: Rating, s: Situatio
   if (p.kind !== 'effort') return {}
   const c = p.dir === 'lower' ? await choice($, 'lower', qLower) : await choice($, 'raise', qRaise)
   if (c === 'auto') return { level: p.level, auto: p.dir === 'lower' }
+  // Usage that would go unused buys nothing: a raise needs no question then.
+  if (c === 'ask' && p.dir === 'raise' && paceNow.mode === 'cool') return { level: p.level }
   if (c !== 'ask') return {}
   const verb = p.dir === 'lower' ? 'Lower' : 'Raise'
   const why = r.reason ? ` (${r.reason})` : ''
@@ -639,6 +652,7 @@ function startRun(r: Rating, s: Situation, d: Decision, p: Plan, base: Level, ov
     errors: 0,
     steppedUp: false,
     delegated: false,
+    pace: paceNow,
   }
 }
 
@@ -804,6 +818,7 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
       steps: r.steps,
       ...(delegated ? { subLevel: run.subLevel ?? null } : {}),
       ...(run.resized.length ? { resized: run.resized } : {}),
+      ...(run.pace.mode !== 'normal' ? { pace: { ...run.pace, ...(run.pace.pace === undefined ? {} : { pace: Number(run.pace.pace.toFixed(2)) }) } } : {}),
       auto: run.auto,
       steppedUp: run.steppedUp,
       estimate: Number((delegated ? (run.rawDelegate ?? 0) : run.rawMain).toFixed(5)),
@@ -854,7 +869,7 @@ async function summary($: EngineInterface) {
     `Lowering: ${said(c.lower)}. Raising: ${said(c.raise)}. Stronger model: ${said(c.up)}. Cheaper model: ${said(c.down)}.${(await remembers($)) ? ' Saved for every session.' : ''}`,
     session ? `Session switch: ${session}.` : 'No session switch.',
     `Calibration: ${runs} measured run(s).${sw ? ` Effort switches that missed the cache: ${Math.round(sw.ratio * 100)}% of ${sw.n} (each one in ~/.claude/mods-logs/rightsize-switches.jsonl).` : ''}`,
-    `Thresholds: hand off under ${Math.round(rules.handOff * 100)}% of staying, lower under ${Math.round(rules.lower * 100)}%${rules.handOff === DEFAULT_RULES.handOff && rules.lower === DEFAULT_RULES.lower ? ' (the defaults)' : ''}.`,
+    `Thresholds: hand off under ${Math.round(rules.handOff * 100)}% of staying, lower under ${Math.round(rules.lower * 100)}%${rules.handOff === DEFAULT_RULES.handOff && rules.lower === DEFAULT_RULES.lower ? ' (the defaults)' : ''}. Budget pacing: ${pacing ? 'on' : 'off'}.${pacing && paceNow.mode !== 'normal' ? ` ${paceNote(paceNow)}` : ''}`,
     `Prices: checked ${priceCheck === 'off' ? 'never (off)' : 'every 30 days'}; /rightsize prices checks now.`,
     '/rightsize report shows what it saved and what went wrong; settings asks the questions again; undo re-runs the last auto-lowered prompt; clear drops the session switch.',
   ].join('\n')
@@ -870,6 +885,7 @@ export const register: Register = (on, options) => {
   if (isBandMode(opts.band)) bandMode = opts.band
   rules = { handOff: parseShare(opts.handOff, DEFAULT_RULES.handOff), lower: parseShare(opts.lowering, DEFAULT_RULES.lower) }
   if (opts.subagents === 'off') subagentMode = 'off'
+  if (opts.pacing === 'off') pacing = false
 
   on('config.set', { key: 'rightsize.band' }, async ($, e, next) => {
     const result = await next(e)
@@ -994,21 +1010,31 @@ export const register: Register = (on, options) => {
     let out = e
     let run: Run | null = null
     try {
-      const s = await situation($)
+      const base = await situation($)
+      paceNow = pacing ? paceOf((await usageNow($))?.rateLimits ?? [], await $.clock.now()) : NORMAL_PACE
+      const s: Situation = { ...base, rules: pacedRules(base.rules ?? DEFAULT_RULES, paceNow) }
       const { rating: r, overhead } = await rate($, text, s)
       if (r) {
         // While Claude fans work out to workflows, a single hand-off would only cut across it.
         const planned = plan(r, s, floor)
-        const p = workflowSeen && planned.kind === 'delegate' ? effortPlan(r, s, floor) : planned
+        const unfanned = workflowSeen && planned.kind === 'delegate' ? effortPlan(r, s, floor) : planned
+        // A window nearly used up: nothing that costs more than staying.
+        const costlier = (unfanned.kind === 'effort' && unfanned.dir === 'raise') || (unfanned.kind === 'delegate' && unfanned.dir === 'up')
+        const p: Plan = paceNow.mode === 'max' && costlier ? { kind: 'none', why: 'the usage window is nearly used up' } : unfanned
         const d = await resolve($, p, r, s)
         if (d.session) await $.state.set({ plugin: 'rightsize', key: 'sessionEffort' }, d.session)
         if (d.delegate) out = { ...e, context: [...(e.context ?? []), delegateNote(d.delegate)] }
         run = startRun(r, s, d, p, (await seenEffort($)) ?? s.level, overhead)
-        await setBand($, bandFor(run, d, p))
+        const note = paceNote(paceNow)
+        const band = p !== unfanned
+          ? { text: `Kept ${s.level} on ${TIER_NAME[s.tier]} instead of ${unfanned.kind === 'delegate' ? `a ${TIER_NAME[unfanned.tier]} subagent` : `raising to ${unfanned.kind === 'effort' ? unfanned.level : ''}`}.`, acted: true }
+          : bandFor(run, d, p)
+        await setBand($, note ? { ...band, text: `${band.text} ${note}` } : band)
         const did = d.delegate ? `delegate ${d.delegate.tier}` : d.level ? `${d.auto ? 'auto ' : ''}${d.level} for the prompt` : d.session ? `${d.session} for the session` : 'no change'
         const fit = TIERS.map(t => `${t[0]}:${r.fit[t] ?? (r.fit[t] === null ? 'no' : '?')}`).join(' ')
-        if (p !== planned) await log($, `hand-off to ${planned.kind === 'delegate' ? planned.tier : '?'} skipped: a workflow ran this session`)
-        await log($, `${r.type} on ${s.tier}/${s.level}: rated ${fit} ${r.size}, plan ${p.kind}${'dir' in p ? ` ${p.dir}` : ''}: ${did}`)
+        if (unfanned !== planned) await log($, `hand-off to ${planned.kind === 'delegate' ? planned.tier : '?'} skipped: a workflow ran this session`)
+        const paced = paceNow.mode === 'normal' ? '' : `, ${paceNow.mode} pace on ${paceNow.window}${paceNow.pace === undefined ? '' : ` (${paceNow.pace.toFixed(2)})`}`
+        await log($, `${r.type} on ${s.tier}/${s.level}${paced}: rated ${fit} ${r.size}, plan ${p.kind}${'dir' in p ? ` ${p.dir}` : ''}: ${did}`)
       } else if (overhead > 0) {
         // A rating that came to nothing still cost something: the report counts it.
         const line: RunLine = { at: new Date().toISOString(), kind: 'overhead', session: sessionId, overhead: round(overhead) }

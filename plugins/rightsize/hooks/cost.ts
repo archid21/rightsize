@@ -289,6 +289,67 @@ export function parseShare(v: unknown, fallback: number) {
   return n > 0 && n <= 1 ? n : fallback
 }
 
+// ---- Pacing ----------------------------------------------------------------
+
+/** One rate-limit window as a response reports it. */
+export type Limit = { kind: string; percentUsed: number; resetsAt?: string }
+export type Pace = {
+  /** hot: on pace to hit a limit before it resets. cool: much of a window will go unused. max: a window is nearly used up. */
+  mode: 'normal' | 'hot' | 'cool' | 'max'
+  window?: 'five_hour' | 'seven_day'
+  /** Share of the window used over share of its time gone. */
+  pace?: number
+  used?: number
+}
+export const NORMAL_PACE: Pace = { mode: 'normal' }
+const WINDOW_MS = { five_hour: 5 * 3600_000, seven_day: 7 * 24 * 3600_000 } as const
+/** Pace in the first part of a window says little: a few prompts look like a flood. */
+export const PACE_FROM = 0.15
+export const HOT_PACE = 1.2
+export const COOL_PACE = 0.6
+export const MAX_USED = 90
+
+// The window that would stop the person first: one nearly used up, else the one
+// with the highest pace. A gateway's spend limit has no reset to pace against.
+export function paceOf(limits: readonly Limit[], now: number): Pace {
+  let worst: Pace = NORMAL_PACE
+  for (const l of limits) {
+    if (l.kind !== 'five_hour' && l.kind !== 'seven_day') continue
+    if (l.percentUsed >= MAX_USED) {
+      if (worst.mode !== 'max' || l.percentUsed > (worst.used ?? 0)) worst = { mode: 'max', window: l.kind, used: l.percentUsed }
+      continue
+    }
+    const reset = l.resetsAt ? Date.parse(l.resetsAt) : NaN
+    if (!Number.isFinite(reset) || worst.mode === 'max') continue
+    const gone = 1 - (reset - now) / WINDOW_MS[l.kind]
+    if (gone < PACE_FROM || gone > 1) continue
+    const pace = l.percentUsed / 100 / gone
+    if (worst.pace === undefined || pace > worst.pace) {
+      worst = { mode: pace > HOT_PACE ? 'hot' : pace < COOL_PACE ? 'cool' : 'normal', window: l.kind, pace, used: l.percentUsed }
+    }
+  }
+  return worst
+}
+
+/** The thresholds at this pace: looser when running hot, stricter when running cool. */
+export function pacedRules(rules: Rules, p: Pace): Rules {
+  if (p.mode === 'max') return { handOff: Math.max(rules.handOff, 0.95), lower: 1 }
+  if (p.mode === 'hot') return { handOff: Math.min(0.95, rules.handOff + 0.15), lower: Math.min(0.99, rules.lower + 0.07) }
+  if (p.mode === 'cool') return { handOff: Math.max(0.3, rules.handOff - 0.2), lower: Math.max(0.5, rules.lower - 0.1) }
+  return rules
+}
+
+const WINDOW_NAME = { five_hour: '5-hour', seven_day: '7-day' } as const
+
+/** Why the thresholds moved, for the band; empty at a normal pace. */
+export function paceNote(p: Pace) {
+  if (p.mode === 'normal' || !p.window) return ''
+  const w = WINDOW_NAME[p.window]
+  if (p.mode === 'max') return `${Math.round(p.used ?? 0)}% of the ${w} window is used, so rightsize saves all it can.`
+  if (p.mode === 'hot') return `The ${w} window is on pace to run out before it resets, so rightsize saves harder.`
+  return `Much of the ${w} window will go unused, so rightsize puts quality first.`
+}
+
 const clampFloor = (l: Level, floor: Level) => (levelRank(l) < levelRank(floor) ? floor : l)
 
 // The effort-only plan: lower or raise on the main model, or nothing.

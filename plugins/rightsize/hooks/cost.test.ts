@@ -18,6 +18,8 @@ import {
   parseShare,
   plan,
   share,
+  paceOf,
+  pacedRules,
   sizeSubagent,
   tierOf,
 } from './cost'
@@ -298,4 +300,41 @@ test("sizes Claude's own subagent: the cheapest weaker model that fits, never a 
   expect(sizeSubagent(rating({ fit: { haiku: 'low', opus: null } }), opus, 'opus', 'low'), 'a rating where the parent would struggle moves nothing').toBeUndefined()
   const strict = { ...opus, rules: { ...DEFAULT_RULES, handOff: 0.01 } }
   expect(sizeSubagent(routine, strict, 'opus', 'low'), 'the hand-off share applies').toBeUndefined()
+})
+
+test('paces the window that would stop the person first', async () => {
+  const now = Date.parse('2026-10-23T12:00:00Z')
+  const H = 3600_000
+  const at = (ms: number) => new Date(now + ms).toISOString()
+  const hot = paceOf([{ kind: 'five_hour', percentUsed: 80, resetsAt: at(2 * H) }], now)
+  expect([hot.mode, hot.window, Number(hot.pace?.toFixed(2))]).toEqual(['hot', 'five_hour', 1.33])
+  const week = paceOf([
+    { kind: 'five_hour', percentUsed: 20, resetsAt: at(2 * H) },
+    { kind: 'seven_day', percentUsed: 85, resetsAt: at(72 * H) },
+  ], now)
+  expect([week.mode, week.window], 'the 5-hour window at 0.33 does not hide the week at 1.49').toEqual(['hot', 'seven_day'])
+  const weekFirst = paceOf([
+    { kind: 'seven_day', percentUsed: 85, resetsAt: at(72 * H) },
+    { kind: 'five_hour', percentUsed: 20, resetsAt: at(2 * H) },
+  ], now)
+  expect(weekFirst.window, 'in either order').toBe('seven_day')
+  expect(paceOf([{ kind: 'five_hour', percentUsed: 95 }, { kind: 'seven_day', percentUsed: 92 }], now).used, 'the fuller of two nearly-used windows').toBe(95)
+  expect(paceOf([{ kind: 'seven_day', percentUsed: 30, resetsAt: at(6 * H) }], now).mode).toBe('cool')
+  expect(paceOf([{ kind: 'five_hour', percentUsed: 6, resetsAt: at(4 * H + 40 * 60_000) }], now).mode, 'too early in the window').toBe('normal')
+  expect(paceOf([{ kind: 'five_hour', percentUsed: 6, resetsAt: at(4 * H + 40 * 60_000) }], now).pace).toBeUndefined()
+  const max = paceOf([{ kind: 'five_hour', percentUsed: 93 }, { kind: 'seven_day', percentUsed: 85, resetsAt: at(72 * H) }], now)
+  expect([max.mode, max.window, max.used], 'nearly used up wins, reset time or not').toEqual(['max', 'five_hour', 93])
+  expect(paceOf([{ kind: 'spend_limit', percentUsed: 95 }], now).mode, 'a gateway spend limit is not paced').toBe('normal')
+  expect(paceOf([], now).mode).toBe('normal')
+})
+
+test('moves the thresholds by pace', async () => {
+  const at = (mode: 'normal' | 'hot' | 'cool' | 'max') => {
+    const r = pacedRules(DEFAULT_RULES, { mode })
+    return [Math.round(r.handOff * 100), Math.round(r.lower * 100)]
+  }
+  expect(at('normal')).toEqual([70, 90])
+  expect(at('hot')).toEqual([85, 97])
+  expect(at('cool')).toEqual([50, 80])
+  expect(at('max')).toEqual([95, 100])
 })

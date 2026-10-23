@@ -49,6 +49,16 @@ After your first answer, rightsize asks whether to use your choices in every ses
 - **The subagent runs at the level its model needs.** rightsize sets the effort of the hand-off's subagent itself, so the level does not depend on Claude passing it on.
 - **Claude's own subagents are right-sized too.** When Claude starts a general-purpose subagent without naming a model, it would run on Claude's model (often Opus). rightsize rates the subagent's brief with Haiku and runs it on the cheapest weaker model that fits, at that model's level, when that costs under the hand-off threshold. It never moves a subagent to a stronger model. It leaves alone subagents that name a model, other agent types (they may set their own model, which rightsize can't see), forks, workflow agents, resumes, teammates, and subagents started by other subagents. Each one it moves costs one Haiku rating call. **Claude's subagents** in `/config` turns this off.
 - **Handing work down needs a clear saving.** A cheaper subagent is used only when its estimate is under 70% of the cost of staying at the level the work needs on your model (a raise counted with the cache it may rewrite), counting the brief, report, check and likely rework. Of the cheaper models that fit, the cheapest route wins. Because Sonnet costs half of Opus, an Opus-to-Sonnet hand-off rarely clears 70%. Hand-offs to Haiku, and hand-offs from Fable, clear it more often. Lowering effort needs the lower level to cost under 90% of staying, counting the cache it may rewrite. Both are defaults you can change in `/config`.
+- **It paces your usage windows.** On a subscription, each response reports how much of the 5-hour and 7-day windows is used and when each resets. rightsize divides the share used by the share of time gone, and acts on whichever window would stop you first:
+
+  | Pace | Hand-off threshold | Lowering threshold | Also |
+  |---|---|---|---|
+  | Over 1.2 (on pace to run out early) | 85% | 97% | |
+  | 0.6 to 1.2 | 70% (your setting) | 90% (your setting) | |
+  | Under 0.6 (much will go unused) | 50% | 80% | Raises effort without asking when the rule is "Ask" |
+  | Over 90% used, any time | 95% | lowers whenever it fits | Skips raises and stronger models |
+
+  The first 15% of a window is not paced, since a few prompts there look like a flood. Thresholds you set in `/config` move by the same amounts. Choices set to never or stay are kept. The band says when pacing changed a decision. **Budget pacing** in `/config` turns it off.
 - **It learns from real costs.** After each rated turn, rightsize reads what the turn really cost from Claude Code's own cost ledger (the `/cost` total), which prices cache writes at the TTL they were written at. The Haiku rating call is left out. Where there is no ledger, it prices the API's token counts from `prices.json` instead. It moves its estimates toward that cost, for each task type and route, and also for each model and each model at each level, in the main chat and in hand-offs. A model and level with few runs leans on what the task type as a whole has shown. After 20 runs, the measured average replaces the guess. A lowered turn that stepped back up is left out, since part of it ran at your normal level. Sessions running at the same time add to one shared record, so none overwrites another's runs.
 - **It knows how you pay.** Each response carries rate-limit windows: a subscription shows five-hour and seven-day windows, and a Claude gateway shows a spend limit. rightsize reads them and shows reports in dollars (API) or as a share of usage (subscription). Only when a response shows none, as with an API key, does it ask you once. The answer is kept across sessions.
 - **Prices stay current.** Every 30 days it compares `prices.json` with Anthropic's pricing page and writes in any change, keeping the old file as `prices.json.bak`.
@@ -89,6 +99,7 @@ The band shows in the CLI and the desktop app. VS Code and the mobile app keep t
   - **Hand-off threshold**: 50%, 60%, 70% (default), 80% or 90%. A cheaper subagent must cost under this share of staying. Lower is stricter.
   - **Lowering threshold**: 70%, 80%, 90% (default) or 95%. A lower effort level must cost under this share of staying. Lower is stricter.
   - **Claude's subagents**: cheaper when it fits (default) or off.
+  - **Budget pacing**: on (default) or off.
   - **Band**: when it acts (the default: only when rightsize changes something), always (every rated prompt, "No change" included), or off (status line only).
   - **Price check**: monthly, check now, or off.
 
@@ -96,7 +107,7 @@ The band shows in the CLI and the desktop app. VS Code and the mobile app keep t
 
 These are in `~/.claude/mods-logs/`:
 - `rightsize.log`: each decision.
-- `rightsize-runs.jsonl`: each rated turn, changed or not and stopped or not. Each line has the session ID, the change made and the change suggested, the estimated and actual cost (and whether the actual cost came from the `ledger` or from `tokens`), the rating call's cost, the rate-limit windows before and after, the turn's duration and its subagent calls, each model's rated level (`fit`), the rater's guesses of the tokens read and written and the tool calls (`read`, `write`, `steps`), for a hand-off the level its subagent ran at (`subLevel`), Claude's own subagents it moved to a cheaper model (`resized`), and its workflow calls (`workflows`, and `afterWorkflow` once one has run in the session). A rating that came to nothing is logged as an `overhead` line. `/rightsize report` reads this file.
+- `rightsize-runs.jsonl`: each rated turn, changed or not and stopped or not. Each line has the session ID, the change made and the change suggested, the estimated and actual cost (and whether the actual cost came from the `ledger` or from `tokens`), the rating call's cost, the rate-limit windows before and after, the turn's duration and its subagent calls, each model's rated level (`fit`), the rater's guesses of the tokens read and written and the tool calls (`read`, `write`, `steps`), for a hand-off the level its subagent ran at (`subLevel`), Claude's own subagents it moved to a cheaper model (`resized`), the usage pace when it moved the thresholds (`pace`), and its workflow calls (`workflows`, and `afterWorkflow` once one has run in the session). A rating that came to nothing is logged as an `overhead` line. `/rightsize report` reads this file.
 - `rightsize-switches.jsonl`: each measured effort switch, and whether the cache was kept.
 
 ## Limits

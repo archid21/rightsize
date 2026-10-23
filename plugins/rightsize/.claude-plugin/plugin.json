@@ -64,6 +64,16 @@
         "off"
       ]
     },
+    "pacing": {
+      "type": "string",
+      "title": "Budget pacing",
+      "description": "on: on a subscription, move the thresholds by how fast the 5-hour and 7-day windows are being used. Running out early: hand off and lower more readily. Much left near a reset: hand off only for big savings, and raise without asking. Over 90% used: save all it can and skip raises. off: always use the thresholds above.",
+      "default": "on",
+      "options": [
+        "on",
+        "off"
+      ]
+    },
     "band": {
       "type": "string",
       "title": "Band",

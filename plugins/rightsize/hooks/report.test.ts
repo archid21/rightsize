@@ -89,3 +89,16 @@ test('fixed context: request-weighted, the biggest parts first, nothing when it 
   expect(fixedLines([f(14000, 10, 0.001)])).toEqual([])
   expect(fixedLines([run({})])).toEqual([])
 })
+
+test("Claude's subagents moved to a cheaper model: counted, and their saving added", async () => {
+  const sub = (x: Partial<RunLine>): RunLine => ({ at: ago(0), kind: 'subagent', session: 's1', type: 'search', from: 'opus', tier: 'haiku', level: 'low', estimate: 0.01, parentEstimate: 0.2, actual: 0.02, ...x })
+  const t = totals([run({ actual: 0.5 }), sub({}), sub({ aborted: true })])
+  expect([t.rated, t.subagents]).toEqual([1, 2])
+  // 0.02 on Haiku against an estimate 20x higher on Opus: 0.40 that way, 0.38 saved. The stopped one claims nothing.
+  expect(Math.abs(t.saved - 0.38) < 1e-9).toBe(true)
+  expect(t.spent, 'its cost is already in its turn').toBe(0.5)
+  const text = buildReport([run({ actual: 0.5 }), sub({})], [], { now: NOW, session: 's1', subscription: false })
+  expect(text).toContain("This session: 1 prompt rated, 0 changed. 1 subagent Claude started ran on a cheaper model.")
+  expect(text).toContain('Saved ~$0.38')
+  expect(buildReport([sub({})], [], { now: NOW, session: 's1', subscription: false }), 'a session with only a subagent line').toContain('This session: 0 prompts rated, 0 changed. 1 subagent Claude started ran on a cheaper model.')
+})

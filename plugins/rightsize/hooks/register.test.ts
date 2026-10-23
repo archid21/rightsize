@@ -57,6 +57,9 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
     windowStep: 0,
     ratingUsage: {} as Record<string, number>,
     spawned: [] as { description: string; model?: string }[],
+    /** While set, a spawn waits on it before it settles: its subagent can step first. */
+    spawnHold: null as Promise<void> | null,
+    agents: [] as { id: string; description: string; type: string; status: string; parentId?: string }[],
     /** What /context would break the window into; undefined: no breakdown. */
     breakdown: undefined as Record<string, unknown> | undefined,
   }
@@ -141,8 +144,12 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
   })
   on('agent.spawn', async ($, e) => {
     h.spawned.push({ description: e.description, model: e.model })
-    return { model: e.model ?? h.subModel, agentId: `agent-${e.description}` } as never
+    const id = `agent-${e.description}`
+    h.agents.push({ id, description: e.description, type: e.subagentType, status: 'running', ...(e.parentAgentId ? { parentId: e.parentAgentId } : {}) })
+    if (h.spawnHold) await h.spawnHold
+    return { model: e.model ?? h.subModel, agentId: id } as never
   })
+  on('agent.list', async () => ({ value: h.agents }) as never)
   on('prompt.submit', async ($, e) => {
     h.submitted.push({ text: e.text, context: e.context })
     return { text: e.text } as never
@@ -170,6 +177,8 @@ const drive = ($: unknown, h: ReturnType<typeof engine>) => {
       for await (const _ of it as AsyncIterable<unknown>) void _
     },
     complete: (turnId: string) => e.turn.complete({ turnId, answer: '', durationMs: 1, isAborted: false, reason: 'answer' }),
+    // A subagent's own answer, in its own loop.
+    answer: (agentId: string, isAborted = false) => e.turn.complete({ turnId: `${agentId}-turn`, agentId, answer: '', durationMs: 1, isAborted, reason: isAborted ? 'aborted' : 'answer' }),
     agent: (model: string) => e.tool.call({ tool: 'Agent', description: 'x', prompt: 'brief', model }),
     workflow: () => e.tool.call({ tool: 'Workflow', script: 'export const meta = {}' }),
     bash: (command: string) => e.tool.call({ tool: 'Bash', command, description: `try ${command} ${h.sent.length}` }),
@@ -396,6 +405,34 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect((JSON.parse(last(runs) ?? '{}') as { route?: string }).route).toBe('delegate:haiku')
   })
 
+  test(`the hand-off subagent's first step, before its spawn settles, already runs at the hand-off's level (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    const d = drive($, h)
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+    h.rating = '{"fit":{"haiku":"high","sonnet":"high","opus":"high","fable":"medium"},"type":"feature","read":20000,"write":2000,"steps":6,"reason":"small helper with tests"}'
+    h.answers = { Cheaper: 'Send it to a cheaper subagent (Recommended)', Remember: 'Just this session' }
+    await d.submit(DEBUG)
+    await d.step('t1', 0)
+    await d.agent('haiku')
+    let release = () => {}
+    h.spawnHold = new Promise<void>(r => (release = r))
+    const spawning = d.spawn('helper', 'haiku')
+    while (!h.spawned.length) await flush()
+    // An Explore agent the engine starts meanwhile is not the hand-off's.
+    h.agents.push({ id: 'agent-other', description: 'other', type: 'Explore', status: 'running' })
+    await d.step('t1', 0, 'agent-other')
+    expect(last(h.sent)?.effort).toBe('medium')
+    await d.step('t1', 0, 'agent-helper')
+    expect(last(h.sent)?.effort).toBe('high')
+    release()
+    await spawning
+    await d.step('t1', 1)
+    await d.complete('t1')
+    expect(h.spawned.map(x => x.model), 'the named model is left as Claude named it').toEqual(['haiku'])
+  })
+
   test(`on Opus at medium, hands work Haiku can do at high to Haiku at high, and runs it there (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
     const d = drive($, h)
@@ -484,6 +521,72 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t2', 0)
     await d.step('t2', 0, 'agent-lister')
     expect(last(h.sent)?.effort).toBe('low')
+  })
+
+  const LISTING = '{"fit":{"haiku":"low","sonnet":"low","opus":"low","fable":"low"},"type":"search","read":8000,"write":500,"steps":5,"reason":"list call sites"}'
+  // Two steps of the fake subagent on Haiku, at the fake usage: (200 x 0.1 + 400 x 0.5 + 20,000 x 0.01 + 300 x 0.2) / 1M each.
+  const TWO_HAIKU_STEPS = 0.00096
+
+  test(`measures a moved subagent when it answers, teaches its model and level, and logs it (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    const d = drive($, h)
+    await d.start(surface)
+    h.rating = NO_CHANGE
+    await d.submit(SEARCH)
+    await d.step('t1', 0)
+    h.rating = LISTING
+    await d.spawn('lister')
+    await d.step('t1', 1)
+    await d.complete('t1')
+    // A background subagent: it works and answers after the turn ended.
+    await d.step('l1', 0, 'agent-lister')
+    await d.step('l1', 1, 'agent-lister')
+    await d.answer('agent-lister')
+    const runs = (h.files['/home/test/.claude/mods-logs/rightsize-runs.jsonl'] ?? '').trim().split('\n').map(l => JSON.parse(l) as Record<string, unknown>)
+    const sub = runs.filter(l => l.kind === 'subagent')
+    expect(sub.length).toBe(1)
+    expect([sub[0]?.from, sub[0]?.tier, sub[0]?.level, sub[0]?.type, sub[0]?.aborted]).toEqual(['opus', 'haiku', 'low', 'search', false])
+    expect(Math.abs(Number(sub[0]?.actual) - TWO_HAIKU_STEPS) < 1e-6).toBe(true)
+    expect(Number(sub[0]?.parentEstimate) > Number(sub[0]?.estimate) * 10, 'the same work on Opus').toBe(true)
+    const cal = h.store.calibration as Record<string, { n: number }>
+    expect(['search:subagent', 'search:subagent:haiku', 'search:subagent:haiku:low'].map(k => cal[k]?.n)).toEqual([1, 1, 1])
+
+    // Resumed later and stopped: logged, nothing taught.
+    await d.step('l2', 0, 'agent-lister')
+    await d.answer('agent-lister', true)
+    const again = (h.files['/home/test/.claude/mods-logs/rightsize-runs.jsonl'] ?? '').trim().split('\n').map(l => JSON.parse(l) as Record<string, unknown>)
+    expect(again.filter(l => l.kind === 'subagent').map(l => l.aborted)).toEqual([false, true])
+    expect(Math.abs(Number(last(again)?.actual) - TWO_HAIKU_STEPS / 2) < 1e-6, 'only what it spent since it answered').toBe(true)
+    expect((h.store.calibration as Record<string, { n: number }>)['search:subagent']?.n).toBe(1)
+    h.now = Date.now()
+    expect((await d.command('report')).text ?? '').toContain('2 subagents Claude started ran on a cheaper model.')
+  })
+
+  test(`a moved subagent's first step, before its spawn settles, already runs at its level (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    const d = drive($, h)
+    await d.start(surface)
+    h.rating = NO_CHANGE
+    await d.submit(SEARCH)
+    await d.step('t1', 0)
+    h.rating = LISTING
+    let release = () => {}
+    h.spawnHold = new Promise<void>(r => (release = r))
+    const spawning = d.spawn('lister')
+    while (!h.spawned.length) await flush()
+    // A subagent's own subagent, of the same description and type, is not the one being spawned.
+    h.agents.push({ id: 'agent-nested', description: 'lister', type: 'general-purpose', status: 'running', parentId: 'agent-x' })
+    await d.step('n1', 0, 'agent-nested')
+    expect(last(h.sent)?.effort).toBe('medium')
+    await d.step('l1', 0, 'agent-lister')
+    expect(last(h.sent)?.effort, 'matched to its spawn by what the agent list shows').toBe('low')
+    release()
+    await spawning
+    await d.step('l1', 1, 'agent-lister')
+    expect(last(h.sent)?.effort).toBe('low')
+    await d.answer('agent-lister')
+    const runs = (h.files['/home/test/.claude/mods-logs/rightsize-runs.jsonl'] ?? '').trim().split('\n').map(l => JSON.parse(l) as Record<string, unknown>)
+    expect(Math.abs(Number(runs.find(l => l.kind === 'subagent')?.actual) - TWO_HAIKU_STEPS) < 1e-6, 'both steps counted once').toBe(true)
   })
 
   test(`keeps Claude's subagent on its model when no cheaper one fits (${surface})`, { timeoutMs: 30000 }, async ($, on) => {

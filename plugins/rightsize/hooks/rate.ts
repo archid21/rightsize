@@ -7,7 +7,7 @@ import { TIERS, TIER_NAME, type Fit, isLevel, isTaskType, isTier, levelRank, nee
 export const ratingSystem = (tier: Tier, level: Level) => `You route one request for an AI coding assistant (Claude Code). It now runs on ${TIER_NAME[tier]} at ${level} effort. Models from weakest to strongest: haiku, sonnet, opus, fable.
 
 Return JSON only, no prose, no code fences:
-{"fit":{"haiku":"<level|no>","sonnet":"<level|no>","opus":"<level|no>","fable":"<level|no>"},"size":"<small|bulky>","type":"<type>","read":<tokens>,"write":<tokens>,"steps":<number>,"reason":"<at most 8 words>"}
+{"fit":{"haiku":"<level|no>","sonnet":"<level|no>","opus":"<level|no>","fable":"<level|no>"},"type":"<type>","read":<tokens>,"write":<tokens>,"steps":<number>,"reason":"<at most 8 words>"}
 
 fit, for each model: the lowest reasoning effort at which that model would do this work well, or "no" when it would likely struggle at any effort. A weaker model needs the same or a higher level than a stronger one for the same work. The levels:
 - low: quick lookups, one-line answers, renames, typo fixes, running one known command, simple questions.
@@ -17,8 +17,6 @@ fit, for each model: the lowest reasoning effort at which that model would do th
 - max: the hardest problems only, where a wrong answer is costly and deep reasoning clearly pays off.
 
 A stronger model fits whatever a weaker one fits. Say "no" for the current model only when it is likely to struggle (hard reasoning, subtle bugs, high-stakes design). A cheaper model fits routine or mechanical work: haiku for finding, listing, copying the same edit, pulling out data, formatting; sonnet for routine coding and writing that needs some judgement. When unsure whether a cheaper model fits, say "no" for it.
-
-size: "bulky" when the work reads or writes a lot compared with a short brief and report (searching a large codebase, the same edit across many files, summarising long logs or documents, sorting test output, pulling data from many files); otherwise "small".
 
 type: one of lookup, search, bulk-edit, extract, summarize, feature, debug, refactor, review, design, writing, other.
 read: your estimate of the tokens of files, logs and tool output the work will read. write: the tokens of code and text it will write, thinking left out. steps: the tool calls it will make.
@@ -83,7 +81,6 @@ export function parseRating(raw: string, tier: Tier): Rating | undefined {
   return {
     level: needOn(fit, tier),
     fit,
-    size: lower(json.size) === 'bulky' ? 'bulky' : 'small',
     type: isTaskType(type) ? type : 'other',
     read: count(json.read, 2000, 2_000_000),
     write: count(json.write, 500, 200_000),

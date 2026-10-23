@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Claude's moved subagents are measured and learned from.** Each one's own requests are priced, and when it answers (often after the turn that started it, for a background one) rightsize logs a `subagent` line with its real cost and its raw estimates on its model and on the parent's, and teaches `<type>:subagent`, `:<model>` and `:<model>:<level>` calibration from it. The next sizing uses those numbers. A stopped subagent is logged and teaches nothing; a resumed one counts again from zero.
+- `/rightsize report` counts these subagents ("N subagents Claude started ran on a cheaper model") and adds their saving: the real cost scaled by the parent's estimate over the chosen model's.
+- A subagent's first request no longer slips through at Claude's effort when the engine starts it before the spawn settles: a step from a subagent whose id is not known yet is matched to the pending spawn by its description and type in the agent list. This covers the hand-off's subagent and moved ones.
+- The rating no longer asks for `size`; routing has not used it since model and effort were rated together. Older replies that still carry it read as before.
 - Raise when stuck: a Bash command run again with a new `description` counts as the same call, so "the same tool call failed twice" fires. Found in a live session, where three failing `false` calls only tripped "3 tool calls failed".
 - The fixed-context advice in `/rightsize report` names the fixes for its biggest parts (skills and plugins, MCP servers, CLAUDE.md, agents) instead of always leading with MCP.
 - The idle question says "1 minute", not "1 minutes".

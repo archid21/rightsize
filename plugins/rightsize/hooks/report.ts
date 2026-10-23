@@ -14,8 +14,8 @@ export type Windows = Record<string, number>
 /** One line of rightsize-runs.jsonl. Lines from before 0.5 lack the newer fields. */
 export type RunLine = {
   at: string
-  /** 'overhead': a rating call that came to nothing (failed or unreadable). */
-  kind?: 'run' | 'overhead'
+  /** 'overhead': a rating call that came to nothing (failed or unreadable). 'subagent': one of Claude's subagents moved to a cheaper model, when it answered. */
+  kind?: 'run' | 'overhead' | 'subagent'
   session?: string
   type?: string
   route?: string
@@ -41,6 +41,12 @@ export type RunLine = {
   /** A workflow ran in the session by this turn's end: its agents' cost may be in this turn's. */
   afterWorkflow?: boolean
   durationMs?: number
+  /** A subagent line: the model it would have run on and the one it ran on, at what level, and the raw estimates on each. */
+  from?: string
+  tier?: string
+  level?: string
+  estimate?: number
+  parentEstimate?: number
   /** Main-chat requests in the turn. */
   requests?: number
   /** Tokens every request carried that the person can trim (MCP tools, memory, agents, skills), and what re-reading them cost. */
@@ -82,6 +88,8 @@ export function counterfactual(l: RunLine) {
 
 type Totals = {
   rated: number
+  /** Claude's own subagents moved to a cheaper model. */
+  subagents: number
   changed: Record<Change, number>
   declined: number
   saved: number
@@ -93,6 +101,7 @@ type Totals = {
 export function totals(lines: readonly RunLine[]): Totals {
   const t: Totals = {
     rated: 0,
+    subagents: 0,
     changed: { none: 0, lower: 0, raise: 0, 'delegate-up': 0, 'delegate-down': 0 },
     declined: 0,
     saved: 0,
@@ -102,6 +111,12 @@ export function totals(lines: readonly RunLine[]): Totals {
   }
   for (const l of lines) {
     t.overhead += num(l.overhead)
+    // Its cost is already in its turn's; what it saved is not: the same work on the parent's model, scaled as a turn's is.
+    if (l.kind === 'subagent') {
+      t.subagents += 1
+      if (!l.aborted && num(l.estimate) > 0) t.saved += (num(l.actual) * num(l.parentEstimate)) / num(l.estimate) - num(l.actual)
+      continue
+    }
     if (!isRun(l)) continue
     t.rated += 1
     const c = l.change ?? 'none'
@@ -128,7 +143,8 @@ function changedLine(t: Totals) {
     c['delegate-up'] && `${c['delegate-up']} sent to a stronger model`,
   ].filter(Boolean)
   const declined = t.declined ? ` You kept your level on ${plural(t.declined, 'suggestion')}.` : ''
-  return `${plural(t.rated, 'prompt')} rated, ${n} changed${parts.length ? ` (${parts.join(', ')})` : ''}.${declined}`
+  const subs = t.subagents ? ` ${plural(t.subagents, 'subagent')} Claude started ran on a cheaper model.` : ''
+  return `${plural(t.rated, 'prompt')} rated, ${n} changed${parts.length ? ` (${parts.join(', ')})` : ''}.${declined}${subs}`
 }
 
 function savedLine(t: Totals) {
@@ -180,7 +196,7 @@ function windowLine(lines: readonly RunLine[], t: Totals) {
 
 function period(title: string, lines: readonly RunLine[], subscription: boolean) {
   const t = totals(lines)
-  if (!t.rated && !t.overhead) return [`${title}: nothing rated yet.`]
+  if (!t.rated && !t.overhead && !t.subagents) return [`${title}: nothing rated yet.`]
   const out = [`${title}: ${changedLine(t)}`, `  ${savedLine(t)}`]
   const w = subscription ? windowLine(lines, t) : undefined
   if (w) out.push(`  ${w}`)

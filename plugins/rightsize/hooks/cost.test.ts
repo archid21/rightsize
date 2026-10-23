@@ -32,7 +32,6 @@ import { report } from './register'
 const rating = (over: Partial<Rating>): Rating => ({
   level: 'medium',
   fit: { opus: 'medium' },
-  size: 'small',
   type: 'other',
   read: 2000,
   write: 300,
@@ -53,7 +52,6 @@ test('reads each model\'s level, filling gaps from the models below', async () =
   expect(r).toEqual({
     level: 'medium',
     fit: { haiku: 'high', sonnet: 'high', opus: 'medium', fable: 'medium' },
-    size: 'small',
     type: 'feature',
     read: 5000,
     write: 800,
@@ -121,7 +119,7 @@ test('never lowers below the floor, and raises when the work needs it', async ()
 })
 
 test('hands a big mechanical task on Fable down to Haiku', async () => {
-  const r = rating({ level: 'low', fit: { haiku: 'low', fable: 'low' }, size: 'bulky', type: 'search', read: 150_000, write: 3000, steps: 30 })
+  const r = rating({ level: 'low', fit: { haiku: 'low', fable: 'low' }, type: 'search', read: 150_000, write: 3000, steps: 30 })
   const p = plan(r, fable, 'low')
   expect(p.kind).toBe('delegate')
   if (p.kind === 'delegate') {
@@ -138,7 +136,7 @@ test('the hand-off and lowering thresholds follow the settings, 70% and 90% by d
   expect(parseShare(undefined, 0.9), 'unset: the default').toBe(0.9)
 
   // Hand-off: the same task passes or not as the threshold moves past its cost ratio.
-  const big = rating({ level: 'low', fit: { haiku: 'low', fable: 'low' }, size: 'bulky', type: 'search', read: 150_000, write: 3000, steps: 30 })
+  const big = rating({ level: 'low', fit: { haiku: 'low', fable: 'low' }, type: 'search', read: 150_000, write: 3000, steps: 30 })
   const sent = plan(big, fable, 'low')
   if (sent.kind !== 'delegate') throw new Error('expected a hand-off at the default')
   const ratio = sent.delegateCost / sent.mainCost
@@ -155,13 +153,13 @@ test('the hand-off and lowering thresholds follow the settings, 70% and 90% by d
 })
 
 test('keeps a small task on the main model even when a cheaper one could do it', async () => {
-  const p = plan(rating({ level: 'high', fit: { haiku: 'high', fable: 'high' }, size: 'small' }), fable, 'low')
+  const p = plan(rating({ level: 'high', fit: { haiku: 'high', fable: 'high' } }), fable, 'low')
   expect(p.kind, 'small: the brief and check outweigh the saving').toBe('none')
 })
 
 test('does not hand down when the hand-off costs more than it saves', async () => {
   // A bulky label on tiny work: the brief, report and check outweigh the savings.
-  const r = rating({ level: 'high', fit: { sonnet: 'high', fable: 'high' }, size: 'bulky', read: 500, write: 200, steps: 1 })
+  const r = rating({ level: 'high', fit: { sonnet: 'high', fable: 'high' }, read: 500, write: 200, steps: 1 })
   const p = plan(r, fable, 'low')
   expect(p.kind).not.toBe('delegate')
 })
@@ -185,7 +183,7 @@ test('calibration moves estimates toward what runs really cost', async () => {
   expect(near(mainCost(r, { ...opus, cal }, 'medium', 0), before * 2), 'estimate doubled').toBe(true)
   const half = learn(learn({}, 'x', 3), 'x', 3)
   expect(near(factor(half, 'x'), 1 + (3 - 1) * (2 / CAL_FULL)), 'two runs move it 10% of the way').toBe(true)
-  const sub = rating({ type: 'search', fit: { haiku: 'low' }, size: 'bulky', read: 100_000, steps: 20 })
+  const sub = rating({ type: 'search', fit: { haiku: 'low' }, read: 100_000, steps: 20 })
   const d0 = delegateCost(sub, fable, 'haiku', 'low')
   const d1 = delegateCost(sub, { ...fable, cal: learn({}, 'search:delegate', 0.5) }, 'haiku', 'low')
   expect(d1, 'delegate estimates calibrate too').toBeLessThan(d0)
@@ -194,7 +192,7 @@ test('calibration moves estimates toward what runs really cost', async () => {
 // The case that needs both changes at once: Opus at medium is not enough, and a
 // cheaper model at a higher level would do it for less than raising Opus.
 const helper = { type: 'feature' as const, read: 20_000, write: 2000, steps: 6 }
-const bulky = { type: 'feature' as const, size: 'bulky' as const, read: 150_000, write: 3000, steps: 30 }
+const bulky = { type: 'feature' as const, read: 150_000, write: 3000, steps: 30 }
 
 test('on Opus at medium, sends work Haiku can do at high to Haiku at high, not Opus to high', async () => {
   const r = rating({ ...helper, level: 'high', fit: { haiku: 'high', sonnet: 'high', opus: 'high', fable: 'medium' } })
@@ -254,7 +252,7 @@ test('raises effort on the main model when the switch is free and the work is to
 })
 
 test('the floor applies to the subagent\'s level too', async () => {
-  const r = rating({ ...helper, level: 'medium', fit: { haiku: 'low', opus: 'medium' }, size: 'bulky', read: 150_000, steps: 30 })
+  const r = rating({ ...helper, level: 'medium', fit: { haiku: 'low', opus: 'medium' }, read: 150_000, steps: 30 })
   const p = plan(r, opus, 'medium')
   expect(p.kind === 'delegate' && p.level).toBe('medium')
 })
@@ -350,4 +348,14 @@ test('idle resume: the rewrite over a warm read, the cache life, and the warning
   expect(cacheTtlMs('{}')).toBe(3_600_000)
   expect(cacheTtlMs('not json')).toBe(3_600_000)
   expect([parseIdleWarning('over $0.50'), parseIdleWarning('over $1'), parseIdleWarning('off'), parseIdleWarning(undefined)]).toEqual([0.5, 1, null, 0.1])
+})
+
+test("a moved subagent's model learns from what such subagents really cost", async () => {
+  const listing = rating({ type: 'search', fit: { haiku: 'low', sonnet: 'low', opus: 'low', fable: 'low' }, read: 8000, write: 500, steps: 5 })
+  expect(sizeSubagent(listing, opus, 'opus', 'low')?.tier).toBe('haiku')
+  // Haiku's runs of this kind cost 40x their estimate; Sonnet has no record of its own.
+  const dear = { ...opus, cal: { 'search:subagent:haiku': { n: CAL_FULL, ratio: 40 } } }
+  expect(sizeSubagent(listing, dear, 'opus', 'low')?.tier).toBe('sonnet')
+  const size = sizeSubagent(listing, opus, 'opus', 'low')
+  expect(size !== undefined && size.parentRaw > size.raw * 10, 'the raw estimates for the saving').toBe(true)
 })

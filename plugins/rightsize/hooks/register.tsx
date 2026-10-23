@@ -47,6 +47,7 @@ import {
   rawMainCost,
   share,
   sizeSubagent,
+  subagentKeys,
   tierOf,
   tierRank,
   usageCost,
@@ -91,6 +92,10 @@ type Raise = NonNullable<Choices['raise']>
 type Route = NonNullable<Choices['up']>
 type Billing = 'api' | 'subscription'
 type Resized = { from: Tier; tier: Tier; level: Level; type: Rating['type'] }
+/** A moved subagent: its estimates on the model it runs on and on its parent's, and what its own requests cost so far. */
+type Measured = Resized & { raw: number; parentRaw: number; spend: number }
+/** A spawn the engine is starting: its first step can come before its id does. */
+type Spawning = { description: string; type: string; run?: Run; size?: Omit<Measured, 'spend'>; id?: string }
 type SubagentMode = 'cheaper when it fits' | 'off'
 type Question<V> = { header: string; question: string; options: readonly (readonly [string, V])[] }
 
@@ -262,7 +267,8 @@ let lastTurnAt = 0
 /** The idle gap already warned about: the person's answer stands for it. */
 let idleWarnedFor = 0
 /** Claude's own subagents moved to a cheaper model, by id: the level their steps run at, past the turn that started them. */
-const resizedLevel = new Map<string, Level>()
+const resizedRuns = new Map<string, Measured>()
+const spawning: Spawning[] = []
 
 const words = (text: string) => text.trim().split(/\s+/).filter(Boolean).length
 const fromPerson = (e: PromptSubmitInput) => e.origin.kind === 'composer' || e.origin.kind === 'bridge'
@@ -556,7 +562,7 @@ async function sizeSpawn($: EngineInterface, e: AgentSpawnInput, run: Run | null
   const size = sizeSubagent(r, { ...s, tier: parent }, parent, floor)
   const fit = TIERS.map(t => `${t[0]}:${r.fit[t] ?? (r.fit[t] === null ? 'no' : '?')}`).join(' ')
   await log($, `subagent "${e.description}" on ${parent}: rated ${fit}, ${size ? `sent to ${size.tier}/${size.level}` : 'kept'}`)
-  return size ? { from: parent, tier: size.tier, level: size.level, type: r.type } : undefined
+  return size ? { from: parent, tier: size.tier, level: size.level, type: r.type, raw: size.raw, parentRaw: size.parentRaw } : undefined
 }
 
 const costLine = (d: number, stay: number, cur: string) =>
@@ -988,6 +994,48 @@ async function holdIdle($: EngineInterface): Promise<boolean> {
   return a === true
 }
 
+// A subagent's step whose id no spawn has answered yet: the engine started it before
+// next(e) settled. Match it to the spawn by what $.agent.list() shows of it.
+async function claim($: EngineInterface, id: string) {
+  if (!spawning.length || resizedRuns.has(id) || active?.subAgents.includes(id)) return
+  const row = (await $.agent.list().catch(() => [])).find(a => a.id === id)
+  if (!row || row.parentId !== undefined) return
+  const w = spawning.find(x => !x.id && x.description === row.description && x.type === row.type)
+  if (!w) return
+  w.id = id
+  if (w.run && !w.run.subAgents.includes(id)) w.run.subAgents.push(id)
+  if (w.size) resizedRuns.set(id, { ...w.size, spend: 0 })
+}
+
+// A moved subagent's answer: what its own requests cost teaches the estimate for its
+// model and level, and the log keeps it for the report. A background one often
+// answers after the turn that started it ended, so this is its own line. A
+// resumed subagent starts counting again.
+async function finishSubagent($: EngineInterface, m: Measured, aborted: boolean) {
+  const spend = m.spend
+  m.spend = 0
+  if (spend <= 0) return
+  if (!aborted) {
+    const sample = ratioSample(spend, m.raw)
+    for (const key of subagentKeys(m.type, m.tier, m.level)) teach(key, sample)
+    await saveCal($)
+  }
+  const line: RunLine = {
+    at: new Date().toISOString(),
+    kind: 'subagent',
+    session: sessionId,
+    type: m.type,
+    from: m.from,
+    tier: m.tier,
+    level: m.level,
+    estimate: round(m.raw),
+    parentEstimate: round(m.parentRaw),
+    actual: round(spend),
+    aborted,
+  }
+  await append($, 'rightsize-runs.jsonl', JSON.stringify(line), RUNS_LOG_MAX)
+}
+
 async function summary($: EngineInterface) {
   const c = await choices($)
   const said = (v: string | undefined) => v ?? 'not asked yet'
@@ -1051,7 +1099,8 @@ export const register: Register = (on, options) => {
     lastApplied = undefined
     lastContext = 0
     workflowSeen = false
-    resizedLevel.clear()
+    resizedRuns.clear()
+    spawning.length = 0
     lastTurnAt = 0
     idleWarnedFor = 0
     await $.command.register({ name: CMD, description: 'Rightsize: status, report, settings, undo or clear' })
@@ -1176,7 +1225,7 @@ export const register: Register = (on, options) => {
         const fit = TIERS.map(t => `${t[0]}:${r.fit[t] ?? (r.fit[t] === null ? 'no' : '?')}`).join(' ')
         if (unfanned !== planned) await log($, `hand-off to ${planned.kind === 'delegate' ? planned.tier : '?'} skipped: a workflow ran this session`)
         const paced = paceNow.mode === 'normal' ? '' : `, ${paceNow.mode} pace on ${paceNow.window}${paceNow.pace === undefined ? '' : ` (${paceNow.pace.toFixed(2)})`}`
-        await log($, `${r.type} on ${s.tier}/${s.level}${paced}: rated ${fit} ${r.size}, plan ${p.kind}${'dir' in p ? ` ${p.dir}` : ''}: ${did}`)
+        await log($, `${r.type} on ${s.tier}/${s.level}${paced}: rated ${fit}, plan ${p.kind}${'dir' in p ? ` ${p.dir}` : ''}: ${did}`)
       } else if (overhead > 0) {
         // A rating that came to nothing still cost something: the report counts it.
         const line: RunLine = { at: new Date().toISOString(), kind: 'overhead', session: sessionId, overhead: round(overhead) }
@@ -1195,13 +1244,19 @@ export const register: Register = (on, options) => {
     if (e.agentId !== undefined) {
       // The hand-off's subagent, and a subagent moved to a cheaper model, run at the
       // level their model needs, whatever Claude asked for.
+      await claim($, e.agentId)
       const run = active
       const ours = run?.delegate && run.subAgents.includes(e.agentId) ? run.delegate : undefined
-      const level = ours?.level ?? resizedLevel.get(e.agentId)
+      const sized = resizedRuns.get(e.agentId)
+      const level = ours?.level ?? sized?.level
       const send = level && e.effort !== undefined ? { ...e, effort: level } : e
       if (run && ours && isLevel(send.effort)) run.subLevel = send.effort
       const out = yield* next(send)
-      if (run && out.usage) run.subCost += usageCost(prices, out.usage.model, out.usage)
+      if (out.usage) {
+        const cost = usageCost(prices, out.usage.model, out.usage)
+        if (run) run.subCost += cost
+        if (sized) sized.spend += cost
+      }
       return out
     }
     if (pending && active?.turnId !== e.turnId) {
@@ -1295,13 +1350,21 @@ export const register: Register = (on, options) => {
   on('agent.spawn', async ($, e, next) => {
     const run = active ?? pending
     const size = await sizeSpawn($, e, run).catch(() => undefined)
-    const result = await next(size ? { ...e, model: size.tier } : e)
     const ours = run?.delegate && e.parentAgentId === undefined && !e.fork && tierOf(e.model) === run.delegate.tier
-    if (run && ours && result.agentId) run.subAgents.push(result.agentId)
-    if (size && result.agentId && tierOf(result.model) === size.tier) {
-      resizedLevel.set(result.agentId, size.level)
-      run?.resized.push(size)
+    const wait: Spawning | undefined = ours || size ? { description: e.description, type: e.subagentType, ...(ours && run ? { run } : {}), ...(size ? { size } : {}) } : undefined
+    if (wait) spawning.push(wait)
+    let result: Awaited<ReturnType<typeof next>>
+    try {
+      result = await next(size ? { ...e, model: size.tier } : e)
+    } finally {
+      if (wait) spawning.splice(spawning.indexOf(wait), 1)
     }
+    const id = result.agentId
+    if (run && ours && id && !run.subAgents.includes(id)) run.subAgents.push(id)
+    if (size && id && tierOf(result.model) === size.tier) {
+      if (!resizedRuns.has(id)) resizedRuns.set(id, { ...size, spend: 0 })
+      run?.resized.push({ from: size.from, tier: size.tier, level: size.level, type: size.type })
+    } else if (id) resizedRuns.delete(id)
     return result
   }).catch(($, e, next) => next(e))
 
@@ -1340,6 +1403,8 @@ export const register: Register = (on, options) => {
 
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)
+    const sized = e.agentId === undefined ? undefined : resizedRuns.get(e.agentId)
+    if (sized) await finishSubagent($, sized, e.isAborted)
     if (e.agentId === undefined) {
       await knowBilling($, false)
       await rememberTurn($)

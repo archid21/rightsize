@@ -122,7 +122,6 @@ export type Rating = {
   /** The level the work needs on the session's model (see needOn). */
   level: Level
   fit: Fit
-  size: 'small' | 'bulky'
   type: TaskType
   /** Tokens of files, logs and tool output the work reads. */
   read: number
@@ -150,15 +149,18 @@ export type Calibration = Record<string, { n: number; ratio: number }>
 export const CAL_FULL = 20
 /** Key for the share of effort switches that cost a cache miss (prior: all of them). */
 export const SWITCH_KEY = 'cache:effort-switch'
-export const calKey = (type: TaskType, route: 'main' | 'delegate') => `${type}:${route}`
+/** main: the main chat. delegate: rightsize's hand-off. subagent: a subagent Claude started, moved to a cheaper model. */
+export type CalRoute = 'main' | 'delegate' | 'subagent'
+export const calKey = (type: TaskType, route: CalRoute) => `${type}:${route}`
 /** A route's keys, from the most general to the most specific: the task type, then the model, then the model at its level. */
-export const routeKeys = (type: TaskType, route: 'main' | 'delegate', tier: Tier, level: Level) => [
+export const routeKeys = (type: TaskType, route: CalRoute, tier: Tier, level: Level) => [
   calKey(type, route),
   `${type}:${route}:${tier}`,
   `${type}:${route}:${tier}:${level}`,
 ]
 export const mainKeys = (type: TaskType, tier: Tier, level: Level) => routeKeys(type, 'main', tier, level)
 export const delegateKeys = (type: TaskType, tier: Tier, level: Level) => routeKeys(type, 'delegate', tier, level)
+export const subagentKeys = (type: TaskType, tier: Tier, level: Level) => routeKeys(type, 'subagent', tier, level)
 
 // Each key's measured ratio stands on the one before it as its prior, so a model
 // and level with few runs leans on what the task type as a whole has shown.
@@ -240,8 +242,8 @@ export function mainCost(r: Rating, s: Situation, level: Level, switches: number
 
 const reworkFactor = (main: Tier, sub: Tier) => (tierRank(sub) >= tierRank(main) ? 1.2 : sub === 'haiku' ? 1.5 : 1.3)
 
-/** A subagent's own requests on `sub`: it starts with no cache, so its base and the brief are written fresh. */
-function subWork(r: Rating, s: Situation, sub: Tier, subLevel: Level) {
+/** A subagent's own requests on `sub`, before calibration: it starts with no cache, so its base and the brief are written fresh. */
+export function subWork(r: Rating, s: Situation, sub: Tier, subLevel: Level) {
   const steps = Math.max(1, Math.round(r.steps))
   return dollars(s.prices[sub], {
     cacheWrite: SUB_BASE + BRIEF + r.read,
@@ -424,19 +426,33 @@ export function plan(r: Rating, s: Situation, floor: Level): Plan {
 // at its own level, when its work (likely rework counted) costs under the hand-off
 // share of running on the parent. Never a stronger model, and nothing when the
 // parent itself would struggle: that is Claude's call, not a saving.
-export type SubagentSize = { tier: Tier; level: Level; cost: number; parentCost: number }
+// Each model's estimate is calibrated by what Claude's subagents moved to it really cost.
+export type SubagentSize = {
+  tier: Tier
+  level: Level
+  /** Calibrated, likely rework counted: what the choice was made on. */
+  cost: number
+  parentCost: number
+  /** Before calibration and rework: what a run teaches against, and the parent's for the saving. */
+  raw: number
+  parentRaw: number
+}
 
 export function sizeSubagent(r: Rating, s: Situation, parent: Tier, floor: Level): SubagentSize | undefined {
   const own = r.fit[parent]
   if (!own) return undefined
-  const parentCost = subWork(r, s, parent, clampFloor(own, floor)) * reworkFactor(parent, parent)
+  const priced = (t: Tier, level: Level) => {
+    const raw = subWork(r, s, t, level)
+    return { raw, cost: raw * routeFactor(s.cal, subagentKeys(r.type, t, level)) * reworkFactor(parent, t) }
+  }
+  const p = priced(parent, clampFloor(own, floor))
   const best = TIERS.flatMap(t => {
     const need = r.fit[t]
     if (tierRank(t) >= tierRank(parent) || !need) return []
     const level = clampFloor(need, floor)
-    return [{ tier: t, level, cost: subWork(r, s, t, level) * reworkFactor(parent, t), parentCost }]
+    return [{ tier: t, level, ...priced(t, level), parentCost: p.cost, parentRaw: p.raw }]
   }).sort((a, b) => a.cost - b.cost)[0]
-  return best && best.cost < (s.rules ?? DEFAULT_RULES).handOff * parentCost ? best : undefined
+  return best && best.cost < (s.rules ?? DEFAULT_RULES).handOff * p.cost ? best : undefined
 }
 
 // ---- Wording ---------------------------------------------------------------

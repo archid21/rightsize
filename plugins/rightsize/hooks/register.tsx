@@ -1046,7 +1046,7 @@ export const register: Register = (on, options) => {
     }
     if (active && e.agentId === undefined) {
       const model = (e as { model?: unknown }).model
-      if (String(e.tool) === 'Agent' && active.delegate && model === active.delegate.tier) active.delegated = true
+      if (String(e.tool) === 'Agent' && active.delegate && tierOf(typeof model === 'string' ? model : undefined) === active.delegate.tier) active.delegated = true
       if (String(e.tool) === 'Agent' || String(e.tool) === 'SendMessage') active.agentCalls += 1
       if ((result as { isError?: boolean }).isError) active.errors += 1
     }

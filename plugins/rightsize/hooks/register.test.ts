@@ -358,6 +358,28 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await bandText($, surface)).toMatch(/^rightsize: Sent to Haiku: .* on Fable \(estimated\), saved about \d+%\.$/)
   })
 
+  test(`counts a hand-off whose Agent call names the full model id (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    const d = drive($, h)
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+
+    h.rating = '{"fit":{"haiku":"high","sonnet":"high","opus":"high","fable":"medium"},"size":"small","type":"feature","read":20000,"write":2000,"steps":6,"reason":"small helper with tests"}'
+    h.answers = { Cheaper: 'Send it to a cheaper subagent (Recommended)', Remember: 'Just this session' }
+    await d.submit(DEBUG)
+    h.subModel = 'claude-haiku-5-5'
+    await d.step('t1', 0)
+    await d.agent('claude-haiku-5-5')
+    await d.spawn('helper', 'claude-haiku-5-5')
+    await d.step('t1', 0, 'agent-helper')
+    await d.step('t1', 1)
+    await d.complete('t1')
+    expect(h.sent.find(s => s.agentId === 'agent-helper')?.effort).toBe('high')
+    const runs = (h.files['/home/test/.claude/mods-logs/rightsize-runs.jsonl'] ?? '').trim().split('\n')
+    expect((JSON.parse(last(runs) ?? '{}') as { route?: string }).route).toBe('delegate:haiku')
+  })
+
   test(`on Opus at medium, hands work Haiku can do at high to Haiku at high, and runs it there (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
     const d = drive($, h)

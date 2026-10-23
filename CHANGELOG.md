@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Run log lines carry the rater's guesses behind each estimate (`read`, `write`, `steps`), so a bad guess can be told from a bad cost model.
 - **Claude's own subagents.** When Claude starts a general-purpose subagent without naming a model, it would run on Claude's own model. rightsize now rates the subagent's brief with Haiku and runs it on the cheapest weaker model that fits, at that model's level, when that costs under the hand-off threshold. It never picks a stronger model, and it leaves alone subagents that name a model, other agent types (they may set their own), forks, workflow agents, resumes, teammates and subagents started by subagents. The band says so (`Ran Claude's subagent on Haiku (low) instead of Opus.`), and run log lines carry `resized`. **Claude's subagents** in `/config` turns it off.
 - A hand-off now counts as taken when Claude's Agent call names the full model id (`claude-haiku-5-5`), not only the alias.
 - **Workflow guard (ultracode).** Once Claude runs a workflow in a session, rightsize stops handing work off for the rest of that session, and turns from then on teach calibration nothing and claim no saving: a workflow runs on in the background, so its agents' cost lands in later turns too. Prompts are still rated and effort still changes. `/rightsize report` lists these turns on their own line; run log lines carry `workflows` and `afterWorkflow`.

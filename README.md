@@ -96,7 +96,7 @@ The band shows in the CLI and the desktop app. VS Code and the mobile app keep t
 
 These are in `~/.claude/mods-logs/`:
 - `rightsize.log`: each decision.
-- `rightsize-runs.jsonl`: each rated turn, changed or not and stopped or not. Each line has the session ID, the change made and the change suggested, the estimated and actual cost (and whether the actual cost came from the `ledger` or from `tokens`), the rating call's cost, the rate-limit windows before and after, the turn's duration and its subagent calls, each model's rated level (`fit`), for a hand-off the level its subagent ran at (`subLevel`), Claude's own subagents it moved to a cheaper model (`resized`), and its workflow calls (`workflows`, and `afterWorkflow` once one has run in the session). A rating that came to nothing is logged as an `overhead` line. `/rightsize report` reads this file.
+- `rightsize-runs.jsonl`: each rated turn, changed or not and stopped or not. Each line has the session ID, the change made and the change suggested, the estimated and actual cost (and whether the actual cost came from the `ledger` or from `tokens`), the rating call's cost, the rate-limit windows before and after, the turn's duration and its subagent calls, each model's rated level (`fit`), the rater's guesses of the tokens read and written and the tool calls (`read`, `write`, `steps`), for a hand-off the level its subagent ran at (`subLevel`), Claude's own subagents it moved to a cheaper model (`resized`), and its workflow calls (`workflows`, and `afterWorkflow` once one has run in the session). A rating that came to nothing is logged as an `overhead` line. `/rightsize report` reads this file.
 - `rightsize-switches.jsonl`: each measured effort switch, and whether the cache was kept.
 
 ## Limits

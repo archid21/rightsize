@@ -798,6 +798,10 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
       tier: run.tier,
       level: run.steppedUp ? run.normal : (run.level ?? run.normal),
       fit: r.fit,
+      // The rater's guesses behind the estimate, to tell a bad guess from a bad cost model.
+      read: r.read,
+      write: r.write,
+      steps: r.steps,
       ...(delegated ? { subLevel: run.subLevel ?? null } : {}),
       ...(run.resized.length ? { resized: run.resized } : {}),
       auto: run.auto,

@@ -418,10 +418,11 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const cal = h.store.calibration as Record<string, { n: number }>
     expect(['feature:delegate', 'feature:delegate:haiku', 'feature:delegate:haiku:high'].map(k => cal[k]?.n)).toEqual([1, 1, 1])
     const runs = (h.files['/home/test/.claude/mods-logs/rightsize-runs.jsonl'] ?? '').trim().split('\n')
-    const line = JSON.parse(last(runs) ?? '{}') as { route?: string; subLevel?: string; fit?: unknown }
+    const line = JSON.parse(last(runs) ?? '{}') as { route?: string; subLevel?: string; fit?: unknown; read?: number; write?: number; steps?: number }
     expect(line.route).toBe('delegate:haiku')
     expect(line.subLevel).toBe('high')
     expect(line.fit).toEqual({ haiku: 'high', sonnet: 'high', opus: 'high', fable: 'medium' })
+    expect([line.read, line.write, line.steps], "the rater's token guesses").toEqual([20000, 2000, 6])
     expect((await d.command('')).text ?? '', 'the run count counts the run once').toContain('Calibration: 1 measured run(s).')
   })
 

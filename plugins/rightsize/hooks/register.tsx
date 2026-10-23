@@ -958,7 +958,8 @@ async function rememberTurn($: EngineInterface) {
 
 const idleFor = (ms: number) => {
   const m = Math.round(ms / 60_000)
-  return m < 120 ? `${m} minutes` : m < 48 * 60 ? `${Math.round(m / 60)} hours` : `${Math.round(m / 1440)} days`
+  const n = (v: number, unit: string) => `${v} ${unit}${v === 1 ? '' : 's'}`
+  return m < 120 ? n(m, 'minute') : m < 48 * 60 ? n(Math.round(m / 60), 'hour') : n(Math.round(m / 1440), 'day')
 }
 
 // After the cache expired, the next request writes the whole conversation again. On

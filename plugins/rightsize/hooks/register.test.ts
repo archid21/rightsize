@@ -172,7 +172,7 @@ const drive = ($: unknown, h: ReturnType<typeof engine>) => {
     complete: (turnId: string) => e.turn.complete({ turnId, answer: '', durationMs: 1, isAborted: false, reason: 'answer' }),
     agent: (model: string) => e.tool.call({ tool: 'Agent', description: 'x', prompt: 'brief', model }),
     workflow: () => e.tool.call({ tool: 'Workflow', script: 'export const meta = {}' }),
-    bash: (command: string) => e.tool.call({ tool: 'Bash', command }),
+    bash: (command: string) => e.tool.call({ tool: 'Bash', command, description: `try ${command} ${h.sent.length}` }),
     // The engine starting a subagent from the main chat's Agent call; its steps carry `agent-<description>`.
     spawn: (description: string, model?: string, over: Record<string, unknown> = {}) =>
       e.agent.spawn({ prompt: 'brief', description, subagentType: 'general-purpose', provider: { kind: 'core' }, parentModel: h.model, background: false, fork: false, ...(model ? { model } : {}), ...over }),
@@ -756,6 +756,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.answers = { Idle: 'Send it' }
     await d.submit('continue')
     expect(h.asked[0]?.question).toContain('sat idle for 3 days')
+    expect(h.asked[0]?.question).not.toContain('1 minutes')
     expect(last(h.submitted)?.text, 'sent').toBe('continue')
   })
 

@@ -31,10 +31,13 @@ export const CEILING: Level = 'xhigh'
 
 export const noSignals = (): Signals => ({ errors: 0, calls: {}, fired: [] })
 
-/** The call's identity: the tool and its arguments, without the call's own id. */
+/** Keys that label a call rather than make it: Claude writes a fresh `description` for the same Bash command. */
+const NOT_THE_CALL = new Set(['tool', 'tool_use_id', 'agentId', 'requestMeta', 'description'])
+
+/** The call's identity: the tool and its arguments, without its id or its label. */
 export function callKey(tool: string, input: Record<string, unknown>) {
   const args: Record<string, unknown> = {}
-  for (const k of Object.keys(input).sort()) if (k !== 'tool' && k !== 'tool_use_id' && k !== 'agentId' && k !== 'requestMeta') args[k] = input[k]
+  for (const k of Object.keys(input).sort()) if (!NOT_THE_CALL.has(k)) args[k] = input[k]
   return `${tool} ${JSON.stringify(args)}`
 }
 

@@ -82,8 +82,10 @@ test('fixed context: request-weighted, the biggest parts first, nothing when it 
   const f = (tokens: number, requests: number, cost: number) => run({ requests, actual: 1, fixed: { tokens, mcp: tokens - 4000, memory: 4000, agents: 0, skills: 0, cost, servers: { linear: tokens - 4000 } } })
   expect(fixedLines([f(14000, 10, 0.5), f(24000, 30, 1.5)])).toEqual([
     'Fixed context (last 30 days): ~22K tokens rode along on every request: MCP tools ~18K (linear 20K), CLAUDE.md and memory ~4K.',
-    "  Re-reading it cost at least ~$2.00 over 40 requests (~100% of what those turns cost). rightsize can't trim it: disconnect MCP servers you don't use (/mcp), trim CLAUDE.md, or turn off unused plugins.",
+    "  Re-reading it cost at least ~$2.00 over 40 requests (~100% of what those turns cost). rightsize can't trim it: disconnect MCP servers you don't use (/mcp), or trim CLAUDE.md and memory files.",
   ])
+  const skills = run({ requests: 5, actual: 1, fixed: { tokens: 15000, mcp: 300, memory: 1000, agents: 2500, skills: 11200, cost: 0.03 } })
+  expect(fixedLines([skills])[1], 'the advice follows the biggest parts').toContain("rightsize can't trim it: turn off plugins and skills you don't use (/plugin), or remove custom agents you don't use (/agents).")
   expect(fixedLines([f(14000, 10, 0.001)])).toEqual([])
   expect(fixedLines([run({})])).toEqual([])
 })

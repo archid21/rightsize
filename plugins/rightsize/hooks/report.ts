@@ -251,17 +251,20 @@ export function fixedLines(lines: readonly RunLine[]) {
   const servers = Object.entries(runs[runs.length - 1]?.fixed?.servers ?? {})
   const mcp = `MCP tools ~${k(avg('mcp'))}${servers.length ? ` (${servers.map(([n, t]) => `${n} ${k(t)}`).join(', ')})` : ''}`
   const parts = [
-    [avg('mcp'), mcp],
-    [avg('memory'), `CLAUDE.md and memory ~${k(avg('memory'))}`],
-    [avg('skills'), `skills and commands ~${k(avg('skills'))}`],
-    [avg('agents'), `agent descriptions ~${k(avg('agents'))}`],
+    [avg('mcp'), mcp, "disconnect MCP servers you don't use (/mcp)"],
+    [avg('memory'), `CLAUDE.md and memory ~${k(avg('memory'))}`, 'trim CLAUDE.md and memory files'],
+    [avg('skills'), `skills and commands ~${k(avg('skills'))}`, "turn off plugins and skills you don't use (/plugin)"],
+    [avg('agents'), `agent descriptions ~${k(avg('agents'))}`, "remove custom agents you don't use (/agents)"],
   ] as const
-  const listed = parts.filter(([t]) => t >= 500).sort((a, b) => b[0] - a[0]).map(([, text]) => text)
+  const big = parts.filter(([t]) => t >= 500).sort((a, b) => b[0] - a[0])
+  const listed = big.map(([, text]) => text)
+  // The advice follows the biggest parts, so it names what would cut the most.
+  const how = big.slice(0, 2).map(([, , fix]) => fix).join(', or ')
   const spent = runs.reduce((n, l) => n + num(l.actual), 0)
   const pct = spent > 0 ? ` (~${Math.round((cost / spent) * 100)}% of what those turns cost)` : ''
   return [
     `Fixed context (last 30 days): ~${k(avg('tokens'))} tokens rode along on every request${listed.length ? `: ${listed.join(', ')}` : ''}.`,
-    `  Re-reading it cost at least ~${money(cost)} over ${plural(requests, 'request')}${pct}. rightsize can't trim it: disconnect MCP servers you don't use (/mcp), trim CLAUDE.md, or turn off unused plugins.`,
+    `  Re-reading it cost at least ~${money(cost)} over ${plural(requests, 'request')}${pct}. rightsize can't trim it${how ? `: ${how}` : ''}.`,
   ]
 }
 

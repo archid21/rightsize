@@ -1,7 +1,8 @@
 import { expect, test } from 'claude-code/testing'
 import { callKey, noSignals, noteCall, oneUp, struggle } from './struggle'
 
-const bash = (command: string) => callKey('Bash', { tool: 'Bash', tool_use_id: Math.random().toString(), command })
+// Claude labels each Bash call afresh, so the description differs between runs of one command.
+const bash = (command: string) => callKey('Bash', { tool: 'Bash', tool_use_id: Math.random().toString(), command, description: `run ${command} (${Math.random()})` })
 
 test('the same call failing twice is the first sign', async () => {
   let s = noSignals()

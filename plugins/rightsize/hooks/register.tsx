@@ -19,10 +19,10 @@ import {
   type Rating,
   type Rules,
   type Situation,
-  calKey,
   contextOf,
   delegateCost,
   delegateKeys,
+  mainKeys,
   effortPlan,
   isLevel,
   levelRank,
@@ -150,6 +150,10 @@ type Run = {
   normal: Level
   /** The level for this turn only. */
   level?: Level
+  /** The level the main chat runs at with rightsize's change: the estimate's level. */
+  ranAt: Level
+  /** Workflow calls (ultracode's fan-out) in the turn. */
+  workflows: number
   /** Lowered without asking: steps back up when the turn gets hard. */
   auto: boolean
   delegate?: { tier: Tier; level: Level; dir: 'up' | 'down' }
@@ -208,6 +212,13 @@ let lastApplied: Level | undefined
 let lastContext = 0
 let lastAuto: { text: string; level: Level; normal: Level } | null = null
 let skipOnce: string | null = null
+/**
+ * A workflow ran in this session (ultracode, or asked for). Claude is then fanning
+ * work out itself, so rightsize hands nothing off until the session ends. A workflow
+ * runs on in the background, so its agents' cost lands in later turns too: from
+ * here on no turn teaches calibration or claims a saving.
+ */
+let workflowSeen = false
 
 const words = (text: string) => text.trim().split(/\s+/).filter(Boolean).length
 const fromPerson = (e: PromptSubmitInput) => e.origin.kind === 'composer' || e.origin.kind === 'bridge'
@@ -574,6 +585,8 @@ function startRun(r: Rating, s: Situation, d: Decision, p: Plan, base: Level, ov
     tier: s.tier,
     normal: s.level,
     level: d.level,
+    ranAt: level,
+    workflows: 0,
     auto: d.auto === true,
     delegate: d.delegate,
     rawMain: rawMainCost(r, s, level),
@@ -718,14 +731,18 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
   const end = run.ledgerStart === undefined ? undefined : u?.cost?.usd
   const ledger = end === undefined || run.ledgerStart === undefined ? 0 : end - run.ledgerStart
   const actual = ledger > 0 ? ledger : tokens
-  if (!aborted && actual > 0) {
+  // A workflow's agents say nothing about one route's estimate, in this turn or the ones after it.
+  if (!aborted && actual > 0 && !workflowSeen) {
     if (delegated && run.delegate && run.rawDelegate) {
       const sample = ratioSample(actual, run.rawDelegate)
       for (const key of delegateKeys(r.type, run.delegate.tier, run.delegate.level)) teach(key, sample)
     }
     // A turn that stepped back up ran partly at the normal level, so its cost says
     // nothing about the lowered estimate: it teaches nothing.
-    else if (!run.delegate && !run.steppedUp) teach(calKey(r.type, 'main'), ratioSample(Math.max(0, actual - run.missCost), run.rawMain))
+    else if (!run.delegate && !run.steppedUp) {
+      const sample = ratioSample(Math.max(0, actual - run.missCost), run.rawMain)
+      for (const key of mainKeys(r.type, run.tier, run.ranAt)) teach(key, sample)
+    }
     await saveCal($)
   }
   // Every rated turn is logged, changed or not and stopped or not, for /rightsize report.
@@ -754,6 +771,8 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
       overhead: round(run.overhead),
       missCost: round(run.missCost),
       agentCalls: run.agentCalls,
+      ...(run.workflows ? { workflows: run.workflows } : {}),
+      ...(workflowSeen ? { afterWorkflow: true } : {}),
       durationMs,
       ...(run.before ? { before: run.before } : {}),
       ...(windows(u?.rateLimits) ? { after: windows(u?.rateLimits) } : {}),
@@ -829,6 +848,7 @@ export const register: Register = (on, options) => {
     active = null
     lastApplied = undefined
     lastContext = 0
+    workflowSeen = false
     await $.command.register({ name: CMD, description: 'Rightsize: status, report, settings, undo or clear' })
     await setBandMode($, bandMode)
     await setBand($, null)
@@ -923,7 +943,9 @@ export const register: Register = (on, options) => {
       const s = await situation($)
       const { rating: r, overhead } = await rate($, text, s)
       if (r) {
-        const p = plan(r, s, floor)
+        // While Claude fans work out to workflows, a single hand-off would only cut across it.
+        const planned = plan(r, s, floor)
+        const p = workflowSeen && planned.kind === 'delegate' ? effortPlan(r, s, floor) : planned
         const d = await resolve($, p, r, s)
         if (d.session) await $.state.set({ plugin: 'rightsize', key: 'sessionEffort' }, d.session)
         if (d.delegate) out = { ...e, context: [...(e.context ?? []), delegateNote(d.delegate)] }
@@ -931,6 +953,7 @@ export const register: Register = (on, options) => {
         await setBand($, bandFor(run, d, p))
         const did = d.delegate ? `delegate ${d.delegate.tier}` : d.level ? `${d.auto ? 'auto ' : ''}${d.level} for the prompt` : d.session ? `${d.session} for the session` : 'no change'
         const fit = TIERS.map(t => `${t[0]}:${r.fit[t] ?? (r.fit[t] === null ? 'no' : '?')}`).join(' ')
+        if (p !== planned) await log($, `hand-off to ${planned.kind === 'delegate' ? planned.tier : '?'} skipped: a workflow ran this session`)
         await log($, `${r.type} on ${s.tier}/${s.level}: rated ${fit} ${r.size}, plan ${p.kind}${'dir' in p ? ` ${p.dir}` : ''}: ${did}`)
       } else if (overhead > 0) {
         // A rating that came to nothing still cost something: the report counts it.
@@ -1016,6 +1039,11 @@ export const register: Register = (on, options) => {
 
   on('tool.call', async ($, e, next) => {
     const result = await next(e)
+    // Ultracode's fan-out runs through the Workflow tool, from the main chat or a subagent.
+    if (String(e.tool) === 'Workflow') {
+      workflowSeen = true
+      if (active) active.workflows += 1
+    }
     if (active && e.agentId === undefined) {
       const model = (e as { model?: unknown }).model
       if (String(e.tool) === 'Agent' && active.delegate && model === active.delegate.tier) active.delegated = true

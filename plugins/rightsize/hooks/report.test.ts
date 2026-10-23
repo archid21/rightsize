@@ -64,6 +64,14 @@ test('lists what went wrong, and how far the estimates were off', async () => {
   expect(buildReport([], [], { now: NOW, session: 's1', subscription: false })).toContain('- Nothing yet.')
 })
 
+test('turns during or after a workflow claim no saving and get their own line', async () => {
+  const fanned = run({ change: 'lower', actual: 2, stay: 1, taken: 0.5, workflows: 1, afterWorkflow: true })
+  expect(counterfactual(fanned), 'no saving claimed').toBe(2)
+  const later = run({ change: 'none', actual: 0.4, afterWorkflow: true })
+  const text = wentWrong([fanned, later, run({})], []).join('\n')
+  expect(text).toContain('2 turns ran during or after a workflow (1 workflow, ultracode or asked for): $2.40.')
+})
+
 test('reads the log, skipping a torn first line', async () => {
   const lines = parseLines<RunLine>(`{"at":"x","actu\n${JSON.stringify(run({}))}\n\nnot json\n`)
   expect(lines.length).toBe(1)

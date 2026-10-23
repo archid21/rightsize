@@ -142,8 +142,18 @@ export const CAL_FULL = 20
 /** Key for the share of effort switches that cost a cache miss (prior: all of them). */
 export const SWITCH_KEY = 'cache:effort-switch'
 export const calKey = (type: TaskType, route: 'main' | 'delegate') => `${type}:${route}`
-/** A hand-off's keys, from the most general to the most specific: the task type, then the model, then the model at its level. */
-export const delegateKeys = (type: TaskType, tier: Tier, level: Level) => [calKey(type, 'delegate'), `${type}:delegate:${tier}`, `${type}:delegate:${tier}:${level}`]
+/** A route's keys, from the most general to the most specific: the task type, then the model, then the model at its level. */
+export const routeKeys = (type: TaskType, route: 'main' | 'delegate', tier: Tier, level: Level) => [
+  calKey(type, route),
+  `${type}:${route}:${tier}`,
+  `${type}:${route}:${tier}:${level}`,
+]
+export const mainKeys = (type: TaskType, tier: Tier, level: Level) => routeKeys(type, 'main', tier, level)
+export const delegateKeys = (type: TaskType, tier: Tier, level: Level) => routeKeys(type, 'delegate', tier, level)
+
+// Each key's measured ratio stands on the one before it as its prior, so a model
+// and level with few runs leans on what the task type as a whole has shown.
+export const routeFactor = (cal: Calibration, keys: readonly string[]) => keys.reduce((prior, key) => factor(cal, key, prior), 1)
 
 export function parseCalibration(v: unknown): Calibration {
   const out: Calibration = {}
@@ -216,7 +226,7 @@ export function switchCost(s: Situation, switches: number) {
 }
 
 export function mainCost(r: Rating, s: Situation, level: Level, switches: number) {
-  return rawMainCost(r, s, level) * factor(s.cal, calKey(r.type, 'main')) + switchCost(s, switches)
+  return rawMainCost(r, s, level) * routeFactor(s.cal, mainKeys(r.type, s.tier, level)) + switchCost(s, switches)
 }
 
 const reworkFactor = (main: Tier, sub: Tier) => (tierRank(sub) >= tierRank(main) ? 1.2 : sub === 'haiku' ? 1.5 : 1.3)
@@ -239,13 +249,8 @@ export function rawDelegateCost(r: Rating, s: Situation, sub: Tier, subLevel: Le
   return (main + work) * reworkFactor(s.tier, sub)
 }
 
-// Each key's measured ratio stands on the one before it as its prior, so a model
-// and level with few runs leans on what the task type as a whole has shown.
-export const delegateFactor = (cal: Calibration, type: TaskType, sub: Tier, subLevel: Level) =>
-  delegateKeys(type, sub, subLevel).reduce((prior, key) => factor(cal, key, prior), 1)
-
 export function delegateCost(r: Rating, s: Situation, sub: Tier, subLevel: Level) {
-  return rawDelegateCost(r, s, sub, subLevel) * delegateFactor(s.cal, r.type, sub, subLevel)
+  return rawDelegateCost(r, s, sub, subLevel) * routeFactor(s.cal, delegateKeys(r.type, sub, subLevel))
 }
 
 // ---- Plans -----------------------------------------------------------------

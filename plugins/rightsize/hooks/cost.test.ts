@@ -9,6 +9,7 @@ import {
   delegateCost,
   delegateKeys,
   effortPlan,
+  mainKeys,
   factor,
   learn,
   mainCost,
@@ -250,6 +251,24 @@ test('the floor applies to the subagent\'s level too', async () => {
   const r = rating({ ...helper, level: 'medium', fit: { haiku: 'low', opus: 'medium' }, size: 'bulky', read: 150_000, steps: 30 })
   const p = plan(r, opus, 'medium')
   expect(p.kind === 'delegate' && p.level).toBe('medium')
+})
+
+test('the main chat learns per model and level: expensive high runs leave the low estimate alone', async () => {
+  const r = rating({ type: 'debug', read: 10_000, write: 1000, steps: 4 })
+  const low = mainCost(r, opus, 'low', 0)
+  const high = mainCost(r, opus, 'high', 0)
+  let cal = {}
+  for (let i = 0; i < CAL_FULL; i++) for (const k of mainKeys('debug', 'opus', 'high').slice(1)) cal = learn(cal, k, 3)
+  expect(near(mainCost(r, { ...opus, cal }, 'high', 0), high * 3), 'Opus at high: 3x').toBe(true)
+  expect(near(mainCost(r, { ...opus, cal }, 'low', 0), low * 3), 'Opus at low: only the model-wide key moved it').toBe(true)
+  // The model-wide key moved low too; with only the level key taught, low stays put.
+  let levelOnly = {}
+  for (let i = 0; i < CAL_FULL; i++) levelOnly = learn(levelOnly, 'debug:main:opus:high', 3)
+  expect(mainCost(r, { ...opus, cal: levelOnly }, 'low', 0), 'another level: untouched').toBe(low)
+  expect(mainCost(r, { ...fable, cal: levelOnly }, 'high', 0), 'another model: untouched').toBe(mainCost(r, fable, 'high', 0))
+  // A level with few runs leans on the type-wide ratio.
+  const typeWide = learn({}, 'debug:main', 3)
+  expect(near(mainCost(r, { ...opus, cal: typeWide }, 'low', 0), low * (1 + 2 / CAL_FULL))).toBe(true)
 })
 
 test('reports a hand-off in dollars or as a share of usage', async () => {

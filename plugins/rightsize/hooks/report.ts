@@ -34,6 +34,10 @@ export type RunLine = {
   missCost?: number
   /** Subagent calls (Agent and SendMessage) on the main thread: more than one on a hand-off is rework. */
   agentCalls?: number
+  /** Workflow calls in the turn (ultracode's fan-out). */
+  workflows?: number
+  /** A workflow ran in the session by this turn's end: its agents' cost may be in this turn's. */
+  afterWorkflow?: boolean
   durationMs?: number
   before?: Windows
   after?: Windows
@@ -66,7 +70,7 @@ const delegated = (l: RunLine) => (l.route ?? '').startsWith('delegate:')
 /** What staying would have cost, by the estimate; the actual cost where there is nothing to compare. */
 export function counterfactual(l: RunLine) {
   const actual = num(l.actual)
-  if (l.steppedUp || !l.taken || !l.stay || l.change === undefined || l.change === 'none') return actual
+  if (l.steppedUp || l.afterWorkflow || !l.taken || !l.stay || l.change === undefined || l.change === 'none') return actual
   return (actual * l.stay) / l.taken
 }
 
@@ -202,6 +206,13 @@ export function wentWrong(lines: readonly RunLine[], switches: readonly SwitchLi
   if (missed) {
     const cost = runs.reduce((s, l) => s + num(l.missCost), 0)
     out.push(`${missed} of ${plural(switches.length, 'effort switch', 'effort switches')} missed the cache${cost >= 0.005 ? ` (~${money(cost)})` : ''}.`)
+  }
+  const fanned = runs.filter(l => l.afterWorkflow)
+  if (fanned.length) {
+    const flows = fanned.reduce((s, l) => s + num(l.workflows), 0)
+    out.push(
+      `${plural(fanned.length, 'turn')} ran during or after a workflow (${plural(flows, 'workflow')}, ultracode or asked for): ${money(fanned.reduce((s, l) => s + num(l.actual), 0))}. No saving is counted for them, they teach calibration nothing, and hand-offs paused for those sessions.`,
+    )
   }
   const aborted = lines.filter(l => isRun(l) && l.aborted).length
   if (aborted) out.push(`${plural(aborted, 'turn')} you stopped: their rating cost counts, no saving does.`)

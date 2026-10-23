@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Workflow guard (ultracode).** Once Claude runs a workflow in a session, rightsize stops handing work off for the rest of that session, and turns from then on teach calibration nothing and claim no saving: a workflow runs on in the background, so its agents' cost lands in later turns too. Prompts are still rated and effort still changes. `/rightsize report` lists these turns on their own line; run log lines carry `workflows` and `afterWorkflow`.
+- Main-chat calibration is kept per task type, per model and per model at each level, like hand-offs: expensive runs at high no longer move the estimate for low.
 - **Model and effort together.** The rating gives each model's own level (or says it would struggle), and the cost model prices every model at its level. On Opus at medium, work Opus needs high for can go to Haiku at high instead of raising Opus. Of the cheaper models that fit, the cheapest route wins; the comparison counts the switch a raise would cost. Hand-downs no longer need the work rated "bulky": the cost decides. The older one-level rating still reads.
 - The hand-off's subagent runs at the level its model needs: rightsize sets its effort on each of its requests, instead of relying on the note. Other subagents keep their own level.
 - Hand-off calibration is kept per task type, per model and per model at each level; each finer key starts from the one above it.

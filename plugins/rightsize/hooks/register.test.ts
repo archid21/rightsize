@@ -126,6 +126,7 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
     return { result: { questions: e.questions, answers: { [q?.question ?? '']: answer } } }
   })
   ;(on as unknown as LooseOn)('tool.call', { tool: 'Agent' }, async () => ({ result: { content: 'done' } }))
+  ;(on as unknown as LooseOn)('tool.call', { tool: 'Workflow' }, async () => ({ result: { content: 'started in the background' } }))
   on('agent.spawn', async ($, e) => ({ model: e.model ?? h.subModel, agentId: `agent-${(e as { description: string }).description}` }) as never)
   on('prompt.submit', async ($, e) => {
     h.submitted.push({ text: e.text, context: e.context })
@@ -155,6 +156,7 @@ const drive = ($: unknown, h: ReturnType<typeof engine>) => {
     },
     complete: (turnId: string) => e.turn.complete({ turnId, answer: '', durationMs: 1, isAborted: false, reason: 'answer' }),
     agent: (model: string) => e.tool.call({ tool: 'Agent', description: 'x', prompt: 'brief', model }),
+    workflow: () => e.tool.call({ tool: 'Workflow', script: 'export const meta = {}' }),
     // The engine starting a subagent from the main chat's Agent call; its steps carry `agent-<description>`.
     spawn: (description: string, model?: string) =>
       e.agent.spawn({ prompt: 'brief', description, subagentType: 'general-purpose', provider: { kind: 'core' }, parentModel: h.model, background: false, fork: false, ...(model ? { model } : {}) }),
@@ -395,6 +397,53 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(line.subLevel).toBe('high')
     expect(line.fit).toEqual({ haiku: 'high', sonnet: 'high', opus: 'high', fable: 'medium' })
     expect((await d.command('')).text ?? '', 'the run count counts the run once').toContain('Calibration: 1 measured run(s).')
+  })
+
+  test(`a workflow pauses hand-offs and learning for the session, and the report lists it (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high' })
+    const d = drive($, h)
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+    const keys = ['lookup:main', 'lookup:main:fable', 'lookup:main:fable:high']
+    const learned = () => keys.map(k => (h.store.calibration as Record<string, { n: number }> | undefined)?.[k]?.n)
+
+    // An ordinary turn teaches the type, the model, and the model at its level.
+    h.rating = '{"level":"high","model":"same","type":"lookup","read":2000,"write":300,"steps":1}'
+    await d.submit(LOOKUP)
+    await d.step('t1')
+    await d.complete('t1')
+    expect(learned()).toEqual([1, 1, 1])
+
+    // A turn that starts a workflow teaches nothing.
+    await d.submit(LOOKUP)
+    await d.step('t2')
+    await d.workflow()
+    await d.complete('t2')
+    expect(learned(), 'unchanged').toEqual([1, 1, 1])
+
+    // A task that would go to Haiku stays here; the turn after the workflow teaches nothing either.
+    h.rating = '{"level":"low","model":"haiku","size":"bulky","type":"search","read":150000,"write":3000,"steps":30}'
+    h.answers = { Lowering: 'Never lower', Cheaper: 'Send it to a cheaper subagent (Recommended)', Remember: 'Just this session' }
+    await d.submit(SEARCH)
+    expect(h.asked.map(a => a.header), 'no hand-off question').not.toContain('Cheaper')
+    expect(last(h.submitted)?.context ?? [], 'no hand-off note').toEqual([])
+    await d.step('t3')
+    await d.complete('t3')
+    expect(learned()).toEqual([1, 1, 1])
+    const lines = (h.files['/home/test/.claude/mods-logs/rightsize-runs.jsonl'] ?? '').trim().split('\n').map(l => JSON.parse(l) as { workflows?: number; afterWorkflow?: boolean })
+    expect(lines.map(l => [l.workflows ?? 0, l.afterWorkflow ?? false])).toEqual([[0, false], [1, true], [0, true]])
+    h.now = Date.now()
+    expect((await d.command('report')).text ?? '').toContain('2 turns ran during or after a workflow (1 workflow, ultracode or asked for)')
+
+    // A new session hands off again.
+    await d.start(surface)
+    await d.step('t4')
+    await d.complete('t4')
+    const before = h.asked.length
+    await d.submit(SEARCH)
+    expect(h.asked.slice(before).map(q => q.header)).toContain('Cheaper')
+    expect(last(h.submitted)?.context?.join('\n') ?? '').toContain('model "haiku"')
   })
 
   test(`the band shows a change, and its buttons change the rule and undo it (${surface})`, { timeoutMs: 30000 }, async ($, on) => {

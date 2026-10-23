@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 (2026-10-23)
 
 - **Claude's moved subagents are measured and learned from.** Each one's own requests are priced, and when it answers (often after the turn that started it, for a background one) rightsize logs a `subagent` line with its real cost and its raw estimates on its model and on the parent's, and teaches `<type>:subagent`, `:<model>` and `:<model>:<level>` calibration from it. The next sizing uses those numbers. A stopped subagent is logged and teaches nothing; a resumed one counts again from zero.
 - `/rightsize report` counts these subagents ("N subagents Claude started ran on a cheaper model") and adds their saving: the real cost scaled by the parent's estimate over the chosen model's.

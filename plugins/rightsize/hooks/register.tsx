@@ -1,5 +1,11 @@
 import type { EngineInterface, PromptSubmitInput, Register } from 'claude-code'
-import type { RightsizeChoices as Choices, RightsizeLevel as Level, RightsizeTier as Tier } from '../types'
+import type {
+  RightsizeBand as Band,
+  RightsizeBandMode as BandMode,
+  RightsizeChoices as Choices,
+  RightsizeLevel as Level,
+  RightsizeTier as Tier,
+} from '../types'
 import {
   DEFAULT_LEVEL,
   DEFAULT_PRICES,
@@ -45,7 +51,8 @@ import { type Change, type RunLine, type SwitchLine, type Windows, buildReport, 
 // note beside the prompt (prompt.submit context). After each rated turn the
 // real cost is read off the session's cost ledger (/cost) and fed back into the
 // estimates. Billing (API or subscription) is read off the rate limits each
-// response carries; the person is asked only when they say nothing.
+// response carries; the person is asked only when they say nothing. A band
+// above the prompt shows what it did, with buttons to undo it or change the rule.
 
 const NAME = 'rightsize'
 const CMD = 'rightsize'
@@ -111,6 +118,15 @@ const qBilling: Question<Billing> = {
     ['API (pay per token)', 'api'],
   ],
 }
+const qBand: Question<BandMode> = {
+  header: 'Band',
+  question: 'When should the rightsize band show above the prompt?',
+  options: [
+    ['Only when it changes something (Recommended)', 'when it acts'],
+    ['On every rated prompt', 'always'],
+    ['Never (status line only)', 'off'],
+  ],
+}
 const qRemember: Question<boolean> = {
   header: 'Remember',
   question: 'Use these choices in every session?',
@@ -172,6 +188,7 @@ let billing: Billing = 'api'
 let billingBy: 'detected' | 'answered' | 'saved' | null = null
 let billingAsked = false
 let priceCheck: 'monthly' | 'check now' | 'off' = 'monthly'
+let bandMode: BandMode = 'when it acts'
 let checking: Promise<string> | null = null
 let prices: Prices = DEFAULT_PRICES
 let cal: Calibration = {}
@@ -550,6 +567,90 @@ async function showStatus($: EngineInterface) {
   $.ui.status(session ? `Effort: ${session} (this session, by rightsize)` : undefined)
 }
 
+// ---- Band ------------------------------------------------------------------
+
+const BAND = { plugin: 'rightsize', key: 'band' } as const
+const BAND_MODE = { plugin: 'rightsize', key: 'bandMode' } as const
+
+const isBandMode = (v: unknown): v is BandMode => v === 'when it acts' || v === 'always' || v === 'off'
+
+const setBand = ($: EngineInterface, band: Band | null) => $.state.set(BAND, band).catch(() => undefined)
+
+async function setBandMode($: EngineInterface, v: BandMode) {
+  bandMode = v
+  await $.state.set(BAND_MODE, v).catch(() => undefined)
+}
+
+const RULE_NAME: Record<keyof Choices, string> = { lower: 'Lowering', raise: 'Raising', up: 'Stronger model', down: 'Cheaper model' }
+
+// Short labels for the band's rule buttons. "Ask me each time" for a model
+// change stays in /rightsize settings, to keep the band to one row.
+const RULES: Record<keyof Choices, readonly (readonly [string, string])[]> = {
+  lower: [['auto', 'Lower automatically'], ['ask', 'Ask me each time'], ['never', 'Never lower']],
+  raise: [['auto', 'Raise automatically'], ['ask', 'Ask me each time'], ['never', 'Never raise']],
+  up: [['auto', 'Always send'], ['ask', 'Ask first'], ['stay', 'Stay, raise effort only']],
+  down: [['auto', 'Always send'], ['ask', 'Ask first'], ['stay', 'Stay, lower effort only']],
+}
+
+/** What the band shows for a rated prompt: what was done, or what was suggested and not done. */
+export function bandFor(run: Pick<Run, 'tier' | 'normal' | 'auto' | 'delegate' | 'stay' | 'takenDelegate'>, d: Decision, p: Plan): Band {
+  const cur = TIER_NAME[run.tier]
+  if (run.delegate) {
+    const to = TIER_NAME[run.delegate.tier]
+    return { text: `Sending this to a ${to} subagent. ${costLine(run.takenDelegate ?? 0, run.stay, cur)}`, acted: true, rule: run.delegate.dir }
+  }
+  const level = d.level ?? d.session
+  if (level) {
+    const lower = levelRank(level) < levelRank(run.normal)
+    const scope = d.level ? `this prompt${run.auto ? ' (automatically)' : ''}` : 'this session'
+    return {
+      text: `Effort ${lower ? 'lowered' : 'raised'}: ${run.normal} → ${level} for ${scope}.`,
+      acted: true,
+      rule: lower ? 'lower' : 'raise',
+      ...(run.auto && d.level ? { canUndo: true } : {}),
+      ...(d.session ? { canClear: true } : {}),
+    }
+  }
+  if (p.kind === 'none') return { text: `No change: ${run.normal} on ${cur} fits this prompt.`, acted: false }
+  const what = p.kind === 'effort' ? `${p.level} effort` : `a ${TIER_NAME[p.tier]} subagent`
+  const rule = p.kind === 'effort' ? (p.dir === 'lower' ? 'lower' : 'raise') : p.dir
+  return { text: `No change: ${what} would fit, kept ${run.normal} on ${cur}.`, acted: false, rule }
+}
+
+async function setRule($: EngineInterface, key: keyof Choices, value: string) {
+  await saveChoices($, { ...(await choices($)), [key]: value } as Choices)
+  const label = RULES[key].find(r => r[0] === value)?.[1] ?? value
+  $.ui.toast(`Rightsize: ${RULE_NAME[key]} is now "${label}".`)
+}
+
+async function undo($: EngineInterface) {
+  if (!lastAuto) return 'Nothing to undo: the last prompt was not lowered automatically.'
+  const { text, normal } = lastAuto
+  lastAuto = null
+  skipOnce = text.trim()
+  const filled = await $.prompt.fill({ text, mode: 'replace' }).catch(() => null)
+  await setBand($, null)
+  await showStatus($)
+  return filled?.isFilled
+    ? `The prompt is back in the box. Press Enter to run it at ${normal}.`
+    : `Could not fill the prompt box. Send the prompt again and it runs at ${normal}.`
+}
+
+async function clearSession($: EngineInterface) {
+  const level = await sessionEffort($)
+  await $.state.set({ plugin: 'rightsize', key: 'sessionEffort' }, null)
+  await setBand($, null)
+  await showStatus($)
+  return level ? `Cleared the session switch to ${level}.` : 'No session switch was set.'
+}
+
+async function chooseBandMode($: EngineInterface) {
+  const v = await pick($, qBand)
+  if (v === undefined) return
+  await setBandMode($, v)
+  await $.config.set({ key: 'rightsize.band', value: v }).catch(() => undefined)
+}
+
 export function report(run: Pick<Run, 'tier' | 'stay'> & { delegate: NonNullable<Run['delegate']> }, actual: number, mode: 'api' | 'subscription') {
   const to = TIER_NAME[run.delegate.tier]
   const cur = TIER_NAME[run.tier]
@@ -611,9 +712,13 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
     }
     await append($, 'rightsize-runs.jsonl', JSON.stringify(line), RUNS_LOG_MAX)
   }
-  if (run.delegate) {
-    if (!delegated) $.ui.log(`rightsize: Claude did not hand this to a ${TIER_NAME[run.delegate.tier]} subagent; it ran on ${TIER_NAME[run.tier]} (${money(actual)}).`)
-    else if (!aborted) $.ui.log(report({ tier: run.tier, stay: run.stay, delegate: run.delegate }, actual, billing))
+  if (run.delegate && (!delegated || !aborted)) {
+    const text = !delegated
+      ? `rightsize: Claude did not hand this to a ${TIER_NAME[run.delegate.tier]} subagent; it ran on ${TIER_NAME[run.tier]} (${money(actual)}).`
+      : report({ tier: run.tier, stay: run.stay, delegate: run.delegate }, actual, billing)
+    // The band shows the result in place of a transcript line; with the band off, the line stays.
+    if (bandMode === 'off') $.ui.log(text)
+    else await setBand($, { text: text.replace(/^rightsize: /, ''), acted: true, rule: run.delegate.dir })
   }
   await showStatus($)
 }
@@ -625,7 +730,7 @@ async function summary($: EngineInterface) {
   const runs = Object.entries(cal).filter(([k]) => k !== SWITCH_KEY).reduce((n, [, e]) => n + e.n, 0)
   const sw = cal[SWITCH_KEY]
   return [
-    `Rightsize is ${off ? 'off (turn it on with /mods)' : 'on'}. Lowest level: ${floor}. Billing: ${billingBy ? `${billing} (${billingBy === 'answered' ? 'your answer' : billingBy})` : 'not known yet'}.`,
+    `Rightsize is ${off ? 'off (turn it on with /mods)' : 'on'}. Lowest level: ${floor}. Band: ${bandMode}. Billing: ${billingBy ? `${billing} (${billingBy === 'answered' ? 'your answer' : billingBy})` : 'not known yet'}.`,
     `Lowering: ${said(c.lower)}. Raising: ${said(c.raise)}. Stronger model: ${said(c.up)}. Cheaper model: ${said(c.down)}.${(await remembers($)) ? ' Saved for every session.' : ''}`,
     session ? `Session switch: ${session}.` : 'No session switch.',
     `Calibration: ${runs} measured run(s).${sw ? ` Effort switches that missed the cache: ${Math.round(sw.ratio * 100)}% of ${sw.n} (each one in ~/.claude/mods-logs/rightsize-switches.jsonl).` : ''}`,
@@ -641,6 +746,13 @@ export const register: Register = (on, options) => {
   if (isLevel(opts.floor)) floor = opts.floor
   if (opts.billing === 'subscription') billing = 'subscription'
   if (opts.priceCheck === 'off' || opts.priceCheck === 'check now') priceCheck = opts.priceCheck
+  if (isBandMode(opts.band)) bandMode = opts.band
+
+  on('config.set', { key: 'rightsize.band' }, async ($, e, next) => {
+    const result = await next(e)
+    if (isBandMode(e.value)) await setBandMode($, e.value)
+    return result
+  })
 
   // Reports set in /config counts as the answer to the billing question.
   on('config.set', { key: 'rightsize.billing' }, async ($, e, next) => {
@@ -667,6 +779,8 @@ export const register: Register = (on, options) => {
     lastApplied = undefined
     lastContext = 0
     await $.command.register({ name: CMD, description: 'Rightsize: status, report, settings, undo or clear' })
+    await setBandMode($, bandMode)
+    await setBand($, null)
     prices = parsePrices(await readText($, `${$.plugin.root}/prices.json`))
     if (priceCheck === 'check now') {
       // Set by hand in settings: check once, then back to monthly.
@@ -707,19 +821,7 @@ export const register: Register = (on, options) => {
 
   on('command.run', { command: CMD }, async ($, e) => {
     const arg = e.args.trim().toLowerCase()
-    if (arg === 'undo') {
-      if (!lastAuto) return { text: 'Nothing to undo: the last prompt was not lowered automatically.' }
-      const { text, normal } = lastAuto
-      lastAuto = null
-      skipOnce = text.trim()
-      const filled = await $.prompt.fill({ text, mode: 'replace' }).catch(() => null)
-      await showStatus($)
-      return {
-        text: filled?.isFilled
-          ? `The prompt is back in the box. Press Enter to run it at ${normal}.`
-          : `Could not fill the prompt box. Send the prompt again and it runs at ${normal}.`,
-      }
-    }
+    if (arg === 'undo') return { text: await undo($) }
     if (arg === 'prices') return { text: await runCheck($, 'manual') }
     if (arg === 'report') {
       const dir = `${home}/.claude/mods-logs`
@@ -727,12 +829,7 @@ export const register: Register = (on, options) => {
       const switches = parseLines<SwitchLine>(await readText($, `${dir}/rightsize-switches.jsonl`))
       return { text: buildReport(runs, switches, { now: await $.clock.now(), session: sessionId, subscription: billing === 'subscription' }) }
     }
-    if (arg === 'clear') {
-      const level = await sessionEffort($)
-      await $.state.set({ plugin: 'rightsize', key: 'sessionEffort' }, null)
-      await showStatus($)
-      return { text: level ? `Cleared the session switch to ${level}.` : 'No session switch was set.' }
-    }
+    if (arg === 'clear') return { text: await clearSession($) }
     if (arg === 'settings') {
       const s = await situation($)
       const cur = TIER_NAME[s.tier]
@@ -757,6 +854,8 @@ export const register: Register = (on, options) => {
 
   on('prompt.submit', async ($, e, next) => {
     if (off || !fromPerson(e) || e.command || e.isMeta) return next(e)
+    // A new prompt replaces the last one's band.
+    await setBand($, null)
     const text = e.text.trim()
     if (skipOnce !== null && text === skipOnce) {
       skipOnce = null
@@ -778,6 +877,7 @@ export const register: Register = (on, options) => {
         if (d.session) await $.state.set({ plugin: 'rightsize', key: 'sessionEffort' }, d.session)
         if (d.delegate) out = { ...e, context: [...(e.context ?? []), delegateNote(d.delegate)] }
         run = startRun(r, s, d, p, (await seenEffort($)) ?? s.level, overhead)
+        await setBand($, bandFor(run, d, p))
         const did = d.delegate ? `delegate ${d.delegate.tier}` : d.level ? `${d.auto ? 'auto ' : ''}${d.level} for the prompt` : d.session ? `${d.session} for the session` : 'no change'
         await log($, `${r.type} on ${s.tier}/${s.level}: rated ${r.level}/${r.model}/${r.size}, plan ${p.kind}${'dir' in p ? ` ${p.dir}` : ''}: ${did}`)
       } else if (overhead > 0) {
@@ -815,6 +915,7 @@ export const register: Register = (on, options) => {
       level = own
       if (!run.steppedUp) {
         run.steppedUp = true
+        await setBand($, { text: `Effort back to ${run.normal}: the task got harder.`, acted: true, rule: 'lower' })
         await showStatus($)
       }
     }
@@ -866,6 +967,39 @@ export const register: Register = (on, options) => {
     }
     return result
   }).catch(($, e, next) => next(e))
+
+  // One row above the prompt: what rightsize did, then buttons to undo it, change
+  // the rule for this situation, choose when the band shows, or close it.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    if (off || e.props.hasSurvey) return next(e)
+    const mode = (await $.state.get(BAND_MODE).catch(() => undefined))?.value ?? bandMode
+    const band = (await $.state.get(BAND).catch(() => undefined))?.value
+    if (!band || mode === 'off' || (mode === 'when it acts' && !band.acted)) return next(e)
+    const rule = band.rule
+    const have = rule ? (await choices($))[rule] : undefined
+    const buttons: { key: string; label: string; press: () => Promise<unknown> }[] = []
+    if (band.canUndo) buttons.push({ key: 'undo', label: 'Undo', press: async () => $.ui.toast(await undo($)) })
+    if (band.canClear) buttons.push({ key: 'clear', label: 'Clear', press: async () => $.ui.toast(await clearSession($)) })
+    if (rule) {
+      for (const [value, label] of RULES[rule]) {
+        if (value !== have) buttons.push({ key: `rule-${value}`, label, press: () => setRule($, rule, value) })
+      }
+    }
+    const { Box, Button, Text } = $.ui.resolve(e)
+    return (
+      <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
+        <Text>
+          <Text dimColor>rightsize: </Text>
+          {band.text}
+        </Text>
+        {buttons.map((b, i) => (
+          <Button key={b.key} label={b.label} hotkey={String(i + 1)} onPress={() => void b.press()} />
+        ))}
+        <Button key="mode" label="⋯" onPress={() => void chooseBandMode($)} />
+        <Button key="close" label="×" role="dismiss" onPress={() => void setBand($, null)} />
+      </Box>
+    )
+  })
 
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)

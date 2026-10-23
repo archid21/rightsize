@@ -22,6 +22,23 @@ export type RightsizeChoices = {
   down?: 'auto' | 'ask' | 'stay' | 'each'
 }
 
+/** When the band above the prompt shows (Band in /config). */
+export type RightsizeBandMode = 'when it acts' | 'always' | 'off'
+
+/** What the band above the prompt shows for the last rated prompt. */
+export type RightsizeBand = {
+  /** The one line: what rightsize did, or that it changed nothing. */
+  text: string
+  /** True when rightsize changed something: the band shows under "when it acts". */
+  acted: boolean
+  /** The situation whose rule the band's buttons change. */
+  rule?: keyof RightsizeChoices
+  /** The prompt was lowered on its own and can be run again at the normal level. */
+  canUndo?: boolean
+  /** A session switch can be dropped. */
+  canClear?: boolean
+}
+
 declare module 'claude-code' {
   interface PluginState {
     'rightsize': {
@@ -37,6 +54,10 @@ declare module 'claude-code' {
       choices: RightsizeChoices
       /** True once "Use these choices in every session?" was answered this session. */
       rememberAsked: boolean
+      /** The band above the prompt; null when there is nothing to show or it was closed. */
+      band: RightsizeBand | null
+      /** When the band shows. */
+      bandMode: RightsizeBandMode
     }
   }
 }

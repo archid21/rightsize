@@ -20,6 +20,8 @@ const SEARCH = 'find every call site of the old logger across the whole repo and
 const NO_CHANGE = '{"level":"medium","model":"same","size":"small","type":"lookup","read":2000,"write":300,"steps":1}'
 const FREE_SWITCHES = { 'cache:effort-switch': { n: 20, ratio: 0 } }
 
+const h$ = ($: { ui: { resolve: (e: never) => { Box: unknown } } }, e: unknown) => h($.ui.resolve(e as never).Box as never, {}) as never
+
 // Stands for the engine beneath the plugin, and records what reaches it.
 function engine(on: Parameters<TestBody>[1], start: { model: string; effort: string; store?: Record<string, unknown> }) {
   const h = {
@@ -135,6 +137,8 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
     return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: { ...usage, model: e.agentId ? h.subModel : h.model } } as never
   })
   on('turn.complete', async () => ({ text: '' }) as never)
+  // The engine's own band above the prompt: an empty row.
+  on('ui.render', ($, e) => h$($, e))
   return h
 }
 
@@ -175,6 +179,28 @@ const OLD_PRICES = JSON.stringify({
 })
 
 const last = <T>(xs: readonly T[]) => xs[xs.length - 1]
+
+const BAND = {
+  plugin: 'rightsize',
+  component: 'AbovePrompt',
+  props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 80, scroll: { offset: 0, bodyRows: 10 }, view: {} },
+} as const
+type Mounted = {
+  find: (q: object) => Promise<{ text?: string } | undefined>
+  findAll: (q: object) => Promise<{ key?: string }[]>
+  press: (t: object) => Promise<unknown>
+  unmount: () => Promise<void>
+}
+const mount = ($: unknown, surface: string) => ($ as { ui: { mount: (x: unknown) => Promise<Mounted> } }).ui.mount({ ...BAND, surface })
+// The band's line as drawn, or '' when it draws nothing.
+async function bandText($: unknown, surface: string) {
+  const ui = await mount($, surface)
+  const text = (await ui.find({ type: 'Text', text: /rightsize:/ }))?.text ?? ''
+  await ui.unmount()
+  return text
+}
+const setBand = ($: unknown, value: string) => ($ as { config: { set: (x: unknown) => Promise<unknown> } }).config.set({ key: 'rightsize.band', value })
+const LOWER = '{"level":"low","model":"same","size":"small","type":"lookup","read":2000,"write":3000,"steps":1,"reason":"one function lookup"}'
 
 for (const surface of ['desktop', 'terminal'] as const) {
   test(`asks Q1 once, lowers on its own after, steps up when the turn gets long, and undoes (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -289,7 +315,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t1', 1)
     await d.complete('t1')
     expect(h.sent.filter(s => s.turnId === 't1' && !s.agentId).every(s => s.effort === 'medium'), 'main chat effort untouched').toBe(true)
-    expect(last(h.logs) ?? '').toMatch(/^rightsize: Sent to Fable: \$[\d.]+ vs about \$[\d.]+ on Opus \(estimated\)/)
+    expect(await bandText($, surface), 'the band carries the result').toMatch(/^rightsize: Sent to Fable: \$[\d.]+ vs about \$[\d.]+ on Opus \(estimated\)/)
     const cal = h.store.calibration as Record<string, { n: number }>
     expect(cal['debug:delegate']?.n).toBe(1)
   })
@@ -312,7 +338,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     // Claude answered without the subagent: the report says so.
     await d.step('t1')
     await d.complete('t1')
-    expect(last(h.logs) ?? '').toContain('did not hand this to a Haiku subagent')
+    expect(await bandText($, surface)).toContain('did not hand this to a Haiku subagent')
 
     // Next time: no question, and the subagent's cost is counted.
     await d.submit(SEARCH)
@@ -322,7 +348,78 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t2', 0, 'a2')
     await d.step('t2', 1)
     await d.complete('t2')
-    expect(last(h.logs) ?? '').toMatch(/^rightsize: Sent to Haiku: .* on Fable \(estimated\), saved about \d+%\.$/)
+    expect(await bandText($, surface)).toMatch(/^rightsize: Sent to Haiku: .* on Fable \(estimated\), saved about \d+%\.$/)
+  })
+
+  test(`the band shows a change, and its buttons change the rule and undo it (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { calibration: FREE_SWITCHES } })
+    const d = drive($, h)
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+    expect(await bandText($, surface), 'nothing to show yet').toBe('')
+
+    h.rating = LOWER
+    h.answers = { Lowering: 'Lower automatically', Remember: 'Just this session' }
+    await d.submit(LOOKUP)
+    expect(await bandText($, surface)).toBe('rightsize: Effort lowered: medium → low for this prompt (automatically).')
+    const ui = await mount($, surface)
+    expect((await ui.findAll({ type: 'Button' })).map(b => b.key)).toEqual(['undo', 'rule-ask', 'rule-never', 'mode', 'close'])
+
+    // A rule button changes the answer to Q1 in one press.
+    await ui.press({ key: 'rule-ask' })
+    expect(last(h.toasts)).toBe('Rightsize: Lowering is now "Ask me each time".')
+    expect((await d.command('')).text ?? '').toContain('Lowering: ask.')
+    expect((await ui.findAll({ type: 'Button' })).map(b => b.key), 'the new rule is not offered again').toEqual(['undo', 'rule-auto', 'rule-never', 'mode', 'close'])
+
+    // Undo puts the prompt back in the box and closes the band.
+    await ui.press({ key: 'undo' })
+    expect(h.filled[0]).toBe(LOOKUP)
+    expect(last(h.toasts) ?? '').toContain('run it at medium')
+    await ui.unmount()
+    expect(await bandText($, surface)).toBe('')
+  })
+
+  test(`the Band setting: when it acts, always, off, and the ⋯ and × buttons (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { calibration: FREE_SWITCHES } })
+    const d = drive($, h)
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+
+    // "when it acts" (the default): no change, no band.
+    h.rating = NO_CHANGE
+    await d.submit(LOOKUP)
+    expect(await bandText($, surface)).toBe('')
+
+    // "always": the same prompt shows that nothing changed.
+    await setBand($, 'always')
+    expect(await bandText($, surface)).toBe('rightsize: No change: medium on Opus fits this prompt.')
+
+    // × closes it until the next prompt.
+    let ui = await mount($, surface)
+    await ui.press({ key: 'close' })
+    await ui.unmount()
+    expect(await bandText($, surface)).toBe('')
+    await d.submit(LOOKUP)
+    expect(await bandText($, surface)).toContain('No change')
+
+    // ⋯ asks when the band should show, and saves the answer in /config.
+    h.answers = { Band: 'Never (status line only)' }
+    ui = await mount($, surface)
+    await ui.press({ key: 'mode' })
+    await ui.unmount()
+    expect(last(h.configSet)).toBe('off')
+    expect(await bandText($, surface)).toBe('')
+
+    // "off": a hand-off result goes back to a transcript line.
+    h.rating = '{"level":"high","model":"fable","size":"small","type":"debug","read":30000,"write":4000,"steps":12,"reason":"subtle concurrency bug"}'
+    h.answers = { Stronger: 'Send it to a subagent automatically', Remember: 'Just this session' }
+    await d.submit(DEBUG)
+    await d.step('t1')
+    await d.complete('t1')
+    expect(await bandText($, surface)).toBe('')
+    expect(last(h.logs) ?? '').toContain('did not hand this to a Fable subagent')
   })
 
   test(`skips short prompts, slash commands, other senders, and when off in /mods (${surface})`, { timeoutMs: 30000 }, async ($, on) => {

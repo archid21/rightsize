@@ -29,6 +29,17 @@
         "subscription"
       ]
     },
+    "band": {
+      "type": "string",
+      "title": "Band",
+      "description": "The row above the prompt that shows what rightsize did, with buttons to undo it or change the rule. when it acts: only when it changes something. always: on every rated prompt, no change included. off: status line only.",
+      "default": "when it acts",
+      "options": [
+        "when it acts",
+        "always",
+        "off"
+      ]
+    },
     "priceCheck": {
       "type": "string",
       "title": "Price check",

@@ -52,11 +52,21 @@ After your first answer, rightsize asks whether to use your choices in every ses
 - **It knows how you pay.** Each response carries rate-limit windows: a subscription shows five-hour and seven-day windows, and a Claude gateway shows a spend limit. rightsize reads them and shows reports in dollars (API) or as a share of usage (subscription). Only when a response shows none, as with an API key, does it ask you once. The answer is kept across sessions.
 - **Prices stay current.** Every 30 days it compares `prices.json` with Anthropic's pricing page and writes in any change, keeping the old file as `prices.json.bak`.
 
-After each hand-off, one line in the transcript shows the result, for example:
+## The band
+
+A one-row band above the prompt shows what rightsize did, with buttons to act on it:
 
 ```
-rightsize: Sent to Haiku: $0.04 vs about $0.31 on Fable (estimated), saved about 87%.
+rightsize: Effort lowered: high → medium for this prompt (automatically).  [Undo] [Ask me each time] [Never lower] [⋯] [×]
 ```
+
+- **Undo** puts the prompt back in the box, to run at your normal level. **Clear** drops a session-wide switch.
+- The rule buttons change your answer for this case (Q1–Q4) in one press. Your current answer is not shown.
+- **⋯** chooses when the band shows. **×** closes it until your next prompt.
+- In the CLI, focus the band (ctrl+x tab or a click) and press a button's number.
+- After a hand-off, the band shows the result, for example `Sent to Haiku: $0.04 vs about $0.31 on Fable (estimated), saved about 87%.` With the band off, that result is a line in the transcript instead.
+
+The band shows in the CLI and the desktop app. VS Code and the mobile app keep the status line.
 
 ## Commands and settings
 
@@ -75,6 +85,7 @@ rightsize: Sent to Haiku: $0.04 vs about $0.31 on Fable (estimated), saved about
 - `/config` → rightsize:
   - **Lowest effort**: low, medium or high.
   - **Reports**: dollars, or share of usage for subscriptions. Setting it counts as your answer; rate limits that show a subscription still win.
+  - **Band**: when it acts (the default: only when rightsize changes something), always (every rated prompt, "No change" included), or off (status line only).
   - **Price check**: monthly, check now, or off.
 
 ## Logs

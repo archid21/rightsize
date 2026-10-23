@@ -21,7 +21,7 @@ claude --plugin-dir plugins/rightsize
 
 ## Where things live
 
-- `hooks/register.ts`: the hooks, the four questions and the reports.
+- `hooks/register.tsx`: the hooks, the four questions, the band above the prompt and the reports.
 - `hooks/cost.ts`: the cost model, plans and calibration. These are pure functions, tested in `cost.test.ts`.
 - `hooks/rate.ts`: the Haiku rating prompt and its parser.
 - `hooks/prices.ts`: the pricing-page parser and the monthly check.

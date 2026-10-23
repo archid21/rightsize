@@ -1,14 +1,48 @@
 # rightsize
 
-**A Claude Code mod that picks the right effort level and model for each prompt, and counts the cost of every switch.**
+**A Claude Code mod that matches each prompt to the right model and effort level, so you don't pay Opus prices for Haiku work.**
 
 Created by [Archi Dubey](https://github.com/archid21). MIT license.
 
-Before a prompt is sent, rightsize makes one cheap Haiku call to rate it:
-- for each model (Haiku, Sonnet, Opus, Fable), the lowest reasoning effort (`low` to `max`) at which it would do the work well, or that it would struggle
-- how much the work reads, writes and how many steps it takes
+## Before you use it
 
-A cost model then prices each model at its own level, using Anthropic's current prices, and picks the cheapest route that fits. That can change the model and the effort together: on Opus at medium, work that Opus needs high for may go to Haiku at high instead. rightsize does what you chose the first time each case came up: it lowers or raises effort, or hands the work to a subagent on another model, at that model's level, and has the main chat check the result.
+rightsize is a work in progress. It changes how Claude Code spends your tokens, and its choices are estimates. Savings are not guaranteed: some turns can cost more, not less, and a cheaper model can sometimes do weaker work. Use it at your own risk, and check `/rightsize report` to see what it really did for you.
+
+Feedback and feature requests are welcome. If you find a bug, a wrong call, or a saving that didn't show up, or you have an idea for a feature, [open an issue](https://github.com/archid21/rightsize/issues). What you report shapes what gets built next.
+
+## What it does
+
+Not every prompt needs your strongest model thinking its hardest. "Rename this variable" and "redesign the auth flow" get the same treatment by default. rightsize looks at each prompt before it is sent and picks a better fit.
+
+### It sizes each prompt
+
+- Before each prompt goes out, a quick, cheap check rates how hard the work is.
+- Simple work runs at lower effort. Hard work gets more.
+- If Claude gets stuck partway through (the same command keeps failing, or it goes in circles), rightsize turns the effort up for the rest of that turn.
+
+### It hands work to cheaper helpers
+
+- When a smaller model can do a task well, rightsize sends the task to a helper (a subagent) on that model. Your main chat stays as it is.
+- The main chat writes the helper a clear brief, checks the result, and asks for fixes if needed. If the helper still can't get it right, the main chat does the work itself.
+- When Claude starts its own helpers, rightsize moves them to a cheaper model too, if that model can do the job.
+
+### It looks after your budget
+
+- On a subscription, it watches your 5-hour and weekly limits. If you are using them up too fast, it saves harder. If you will have plenty left over, it lets Claude work harder.
+- On API billing, it warns you before an old, idle session would cost you a lot to pick up again, and shows cheaper options.
+- It keeps its price list up to date with Anthropic's pricing page.
+
+### It learns and shows its work
+
+- After each prompt, it compares what it expected to spend with what you really spent, and it adjusts its guesses next time.
+- `/rightsize report` shows what it changed, about how much it saved, and what went wrong, for this session, the last 7 days, and the last 30 days.
+- The report also shows the fixed overhead that comes with every message (tools, instructions, plugins) and how to cut it.
+
+### You stay in charge
+
+- The first time each kind of change comes up, rightsize asks you what to do: do it automatically, ask each time, or never.
+- A small bar above the prompt tells you what it changed, with buttons to undo it or change your rule.
+- Every limit and feature can be changed or turned off in `/config`.
 
 ## Install
 

@@ -1,0 +1,6 @@
+.DS_Store
+# Written by Claude Code when it loads the mod from a folder it hot-reloads.
+.claude-plugin/types/
+plugins/*/.claude-plugin/types/
+# Written by the monthly price check.
+*.bak

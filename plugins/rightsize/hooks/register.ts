@@ -1,0 +1,715 @@
+import type { EngineInterface, PromptSubmitInput, Register } from 'claude-code'
+import type { RightsizeChoices as Choices, RightsizeLevel as Level, RightsizeTier as Tier } from '../types'
+import {
+  DEFAULT_LEVEL,
+  DEFAULT_PRICES,
+  SWITCH_KEY,
+  TIERS,
+  TIER_NAME,
+  type Calibration,
+  type Plan,
+  type Prices,
+  type Rating,
+  type Situation,
+  calKey,
+  contextOf,
+  effortPlan,
+  isLevel,
+  learn,
+  mainCost,
+  money,
+  parseCalibration,
+  parsePrices,
+  plan,
+  ratioSample,
+  rawDelegateCost,
+  rawMainCost,
+  share,
+  tierOf,
+  tierRank,
+  usageCost,
+} from './cost'
+import { PRICING_URL, applyPrices, diffPrices, isDue, parsePricingPage } from './prices'
+import { parseRating, ratingPrompt, ratingSystem } from './rate'
+
+// Before a prompt is sent, a quick Haiku call rates the effort, the model and
+// the size of the work, and the cost model prices each route. The first time
+// each situation comes up in a session the person picks how to handle it
+// (Q1 lowering, Q2 raising, Q3 a stronger model, Q4 a cheaper model), then the
+// mod follows that answer. Effort changes rewrite each main-thread request
+// (turn.step); a model change hands the work to a subagent through a hidden
+// note beside the prompt (prompt.submit context). After each rated turn the
+// real cost is measured from the API's usage and fed back into the estimates.
+
+const NAME = 'rightsize'
+const CMD = 'rightsize'
+const RATER = 'haiku'
+const MIN_WORDS = 6
+const BRAIN_DUMP_WORDS = 120
+/** An auto-lowered turn steps back up from this step on. */
+const STEP_UP_AFTER = 5
+/** Claude Code's own system prompt and tools, before the first request is seen. */
+const DEFAULT_CONTEXT = 20_000
+const RUNS_LOG_MAX = 200_000
+
+type Lower = NonNullable<Choices['lower']>
+type Raise = NonNullable<Choices['raise']>
+type Route = NonNullable<Choices['up']>
+type Question<V> = { header: string; question: string; options: readonly (readonly [string, V])[] }
+
+const qLower: Question<Lower> = {
+  header: 'Lowering',
+  question: 'When a prompt needs less effort, what should I do?',
+  options: [
+    ['Lower automatically', 'auto'],
+    ['Ask me each time', 'ask'],
+    ['Never lower', 'never'],
+  ],
+}
+const qRaise: Question<Raise> = {
+  header: 'Raising',
+  question: 'When a prompt needs more effort on the same model, what should I do?',
+  options: [
+    ['Raise automatically (Recommended)', 'auto'],
+    ['Ask me each time', 'ask'],
+    ['Never raise', 'never'],
+  ],
+}
+const qUp = (cur: string, to: string): Question<Route> => ({
+  header: 'Stronger',
+  question: `When a prompt needs a stronger model than ${cur} (such as ${to}), what should I do?`,
+  options: [
+    ['Ask before sending it to a subagent (Recommended)', 'ask'],
+    ['Send it to a subagent automatically', 'auto'],
+    [`Stay on ${cur}, raise effort only`, 'stay'],
+    ['Ask me each time', 'each'],
+  ],
+})
+const qDown = (cur: string, to: string): Question<Route> => ({
+  header: 'Cheaper',
+  question: `When a big task could run on a cheaper model than ${cur} (such as ${to}), what should I do?`,
+  options: [
+    ['Send it to a cheaper subagent (Recommended)', 'auto'],
+    ['Ask before sending it', 'ask'],
+    [`Stay on ${cur}, lower effort only`, 'stay'],
+    ['Ask me each time', 'each'],
+  ],
+})
+const qRemember: Question<boolean> = {
+  header: 'Remember',
+  question: 'Use these choices in every session?',
+  options: [
+    ['Yes, from now on', true],
+    ['Just this session', false],
+  ],
+}
+
+/** One rated prompt, from prompt.submit until its turn completes. */
+type Run = {
+  turnId?: string
+  rating: Rating
+  tier: Tier
+  /** The level the turn runs at with no change. */
+  normal: Level
+  /** The level for this turn only. */
+  level?: Level
+  /** Lowered without asking: steps back up when the turn gets hard. */
+  auto: boolean
+  delegate?: { tier: Tier; level: Level; dir: 'up' | 'down' }
+  /** Uncalibrated estimates of the route taken, for calibration. */
+  rawMain: number
+  rawDelegate?: number
+  /** Calibrated estimate of staying at the normal level, for the report. */
+  stay: number
+  mainCost: number
+  subCost: number
+  /** What effort-switch cache misses cost this turn. */
+  missCost: number
+  errors: number
+  steppedUp: boolean
+  delegated: boolean
+}
+
+let home = ''
+let off = false
+let floor: Level = 'low'
+let billing: 'api' | 'subscription' = 'api'
+let priceCheck: 'monthly' | 'check now' | 'off' = 'monthly'
+let checking: Promise<string> | null = null
+let prices: Prices = DEFAULT_PRICES
+let cal: Calibration = {}
+let pending: Run | null = null
+let active: Run | null = null
+let lastApplied: Level | undefined
+let lastContext = 0
+let lastAuto: { text: string; level: Level; normal: Level } | null = null
+let skipOnce: string | null = null
+
+const words = (text: string) => text.trim().split(/\s+/).filter(Boolean).length
+const fromPerson = (e: PromptSubmitInput) => e.origin.kind === 'composer' || e.origin.kind === 'bridge'
+const names = (tiers: readonly Tier[]) => tiers.map(t => TIER_NAME[t]).join(' or ')
+
+// A prompt brain-dump is about to offer to shape: leave it to brain-dump, and
+// rate the brief it writes instead.
+const brainDumpWillCatch = (text: string, switches: Record<string, unknown>) =>
+  switches['brain-dump'] !== false && words(text) >= BRAIN_DUMP_WORDS && !text.includes('THE JOB')
+
+// ---- Files -----------------------------------------------------------------
+
+async function readText($: EngineInterface, path: string) {
+  try {
+    if (!(await $.fs.exists(path))) return ''
+    return String(await $.fs.read(path))
+  } catch {
+    return ''
+  }
+}
+
+async function readSwitches($: EngineInterface): Promise<Record<string, unknown>> {
+  try {
+    const json = JSON.parse((await readText($, `${home}/.claude/mods/switches.json`)) || '{}') as unknown
+    return json && typeof json === 'object' && !Array.isArray(json) ? (json as Record<string, unknown>) : {}
+  } catch {
+    return {}
+  }
+}
+
+async function append($: EngineInterface, name: string, line: string, max: number) {
+  try {
+    const dir = `${home}/.claude/mods-logs`
+    const path = `${dir}/${name}`
+    const old = await readText($, path)
+    if (!old) await $.process.run(['mkdir', '-p', dir])
+    let text = `${old}${line}\n`
+    if (text.length > max) text = text.slice(text.indexOf('\n', text.length - max) + 1)
+    await $.fs.write(path, text)
+  } catch {
+    // Logging must never hold up a prompt.
+  }
+}
+
+const log = ($: EngineInterface, line: string) => append($, 'rightsize.log', `${new Date().toISOString()} ${line}`, 50_000)
+
+// ---- Prices ----------------------------------------------------------------
+
+// Reads Anthropic's pricing page and writes any changed price into prices.json,
+// keeping the old file as prices.json.bak. A failed fetch or an unreadable page
+// changes nothing and is tried again at the next session start.
+async function checkPrices($: EngineInterface, why: 'monthly' | 'manual'): Promise<string> {
+  const path = `${$.plugin.root}/prices.json`
+  let text = ''
+  try {
+    const res = await $.http.fetch(PRICING_URL)
+    if (!res.ok) throw new Error(`the pricing page answered ${res.status}`)
+    text = res.text
+  } catch (err) {
+    const msg = `Price check failed: ${err instanceof Error ? err.message : String(err)}. prices.json is unchanged.`
+    await log($, `${why} ${msg}`)
+    return msg
+  }
+  const page = parsePricingPage(text)
+  const found = Object.keys(page).length
+  if (found < 4) {
+    const msg = `Price check found ${found} of 4 models on the pricing page; its layout may have changed. prices.json is unchanged.`
+    await log($, `${why} ${msg}`)
+    return msg
+  }
+  const now = await $.clock.now()
+  await $.store.set('pricesCheckedAt', now).catch(() => undefined)
+  const old = await readText($, path)
+  const changes = diffPrices(old, page)
+  if (!changes.length) {
+    await log($, `${why} price check: no change`)
+    return 'Prices checked: no change since the last check.'
+  }
+  if (old) await $.fs.write(`${path}.bak`, old)
+  const next = applyPrices(old, page, new Date(now).toISOString().slice(0, 10))
+  await $.fs.write(path, next)
+  prices = parsePrices(next)
+  const msg = `Prices updated from Anthropic's pricing page (old file kept as prices.json.bak): ${changes.join('; ')}.`
+  await log($, `${why} ${msg}`)
+  $.ui.log(`rightsize: ${msg}`)
+  return msg
+}
+
+// One check at a time; a second ask waits for the first.
+const runCheck = ($: EngineInterface, why: 'monthly' | 'manual') => {
+  checking ??= checkPrices($, why).finally(() => {
+    checking = null
+  })
+  return checking
+}
+
+// ---- State -----------------------------------------------------------------
+
+async function sessionEffort($: EngineInterface) {
+  const v = (await $.state.get({ plugin: 'rightsize', key: 'sessionEffort' }).catch(() => undefined))?.value
+  return isLevel(v) ? v : null
+}
+
+async function seenEffort($: EngineInterface) {
+  const v = (await $.state.get({ plugin: 'rightsize', key: 'seenEffort' }).catch(() => undefined))?.value
+  return isLevel(v) ? v : null
+}
+
+async function choices($: EngineInterface): Promise<Choices> {
+  const v = (await $.state.get({ plugin: 'rightsize', key: 'choices' }).catch(() => undefined))?.value
+  return v && typeof v === 'object' ? v : {}
+}
+
+async function remembers($: EngineInterface) {
+  return (await $.store.get('remember').catch(() => undefined)) === true
+}
+
+const saveCal = ($: EngineInterface) => $.store.set('calibration', cal).catch(() => undefined)
+
+// ---- Questions -------------------------------------------------------------
+
+// Asks in the engine's dialog. Dismissed, typed under Other, or no one to ask: undefined.
+async function pick<V>($: EngineInterface, q: Question<V>): Promise<V | undefined> {
+  try {
+    const answer = await $.ui.ask(q.question, { options: q.options.map(o => o[0]), header: q.header })
+    return q.options.find(o => o[0] === answer)?.[1]
+  } catch {
+    return undefined
+  }
+}
+
+async function saveChoices($: EngineInterface, next: Choices) {
+  await $.state.set({ plugin: 'rightsize', key: 'choices' }, next)
+  if (await remembers($)) {
+    await $.store.set('choices', next).catch(() => undefined)
+    return
+  }
+  const asked = (await $.state.get({ plugin: 'rightsize', key: 'rememberAsked' }).catch(() => undefined))?.value
+  if (asked === true) return
+  await $.state.set({ plugin: 'rightsize', key: 'rememberAsked' }, true)
+  const yes = await pick($, qRemember)
+  if (yes === true) {
+    await $.store.set('remember', true).catch(() => undefined)
+    await $.store.set('choices', next).catch(() => undefined)
+  } else if (yes === undefined) {
+    // Dismissed: ask again after the next answer.
+    await $.state.set({ plugin: 'rightsize', key: 'rememberAsked' }, false)
+  }
+}
+
+// The saved answer for one situation, or the question, the first time it comes up.
+async function choice<K extends keyof Choices>($: EngineInterface, key: K, q: Question<NonNullable<Choices[K]>>) {
+  const have = (await choices($))[key]
+  if (have) return have
+  const v = await pick($, q)
+  if (v !== undefined) await saveChoices($, { ...(await choices($)), [key]: v })
+  return v
+}
+
+// ---- Deciding --------------------------------------------------------------
+
+async function situation($: EngineInterface): Promise<Situation> {
+  const model = (await $.state.get({ plugin: 'rightsize', key: 'seenModel' }).catch(() => undefined))?.value
+  let tier = tierOf(model)
+  if (!tier) tier = tierOf(String((await $.settings.read({ key: 'model' }).catch(() => '')) ?? '')) ?? 'opus'
+  let level = (await sessionEffort($)) ?? (await seenEffort($))
+  if (!level) {
+    const set = await $.settings.read({ key: 'effortLevel' }).catch(() => undefined)
+    level = isLevel(set) ? set : DEFAULT_LEVEL[tier]
+  }
+  const context = (await $.state.get({ plugin: 'rightsize', key: 'context' }).catch(() => undefined))?.value
+  return { tier, level, context: typeof context === 'number' && context > 0 ? context : DEFAULT_CONTEXT, prices, cal }
+}
+
+async function rate($: EngineInterface, text: string, s: Situation): Promise<Rating | undefined> {
+  let lastReply = ''
+  try {
+    const rows = await $.session.messages()
+    for (let i = rows.length - 1; i >= 0; i--) {
+      const row = rows[i]
+      if (row?.role === 'assistant' && row.text.trim()) {
+        lastReply = row.text
+        break
+      }
+    }
+  } catch {
+    // Rated on the prompt alone.
+  }
+  const r = await $.model.complete({
+    model: RATER,
+    system: ratingSystem(s.tier, s.level),
+    prompt: ratingPrompt(text, lastReply),
+    maxTokens: 200,
+    effort: 'low',
+    timeoutMs: 10_000,
+  })
+  if (!r.isAnswered) {
+    await log($, `rating failed: ${r.reason}`)
+    return undefined
+  }
+  const rating = parseRating(r.text)
+  if (!rating) await log($, `rating unreadable: ${JSON.stringify(r.text.slice(0, 80))}`)
+  return rating
+}
+
+const costLine = (d: number, stay: number, cur: string) =>
+  billing === 'api'
+    ? `About ${money(d)} that way vs ${money(stay)} on ${cur} (estimated).`
+    : `That uses ${share(d, stay)} the usage of staying on ${cur} (estimated).`
+
+type Decision = { level?: Level; session?: Level; auto?: boolean; delegate?: Run['delegate'] }
+
+async function resolveEffort($: EngineInterface, p: Plan, r: Rating, s: Situation): Promise<Decision> {
+  if (p.kind !== 'effort') return {}
+  const c = p.dir === 'lower' ? await choice($, 'lower', qLower) : await choice($, 'raise', qRaise)
+  if (c === 'auto') return { level: p.level, auto: p.dir === 'lower' }
+  if (c !== 'ask') return {}
+  const verb = p.dir === 'lower' ? 'Lower' : 'Raise'
+  const why = r.reason ? ` (${r.reason})` : ''
+  const a = await pick($, {
+    header: 'Effort',
+    question: `This looks like a ${p.level}-effort task${why}. ${verb} from ${s.level} to ${p.level}?`,
+    options: [
+      [`${verb} for this prompt`, 'prompt'],
+      [`${verb} for this session`, 'session'],
+      [`Keep ${s.level}`, 'keep'],
+    ],
+  })
+  if (a === 'prompt') return { level: p.level }
+  if (a === 'session') return { session: p.level }
+  return {}
+}
+
+async function resolve($: EngineInterface, p: Plan, r: Rating, s: Situation): Promise<Decision> {
+  if (p.kind === 'none') return {}
+  if (p.kind === 'effort') return resolveEffort($, p, r, s)
+  const cur = TIER_NAME[s.tier]
+  const to = TIER_NAME[p.tier]
+  const c = p.dir === 'up' ? await choice($, 'up', qUp(cur, to)) : await choice($, 'down', qDown(cur, to))
+  const send: Decision = { delegate: { tier: p.tier, level: p.level, dir: p.dir } }
+  const stay = () => resolveEffort($, effortPlan(r, s, floor), r, s)
+  if (c === 'auto') return send
+  if (c === 'stay') return stay()
+  if (c !== 'ask' && c !== 'each') return {}
+  const why = r.reason ? ` (${r.reason})` : ''
+  const lead = p.dir === 'up' ? `This needs a stronger model${why}.` : `This big task could run on ${to}${why}.`
+  const question = `${lead} Send it to a ${to} subagent? ${costLine(p.delegateCost, p.mainCost, cur)}`
+  if (c === 'ask') {
+    const a = await pick($, { header: 'Subagent', question, options: [[`Send it to a ${to} subagent`, 'send'], [`Stay on ${cur}`, 'stay']] })
+    return a === 'send' ? send : a === 'stay' ? stay() : {}
+  }
+  const ep = effortPlan(r, s, floor)
+  const options: (readonly [string, 'send' | 'effort' | 'keep'])[] = [[`Send it to a ${to} subagent`, 'send']]
+  if (ep.kind === 'effort') options.push([`${ep.dir === 'lower' ? 'Lower' : 'Raise'} effort on ${cur} to ${ep.level}`, 'effort'])
+  options.push([ep.kind === 'effort' ? 'Keep as is' : `Stay on ${cur}`, 'keep'])
+  const a = await pick($, { header: 'Subagent', question, options })
+  if (a === 'send') return send
+  if (a === 'effort' && ep.kind === 'effort') return { level: ep.level }
+  return {}
+}
+
+/** The hidden note that hands the request to a subagent and has the main chat check it. */
+export function delegateNote(d: NonNullable<Run['delegate']>) {
+  const name = TIER_NAME[d.tier]
+  const why = d.dir === 'up' ? 'it needs a stronger model' : 'a cheaper model can do it for less'
+  return [
+    `[rightsize] The person has chosen to hand this request to a ${name} subagent, because ${why}. Do it this way:`,
+    `1. Start one subagent with the Agent tool, model "${d.tier}", effort "${d.level}". Give it a complete brief: the goal, the files, facts and decisions it needs from this conversation, and a "Done means" list of 3 to 6 items that can be checked.`,
+    '2. When it reports back, check its result against every Done-means item yourself. Use real proof where you can (run the tests, read the changed files), not its summary.',
+    '3. If an item fails, send that subagent a specific fix-up note (continue it with SendMessage where you can; otherwise start it again with the note and its last result). At most 2 rework rounds.',
+    d.dir === 'down'
+      ? '4. If an item still fails after 2 reworks, finish the task yourself.'
+      : '4. If an item still fails after 2 reworks, stop and say where it stands.',
+    `5. Answer the person with the result and one line on how it went: "Done in 1 round", "Passed after N rework(s) (what was missed)", or ${
+      d.dir === 'down' ? '"Finished it myself after 2 reworks (what was missed)"' : '"Still failing <item> after 2 reworks"'
+    }.`,
+  ].join('\n')
+}
+
+function startRun(r: Rating, s: Situation, d: Decision): Run {
+  const level = d.level ?? d.session ?? s.level
+  return {
+    rating: r,
+    tier: s.tier,
+    normal: s.level,
+    level: d.level,
+    auto: d.auto === true,
+    delegate: d.delegate,
+    rawMain: rawMainCost(r, s, level),
+    rawDelegate: d.delegate ? rawDelegateCost(r, s, d.delegate.tier, d.delegate.level) : undefined,
+    stay: mainCost(r, s, s.level, 0),
+    mainCost: 0,
+    subCost: 0,
+    missCost: 0,
+    errors: 0,
+    steppedUp: false,
+    delegated: false,
+  }
+}
+
+// ---- Reporting -------------------------------------------------------------
+
+async function showStatus($: EngineInterface) {
+  const run = active ?? pending
+  if (run?.delegate) return $.ui.status(`Rightsize: handing this to a ${TIER_NAME[run.delegate.tier]} subagent`)
+  if (run?.steppedUp) return $.ui.status(`Effort: back to ${run.normal} (the task got harder)`)
+  if (run?.level) return $.ui.status(run.auto ? `Effort: ${run.level} (auto) · /rightsize undo` : `Effort: ${run.level} (this prompt)`)
+  if (!run && lastAuto) return $.ui.status(`Last prompt ran at ${lastAuto.level} (auto) · /rightsize undo`)
+  const session = await sessionEffort($)
+  $.ui.status(session ? `Effort: ${session} (this session, by rightsize)` : undefined)
+}
+
+export function report(run: Pick<Run, 'tier' | 'stay'> & { delegate: NonNullable<Run['delegate']> }, actual: number, mode: 'api' | 'subscription') {
+  const to = TIER_NAME[run.delegate.tier]
+  const cur = TIER_NAME[run.tier]
+  const vs = `${money(actual)} vs about ${money(run.stay)} on ${cur} (estimated)`
+  if (mode === 'subscription') return `rightsize: Sent to ${to}: used ${share(actual, run.stay)} the usage staying on ${cur} would. At API prices: ${vs}.`
+  const diff = actual <= run.stay ? `saved about ${Math.round((1 - actual / Math.max(run.stay, 1e-9)) * 100)}%` : `cost ${share(actual, run.stay)} staying`
+  return `rightsize: Sent to ${to}: ${vs}, ${diff}.`
+}
+
+async function finish($: EngineInterface, run: Run, aborted: boolean) {
+  const r = run.rating
+  const delegated = run.delegate !== undefined && run.delegated
+  const actual = run.mainCost + run.subCost
+  if (!aborted && actual > 0) {
+    if (delegated && run.rawDelegate) cal = learn(cal, calKey(r.type, 'delegate'), ratioSample(actual, run.rawDelegate))
+    else if (!run.delegate) cal = learn(cal, calKey(r.type, 'main'), ratioSample(Math.max(0, actual - run.missCost), run.rawMain))
+    await saveCal($)
+    const line = {
+      at: new Date().toISOString(),
+      type: r.type,
+      route: delegated ? `delegate:${run.delegate?.tier}` : 'main',
+      tier: run.tier,
+      level: run.steppedUp ? run.normal : (run.level ?? run.normal),
+      auto: run.auto,
+      steppedUp: run.steppedUp,
+      estimate: Number((delegated ? (run.rawDelegate ?? 0) : run.rawMain).toFixed(5)),
+      actual: Number(actual.toFixed(5)),
+      stay: Number(run.stay.toFixed(5)),
+    }
+    await append($, 'rightsize-runs.jsonl', JSON.stringify(line), RUNS_LOG_MAX)
+  }
+  if (run.delegate) {
+    if (!delegated) $.ui.log(`rightsize: Claude did not hand this to a ${TIER_NAME[run.delegate.tier]} subagent; it ran on ${TIER_NAME[run.tier]} (${money(actual)}).`)
+    else if (!aborted) $.ui.log(report({ tier: run.tier, stay: run.stay, delegate: run.delegate }, actual, billing))
+  }
+  await showStatus($)
+}
+
+async function summary($: EngineInterface) {
+  const c = await choices($)
+  const said = (v: string | undefined) => v ?? 'not asked yet'
+  const session = await sessionEffort($)
+  const runs = Object.entries(cal).filter(([k]) => k !== SWITCH_KEY).reduce((n, [, e]) => n + e.n, 0)
+  const sw = cal[SWITCH_KEY]
+  return [
+    `Rightsize is ${off ? 'off (turn it on with /mods)' : 'on'}. Lowest level: ${floor}. Reports: ${billing}.`,
+    `Lowering: ${said(c.lower)}. Raising: ${said(c.raise)}. Stronger model: ${said(c.up)}. Cheaper model: ${said(c.down)}.${(await remembers($)) ? ' Saved for every session.' : ''}`,
+    session ? `Session switch: ${session}.` : 'No session switch.',
+    `Calibration: ${runs} measured run(s).${sw ? ` Effort switches that missed the cache: ${Math.round(sw.ratio * 100)}% of ${sw.n} (each one in ~/.claude/mods-logs/rightsize-switches.jsonl).` : ''}`,
+    `Prices: checked ${priceCheck === 'off' ? 'never (off)' : 'every 30 days'}; /rightsize prices checks now.`,
+    '/rightsize settings asks the questions again; undo re-runs the last auto-lowered prompt; clear drops the session switch.',
+  ].join('\n')
+}
+
+// ---- Hooks -----------------------------------------------------------------
+
+export const register: Register = (on, options) => {
+  const opts = (options ?? {}) as Record<string, unknown>
+  if (isLevel(opts.floor)) floor = opts.floor
+  if (opts.billing === 'subscription') billing = 'subscription'
+  if (opts.priceCheck === 'off' || opts.priceCheck === 'check now') priceCheck = opts.priceCheck
+
+  // "check now" in /config runs a check and leaves the row on its usual value.
+  on('config.set', { key: 'rightsize.priceCheck' }, async ($, e, next) => {
+    if (e.value !== 'check now') return next(e)
+    $.ui.toast('Checking prices against Anthropic’s pricing page...')
+    void runCheck($, 'manual').then(msg => $.ui.toast(msg))
+    return next({ ...e, value: e.previous === 'off' ? 'off' : 'monthly' })
+  })
+
+  on('session.start', async ($, e, next) => {
+    const result = await next(e)
+    home = $.plugin.root.split('/.claude/')[0] ?? ''
+    pending = null
+    active = null
+    lastApplied = undefined
+    lastContext = 0
+    await $.command.register({ name: CMD, description: 'Rightsize: status, settings, undo or clear' })
+    prices = parsePrices(await readText($, `${$.plugin.root}/prices.json`))
+    if (priceCheck === 'check now') {
+      // Set by hand in settings: check once, then back to monthly.
+      void runCheck($, 'manual').then(msg => $.ui.toast(msg))
+      void $.config.set({ key: 'rightsize.priceCheck', value: 'monthly' }).catch(() => undefined)
+    } else if (priceCheck === 'monthly' && isDue(await $.store.get('pricesCheckedAt').catch(() => undefined), await $.clock.now())) {
+      void runCheck($, 'monthly')
+    }
+    cal = parseCalibration(await $.store.get('calibration').catch(() => undefined))
+    if (await remembers($)) {
+      const saved = await $.store.get('choices').catch(() => undefined)
+      if (saved && typeof saved === 'object') await $.state.set({ plugin: 'rightsize', key: 'choices' }, { ...(saved as Choices), ...(await choices($)) })
+    }
+    off = (await readSwitches($))[NAME] === false
+    $.clock.every(3000, () => {
+      void readSwitches($).then(json => {
+        off = json[NAME] === false
+      })
+    })
+    await showStatus($)
+    return result
+  })
+
+  on('command.run', { command: CMD }, async ($, e) => {
+    const arg = e.args.trim().toLowerCase()
+    if (arg === 'undo') {
+      if (!lastAuto) return { text: 'Nothing to undo: the last prompt was not lowered automatically.' }
+      const { text, normal } = lastAuto
+      lastAuto = null
+      skipOnce = text.trim()
+      const filled = await $.prompt.fill({ text, mode: 'replace' }).catch(() => null)
+      await showStatus($)
+      return {
+        text: filled?.isFilled
+          ? `The prompt is back in the box. Press Enter to run it at ${normal}.`
+          : `Could not fill the prompt box. Send the prompt again and it runs at ${normal}.`,
+      }
+    }
+    if (arg === 'prices') return { text: await runCheck($, 'manual') }
+    if (arg === 'clear') {
+      const level = await sessionEffort($)
+      await $.state.set({ plugin: 'rightsize', key: 'sessionEffort' }, null)
+      await showStatus($)
+      return { text: level ? `Cleared the session switch to ${level}.` : 'No session switch was set.' }
+    }
+    if (arg === 'settings') {
+      const s = await situation($)
+      const cur = TIER_NAME[s.tier]
+      const up = TIERS.filter(t => tierRank(t) > tierRank(s.tier))
+      const down = TIERS.filter(t => tierRank(t) < tierRank(s.tier))
+      const next: Choices = {}
+      next.lower = await pick($, qLower)
+      next.raise = await pick($, qRaise)
+      if (up.length) next.up = await pick($, qUp(cur, names(up)))
+      if (down.length) next.down = await pick($, qDown(cur, names(down)))
+      for (const k of Object.keys(next) as (keyof Choices)[]) if (next[k] === undefined) delete next[k]
+      await $.state.set({ plugin: 'rightsize', key: 'rememberAsked' }, false)
+      await $.store.set('remember', false).catch(() => undefined)
+      await saveChoices($, next)
+      return { text: await summary($) }
+    }
+    return { text: await summary($) }
+  })
+
+  on('prompt.submit', async ($, e, next) => {
+    if (off || !fromPerson(e) || e.command || e.isMeta) return next(e)
+    const text = e.text.trim()
+    if (skipOnce !== null && text === skipOnce) {
+      skipOnce = null
+      return next(e)
+    }
+    if (text.startsWith('/') || words(text) < MIN_WORDS) return next(e)
+    if (brainDumpWillCatch(text, await readSwitches($))) return next(e)
+
+    $.ui.status('Rightsize: rating the prompt...')
+    let out = e
+    let run: Run | null = null
+    try {
+      const s = await situation($)
+      const r = await rate($, text, s)
+      if (r) {
+        const p = plan(r, s, floor)
+        const d = await resolve($, p, r, s)
+        if (d.session) await $.state.set({ plugin: 'rightsize', key: 'sessionEffort' }, d.session)
+        if (d.delegate) out = { ...e, context: [...(e.context ?? []), delegateNote(d.delegate)] }
+        run = startRun(r, s, d)
+        const did = d.delegate ? `delegate ${d.delegate.tier}` : d.level ? `${d.auto ? 'auto ' : ''}${d.level} for the prompt` : d.session ? `${d.session} for the session` : 'no change'
+        await log($, `${r.type} on ${s.tier}/${s.level}: rated ${r.level}/${r.model}/${r.size}, plan ${p.kind}${'dir' in p ? ` ${p.dir}` : ''}: ${did}`)
+      }
+    } catch (err) {
+      await log($, `rating threw: ${err instanceof Error ? err.message : String(err)}`)
+    }
+    pending = run
+    lastAuto = run?.auto && run.level ? { text: e.text, level: run.level, normal: run.normal } : null
+    await showStatus($)
+    return next(out)
+  }).catch(($, e, next) => next(e))
+
+  on('turn.step', async function* ($, e, next) {
+    if (e.agentId !== undefined) {
+      const out = yield* next(e)
+      if (active && out.usage) active.subCost += usageCost(prices, out.usage.model, out.usage)
+      return out
+    }
+    if (pending && active?.turnId !== e.turnId) {
+      active = { ...pending, turnId: e.turnId }
+      pending = null
+    }
+    const run = active?.turnId === e.turnId ? active : null
+    if (isLevel(e.effort)) await $.state.set({ plugin: 'rightsize', key: 'seenEffort' }, e.effort)
+    const session = await sessionEffort($)
+    const own = session ?? (isLevel(e.effort) ? e.effort : undefined)
+    let level: Level | undefined = run?.level ?? session ?? undefined
+    if (run?.auto && (e.index >= STEP_UP_AFTER || run.errors > 0)) {
+      level = own
+      if (!run.steppedUp) {
+        run.steppedUp = true
+        await showStatus($)
+      }
+    }
+    const send = level && e.effort !== undefined ? { ...e, effort: level } : e
+    const applied = isLevel(send.effort) ? send.effort : undefined
+    const out = yield* next(send)
+    const u = out.usage
+    if (u) {
+      // An effort switch may make this request re-write the conversation: measure it.
+      if (applied && lastApplied && applied !== lastApplied && lastContext > 5000) {
+        const missed = u.cache_read_input_tokens < lastContext * 0.5
+        cal = learn(cal, SWITCH_KEY, missed ? 1 : 0)
+        // One line per measured switch: the evidence for whether the engine keeps the cache.
+        await append(
+          $,
+          'rightsize-switches.jsonl',
+          JSON.stringify({
+            at: new Date().toISOString(),
+            model: u.model,
+            from: lastApplied,
+            to: applied,
+            context: lastContext,
+            cacheRead: u.cache_read_input_tokens,
+            cacheWrite: u.cache_creation_input_tokens,
+            kept: !missed,
+          }),
+          RUNS_LOG_MAX,
+        )
+        const t = tierOf(u.model)
+        if (missed && run && t) run.missCost += (u.cache_creation_input_tokens * (prices[t].cacheWrite - prices[t].cacheRead)) / 1e6
+        void saveCal($)
+      }
+      if (applied) lastApplied = applied
+      lastContext = contextOf(u)
+      await $.state.set({ plugin: 'rightsize', key: 'context' }, lastContext)
+      await $.state.set({ plugin: 'rightsize', key: 'seenModel' }, u.model)
+      if (run) run.mainCost += usageCost(prices, u.model, u)
+    }
+    return out
+  })
+
+  on('tool.call', async ($, e, next) => {
+    const result = await next(e)
+    if (active && e.agentId === undefined) {
+      const model = (e as { model?: unknown }).model
+      if (String(e.tool) === 'Agent' && active.delegate && model === active.delegate.tier) active.delegated = true
+      if ((result as { isError?: boolean }).isError) active.errors += 1
+    }
+    return result
+  }).catch(($, e, next) => next(e))
+
+  on('turn.complete', async ($, e, next) => {
+    const result = await next(e)
+    if (e.agentId === undefined && active && active.turnId === e.turnId) {
+      const run = active
+      active = null
+      await finish($, run, e.isAborted)
+    }
+    return result
+  })
+}
+

@@ -1,0 +1,15 @@
+{
+  "name": "archid21",
+  "owner": { "name": "Archi Dubey", "url": "https://github.com/archid21" },
+  "description": "Claude Code mods by Archi Dubey",
+  "plugins": [
+    {
+      "name": "rightsize",
+      "source": "./plugins/rightsize",
+      "description": "Right-sizes each Claude Code prompt: rates the effort, model and cost it needs, then lowers or raises effort, or hands the work to a stronger or cheaper subagent",
+      "version": "0.4.0",
+      "author": { "name": "Archi Dubey", "url": "https://github.com/archid21" },
+      "license": "MIT"
+    }
+  ]
+}

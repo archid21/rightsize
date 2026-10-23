@@ -1,0 +1,55 @@
+{
+  "name": "rightsize",
+  "version": "0.4.0",
+  "description": "Right-sizes each Claude Code prompt: rates the effort, model and cost it needs, then lowers or raises effort, or hands the work to a stronger or cheaper subagent, the way you chose the first time each case came up",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "Archi Dubey",
+    "url": "https://github.com/archid21"
+  },
+  "userConfig": {
+    "floor": {
+      "type": "string",
+      "title": "Lowest effort",
+      "description": "The lowest effort level rightsize will lower to.",
+      "default": "low",
+      "options": [
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    "billing": {
+      "type": "string",
+      "title": "Reports",
+      "description": "api: subagent reports show dollars. subscription: they show the share of usage, with API prices beside it.",
+      "default": "api",
+      "options": [
+        "api",
+        "subscription"
+      ]
+    },
+    "priceCheck": {
+      "type": "string",
+      "title": "Price check",
+      "description": "monthly: compare prices.json with Anthropic's pricing page every 30 days and update it. check now: check once right away, then back to monthly. off: never check.",
+      "default": "monthly",
+      "options": [
+        "monthly",
+        "check now",
+        "off"
+      ]
+    }
+  },
+  "homepage": "https://github.com/archid21/rightsize",
+  "repository": "https://github.com/archid21/rightsize",
+  "license": "MIT",
+  "keywords": [
+    "effort",
+    "cost",
+    "model-routing",
+    "subagents",
+    "prompt-caching",
+    "mod"
+  ]
+}

@@ -1,0 +1,92 @@
+# rightsize
+
+**A Claude Code mod that picks the right effort level and model for each prompt, and counts the cost of every switch.**
+
+Created by [Archi Dubey](https://github.com/archid21). MIT license.
+
+Before a prompt is sent, rightsize makes one cheap Haiku call to rate it:
+- the reasoning effort it needs (`low` to `max`)
+- whether a stronger or cheaper model would do better
+- how big the work is
+
+A cost model then prices each route, using Anthropic's current prices. rightsize does what you chose the first time each case came up: it lowers or raises effort, or hands the work to a subagent on another model and has the main chat check the result.
+
+## Install
+
+You need Claude Code 2.1.287 or newer in the terminal, or 2.1.286 or newer in the desktop app (`claude --version`).
+
+In Claude Code, run:
+
+```
+/plugin marketplace add archid21/rightsize
+/plugin install rightsize@archid21
+```
+
+Pick the user scope so it loads in every session, then start a new session.
+
+## The four questions
+
+Each question is asked once, the first time its case comes up:
+
+| Case | Choices |
+|---|---|
+| **Q1** A prompt needs less effort | Lower automatically · Ask me each time · Never lower |
+| **Q2** It needs more effort on the same model | Raise automatically · Ask me each time · Never raise |
+| **Q3** A stronger model would do better | Ask before sending it to a subagent · Send it automatically · Stay on this model, raise effort only · Ask me each time |
+| **Q4** A big task could run on a cheaper model | Send it to a cheaper subagent · Ask before sending it · Stay on this model, lower effort only · Ask me each time |
+
+After your first answer, rightsize asks whether to use your choices in every session.
+
+## How it decides
+
+- **Effort changes can cost a cache rewrite.** Anthropic's docs say that changing effort at the top level of a request resets the conversation's prompt cache. A per-message change (beta) keeps it. rightsize counts that cost, and it measures what Claude Code really does: every effort switch is logged with whether the cache survived. Lowering effort happens only when it pays.
+- **Changing the model always means a subagent.** The main chat keeps its model and its cache. A hidden note beside your prompt (your text is unchanged) asks it to:
+  1. write a brief with a "Done means" list
+  2. check the subagent's result against that list
+  3. send at most 2 rework notes
+  4. tell you how it went
+
+  When the work goes to a cheaper model and still fails after 2 reworks, the main chat finishes it itself.
+- **Handing work down needs a clear saving.** A cheaper subagent is used only when its estimate is under 70% of the cost of staying, counting the brief, report, check and likely rework.
+- **It learns from real costs.** After each rated turn, rightsize measures what the turn really cost from the API's token usage, and moves its estimates toward it, for each task type and route. After 20 runs, the measured average replaces the guess.
+- **Prices stay current.** Every 30 days it compares `prices.json` with Anthropic's pricing page and writes in any change, keeping the old file as `prices.json.bak`.
+
+After each hand-off, one line in the transcript shows the result, for example:
+
+```
+rightsize: Sent to Haiku: $0.04 vs about $0.31 on Fable (estimated), saved about 87%.
+```
+
+## Commands and settings
+
+- `/rightsize`: the state, your answers, the calibration and the cache-switch results.
+- `/rightsize settings`: ask the four questions again.
+- `/rightsize undo`: put the last auto-lowered prompt back in the box, to run at the normal level.
+- `/rightsize clear`: drop a session-wide effort switch.
+- `/rightsize prices`: check prices now.
+- `/config` → rightsize:
+  - **Lowest effort**: low, medium or high.
+  - **Reports**: dollars, or share of usage for subscriptions.
+  - **Price check**: monthly, check now, or off.
+
+## Logs
+
+These are in `~/.claude/mods-logs/`:
+- `rightsize.log`: each decision.
+- `rightsize-runs.jsonl`: each measured turn, with its estimated and actual cost.
+- `rightsize-switches.jsonl`: each measured effort switch, and whether the cache was kept.
+
+## Limits
+
+- The app's effort picker does not move. The status line shows the level in use.
+- The rating is an estimate from Haiku. Calibration corrects cost guesses, but it can't correct a wrong choice of model.
+- Model facts (names, default effort levels, which models can switch effort mid-conversation) are built in for Claude Fable 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5. See [CONTRIBUTING.md](CONTRIBUTING.md) for how to update them when models change.
+- This is an independent project, not made or endorsed by Anthropic.
+
+## Contributing
+
+Improvements are welcome: see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## License
+
+[MIT](LICENSE) © 2026 Archi Dubey

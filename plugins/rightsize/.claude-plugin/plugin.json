@@ -54,6 +54,16 @@
         "95%"
       ]
     },
+    "subagents": {
+      "type": "string",
+      "title": "Claude's subagents",
+      "description": "cheaper when it fits: when Claude starts a general-purpose subagent without naming a model, rate its brief and run it on the cheapest weaker model that fits, at that model's level, under the hand-off threshold. off: leave Claude's own subagents on its model.",
+      "default": "cheaper when it fits",
+      "options": [
+        "cheaper when it fits",
+        "off"
+      ]
+    },
     "band": {
       "type": "string",
       "title": "Band",

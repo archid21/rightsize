@@ -18,6 +18,7 @@ import {
   parseShare,
   plan,
   share,
+  sizeSubagent,
   tierOf,
 } from './cost'
 import { parseRating } from './rate'
@@ -279,4 +280,22 @@ test('reports a hand-off in dollars or as a share of usage', async () => {
   expect(report(up, 0.81, 'api')).toBe('rightsize: Sent to Fable: $0.81 vs about $0.30 on Opus (estimated), cost about 2.7x staying.')
   expect(money(0.001)).toBe('under $0.01')
   expect(share(1, 0)).toBe('an unknown share of')
+})
+
+test("sizes Claude's own subagent: the cheapest weaker model that fits, never a stronger one", async () => {
+  const listing = rating({ fit: { haiku: 'low', sonnet: 'low', opus: 'low', fable: 'low' }, read: 8000, write: 500, steps: 5 })
+  expect(sizeSubagent(listing, opus, 'opus', 'low')?.tier).toBe('haiku')
+  expect(sizeSubagent(listing, opus, 'opus', 'low')?.level).toBe('low')
+  expect(sizeSubagent(listing, opus, 'opus', 'medium')?.level, 'the lowest level still holds').toBe('medium')
+  const routine = rating({ fit: { haiku: null, sonnet: 'medium', opus: 'low', fable: 'low' }, read: 8000, write: 500, steps: 5 })
+  expect(sizeSubagent(routine, opus, 'opus', 'low')?.tier).toBe('sonnet')
+  expect(sizeSubagent(routine, opus, 'opus', 'low')?.level).toBe('medium')
+  const hard = rating({ fit: { haiku: null, sonnet: null, opus: null, fable: 'high' } })
+  expect(sizeSubagent(hard, opus, 'opus', 'low'), 'the parent would struggle: not a saving to make').toBeUndefined()
+  expect(sizeSubagent(listing, opus, 'haiku', 'low'), 'nothing is weaker than Haiku').toBeUndefined()
+  const cheapFable = { ...opus, prices: { ...DEFAULT_PRICES, fable: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } } }
+  expect(sizeSubagent(rating({ fit: { haiku: null, sonnet: null, opus: 'low', fable: 'low' } }), cheapFable, 'opus', 'low'), 'not a stronger model, even when it is priced lower').toBeUndefined()
+  expect(sizeSubagent(rating({ fit: { haiku: 'low', opus: null } }), opus, 'opus', 'low'), 'a rating where the parent would struggle moves nothing').toBeUndefined()
+  const strict = { ...opus, rules: { ...DEFAULT_RULES, handOff: 0.01 } }
+  expect(sizeSubagent(routine, strict, 'opus', 'low'), 'the hand-off share applies').toBeUndefined()
 })

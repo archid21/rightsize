@@ -231,22 +231,25 @@ export function mainCost(r: Rating, s: Situation, level: Level, switches: number
 
 const reworkFactor = (main: Tier, sub: Tier) => (tierRank(sub) >= tierRank(main) ? 1.2 : sub === 'haiku' ? 1.5 : 1.3)
 
+/** A subagent's own requests on `sub`: it starts with no cache, so its base and the brief are written fresh. */
+function subWork(r: Rating, s: Situation, sub: Tier, subLevel: Level) {
+  const steps = Math.max(1, Math.round(r.steps))
+  return dollars(s.prices[sub], {
+    cacheWrite: SUB_BASE + BRIEF + r.read,
+    cacheRead: steps * (SUB_BASE + BRIEF) + ((steps - 1) * r.read) / 2,
+    output: r.write * EFFORT_OUT[subLevel] + REPORT,
+  })
+}
+
 /** The work handed to a subagent on `sub`, before calibration: brief, work, check, likely rework. */
 export function rawDelegateCost(r: Rating, s: Situation, sub: Tier, subLevel: Level) {
-  const steps = Math.max(1, Math.round(r.steps))
   // The main chat writes the brief, reads the report, checks the result and answers.
   const main = dollars(s.prices[s.tier], {
     cacheRead: 3 * s.context,
     cacheWrite: REPORT + Math.min(CHECK_CAP, r.read * 0.2) + PROMPT,
     output: (BRIEF + FINAL) * EFFORT_OUT.medium,
   })
-  // The subagent starts with no cache: its base and the brief are written fresh.
-  const work = dollars(s.prices[sub], {
-    cacheWrite: SUB_BASE + BRIEF + r.read,
-    cacheRead: steps * (SUB_BASE + BRIEF) + ((steps - 1) * r.read) / 2,
-    output: r.write * EFFORT_OUT[subLevel] + REPORT,
-  })
-  return (main + work) * reworkFactor(s.tier, sub)
+  return (main + subWork(r, s, sub, subLevel)) * reworkFactor(s.tier, sub)
 }
 
 export function delegateCost(r: Rating, s: Situation, sub: Tier, subLevel: Level) {
@@ -327,6 +330,26 @@ export function plan(r: Rating, s: Situation, floor: Level): Plan {
     return { kind: 'delegate', dir: 'down', tier: down.tier, level: down.level, delegateCost: down.cost, mainCost: alt, instead: level }
   }
   return effortPlan(r, s, floor)
+}
+
+// A subagent Claude starts on its own runs on its parent's model unless the call
+// names one. Its brief is rated like a prompt: the cheapest weaker model that fits,
+// at its own level, when its work (likely rework counted) costs under the hand-off
+// share of running on the parent. Never a stronger model, and nothing when the
+// parent itself would struggle: that is Claude's call, not a saving.
+export type SubagentSize = { tier: Tier; level: Level; cost: number; parentCost: number }
+
+export function sizeSubagent(r: Rating, s: Situation, parent: Tier, floor: Level): SubagentSize | undefined {
+  const own = r.fit[parent]
+  if (!own) return undefined
+  const parentCost = subWork(r, s, parent, clampFloor(own, floor)) * reworkFactor(parent, parent)
+  const best = TIERS.flatMap(t => {
+    const need = r.fit[t]
+    if (tierRank(t) >= tierRank(parent) || !need) return []
+    const level = clampFloor(need, floor)
+    return [{ tier: t, level, cost: subWork(r, s, t, level) * reworkFactor(parent, t), parentCost }]
+  }).sort((a, b) => a.cost - b.cost)[0]
+  return best && best.cost < (s.rules ?? DEFAULT_RULES).handOff * parentCost ? best : undefined
 }
 
 // ---- Wording ---------------------------------------------------------------

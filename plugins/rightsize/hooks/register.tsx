@@ -1,4 +1,4 @@
-import type { EngineInterface, PromptSubmitInput, Register } from 'claude-code'
+import type { AgentSpawnInput, EngineInterface, PromptSubmitInput, Register } from 'claude-code'
 import type {
   RightsizeBand as Band,
   RightsizeBandMode as BandMode,
@@ -37,6 +37,7 @@ import {
   rawDelegateCost,
   rawMainCost,
   share,
+  sizeSubagent,
   tierOf,
   tierRank,
   usageCost,
@@ -53,7 +54,9 @@ import { type Change, type RunLine, type SwitchLine, type Windows, buildReport, 
 // mod follows that answer. Effort changes rewrite each main-thread request
 // (turn.step); a model change hands the work to a subagent through a hidden
 // note beside the prompt (prompt.submit context), and that subagent's requests
-// run at the level its model needs (turn.step). After each rated turn the
+// run at the level its model needs (turn.step). A subagent Claude starts on its
+// own with no model named has its brief rated too, and runs on the cheapest model
+// that fits, at that model's level (agent.spawn, turn.step). After each rated turn the
 // real cost is read off the session's cost ledger (/cost) and fed back into the
 // estimates. Billing (API or subscription) is read off the rate limits each
 // response carries; the person is asked only when they say nothing. A band
@@ -75,6 +78,8 @@ type Lower = NonNullable<Choices['lower']>
 type Raise = NonNullable<Choices['raise']>
 type Route = NonNullable<Choices['up']>
 type Billing = 'api' | 'subscription'
+type Resized = { from: Tier; tier: Tier; level: Level; type: Rating['type'] }
+type SubagentMode = 'cheaper when it fits' | 'off'
 type Question<V> = { header: string; question: string; options: readonly (readonly [string, V])[] }
 
 const qLower: Question<Lower> = {
@@ -161,6 +166,8 @@ type Run = {
   subAgents: string[]
   /** The effort the hand-off's subagent really ran at, as sent. */
   subLevel?: Level
+  /** Claude's own subagents moved to a cheaper model this turn. */
+  resized: Resized[]
   /** Uncalibrated estimates of the route taken, for calibration. */
   rawMain: number
   rawDelegate?: number
@@ -219,6 +226,9 @@ let skipOnce: string | null = null
  * here on no turn teaches calibration or claims a saving.
  */
 let workflowSeen = false
+let subagentMode: SubagentMode = 'cheaper when it fits'
+/** Claude's own subagents moved to a cheaper model, by id: the level their steps run at, past the turn that started them. */
+const resizedLevel = new Map<string, Level>()
 
 const words = (text: string) => text.trim().split(/\s+/).filter(Boolean).length
 const fromPerson = (e: PromptSubmitInput) => e.origin.kind === 'composer' || e.origin.kind === 'bridge'
@@ -473,10 +483,14 @@ async function rate($: EngineInterface, text: string, s: Situation): Promise<{ r
   } catch {
     // Rated on the prompt alone.
   }
+  return askRater($, s.tier, s.level, ratingPrompt(text, lastReply))
+}
+
+async function askRater($: EngineInterface, tier: Tier, level: Level, prompt: string): Promise<{ rating?: Rating; overhead: number }> {
   const r = await $.model.complete({
     model: RATER,
-    system: ratingSystem(s.tier, s.level),
-    prompt: ratingPrompt(text, lastReply),
+    system: ratingSystem(tier, level),
+    prompt,
     maxTokens: 300,
     effort: 'low',
     timeoutMs: 10_000,
@@ -487,9 +501,28 @@ async function rate($: EngineInterface, text: string, s: Situation): Promise<{ r
     await log($, `rating failed: ${r.reason}`)
     return { overhead }
   }
-  const rating = parseRating(r.text, s.tier)
+  const rating = parseRating(r.text, tier)
   if (!rating) await log($, `rating unreadable: ${JSON.stringify(r.text.slice(0, 80))}`)
   return { rating, overhead }
+}
+
+// A general-purpose subagent the main chat starts with no model named runs on the
+// main chat's model. Other types may set their own model, which a spawn does not show,
+// so they are left as they are; so are forks, workflow agents, resumes and teammates.
+async function sizeSpawn($: EngineInterface, e: AgentSpawnInput, run: Run | null) {
+  if (off || subagentMode === 'off') return undefined
+  if (e.parentAgentId !== undefined || e.fork || e.isTeammate || e.workflow || e.resume) return undefined
+  if (e.subagentType !== 'general-purpose' || (e.model !== undefined && e.model !== 'inherit')) return undefined
+  const s = await situation($)
+  const parent = tierOf(e.parentModel) ?? s.tier
+  if (parent === TIERS[0]) return undefined
+  const { rating: r, overhead } = await askRater($, parent, s.level, ratingPrompt(`${e.description}\n\n${e.prompt}`, ''))
+  if (run) run.overhead += overhead
+  if (!r) return undefined
+  const size = sizeSubagent(r, { ...s, tier: parent }, parent, floor)
+  const fit = TIERS.map(t => `${t[0]}:${r.fit[t] ?? (r.fit[t] === null ? 'no' : '?')}`).join(' ')
+  await log($, `subagent "${e.description}" on ${parent}: rated ${fit}, ${size ? `sent to ${size.tier}/${size.level}` : 'kept'}`)
+  return size ? { from: parent, tier: size.tier, level: size.level, type: r.type } : undefined
 }
 
 const costLine = (d: number, stay: number, cur: string) =>
@@ -599,6 +632,7 @@ function startRun(r: Rating, s: Situation, d: Decision, p: Plan, base: Level, ov
     overhead,
     agentCalls: 0,
     subAgents: [],
+    resized: [],
     mainCost: 0,
     subCost: 0,
     missCost: 0,
@@ -705,6 +739,14 @@ async function chooseBandMode($: EngineInterface) {
   await $.config.set({ key: 'rightsize.band', value: v }).catch(() => undefined)
 }
 
+/** "Ran 2 of Claude's subagents on Haiku (low) instead of Opus." */
+export function resizedText(xs: readonly Resized[]) {
+  const to = [...new Set(xs.map(x => `${TIER_NAME[x.tier]} (${x.level})`))].join(' and ')
+  const from = [...new Set(xs.map(x => TIER_NAME[x.from]))].join(' and ')
+  const n = xs.length === 1 ? "Claude's subagent" : `${xs.length} of Claude's subagents`
+  return `Ran ${n} on ${to} instead of ${from}.`
+}
+
 export function report(run: Pick<Run, 'tier' | 'stay'> & { delegate: NonNullable<Run['delegate']> }, actual: number, mode: 'api' | 'subscription') {
   const to = TIER_NAME[run.delegate.tier]
   const cur = TIER_NAME[run.tier]
@@ -757,6 +799,7 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
       level: run.steppedUp ? run.normal : (run.level ?? run.normal),
       fit: r.fit,
       ...(delegated ? { subLevel: run.subLevel ?? null } : {}),
+      ...(run.resized.length ? { resized: run.resized } : {}),
       auto: run.auto,
       steppedUp: run.steppedUp,
       estimate: Number((delegated ? (run.rawDelegate ?? 0) : run.rawMain).toFixed(5)),
@@ -786,6 +829,11 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
     // The band shows the result in place of a transcript line; with the band off, the line stays.
     if (bandMode === 'off') $.ui.log(text)
     else await setBand($, { text: text.replace(/^rightsize: /, ''), acted: true, rule: run.delegate.dir })
+  }
+  if (run.resized.length && bandMode !== 'off') {
+    const text = resizedText(run.resized)
+    const band = (await $.state.get(BAND).catch(() => undefined))?.value
+    await setBand($, band?.acted ? { ...band, text: `${band.text} ${text}` } : { text, acted: true })
   }
   await showStatus($)
 }
@@ -817,6 +865,7 @@ export const register: Register = (on, options) => {
   if (opts.priceCheck === 'off' || opts.priceCheck === 'check now') priceCheck = opts.priceCheck
   if (isBandMode(opts.band)) bandMode = opts.band
   rules = { handOff: parseShare(opts.handOff, DEFAULT_RULES.handOff), lower: parseShare(opts.lowering, DEFAULT_RULES.lower) }
+  if (opts.subagents === 'off') subagentMode = 'off'
 
   on('config.set', { key: 'rightsize.band' }, async ($, e, next) => {
     const result = await next(e)
@@ -849,6 +898,7 @@ export const register: Register = (on, options) => {
     lastApplied = undefined
     lastContext = 0
     workflowSeen = false
+    resizedLevel.clear()
     await $.command.register({ name: CMD, description: 'Rightsize: status, report, settings, undo or clear' })
     await setBandMode($, bandMode)
     await setBand($, null)
@@ -971,10 +1021,12 @@ export const register: Register = (on, options) => {
 
   on('turn.step', async function* ($, e, next) {
     if (e.agentId !== undefined) {
-      // The hand-off's subagent runs at the level its model needs, whatever Claude asked for.
+      // The hand-off's subagent, and a subagent moved to a cheaper model, run at the
+      // level their model needs, whatever Claude asked for.
       const run = active
       const ours = run?.delegate && run.subAgents.includes(e.agentId) ? run.delegate : undefined
-      const send = ours && e.effort !== undefined ? { ...e, effort: ours.level } : e
+      const level = ours?.level ?? resizedLevel.get(e.agentId)
+      const send = level && e.effort !== undefined ? { ...e, effort: level } : e
       if (run && ours && isLevel(send.effort)) run.subLevel = send.effort
       const out = yield* next(send)
       if (run && out.usage) run.subCost += usageCost(prices, out.usage.model, out.usage)
@@ -1054,12 +1106,18 @@ export const register: Register = (on, options) => {
   }).catch(($, e, next) => next(e))
 
   // The main chat starting the hand-off's subagent: the Agent call names its model.
-  // Remember its id, so its steps run at the hand-off's level.
+  // Remember its id, so its steps run at the hand-off's level. A subagent Claude
+  // starts on its own with no model named goes to the cheapest model that fits.
   on('agent.spawn', async ($, e, next) => {
-    const result = await next(e)
     const run = active ?? pending
+    const size = await sizeSpawn($, e, run).catch(() => undefined)
+    const result = await next(size ? { ...e, model: size.tier } : e)
     const ours = run?.delegate && e.parentAgentId === undefined && !e.fork && tierOf(e.model) === run.delegate.tier
     if (run && ours && result.agentId) run.subAgents.push(result.agentId)
+    if (size && result.agentId && tierOf(result.model) === size.tier) {
+      resizedLevel.set(result.agentId, size.level)
+      run?.resized.push(size)
+    }
     return result
   }).catch(($, e, next) => next(e))
 

@@ -56,6 +56,7 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
     /** Percent each main request adds to every rate-limit window. */
     windowStep: 0,
     ratingUsage: {} as Record<string, number>,
+    spawned: [] as { description: string; model?: string }[],
   }
   on('session.start', async ($, e) => ({ cwd: e.cwd }) as never)
   on('command.register', async () => ({ value: undefined }) as never)
@@ -127,7 +128,10 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
   })
   ;(on as unknown as LooseOn)('tool.call', { tool: 'Agent' }, async () => ({ result: { content: 'done' } }))
   ;(on as unknown as LooseOn)('tool.call', { tool: 'Workflow' }, async () => ({ result: { content: 'started in the background' } }))
-  on('agent.spawn', async ($, e) => ({ model: e.model ?? h.subModel, agentId: `agent-${(e as { description: string }).description}` }) as never)
+  on('agent.spawn', async ($, e) => {
+    h.spawned.push({ description: e.description, model: e.model })
+    return { model: e.model ?? h.subModel, agentId: `agent-${e.description}` } as never
+  })
   on('prompt.submit', async ($, e) => {
     h.submitted.push({ text: e.text, context: e.context })
     return { text: e.text } as never
@@ -158,8 +162,8 @@ const drive = ($: unknown, h: ReturnType<typeof engine>) => {
     agent: (model: string) => e.tool.call({ tool: 'Agent', description: 'x', prompt: 'brief', model }),
     workflow: () => e.tool.call({ tool: 'Workflow', script: 'export const meta = {}' }),
     // The engine starting a subagent from the main chat's Agent call; its steps carry `agent-<description>`.
-    spawn: (description: string, model?: string) =>
-      e.agent.spawn({ prompt: 'brief', description, subagentType: 'general-purpose', provider: { kind: 'core' }, parentModel: h.model, background: false, fork: false, ...(model ? { model } : {}) }),
+    spawn: (description: string, model?: string, over: Record<string, unknown> = {}) =>
+      e.agent.spawn({ prompt: 'brief', description, subagentType: 'general-purpose', provider: { kind: 'core' }, parentModel: h.model, background: false, fork: false, ...(model ? { model } : {}), ...over }),
     configSet: (value: string) => (e as unknown as { config: { set: (x: unknown) => Promise<unknown> } }).config.set({ key: 'rightsize.priceCheck', value }),
     command: (args: string) => e.command.run({ command: 'rightsize', args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } }),
   }
@@ -399,7 +403,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t1', 0)
     await d.agent('haiku')
     await d.spawn('helper', 'haiku')
-    await d.spawn('explore')
+    await d.spawn('explore', 'opus')
     await d.step('t1', 0, 'agent-helper')
     await d.step('t1', 1, 'agent-helper')
     await d.step('t1', 0, 'agent-explore')
@@ -419,6 +423,79 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(line.subLevel).toBe('high')
     expect(line.fit).toEqual({ haiku: 'high', sonnet: 'high', opus: 'high', fable: 'medium' })
     expect((await d.command('')).text ?? '', 'the run count counts the run once').toContain('Calibration: 1 measured run(s).')
+  })
+
+  test(`runs a subagent Claude starts on its own on the cheapest model that fits, at that model's level (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    const d = drive($, h)
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+
+    h.rating = NO_CHANGE
+    await d.submit(SEARCH)
+    await d.step('t1', 0)
+    // The brief is rated: Haiku at low does a file listing.
+    h.rating = '{"fit":{"haiku":"low","sonnet":"low","opus":"low","fable":"low"},"size":"small","type":"search","read":8000,"write":500,"steps":5,"reason":"list call sites"}'
+    await d.spawn('lister')
+    // Left alone: a model named, another type (it may set its own), a fork, a nested spawn, a workflow agent.
+    await d.spawn('named', 'opus')
+    await d.spawn('explorer', undefined, { subagentType: 'Explore' })
+    await d.spawn('forked', undefined, { fork: true })
+    await d.spawn('nested', undefined, { parentAgentId: 'agent-lister' })
+    await d.spawn('wf', undefined, { workflow: { runId: 'wf_1', agentIndex: 1 } })
+    expect(h.spawned.map(x => [x.description, x.model ?? null])).toEqual([
+      ['lister', 'haiku'],
+      ['named', 'opus'],
+      ['explorer', null],
+      ['forked', null],
+      ['nested', null],
+      ['wf', null],
+    ])
+    await d.step('t1', 0, 'agent-lister')
+    await d.step('t1', 1, 'agent-lister')
+    await d.step('t1', 0, 'agent-named')
+    await d.step('t1', 1)
+    await d.complete('t1')
+    const sent = h.sent.filter(s => s.turnId === 't1')
+    expect(sent.filter(s => s.agentId === 'agent-lister').map(s => s.effort), 'the moved subagent runs at Haiku\'s level').toEqual(['low', 'low'])
+    expect(sent.find(s => s.agentId === 'agent-named')?.effort, 'a subagent left alone keeps its level').toBe('medium')
+    expect(await bandText($, surface)).toBe("rightsize: Ran Claude's subagent on Haiku (low) instead of Opus.")
+    const runs = (h.files['/home/test/.claude/mods-logs/rightsize-runs.jsonl'] ?? '').trim().split('\n')
+    const line = JSON.parse(last(runs) ?? '{}') as { route?: string; resized?: unknown }
+    expect(line.route, 'not a hand-off').toBe('main')
+    expect(line.resized).toEqual([{ from: 'opus', tier: 'haiku', level: 'low', type: 'search' }])
+
+    // A later turn's step of the same subagent (a background one) still runs at its level.
+    await d.submit(LOOKUP)
+    await d.step('t2', 0)
+    await d.step('t2', 0, 'agent-lister')
+    expect(last(h.sent)?.effort).toBe('low')
+  })
+
+  test(`keeps Claude's subagent on its model when no cheaper one fits (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    const d = drive($, h)
+    await d.start(surface)
+    h.rating = NO_CHANGE
+    await d.submit(DEBUG)
+    await d.step('t1', 0)
+    h.rating = '{"fit":{"haiku":"no","sonnet":"no","opus":"high","fable":"medium"},"size":"small","type":"debug","read":8000,"write":500,"steps":5,"reason":"subtle race"}'
+    await d.spawn('debugger')
+    await d.step('t1', 0, 'agent-debugger')
+    expect(h.spawned[0]?.model, 'never a stronger model either').toBeUndefined()
+    expect(last(h.sent)?.effort).toBe('medium')
+  })
+
+  test(`leaves Claude's subagents alone when "Claude's subagents" is off in /config (${surface})`, { timeoutMs: 30000, options: { subagents: 'off' } }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    const d = drive($, h)
+    await d.start(surface)
+    h.rating = '{"fit":{"haiku":"low","sonnet":"low","opus":"low","fable":"low"},"size":"small","type":"search","read":8000,"write":500,"steps":5,"reason":"list"}'
+    const before = h.ratings
+    await d.spawn('lister')
+    expect(h.spawned[0]?.model).toBeUndefined()
+    expect(h.ratings, 'no rating call either').toBe(before)
   })
 
   test(`a workflow pauses hand-offs and learning for the session, and the report lists it (${surface})`, { timeoutMs: 30000 }, async ($, on) => {

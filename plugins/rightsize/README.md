@@ -43,6 +43,7 @@ A one-row band above the prompt (CLI and desktop app) shows what the mod did, wi
   - **Lowest effort** (low, medium or high) sets how far it will lower.
   - **Reports** (api or subscription) sets whether reports show dollars or a share of usage. The mod reads this off each response's rate limits (a subscription shows five-hour and seven-day windows) and asks once only when they show nothing. Setting it here counts as your answer.
   - **Hand-off threshold** (50% to 90%, default 70%) and **Lowering threshold** (70% to 95%, default 90%): how much cheaper a subagent or a lower effort level must be before the mod uses it. Lower is stricter.
+  - **Claude's subagents** (cheaper when it fits or off): whether a general-purpose subagent Claude starts without naming a model runs on the cheapest weaker model that fits, at that model's level.
   - **Band** (when it acts, always or off): when the band above the prompt shows. "when it acts", the default, shows it only when the mod changes something.
   - **Price check** (monthly, check now or off): how often `prices.json` is compared with Anthropic's pricing page.
 - `prices.json` holds the price table, in dollars per 1M tokens.
@@ -53,7 +54,7 @@ A one-row band above the prompt (CLI and desktop app) shows what the mod did, wi
 ## Limits
 
 - The app's effort picker does not move. The status line shows the level in use.
-- Subagents keep their own model and effort unless the mod hands them work.
+- Subagents keep their own model and effort unless the mod hands them work, or Claude started them as general-purpose without naming a model. Those the mod may move to a cheaper model.
 - The rating is an estimate from Haiku. Calibration corrects the cost guesses, but it can't correct a wrong choice of model.
 
 ## Logs

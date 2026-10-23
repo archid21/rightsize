@@ -46,16 +46,54 @@ Not every prompt needs your strongest model thinking its hardest. "Rename this v
 
 ## Install
 
-You need Claude Code 2.1.287 or newer in the terminal, or 2.1.286 or newer in the desktop app (`claude --version`).
+You need Claude Code 2.1.287 or newer in the terminal, or 2.1.286 or newer in the desktop app. Installing takes about 2 minutes.
 
-In Claude Code, run:
+### Install it yourself
+
+1. Open a terminal (on a Mac, the Terminal app).
+2. Check your Claude Code version:
+
+   ```bash
+   claude --version
+   ```
+
+   If the number is lower than 2.1.287, update Claude Code first:
+
+   ```bash
+   claude update
+   ```
+
+3. Add the rightsize marketplace, so Claude Code knows where to find it:
+
+   ```bash
+   claude plugin marketplace add archid21/rightsize
+   ```
+
+   It should end with `Successfully added marketplace: archid21`.
+4. Install rightsize for all your projects:
+
+   ```bash
+   claude plugin install rightsize@archid21 --scope user
+   ```
+
+   It should end with `Successfully installed plugin: rightsize@archid21 (scope: user)`. A note that some options are not set yet is normal: every option has a default.
+5. Start a new Claude Code session (type `claude`, or open a new session in the desktop app). Sessions that were already open don't load it.
+6. Type `/rightsize` and press Enter. If it shows its status, it works.
+
+Already inside Claude Code? You can type `/plugin marketplace add archid21/rightsize` and then `/plugin install rightsize@archid21` instead of steps 3 and 4. When it asks where to install, pick the user scope.
+
+### Ask Claude to install it
+
+Paste this into any Claude Code session:
 
 ```
-/plugin marketplace add archid21/rightsize
-/plugin install rightsize@archid21
+Install the rightsize plugin from GitHub for me. Run these two commands in the terminal:
+1. claude plugin marketplace add archid21/rightsize
+2. claude plugin install rightsize@archid21 --scope user
+Tell me if either one fails and why. When both succeed, tell me to start a new session and type /rightsize to check that it works.
 ```
 
-Pick the user scope so it loads in every session, then start a new session.
+Claude asks your permission before it runs each command. When it is done, start a new session and type `/rightsize`.
 
 ## The four questions
 

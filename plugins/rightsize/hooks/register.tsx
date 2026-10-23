@@ -22,6 +22,7 @@ import {
   calKey,
   contextOf,
   delegateCost,
+  delegateKeys,
   effortPlan,
   isLevel,
   levelRank,
@@ -46,12 +47,13 @@ import { parseRating, ratingPrompt, ratingSystem } from './rate'
 import { type Change, type RunLine, type SwitchLine, type Windows, buildReport, parseLines } from './report'
 
 // Before a prompt is sent, a quick Haiku call rates the effort, the model and
-// the size of the work, and the cost model prices each route. The first time
+// the work needs on each model, and the cost model prices each route that fits. The first time
 // each situation comes up in a session the person picks how to handle it
 // (Q1 lowering, Q2 raising, Q3 a stronger model, Q4 a cheaper model), then the
 // mod follows that answer. Effort changes rewrite each main-thread request
 // (turn.step); a model change hands the work to a subagent through a hidden
-// note beside the prompt (prompt.submit context). After each rated turn the
+// note beside the prompt (prompt.submit context), and that subagent's requests
+// run at the level its model needs (turn.step). After each rated turn the
 // real cost is read off the session's cost ledger (/cost) and fed back into the
 // estimates. Billing (API or subscription) is read off the rate limits each
 // response carries; the person is asked only when they say nothing. A band
@@ -105,7 +107,7 @@ const qUp = (cur: string, to: string): Question<Route> => ({
 })
 const qDown = (cur: string, to: string): Question<Route> => ({
   header: 'Cheaper',
-  question: `When a big task could run on a cheaper model than ${cur} (such as ${to}), what should I do?`,
+  question: `When a task could run on a cheaper model than ${cur} (such as ${to}), what should I do?`,
   options: [
     ['Send it to a cheaper subagent (Recommended)', 'auto'],
     ['Ask before sending it', 'ask'],
@@ -151,6 +153,10 @@ type Run = {
   /** Lowered without asking: steps back up when the turn gets hard. */
   auto: boolean
   delegate?: { tier: Tier; level: Level; dir: 'up' | 'down' }
+  /** The hand-off's subagents, by the id their steps carry. */
+  subAgents: string[]
+  /** The effort the hand-off's subagent really ran at, as sent. */
+  subLevel?: Level
   /** Uncalibrated estimates of the route taken, for calibration. */
   rawMain: number
   rawDelegate?: number
@@ -460,7 +466,7 @@ async function rate($: EngineInterface, text: string, s: Situation): Promise<{ r
     model: RATER,
     system: ratingSystem(s.tier, s.level),
     prompt: ratingPrompt(text, lastReply),
-    maxTokens: 200,
+    maxTokens: 300,
     effort: 'low',
     timeoutMs: 10_000,
   })
@@ -470,7 +476,7 @@ async function rate($: EngineInterface, text: string, s: Situation): Promise<{ r
     await log($, `rating failed: ${r.reason}`)
     return { overhead }
   }
-  const rating = parseRating(r.text)
+  const rating = parseRating(r.text, s.tier)
   if (!rating) await log($, `rating unreadable: ${JSON.stringify(r.text.slice(0, 80))}`)
   return { rating, overhead }
 }
@@ -515,7 +521,7 @@ async function resolve($: EngineInterface, p: Plan, r: Rating, s: Situation): Pr
   if (c === 'stay') return stay()
   if (c !== 'ask' && c !== 'each') return {}
   const why = r.reason ? ` (${r.reason})` : ''
-  const lead = p.dir === 'up' ? `This needs a stronger model${why}.` : `This big task could run on ${to}${why}.`
+  const lead = p.dir === 'up' ? `This needs a stronger model${why}.` : `${to} at ${p.level} effort could do this${why}${p.instead ? `, where ${cur} needs ${p.instead}` : ''}.`
   const question = `${lead} Send it to a ${to} subagent? ${costLine(p.delegateCost, p.mainCost, cur)}`
   if (c === 'ask') {
     const a = await pick($, { header: 'Subagent', question, options: [[`Send it to a ${to} subagent`, 'send'], [`Stay on ${cur}`, 'stay']] })
@@ -579,6 +585,7 @@ function startRun(r: Rating, s: Situation, d: Decision, p: Plan, base: Level, ov
     takenDelegate: d.delegate ? delegateCost(r, s, d.delegate.tier, d.delegate.level) : undefined,
     overhead,
     agentCalls: 0,
+    subAgents: [],
     mainCost: 0,
     subCost: 0,
     missCost: 0,
@@ -629,8 +636,9 @@ const RULES: Record<keyof Choices, readonly (readonly [string, string])[]> = {
 export function bandFor(run: Pick<Run, 'tier' | 'normal' | 'auto' | 'delegate' | 'stay' | 'takenDelegate'>, d: Decision, p: Plan): Band {
   const cur = TIER_NAME[run.tier]
   if (run.delegate) {
-    const to = TIER_NAME[run.delegate.tier]
-    return { text: `Sending this to a ${to} subagent. ${costLine(run.takenDelegate ?? 0, run.stay, cur)}`, acted: true, rule: run.delegate.dir }
+    const to = `${TIER_NAME[run.delegate.tier]} subagent at ${run.delegate.level} effort`
+    const instead = p.kind === 'delegate' && p.instead && levelRank(p.instead) > levelRank(run.normal) ? ` instead of raising ${cur} to ${p.instead}` : ''
+    return { text: `Sending this to a ${to}${instead}. ${costLine(run.takenDelegate ?? 0, run.stay, cur)}`, acted: true, rule: run.delegate.dir }
   }
   const level = d.level ?? d.session
   if (level) {
@@ -645,7 +653,7 @@ export function bandFor(run: Pick<Run, 'tier' | 'normal' | 'auto' | 'delegate' |
     }
   }
   if (p.kind === 'none') return { text: `No change: ${run.normal} on ${cur} fits this prompt.`, acted: false }
-  const what = p.kind === 'effort' ? `${p.level} effort` : `a ${TIER_NAME[p.tier]} subagent`
+  const what = p.kind === 'effort' ? `${p.level} effort` : `a ${TIER_NAME[p.tier]} subagent at ${p.level}`
   const rule = p.kind === 'effort' ? (p.dir === 'lower' ? 'lower' : 'raise') : p.dir
   return { text: `No change: ${what} would fit, kept ${run.normal} on ${cur}.`, acted: false, rule }
 }
@@ -711,7 +719,10 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
   const ledger = end === undefined || run.ledgerStart === undefined ? 0 : end - run.ledgerStart
   const actual = ledger > 0 ? ledger : tokens
   if (!aborted && actual > 0) {
-    if (delegated && run.rawDelegate) teach(calKey(r.type, 'delegate'), ratioSample(actual, run.rawDelegate))
+    if (delegated && run.delegate && run.rawDelegate) {
+      const sample = ratioSample(actual, run.rawDelegate)
+      for (const key of delegateKeys(r.type, run.delegate.tier, run.delegate.level)) teach(key, sample)
+    }
     // A turn that stepped back up ran partly at the normal level, so its cost says
     // nothing about the lowered estimate: it teaches nothing.
     else if (!run.delegate && !run.steppedUp) teach(calKey(r.type, 'main'), ratioSample(Math.max(0, actual - run.missCost), run.rawMain))
@@ -727,6 +738,8 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
       route: delegated ? `delegate:${run.delegate?.tier}` : 'main',
       tier: run.tier,
       level: run.steppedUp ? run.normal : (run.level ?? run.normal),
+      fit: r.fit,
+      ...(delegated ? { subLevel: run.subLevel ?? null } : {}),
       auto: run.auto,
       steppedUp: run.steppedUp,
       estimate: Number((delegated ? (run.rawDelegate ?? 0) : run.rawMain).toFixed(5)),
@@ -762,7 +775,8 @@ async function summary($: EngineInterface) {
   const c = await choices($)
   const said = (v: string | undefined) => v ?? 'not asked yet'
   const session = await sessionEffort($)
-  const runs = Object.entries(cal).filter(([k]) => k !== SWITCH_KEY).reduce((n, [, e]) => n + e.n, 0)
+  // One run teaches its type:route key and, for a hand-off, finer keys too: count the first only.
+  const runs = Object.entries(cal).filter(([k]) => k !== SWITCH_KEY && k.split(':').length === 2).reduce((n, [, e]) => n + e.n, 0)
   const sw = cal[SWITCH_KEY]
   return [
     `Rightsize is ${off ? 'off (turn it on with /mods)' : 'on'}. Lowest level: ${floor}. Band: ${bandMode}. Billing: ${billingBy ? `${billing} (${billingBy === 'answered' ? 'your answer' : billingBy})` : 'not known yet'}.`,
@@ -916,7 +930,8 @@ export const register: Register = (on, options) => {
         run = startRun(r, s, d, p, (await seenEffort($)) ?? s.level, overhead)
         await setBand($, bandFor(run, d, p))
         const did = d.delegate ? `delegate ${d.delegate.tier}` : d.level ? `${d.auto ? 'auto ' : ''}${d.level} for the prompt` : d.session ? `${d.session} for the session` : 'no change'
-        await log($, `${r.type} on ${s.tier}/${s.level}: rated ${r.level}/${r.model}/${r.size}, plan ${p.kind}${'dir' in p ? ` ${p.dir}` : ''}: ${did}`)
+        const fit = TIERS.map(t => `${t[0]}:${r.fit[t] ?? (r.fit[t] === null ? 'no' : '?')}`).join(' ')
+        await log($, `${r.type} on ${s.tier}/${s.level}: rated ${fit} ${r.size}, plan ${p.kind}${'dir' in p ? ` ${p.dir}` : ''}: ${did}`)
       } else if (overhead > 0) {
         // A rating that came to nothing still cost something: the report counts it.
         const line: RunLine = { at: new Date().toISOString(), kind: 'overhead', session: sessionId, overhead: round(overhead) }
@@ -933,8 +948,13 @@ export const register: Register = (on, options) => {
 
   on('turn.step', async function* ($, e, next) {
     if (e.agentId !== undefined) {
-      const out = yield* next(e)
-      if (active && out.usage) active.subCost += usageCost(prices, out.usage.model, out.usage)
+      // The hand-off's subagent runs at the level its model needs, whatever Claude asked for.
+      const run = active
+      const ours = run?.delegate && run.subAgents.includes(e.agentId) ? run.delegate : undefined
+      const send = ours && e.effort !== undefined ? { ...e, effort: ours.level } : e
+      if (run && ours && isLevel(send.effort)) run.subLevel = send.effort
+      const out = yield* next(send)
+      if (run && out.usage) run.subCost += usageCost(prices, out.usage.model, out.usage)
       return out
     }
     if (pending && active?.turnId !== e.turnId) {
@@ -1002,6 +1022,16 @@ export const register: Register = (on, options) => {
       if (String(e.tool) === 'Agent' || String(e.tool) === 'SendMessage') active.agentCalls += 1
       if ((result as { isError?: boolean }).isError) active.errors += 1
     }
+    return result
+  }).catch(($, e, next) => next(e))
+
+  // The main chat starting the hand-off's subagent: the Agent call names its model.
+  // Remember its id, so its steps run at the hand-off's level.
+  on('agent.spawn', async ($, e, next) => {
+    const result = await next(e)
+    const run = active ?? pending
+    const ours = run?.delegate && e.parentAgentId === undefined && !e.fork && tierOf(e.model) === run.delegate.tier
+    if (run && ours && result.agentId) run.subAgents.push(result.agentId)
     return result
   }).catch(($, e, next) => next(e))
 

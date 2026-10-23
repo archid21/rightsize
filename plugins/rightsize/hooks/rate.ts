@@ -1,5 +1,5 @@
 import type { RightsizeLevel as Level, RightsizeTier as Tier } from '../types'
-import { TIER_NAME, isLevel, isTaskType, isTier, type Rating } from './cost'
+import { TIERS, TIER_NAME, type Fit, isLevel, isTaskType, isTier, levelRank, needOn, tierRank, type Rating } from './cost'
 
 // The rating: one cheap Haiku call that reads the prompt (and the last reply,
 // so "yes, go ahead" is rated as the task it continues) and returns JSON.
@@ -7,16 +7,16 @@ import { TIER_NAME, isLevel, isTaskType, isTier, type Rating } from './cost'
 export const ratingSystem = (tier: Tier, level: Level) => `You route one request for an AI coding assistant (Claude Code). It now runs on ${TIER_NAME[tier]} at ${level} effort. Models from weakest to strongest: haiku, sonnet, opus, fable.
 
 Return JSON only, no prose, no code fences:
-{"level":"<low|medium|high|xhigh|max>","model":"<same|haiku|sonnet|opus|fable>","size":"<small|bulky>","type":"<type>","read":<tokens>,"write":<tokens>,"steps":<number>,"reason":"<at most 8 words>"}
+{"fit":{"haiku":"<level|no>","sonnet":"<level|no>","opus":"<level|no>","fable":"<level|no>"},"size":"<small|bulky>","type":"<type>","read":<tokens>,"write":<tokens>,"steps":<number>,"reason":"<at most 8 words>"}
 
-level, the reasoning effort the work needs:
+fit, for each model: the lowest reasoning effort at which that model would do this work well, or "no" when it would likely struggle at any effort. A weaker model needs the same or a higher level than a stronger one for the same work. The levels:
 - low: quick lookups, one-line answers, renames, typo fixes, running one known command, simple questions.
 - medium: ordinary single-file edits, short explanations, small scripts, routine tasks with a clear path.
 - high: multi-file changes, debugging with an unknown cause, design choices with trade-offs, tests for real logic, careful reviews.
 - xhigh: large refactors, tricky concurrency or security work, hard algorithms, long multi-step plans.
 - max: the hardest problems only, where a wrong answer is costly and deep reasoning clearly pays off.
 
-model: "same" unless you are sure. Name a stronger model only when the current one is likely to struggle (hard reasoning, subtle bugs, high-stakes design). Name a cheaper model only for routine or mechanical work: haiku for finding, listing, copying the same edit, pulling out data, formatting; sonnet for routine coding and writing that needs some judgement. When unsure between haiku and sonnet, pick sonnet.
+A stronger model fits whatever a weaker one fits. Say "no" for the current model only when it is likely to struggle (hard reasoning, subtle bugs, high-stakes design). A cheaper model fits routine or mechanical work: haiku for finding, listing, copying the same edit, pulling out data, formatting; sonnet for routine coding and writing that needs some judgement. When unsure whether a cheaper model fits, say "no" for it.
 
 size: "bulky" when the work reads or writes a lot compared with a short brief and report (searching a large codebase, the same edit across many files, summarising long logs or documents, sorting test output, pulling data from many files); otherwise "small".
 
@@ -33,8 +33,41 @@ export function ratingPrompt(text: string, lastReply: string) {
 const count = (v: unknown, fallback: number, max: number) =>
   typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.min(max, Math.round(v)) : fallback
 
-// Reads the rating's reply. Undefined when it holds no valid level.
-export function parseRating(raw: string): Rating | undefined {
+const lower = (v: unknown) => (typeof v === 'string' ? v.trim().toLowerCase() : '')
+
+// Each model's level, or null where it would struggle. A stronger model fits at no
+// higher a level than a weaker one that fits, so the rater's gaps and slips are
+// filled from the models below. The older {level, model} reply still reads: the
+// level for the named model (or the current one), "no" for the current one when a
+// stronger model was named.
+function readFit(json: Record<string, unknown>, tier: Tier): Fit | undefined {
+  const fit: Fit = {}
+  const given = json.fit && typeof json.fit === 'object' ? (json.fit as Record<string, unknown>) : undefined
+  if (given) {
+    for (const t of TIERS) {
+      const v = lower(given[t])
+      if (isLevel(v)) fit[t] = v
+      else if (v === 'no') fit[t] = null
+    }
+  } else {
+    const level = lower(json.level)
+    const model = lower(json.model)
+    if (!isLevel(level)) return undefined
+    const named = isTier(model) ? model : tier
+    fit[named] = level
+    if (named !== tier) fit[tier] = tierRank(named) > tierRank(tier) ? null : level
+  }
+  let below: Level | undefined
+  for (const t of TIERS) {
+    const v = fit[t]
+    if (below && (!v || levelRank(v) > levelRank(below))) fit[t] = below
+    below = fit[t] ?? below
+  }
+  return TIERS.some(t => fit[t]) ? fit : undefined
+}
+
+// Reads the rating's reply for a session on `tier`. Undefined when no model fits at any level.
+export function parseRating(raw: string, tier: Tier): Rating | undefined {
   const a = raw.indexOf('{')
   const b = raw.lastIndexOf('}')
   if (a < 0 || b <= a) return undefined
@@ -44,14 +77,12 @@ export function parseRating(raw: string): Rating | undefined {
   } catch {
     return undefined
   }
-  const lower = (v: unknown) => (typeof v === 'string' ? v.trim().toLowerCase() : '')
-  const level = lower(json.level)
-  if (!isLevel(level)) return undefined
-  const model = lower(json.model)
+  const fit = readFit(json, tier)
+  if (!fit) return undefined
   const type = lower(json.type)
   return {
-    level,
-    model: isTier(model) ? model : 'same',
+    level: needOn(fit, tier),
+    fit,
     size: lower(json.size) === 'bulky' ? 'bulky' : 'small',
     type: isTaskType(type) ? type : 'other',
     read: count(json.read, 2000, 2_000_000),

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Model and effort together.** The rating gives each model's own level (or says it would struggle), and the cost model prices every model at its level. On Opus at medium, work Opus needs high for can go to Haiku at high instead of raising Opus. Of the cheaper models that fit, the cheapest route wins; the comparison counts the switch a raise would cost. Hand-downs no longer need the work rated "bulky": the cost decides. The older one-level rating still reads.
+- The hand-off's subagent runs at the level its model needs: rightsize sets its effort on each of its requests, instead of relying on the note. Other subagents keep their own level.
+- Hand-off calibration is kept per task type, per model and per model at each level; each finer key starts from the one above it.
+- `rightsize-runs.jsonl` lines carry each model's rated level (`fit`) and a hand-off's real subagent level (`subLevel`).
 - **Hand-off threshold** (default 70%) and **Lowering threshold** (default 90%) in `/config`: how much cheaper a subagent or a lower effort level must be before rightsize uses it. `/rightsize` shows the values in use.
 - Calibration from sessions running at the same time is merged, not overwritten: each save adds its new runs to the stored record.
 - A lowered turn that stepped back up no longer counts toward calibration, since part of it ran at the normal level.

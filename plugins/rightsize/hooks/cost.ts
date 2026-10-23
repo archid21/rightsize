@@ -106,9 +106,13 @@ export function usageCost(prices: Prices, model: string, u: Usage) {
 
 // ---- Rating ----------------------------------------------------------------
 
+/** Per model, the lowest level it does the work well at; null where it would struggle, absent where unknown. */
+export type Fit = Partial<Record<Tier, Level | null>>
+
 export type Rating = {
+  /** The level the work needs on the session's model (see needOn). */
   level: Level
-  model: 'same' | Tier
+  fit: Fit
   size: 'small' | 'bulky'
   type: TaskType
   /** Tokens of files, logs and tool output the work reads. */
@@ -120,6 +124,15 @@ export type Rating = {
   reason: string
 }
 
+/** The level `tier` needs; where it would struggle, the level of the nearest stronger model that fits, else max. */
+export function needOn(fit: Fit, tier: Tier): Level {
+  const own = fit[tier]
+  if (own) return own
+  return TIERS.filter(t => tierRank(t) > tierRank(tier))
+    .map(t => fit[t])
+    .find(isLevel) ?? 'max'
+}
+
 // ---- Calibration -----------------------------------------------------------
 
 /** Per key, how many runs were seen and the mean of actual / estimated. */
@@ -129,6 +142,8 @@ export const CAL_FULL = 20
 /** Key for the share of effort switches that cost a cache miss (prior: all of them). */
 export const SWITCH_KEY = 'cache:effort-switch'
 export const calKey = (type: TaskType, route: 'main' | 'delegate') => `${type}:${route}`
+/** A hand-off's keys, from the most general to the most specific: the task type, then the model, then the model at its level. */
+export const delegateKeys = (type: TaskType, tier: Tier, level: Level) => [calKey(type, 'delegate'), `${type}:delegate:${tier}`, `${type}:delegate:${tier}:${level}`]
 
 export function parseCalibration(v: unknown): Calibration {
   const out: Calibration = {}
@@ -224,8 +239,13 @@ export function rawDelegateCost(r: Rating, s: Situation, sub: Tier, subLevel: Le
   return (main + work) * reworkFactor(s.tier, sub)
 }
 
+// Each key's measured ratio stands on the one before it as its prior, so a model
+// and level with few runs leans on what the task type as a whole has shown.
+export const delegateFactor = (cal: Calibration, type: TaskType, sub: Tier, subLevel: Level) =>
+  delegateKeys(type, sub, subLevel).reduce((prior, key) => factor(cal, key, prior), 1)
+
 export function delegateCost(r: Rating, s: Situation, sub: Tier, subLevel: Level) {
-  return rawDelegateCost(r, s, sub, subLevel) * factor(s.cal, calKey(r.type, 'delegate'))
+  return rawDelegateCost(r, s, sub, subLevel) * delegateFactor(s.cal, r.type, sub, subLevel)
 }
 
 // ---- Plans -----------------------------------------------------------------
@@ -233,7 +253,17 @@ export function delegateCost(r: Rating, s: Situation, sub: Tier, subLevel: Level
 export type Plan =
   | { kind: 'none'; why: string }
   | { kind: 'effort'; dir: 'lower' | 'raise'; level: Level; saving?: number }
-  | { kind: 'delegate'; dir: 'up' | 'down'; tier: Tier; level: Level; delegateCost: number; mainCost: number }
+  | {
+      kind: 'delegate'
+      dir: 'up' | 'down'
+      tier: Tier
+      level: Level
+      delegateCost: number
+      /** Staying on the session's model: at the level it needs when that is higher, else the cheaper of now and that level. */
+      mainCost: number
+      /** The level the session's model would need; absent when it would struggle. */
+      instead?: Level
+    }
 
 /** Hand work down only when the subagent route costs under this share of staying. */
 export const SAVING_RULE = 0.7
@@ -265,17 +295,31 @@ export function effortPlan(r: Rating, s: Situation, floor: Level): Plan {
   return { kind: 'effort', dir: 'lower', level: target, saving: now - lowered }
 }
 
+// Every model that fits is a route: the session's model at its level in the main
+// chat, each other model at its own level as a subagent. When the session's model
+// would struggle, the cheapest stronger route that fits. Otherwise the cheapest
+// cheaper route, when it costs under the hand-off share of staying at the level
+// the work needs (a raise counted with its switch there and back); else an effort change.
 export function plan(r: Rating, s: Situation, floor: Level): Plan {
-  const level = clampFloor(r.level, floor)
-  const want = r.model === 'same' ? s.tier : r.model
   const stay = mainCost(r, s, s.level, 0)
-  if (tierRank(want) > tierRank(s.tier)) {
-    return { kind: 'delegate', dir: 'up', tier: want, level, delegateCost: delegateCost(r, s, want, level), mainCost: stay }
+  const routes = TIERS.flatMap(t => {
+    const need = r.fit[t]
+    if (t === s.tier || !need) return []
+    const level = clampFloor(need, floor)
+    return [{ tier: t, level, cost: delegateCost(r, s, t, level) }]
+  }).sort((a, b) => a.cost - b.cost)
+  const own = r.fit[s.tier]
+  if (!own) {
+    const up = routes.find(x => tierRank(x.tier) > tierRank(s.tier))
+    if (up) return { kind: 'delegate', dir: 'up', tier: up.tier, level: up.level, delegateCost: up.cost, mainCost: stay }
+    return effortPlan(r, s, floor)
   }
-  if (tierRank(want) < tierRank(s.tier) && r.size === 'bulky') {
-    const lowered = levelRank(level) < levelRank(s.level) ? mainCost(r, s, level, 2) : Infinity
-    const d = delegateCost(r, s, want, level)
-    if (d < (s.rules ?? DEFAULT_RULES).handOff * Math.min(stay, lowered)) return { kind: 'delegate', dir: 'down', tier: want, level, delegateCost: d, mainCost: stay }
+  const level = clampFloor(own, floor)
+  const atNeed = mainCost(r, s, level, level === s.level ? 0 : 2)
+  const alt = levelRank(level) > levelRank(s.level) ? atNeed : Math.min(stay, atNeed)
+  const down = routes.find(x => tierRank(x.tier) < tierRank(s.tier))
+  if (down && down.cost < (s.rules ?? DEFAULT_RULES).handOff * alt) {
+    return { kind: 'delegate', dir: 'down', tier: down.tier, level: down.level, delegateCost: down.cost, mainCost: alt, instead: level }
   }
   return effortPlan(r, s, floor)
 }

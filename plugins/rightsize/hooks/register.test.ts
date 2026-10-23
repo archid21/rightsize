@@ -11,6 +11,7 @@ type Engine = {
   prompt: { submit: (x: unknown) => Promise<unknown> }
   turn: { step: (x: unknown) => unknown; complete: (x: unknown) => Promise<unknown> }
   tool: { call: (x: unknown) => Promise<unknown> }
+  agent: { spawn: (x: unknown) => Promise<unknown> }
   command: { run: (x: unknown) => Promise<Run> }
 }
 
@@ -125,6 +126,7 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
     return { result: { questions: e.questions, answers: { [q?.question ?? '']: answer } } }
   })
   ;(on as unknown as LooseOn)('tool.call', { tool: 'Agent' }, async () => ({ result: { content: 'done' } }))
+  on('agent.spawn', async ($, e) => ({ model: e.model ?? h.subModel, agentId: `agent-${(e as { description: string }).description}` }) as never)
   on('prompt.submit', async ($, e) => {
     h.submitted.push({ text: e.text, context: e.context })
     return { text: e.text } as never
@@ -153,6 +155,9 @@ const drive = ($: unknown, h: ReturnType<typeof engine>) => {
     },
     complete: (turnId: string) => e.turn.complete({ turnId, answer: '', durationMs: 1, isAborted: false, reason: 'answer' }),
     agent: (model: string) => e.tool.call({ tool: 'Agent', description: 'x', prompt: 'brief', model }),
+    // The engine starting a subagent from the main chat's Agent call; its steps carry `agent-<description>`.
+    spawn: (description: string, model?: string) =>
+      e.agent.spawn({ prompt: 'brief', description, subagentType: 'general-purpose', provider: { kind: 'core' }, parentModel: h.model, background: false, fork: false, ...(model ? { model } : {}) }),
     configSet: (value: string) => (e as unknown as { config: { set: (x: unknown) => Promise<unknown> } }).config.set({ key: 'rightsize.priceCheck', value }),
     command: (args: string) => e.command.run({ command: 'rightsize', args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } }),
   }
@@ -349,6 +354,47 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t2', 1)
     await d.complete('t2')
     expect(await bandText($, surface)).toMatch(/^rightsize: Sent to Haiku: .* on Fable \(estimated\), saved about \d+%\.$/)
+  })
+
+  test(`on Opus at medium, hands work Haiku can do at high to Haiku at high, and runs it there (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    const d = drive($, h)
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+
+    h.rating = '{"fit":{"haiku":"high","sonnet":"high","opus":"high","fable":"medium"},"size":"small","type":"feature","read":20000,"write":2000,"steps":6,"reason":"small helper with tests"}'
+    h.answers = { Cheaper: 'Send it to a cheaper subagent (Recommended)', Remember: 'Just this session' }
+    await d.submit(DEBUG)
+    expect(h.asked.map(a => a.header), 'Q4, not Q2: a cheaper model, not more effort').toEqual(['Cheaper', 'Remember'])
+    const note = last(h.submitted)?.context?.join('\n') ?? ''
+    expect(note).toContain('model "haiku", effort "high"')
+    expect(await bandText($, surface)).toMatch(/^rightsize: Sending this to a Haiku subagent at high effort instead of raising Opus to high\. About \$[\d.]+ that way vs \$[\d.]+ on Opus/)
+
+    h.subModel = 'claude-haiku-5-5'
+    await d.step('t1', 0)
+    await d.agent('haiku')
+    await d.spawn('helper', 'haiku')
+    await d.spawn('explore')
+    await d.step('t1', 0, 'agent-helper')
+    await d.step('t1', 1, 'agent-helper')
+    await d.step('t1', 0, 'agent-explore')
+    await d.step('t1', 1)
+    await d.complete('t1')
+    const sent = h.sent.filter(s => s.turnId === 't1')
+    expect(sent.filter(s => s.agentId === 'agent-helper').map(s => s.effort), "the hand-off's subagent runs at high").toEqual(['high', 'high'])
+    expect(sent.find(s => s.agentId === 'agent-explore')?.effort, 'another subagent keeps its own level').toBe('medium')
+    expect(sent.filter(s => !s.agentId).every(s => s.effort === 'medium'), 'the main chat stays at medium').toBe(true)
+
+    // It learns for the task type, for Haiku, and for Haiku at high.
+    const cal = h.store.calibration as Record<string, { n: number }>
+    expect(['feature:delegate', 'feature:delegate:haiku', 'feature:delegate:haiku:high'].map(k => cal[k]?.n)).toEqual([1, 1, 1])
+    const runs = (h.files['/home/test/.claude/mods-logs/rightsize-runs.jsonl'] ?? '').trim().split('\n')
+    const line = JSON.parse(last(runs) ?? '{}') as { route?: string; subLevel?: string; fit?: unknown }
+    expect(line.route).toBe('delegate:haiku')
+    expect(line.subLevel).toBe('high')
+    expect(line.fit).toEqual({ haiku: 'high', sonnet: 'high', opus: 'high', fable: 'medium' })
+    expect((await d.command('')).text ?? '', 'the run count counts the run once').toContain('Calibration: 1 measured run(s).')
   })
 
   test(`the band shows a change, and its buttons change the rule and undo it (${surface})`, { timeoutMs: 30000 }, async ($, on) => {

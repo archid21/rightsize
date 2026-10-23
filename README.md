@@ -5,11 +5,10 @@
 Created by [Archi Dubey](https://github.com/archid21). MIT license.
 
 Before a prompt is sent, rightsize makes one cheap Haiku call to rate it:
-- the reasoning effort it needs (`low` to `max`)
-- whether a stronger or cheaper model would do better
-- how big the work is
+- for each model (Haiku, Sonnet, Opus, Fable), the lowest reasoning effort (`low` to `max`) at which it would do the work well, or that it would struggle
+- how much the work reads, writes and how many steps it takes
 
-A cost model then prices each route, using Anthropic's current prices. rightsize does what you chose the first time each case came up: it lowers or raises effort, or hands the work to a subagent on another model and has the main chat check the result.
+A cost model then prices each model at its own level, using Anthropic's current prices, and picks the cheapest route that fits. That can change the model and the effort together: on Opus at medium, work that Opus needs high for may go to Haiku at high instead. rightsize does what you chose the first time each case came up: it lowers or raises effort, or hands the work to a subagent on another model, at that model's level, and has the main chat check the result.
 
 ## Install
 
@@ -33,7 +32,7 @@ Each question is asked once, the first time its case comes up:
 | **Q1** A prompt needs less effort | Lower automatically · Ask me each time · Never lower |
 | **Q2** It needs more effort on the same model | Raise automatically · Ask me each time · Never raise |
 | **Q3** A stronger model would do better | Ask before sending it to a subagent · Send it automatically · Stay on this model, raise effort only · Ask me each time |
-| **Q4** A big task could run on a cheaper model | Send it to a cheaper subagent · Ask before sending it · Stay on this model, lower effort only · Ask me each time |
+| **Q4** A task could run on a cheaper model | Send it to a cheaper subagent · Ask before sending it · Stay on this model, lower effort only · Ask me each time |
 
 After your first answer, rightsize asks whether to use your choices in every session.
 
@@ -47,8 +46,9 @@ After your first answer, rightsize asks whether to use your choices in every ses
   4. tell you how it went
 
   When the work goes to a cheaper model and still fails after 2 reworks, the main chat finishes it itself.
-- **Handing work down needs a clear saving.** A cheaper subagent is used only when its estimate is under 70% of the cost of staying, counting the brief, report, check and likely rework. Lowering effort needs the lower level to cost under 90% of staying, counting the cache it may rewrite. Both are defaults you can change in `/config`.
-- **It learns from real costs.** After each rated turn, rightsize reads what the turn really cost from Claude Code's own cost ledger (the `/cost` total), which prices cache writes at the TTL they were written at. The Haiku rating call is left out. Where there is no ledger, it prices the API's token counts from `prices.json` instead. It moves its estimates toward that cost, for each task type and route. After 20 runs, the measured average replaces the guess. A lowered turn that stepped back up is left out, since part of it ran at your normal level. Sessions running at the same time add to one shared record, so none overwrites another's runs.
+- **The subagent runs at the level its model needs.** rightsize sets the effort of the hand-off's subagent itself, so the level does not depend on Claude passing it on. Other subagents keep their own level.
+- **Handing work down needs a clear saving.** A cheaper subagent is used only when its estimate is under 70% of the cost of staying at the level the work needs on your model (a raise counted with the cache it may rewrite), counting the brief, report, check and likely rework. Of the cheaper models that fit, the cheapest route wins. Because Sonnet costs half of Opus, an Opus-to-Sonnet hand-off rarely clears 70%. Hand-offs to Haiku, and hand-offs from Fable, clear it more often. Lowering effort needs the lower level to cost under 90% of staying, counting the cache it may rewrite. Both are defaults you can change in `/config`.
+- **It learns from real costs.** After each rated turn, rightsize reads what the turn really cost from Claude Code's own cost ledger (the `/cost` total), which prices cache writes at the TTL they were written at. The Haiku rating call is left out. Where there is no ledger, it prices the API's token counts from `prices.json` instead. It moves its estimates toward that cost, for each task type and route, and for hand-offs also for each model and each model at each level. A model and level with few runs leans on what the task type as a whole has shown. After 20 runs, the measured average replaces the guess. A lowered turn that stepped back up is left out, since part of it ran at your normal level. Sessions running at the same time add to one shared record, so none overwrites another's runs.
 - **It knows how you pay.** Each response carries rate-limit windows: a subscription shows five-hour and seven-day windows, and a Claude gateway shows a spend limit. rightsize reads them and shows reports in dollars (API) or as a share of usage (subscription). Only when a response shows none, as with an API key, does it ask you once. The answer is kept across sessions.
 - **Prices stay current.** Every 30 days it compares `prices.json` with Anthropic's pricing page and writes in any change, keeping the old file as `prices.json.bak`.
 
@@ -94,7 +94,7 @@ The band shows in the CLI and the desktop app. VS Code and the mobile app keep t
 
 These are in `~/.claude/mods-logs/`:
 - `rightsize.log`: each decision.
-- `rightsize-runs.jsonl`: each rated turn, changed or not and stopped or not. Each line has the session ID, the change made and the change suggested, the estimated and actual cost (and whether the actual cost came from the `ledger` or from `tokens`), the rating call's cost, the rate-limit windows before and after, the turn's duration and its subagent calls. A rating that came to nothing is logged as an `overhead` line. `/rightsize report` reads this file.
+- `rightsize-runs.jsonl`: each rated turn, changed or not and stopped or not. Each line has the session ID, the change made and the change suggested, the estimated and actual cost (and whether the actual cost came from the `ledger` or from `tokens`), the rating call's cost, the rate-limit windows before and after, the turn's duration and its subagent calls, each model's rated level (`fit`) and, for a hand-off, the level its subagent ran at (`subLevel`). A rating that came to nothing is logged as an `overhead` line. `/rightsize report` reads this file.
 - `rightsize-switches.jsonl`: each measured effort switch, and whether the cache was kept.
 
 ## Limits

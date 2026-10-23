@@ -2,7 +2,7 @@
 
 By [Archi Dubey](https://github.com/archid21), MIT license. Full guide: https://github.com/archid21/rightsize
 
-Before a prompt is sent, rightsize asks Haiku (at low effort) three things about it: the effort it needs, whether a stronger or cheaper model fits better, and how big the work is. A cost model then prices each route. The mod follows the answers you give the first time each case comes up in a session.
+Before a prompt is sent, rightsize asks Haiku (at low effort) which effort each model would need for it, or whether a model would struggle, and how big the work is. A cost model then prices each model at its own level and picks the cheapest route that fits, which can change the model and the effort together. The mod follows the answers you give the first time each case comes up in a session.
 
 ## The four questions
 
@@ -11,7 +11,7 @@ Each question is asked once, the first time its case comes up:
 - **Q1 Lowering**, when a prompt needs less effort: Lower automatically · Ask me each time · Never lower.
 - **Q2 Raising**, when it needs more effort on the same model: Raise automatically · Ask me each time · Never raise.
 - **Q3 Stronger model**, when a stronger model than the current one fits better: Ask before sending it to a subagent · Send it automatically · Stay on the current model, raise effort only · Ask me each time.
-- **Q4 Cheaper model**, when a big task could run on a cheaper model: Send it to a cheaper subagent · Ask before sending it · Stay on the current model, lower effort only · Ask me each time.
+- **Q4 Cheaper model**, when a task could run on a cheaper model: Send it to a cheaper subagent · Ask before sending it · Stay on the current model, lower effort only · Ask me each time.
 
 After the first answer, it asks "Use these choices in every session?".
 
@@ -26,7 +26,7 @@ After the first answer, it asks "Use these choices in every session?".
   4. report how it went
 
   On the way down, if the cheaper model still fails after 2 reworks, the main chat finishes the task itself.
-- **Handing work down needs a clear saving.** A subagent is used only when the estimate is under 70% of the cost of staying, counting the brief, the report and the check. Lowering effort needs the lower level to cost under 90% of staying. Both are defaults you can change in `/config`.
+- **Handing work down needs a clear saving.** A subagent is used only when the estimate is under 70% of the cost of staying at the level the work needs, counting the brief, the report and the check. The subagent runs at the level its model needs: rightsize sets it. Lowering effort needs the lower level to cost under 90% of staying. Both are defaults you can change in `/config`.
 - **Calibration.** After each rated turn, the mod reads the real cost from Claude Code's cost ledger (the `/cost` total), leaving out the Haiku rating call, and moves its estimates toward it. Where there is no ledger, it prices the API's token counts from `prices.json`. Each task type and route is tracked separately, and after 20 runs the measured average replaces the guess. A lowered turn that stepped back up is left out, and sessions running at the same time add to one shared record rather than overwriting each other.
 
 A one-row band above the prompt (CLI and desktop app) shows what the mod did, with buttons: Undo or Clear, a quicker rule for this case (Q1–Q4), ⋯ to choose when the band shows, and × to close it. After a hand-off it shows the result, for example: `Sent to Haiku: $0.04 vs about $0.31 on Fable (estimated), saved about 87%.` With the band off, that result is a line in the transcript.

@@ -64,6 +64,7 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
     return { value: undefined } as never
   })
   on('clock.now', async () => ({ value: h.now }) as never)
+  on('env.get', async ($, e) => ({ value: (e as { name: string }).name === 'HOME' ? '/home/test' : undefined }) as never)
   on('http.fetch', async () => {
     h.fetches += 1
     return { value: { status: 200, ok: true, headers: {}, text: h.page } } as never
@@ -194,7 +195,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.complete('t3')
 
     // Each effort switch leaves one line of evidence: low, back to medium, low, medium.
-    const switches = Object.entries(h.files).find(([k]) => k.endsWith('/rightsize-switches.jsonl'))?.[1] ?? ''
+    const switches = h.files['/home/test/.claude/mods-logs/rightsize-switches.jsonl'] ?? ''
+    expect(Object.keys(h.files).every(k => k.startsWith('/home/test/.claude/mods-logs/')), 'logs go to HOME, wherever the plugin lives').toBe(true)
     const lines = switches.trim().split('\n').map(l => JSON.parse(l) as { from: string; to: string; kept: boolean })
     expect(lines.map(l => `${l.from}>${l.to}`)).toEqual(['medium>low', 'low>medium', 'medium>low', 'low>medium'])
     expect(lines.every(l => l.kept), 'the fake engine keeps the cache').toBe(true)

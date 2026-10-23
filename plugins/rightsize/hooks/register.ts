@@ -528,7 +528,8 @@ export const register: Register = (on, options) => {
 
   on('session.start', async ($, e, next) => {
     const result = await next(e)
-    home = $.plugin.root.split('/.claude/')[0] ?? ''
+    // The plugin can live anywhere (a clone, ~/Projects), so ask for HOME rather than reading it off the path.
+    home = (await $.env.get('HOME').catch(() => undefined)) || ($.plugin.root.split('/.claude/')[0] ?? '')
     pending = null
     active = null
     lastApplied = undefined

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Billing is read off each response's rate limits: five-hour and seven-day windows mean a subscription, a spend limit means a gateway. rightsize asks once only when they show nothing, and keeps the answer across sessions.
+- Each turn's actual cost comes from the session's cost ledger (the `/cost` total), leaving out the Haiku rating call. Where there is no ledger, it prices the token counts from `prices.json`. Cache writes are priced at the 1-hour TTL by default.
+- Every rated turn is logged to `rightsize-runs.jsonl` with its session, the change made and suggested, the rating call's cost, the rate-limit windows, its duration and its subagent calls.
+- `/rightsize report`: prompts rated and changed, the saving net of rating calls, the share of the usage window it kept for subscribers, and what went wrong, for this session, 7 days and 30 days.
 - The monthly price check is claimed before the page is fetched, so two sessions starting at once check only once. A failed check gives the claim back and stays due.
 
 ## 0.4.0 (2026-10-23)

@@ -23,6 +23,8 @@ export type RunLine = {
   /** What the plan suggested; differs from `change` when the person kept their level. */
   offered?: Change
   steppedUp?: boolean
+  /** Raised mid-turn when the turn showed it was struggling. */
+  escalations?: { step: number; from: string; to: string; why: string }[]
   aborted?: boolean
   /** Calibrated estimates: of the route taken, and of staying at the person's own level and model. */
   taken?: number
@@ -70,7 +72,7 @@ const delegated = (l: RunLine) => (l.route ?? '').startsWith('delegate:')
 /** What staying would have cost, by the estimate; the actual cost where there is nothing to compare. */
 export function counterfactual(l: RunLine) {
   const actual = num(l.actual)
-  if (l.steppedUp || l.afterWorkflow || !l.taken || !l.stay || l.change === undefined || l.change === 'none') return actual
+  if (l.steppedUp || l.escalations?.length || l.afterWorkflow || !l.taken || !l.stay || l.change === undefined || l.change === 'none') return actual
   return (actual * l.stay) / l.taken
 }
 
@@ -192,6 +194,13 @@ export function wentWrong(lines: readonly RunLine[], switches: readonly SwitchLi
   const out: string[] = []
   const steppedUp = runs.filter(l => l.steppedUp).length
   if (steppedUp) out.push(`${plural(steppedUp, 'lowered turn')} stepped back up: the task was harder than rated. No saving is counted for them.`)
+  const raised = runs.filter(l => l.escalations?.length)
+  if (raised.length) {
+    const why = new Map<string, number>()
+    for (const l of raised) for (const x of l.escalations ?? []) why.set(x.why.replace(/^\d+ /, 'several '), (why.get(x.why.replace(/^\d+ /, 'several ')) ?? 0) + 1)
+    const top = [...why.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([w, n]) => `${w} (${n})`).join(', ')
+    out.push(`${plural(raised.length, 'turn')} raised effort mid-turn because Claude looked stuck: ${top}. No saving is counted for them.`)
+  }
   const dearer = runs.filter(l => delegated(l) && num(l.stay) > 0 && num(l.actual) > num(l.stay))
   if (dearer.length) {
     const a = dearer.reduce((s, l) => s + num(l.actual), 0)

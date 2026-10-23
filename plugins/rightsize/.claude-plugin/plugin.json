@@ -74,6 +74,16 @@
         "off"
       ]
     },
+    "escalation": {
+      "type": "string",
+      "title": "Raise when stuck",
+      "description": "on: when a turn shows Claude is stuck (the same tool call failing twice, 3 tool calls failing, the same call running 3 times, or 3x the rated steps), raise effort one level for the rest of the turn, at most twice and never to max. It follows your Raising rule: automatic raises without asking, otherwise it asks. off: never raise mid-turn.",
+      "default": "on",
+      "options": [
+        "on",
+        "off"
+      ]
+    },
     "band": {
       "type": "string",
       "title": "Band",

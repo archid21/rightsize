@@ -50,6 +50,7 @@ import {
 } from './cost'
 import { PRICING_URL, applyPrices, diffPrices, isDue, parsePricingPage } from './prices'
 import { parseRating, ratingPrompt, ratingSystem } from './rate'
+import { type Signals, type Struggle, callKey, noSignals, noteCall, oneUp, struggle } from './struggle'
 import { type Change, type RunLine, type SwitchLine, type Windows, buildReport, parseLines } from './report'
 
 // Before a prompt is sent, a quick Haiku call rates the effort, the model and
@@ -63,7 +64,9 @@ import { type Change, type RunLine, type SwitchLine, type Windows, buildReport, 
 // own with no model named has its brief rated too, and runs on the cheapest model
 // that fits, at that model's level (agent.spawn, turn.step). After each rated turn the
 // real cost is read off the session's cost ledger (/cost) and fed back into the
-// estimates. Billing (API or subscription) is read off the rate limits each
+// estimates. When a turn shows it is struggling (tools failing, the same call
+// failing again or going round, far more steps than rated), effort goes up a
+// level for the rest of the turn (tool.call, turn.step). Billing (API or subscription) is read off the rate limits each
 // response carries; the person is asked only when they say nothing. A band
 // above the prompt shows what it did, with buttons to undo it or change the rule.
 
@@ -200,6 +203,11 @@ type Run = {
   before?: Windows
   /** How fast the tighter usage window was being used when the prompt was rated. */
   pace: Pace
+  /** The main chat's tool calls so far: the signs it is struggling. */
+  signals: Signals
+  /** The level the rest of the turn runs at after a mid-turn raise. */
+  raisedTo?: Level
+  escalations: { step: number; from: Level; to: Level; why: string }[]
 }
 
 let home = ''
@@ -238,6 +246,8 @@ let subagentMode: SubagentMode = 'cheaper when it fits'
 let pacing = true
 /** The pace the prompt being rated was decided at. */
 let paceNow: Pace = NORMAL_PACE
+/** Raise effort mid-turn when the turn shows it is struggling. */
+let escalation = true
 /** Claude's own subagents moved to a cheaper model, by id: the level their steps run at, past the turn that started them. */
 const resizedLevel = new Map<string, Level>()
 
@@ -653,6 +663,8 @@ function startRun(r: Rating, s: Situation, d: Decision, p: Plan, base: Level, ov
     steppedUp: false,
     delegated: false,
     pace: paceNow,
+    signals: noSignals(),
+    escalations: [],
   }
 }
 
@@ -661,6 +673,7 @@ function startRun(r: Rating, s: Situation, d: Decision, p: Plan, base: Level, ov
 async function showStatus($: EngineInterface) {
   const run = active ?? pending
   if (run?.delegate) return $.ui.status(`Rightsize: handing this to a ${TIER_NAME[run.delegate.tier]} subagent`)
+  if (run?.raisedTo) return $.ui.status(`Effort: ${run.raisedTo} (raised mid-turn)`)
   if (run?.steppedUp) return $.ui.status(`Effort: back to ${run.normal} (the task got harder)`)
   if (run?.level) return $.ui.status(run.auto ? `Effort: ${run.level} (auto) · /rightsize undo` : `Effort: ${run.level} (this prompt)`)
   if (!run && lastAuto) return $.ui.status(`Last prompt ran at ${lastAuto.level} (auto) · /rightsize undo`)
@@ -793,9 +806,9 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
       const sample = ratioSample(actual, run.rawDelegate)
       for (const key of delegateKeys(r.type, run.delegate.tier, run.delegate.level)) teach(key, sample)
     }
-    // A turn that stepped back up ran partly at the normal level, so its cost says
-    // nothing about the lowered estimate: it teaches nothing.
-    else if (!run.delegate && !run.steppedUp) {
+    // A turn that stepped back up, or was raised mid-turn, ran at more than one
+    // level, so its cost says nothing about one level's estimate: it teaches nothing.
+    else if (!run.delegate && !run.steppedUp && !run.escalations.length) {
       const sample = ratioSample(Math.max(0, actual - run.missCost), run.rawMain)
       for (const key of mainKeys(r.type, run.tier, run.ranAt)) teach(key, sample)
     }
@@ -821,6 +834,7 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
       ...(run.pace.mode !== 'normal' ? { pace: { ...run.pace, ...(run.pace.pace === undefined ? {} : { pace: Number(run.pace.pace.toFixed(2)) }) } } : {}),
       auto: run.auto,
       steppedUp: run.steppedUp,
+      ...(run.escalations.length ? { escalations: run.escalations } : {}),
       estimate: Number((delegated ? (run.rawDelegate ?? 0) : run.rawMain).toFixed(5)),
       actual: round(actual),
       measured: ledger > 0 ? 'ledger' : 'tokens',
@@ -857,6 +871,38 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
   await showStatus($)
 }
 
+// The turn is struggling: one level up for the rest of it, the way the person's
+// Raising rule says (asked mid-turn unless it is automatic). Each sign is weighed
+// once, raised or not, so a "Keep" is not asked again for the same sign.
+async function escalate($: EngineInterface, run: Run, sign: Struggle, from: Level | undefined, step: number) {
+  run.signals = { ...run.signals, fired: [...run.signals.fired, sign.kind] }
+  const cur = run.raisedTo ?? from
+  const to = cur ? oneUp(cur) : undefined
+  if (!cur || !to) return
+  if (paceNow.mode === 'max') {
+    await log($, `mid-turn raise to ${to} skipped (${sign.why}): the usage window is nearly used up`)
+    return
+  }
+  const rule = (await choices($)).raise
+  if (rule === 'never') return
+  if (rule !== 'auto' && !(rule === 'ask' && paceNow.mode === 'cool')) {
+    const a = await pick($, {
+      header: 'Stuck',
+      question: `Claude looks stuck: ${sign.why}. Raise effort from ${cur} to ${to} for the rest of this turn?`,
+      options: [
+        [`Raise to ${to} for this turn`, 'yes'],
+        [`Keep ${cur}`, 'no'],
+      ],
+    })
+    if (a !== 'yes') return
+  }
+  run.raisedTo = to
+  run.escalations.push({ step, from: cur, to, why: sign.why })
+  await setBand($, { text: `Effort raised mid-turn: ${cur} → ${to} (${sign.why}).`, acted: true, rule: 'raise' })
+  await showStatus($)
+  await log($, `raised mid-turn ${cur} → ${to} at step ${step}: ${sign.why}`)
+}
+
 async function summary($: EngineInterface) {
   const c = await choices($)
   const said = (v: string | undefined) => v ?? 'not asked yet'
@@ -886,6 +932,7 @@ export const register: Register = (on, options) => {
   rules = { handOff: parseShare(opts.handOff, DEFAULT_RULES.handOff), lower: parseShare(opts.lowering, DEFAULT_RULES.lower) }
   if (opts.subagents === 'off') subagentMode = 'off'
   if (opts.pacing === 'off') pacing = false
+  if (opts.escalation === 'off') escalation = false
 
   on('config.set', { key: 'rightsize.band' }, async ($, e, next) => {
     const result = await next(e)
@@ -1081,6 +1128,12 @@ export const register: Register = (on, options) => {
         await showStatus($)
       }
     }
+    // A hand-off's main chat only briefs and checks: its struggle is the subagent's.
+    if (run && !run.delegate && escalation && !off) {
+      const sign = struggle(run.signals, e.index, run.rating.steps)
+      if (sign) await escalate($, run, sign, level ?? own, e.index)
+    }
+    if (run?.raisedTo && (!level || levelRank(run.raisedTo) > levelRank(level))) level = run.raisedTo
     const send = level && e.effort !== undefined ? { ...e, effort: level } : e
     const applied = isLevel(send.effort) ? send.effort : undefined
     const out = yield* next(send)
@@ -1130,7 +1183,10 @@ export const register: Register = (on, options) => {
       const model = (e as { model?: unknown }).model
       if (String(e.tool) === 'Agent' && active.delegate && tierOf(typeof model === 'string' ? model : undefined) === active.delegate.tier) active.delegated = true
       if (String(e.tool) === 'Agent' || String(e.tool) === 'SendMessage') active.agentCalls += 1
-      if ((result as { isError?: boolean }).isError) active.errors += 1
+      const isError = (result as { isError?: boolean }).isError === true
+      if (isError) active.errors += 1
+      // A refused call (a denied permission) says nothing about the work.
+      if (!(result as { deny?: string }).deny) active.signals = noteCall(active.signals, callKey(String(e.tool), e as Record<string, unknown>), isError)
     }
     return result
   }).catch(($, e, next) => next(e))

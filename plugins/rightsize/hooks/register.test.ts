@@ -49,7 +49,7 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
     toasts: [] as string[],
     configSet: [] as unknown[],
     // A gateway's spend limit by default: billed per token, so reports show dollars.
-    rateLimits: [{ kind: 'spend_limit', percentUsed: 1 }] as { kind: string; percentUsed: number }[],
+    rateLimits: [{ kind: 'spend_limit', percentUsed: 1 }] as { kind: string; percentUsed: number; resetsAt?: string }[],
     /** The session's cost ledger in dollars; undefined: the host keeps none. */
     ledger: 0 as number | undefined,
     stepCost: 0.01,
@@ -128,6 +128,12 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
   })
   ;(on as unknown as LooseOn)('tool.call', { tool: 'Agent' }, async () => ({ result: { content: 'done' } }))
   ;(on as unknown as LooseOn)('tool.call', { tool: 'Workflow' }, async () => ({ result: { content: 'started in the background' } }))
+  // A command starting "fail" fails; one starting "denied" is refused, as a denied permission is.
+  ;(on as unknown as LooseOn)('tool.call', { tool: 'Bash' }, async (_$, e) => {
+    const command = String((e as unknown as { command: string }).command)
+    if (command.startsWith('denied')) return { deny: 'permission denied' }
+    return command.startsWith('fail') ? { result: { stdout: '', stderr: 'boom' }, text: 'boom', isError: true } : { result: { stdout: 'ok', stderr: '' }, text: 'ok' }
+  })
   on('agent.spawn', async ($, e) => {
     h.spawned.push({ description: e.description, model: e.model })
     return { model: e.model ?? h.subModel, agentId: `agent-${e.description}` } as never
@@ -161,6 +167,7 @@ const drive = ($: unknown, h: ReturnType<typeof engine>) => {
     complete: (turnId: string) => e.turn.complete({ turnId, answer: '', durationMs: 1, isAborted: false, reason: 'answer' }),
     agent: (model: string) => e.tool.call({ tool: 'Agent', description: 'x', prompt: 'brief', model }),
     workflow: () => e.tool.call({ tool: 'Workflow', script: 'export const meta = {}' }),
+    bash: (command: string) => e.tool.call({ tool: 'Bash', command }),
     // The engine starting a subagent from the main chat's Agent call; its steps carry `agent-<description>`.
     spawn: (description: string, model?: string, over: Record<string, unknown> = {}) =>
       e.agent.spawn({ prompt: 'brief', description, subagentType: 'general-purpose', provider: { kind: 'core' }, parentModel: h.model, background: false, fork: false, ...(model ? { model } : {}), ...over }),
@@ -511,7 +518,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.rateLimits = [
       { kind: 'five_hour', percentUsed: 80, resetsAt: at(h, 2 * HOUR) },
       { kind: 'seven_day', percentUsed: 20, resetsAt: at(h, 160 * HOUR) },
-    ] as typeof h.rateLimits
+    ]
     await d.start(surface)
     await d.step('t0')
     await d.complete('t0')
@@ -530,7 +537,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   test(`budget pacing off in /config: the same window changes nothing (${surface})`, { timeoutMs: 30000, options: { pacing: 'off' } }, async ($, on) => {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { calibration: FREE_SWITCHES } })
     const d = drive($, h)
-    h.rateLimits = [{ kind: 'five_hour', percentUsed: 80, resetsAt: at(h, 2 * HOUR) }] as typeof h.rateLimits
+    h.rateLimits = [{ kind: 'five_hour', percentUsed: 80, resetsAt: at(h, 2 * HOUR) }]
     await d.start(surface)
     await d.step('t0')
     await d.complete('t0')
@@ -544,7 +551,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   test(`budget pacing: a window nearly used up skips a raise and says why (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
     const d = drive($, h)
-    h.rateLimits = [{ kind: 'five_hour', percentUsed: 93, resetsAt: at(h, 4 * HOUR) }] as typeof h.rateLimits
+    h.rateLimits = [{ kind: 'five_hour', percentUsed: 93, resetsAt: at(h, 4 * HOUR) }]
     await d.start(surface)
     await d.step('t0')
     await d.complete('t0')
@@ -561,7 +568,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
     const d = drive($, h)
     // 30% of the week used, 6 hours before it resets.
-    h.rateLimits = [{ kind: 'seven_day', percentUsed: 30, resetsAt: at(h, 6 * HOUR) }] as typeof h.rateLimits
+    h.rateLimits = [{ kind: 'seven_day', percentUsed: 30, resetsAt: at(h, 6 * HOUR) }]
     await d.start(surface)
     await d.step('t0')
     await d.complete('t0')
@@ -572,6 +579,103 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t1')
     expect(last(h.sent)?.effort).toBe('high')
     expect(await bandText($, surface)).toContain('Much of the 7-day window will go unused, so rightsize puts quality first.')
+  })
+
+  const AUTO_RAISE = { remember: true, choices: { raise: 'auto' } }
+
+  test(`raises effort mid-turn when Claude looks stuck, once per sign, at most twice (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: AUTO_RAISE })
+    const d = drive($, h)
+    await d.start(surface)
+    h.rating = NO_CHANGE
+    await d.submit(LOOKUP)
+    await d.step('t1', 0)
+    await d.bash('fail npm test')
+    await d.step('t1', 1)
+    expect(last(h.sent)?.effort, 'one failure is ordinary').toBe('medium')
+    await d.bash('fail npm test')
+    await d.step('t1', 2)
+    expect(last(h.sent)?.effort).toBe('high')
+    expect(await bandText($, surface)).toBe('rightsize: Effort raised mid-turn: medium → high (the same tool call failed twice).')
+    await d.step('t1', 3)
+    expect(last(h.sent)?.effort, 'for the rest of the turn').toBe('high')
+    await d.bash('fail lint')
+    await d.step('t1', 4)
+    expect(last(h.sent)?.effort, 'three failures: a second sign').toBe('xhigh')
+    for (let i = 0; i < 3; i++) await d.bash('ls')
+    await d.step('t1', 5)
+    expect(last(h.sent)?.effort, 'two raises a turn at most').toBe('xhigh')
+    expect(h.asked.length, 'automatic: nothing asked').toBe(0)
+    await d.complete('t1')
+
+    const runs = (h.files['/home/test/.claude/mods-logs/rightsize-runs.jsonl'] ?? '').trim().split('\n')
+    const line = JSON.parse(last(runs) ?? '{}') as { escalations?: { step: number; from: string; to: string }[] }
+    expect(line.escalations?.map(x => [x.step, x.from, x.to])).toEqual([[2, 'medium', 'high'], [4, 'high', 'xhigh']])
+    expect(Object.keys(h.store.calibration ?? {}).filter(k => k.startsWith('lookup:')), 'a turn at two levels teaches nothing').toEqual([])
+    h.now = Date.now()
+    expect((await d.command('report')).text ?? '').toContain('1 turn raised effort mid-turn because Claude looked stuck: the same tool call failed twice (1), several tool calls failed (1).')
+
+    // The next turn starts at the person's level again.
+    await d.submit(LOOKUP)
+    await d.step('t2', 0)
+    expect(last(h.sent)?.effort).toBe('medium')
+  })
+
+  test(`asks before a mid-turn raise unless Raising is automatic, and does not ask twice for one sign (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    const d = drive($, h)
+    await d.start(surface)
+    h.rating = NO_CHANGE
+    await d.submit(LOOKUP)
+    await d.step('t1', 0)
+    await d.bash('fail make')
+    await d.bash('fail make')
+    h.answers = { Stuck: 'Keep medium' }
+    await d.step('t1', 1)
+    expect(h.asked.map(a => a.question)).toEqual(['Claude looks stuck: the same tool call failed twice. Raise effort from medium to high for the rest of this turn?'])
+    expect(last(h.sent)?.effort).toBe('medium')
+    await d.step('t1', 2)
+    expect(h.asked.length, 'the same sign is not asked again').toBe(1)
+    await d.bash('fail make test')
+    h.answers = { Stuck: 'Raise to high for this turn' }
+    await d.step('t1', 3)
+    expect(last(h.sent)?.effort, 'a new sign, and a yes').toBe('high')
+  })
+
+  test(`no mid-turn raise when Raising is never (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { remember: true, choices: { raise: 'never' } } })
+    const d = drive($, h)
+    await d.start(surface)
+    h.rating = NO_CHANGE
+    await d.submit(LOOKUP)
+    await d.step('t1', 0)
+    for (let i = 0; i < 3; i++) await d.bash('fail x')
+    await d.step('t1', 1)
+    expect([last(h.sent)?.effort, h.asked.length]).toEqual(['medium', 0])
+  })
+
+  test(`refused calls are not a sign of struggling (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: AUTO_RAISE })
+    const d = drive($, h)
+    await d.start(surface)
+    h.rating = NO_CHANGE
+    await d.submit(LOOKUP)
+    await d.step('t1', 0)
+    for (let i = 0; i < 3; i++) await d.bash('denied rm -rf build')
+    await d.step('t1', 1)
+    expect(last(h.sent)?.effort).toBe('medium')
+  })
+
+  test(`Escalation off in /config: no mid-turn raise (${surface})`, { timeoutMs: 30000, options: { escalation: 'off' } }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: AUTO_RAISE })
+    const d = drive($, h)
+    await d.start(surface)
+    h.rating = NO_CHANGE
+    await d.submit(LOOKUP)
+    await d.step('t1', 0)
+    for (let i = 0; i < 3; i++) await d.bash('fail x')
+    await d.step('t1', 1)
+    expect(last(h.sent)?.effort).toBe('medium')
   })
 
   test(`a workflow pauses hand-offs and learning for the session, and the report lists it (${surface})`, { timeoutMs: 30000 }, async ($, on) => {

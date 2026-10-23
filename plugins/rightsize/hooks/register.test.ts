@@ -37,6 +37,8 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
     now: 1_800_000_000_000,
     page: '',
     fetches: 0,
+    hold: null as Promise<void> | null,
+    fetchFails: false,
     pricesFile: '',
     backup: '',
     files: {} as Record<string, string>,
@@ -67,6 +69,8 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
   on('env.get', async ($, e) => ({ value: (e as { name: string }).name === 'HOME' ? '/home/test' : undefined }) as never)
   on('http.fetch', async () => {
     h.fetches += 1
+    if (h.hold) await h.hold
+    if (h.fetchFails) return { value: { status: 503, ok: false, headers: {}, text: '' } } as never
     return { value: { status: 200, ok: true, headers: {}, text: h.page } } as never
   })
   on('ui.toast', async ($, e) => {
@@ -356,5 +360,35 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(moved.text ?? '').toContain('found 0 of 4 models')
     expect(h.pricesFile).toBe(before)
     expect(h.store.pricesCheckedAt, 'still due').not.toBe(h.now)
+  })
+
+  test(`claims the monthly check before fetching, and gives the claim back when it fails (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const lastMonth = 1_800_000_000_000 - 31 * DAY
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { pricesCheckedAt: lastMonth } })
+    const d = drive($, h)
+    h.page = PAGE
+    h.pricesFile = OLD_PRICES
+    let release = () => {}
+    h.hold = new Promise<void>(resolve => {
+      release = resolve
+    })
+    await d.start(surface)
+    await flush()
+    expect(h.fetches).toBe(1)
+    // Another session starting now reads this and finds the check not due.
+    expect(h.store.pricesCheckedAt, 'claimed while the page is still loading').toBe(h.now)
+    release()
+    await flush()
+    expect(h.store.pricesCheckedAt).toBe(h.now)
+
+    // 31 days on, the page fails: the claim goes back, so the next start tries again.
+    h.hold = null
+    h.fetchFails = true
+    h.now += 31 * DAY
+    const claimedFrom = h.store.pricesCheckedAt
+    await d.start(surface)
+    await flush()
+    expect(h.fetches).toBe(2)
+    expect(h.store.pricesCheckedAt, 'given back: still due').toBe(claimedFrom)
   })
 }

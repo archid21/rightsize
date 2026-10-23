@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- The monthly price check is claimed before the page is fetched, so two sessions starting at once check only once. A failed check gives the claim back and stays due.
+
 ## 0.4.0 (2026-10-23)
 
 First public release, renamed from effort-advisor.

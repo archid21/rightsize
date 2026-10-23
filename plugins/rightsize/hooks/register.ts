@@ -194,25 +194,28 @@ const log = ($: EngineInterface, line: string) => append($, 'rightsize.log', `${
 
 // Reads Anthropic's pricing page and writes any changed price into prices.json,
 // keeping the old file as prices.json.bak. A failed fetch or an unreadable page
-// changes nothing and is tried again at the next session start.
-async function checkPrices($: EngineInterface, why: 'monthly' | 'manual'): Promise<string> {
+// changes nothing and is tried again at the next session start. `claimedFrom` is
+// the check time a monthly check replaced when it claimed the check; a failed
+// check puts it back so the check stays due.
+async function checkPrices($: EngineInterface, why: 'monthly' | 'manual', claimedFrom?: unknown): Promise<string> {
   const path = `${$.plugin.root}/prices.json`
+  const failed = async (msg: string) => {
+    if (why === 'monthly') await $.store.set('pricesCheckedAt', typeof claimedFrom === 'number' ? claimedFrom : 0).catch(() => undefined)
+    await log($, `${why} ${msg}`)
+    return msg
+  }
   let text = ''
   try {
     const res = await $.http.fetch(PRICING_URL)
     if (!res.ok) throw new Error(`the pricing page answered ${res.status}`)
     text = res.text
   } catch (err) {
-    const msg = `Price check failed: ${err instanceof Error ? err.message : String(err)}. prices.json is unchanged.`
-    await log($, `${why} ${msg}`)
-    return msg
+    return failed(`Price check failed: ${err instanceof Error ? err.message : String(err)}. prices.json is unchanged.`)
   }
   const page = parsePricingPage(text)
   const found = Object.keys(page).length
   if (found < 4) {
-    const msg = `Price check found ${found} of 4 models on the pricing page; its layout may have changed. prices.json is unchanged.`
-    await log($, `${why} ${msg}`)
-    return msg
+    return failed(`Price check found ${found} of 4 models on the pricing page; its layout may have changed. prices.json is unchanged.`)
   }
   const now = await $.clock.now()
   await $.store.set('pricesCheckedAt', now).catch(() => undefined)
@@ -233,8 +236,8 @@ async function checkPrices($: EngineInterface, why: 'monthly' | 'manual'): Promi
 }
 
 // One check at a time; a second ask waits for the first.
-const runCheck = ($: EngineInterface, why: 'monthly' | 'manual') => {
-  checking ??= checkPrices($, why).finally(() => {
+const runCheck = ($: EngineInterface, why: 'monthly' | 'manual', claimedFrom?: unknown) => {
+  checking ??= checkPrices($, why, claimedFrom).finally(() => {
     checking = null
   })
   return checking
@@ -540,8 +543,15 @@ export const register: Register = (on, options) => {
       // Set by hand in settings: check once, then back to monthly.
       void runCheck($, 'manual').then(msg => $.ui.toast(msg))
       void $.config.set({ key: 'rightsize.priceCheck', value: 'monthly' }).catch(() => undefined)
-    } else if (priceCheck === 'monthly' && isDue(await $.store.get('pricesCheckedAt').catch(() => undefined), await $.clock.now())) {
-      void runCheck($, 'monthly')
+    } else if (priceCheck === 'monthly') {
+      const lastChecked = await $.store.get('pricesCheckedAt').catch(() => undefined)
+      const now = await $.clock.now()
+      if (isDue(lastChecked, now)) {
+        // Claim the check before fetching: a second session starting at the same
+        // moment then finds it done. A failed check gives the claim back.
+        await $.store.set('pricesCheckedAt', now).catch(() => undefined)
+        void runCheck($, 'monthly', lastChecked)
+      }
     }
     cal = parseCalibration(await $.store.get('calibration').catch(() => undefined))
     if (await remembers($)) {

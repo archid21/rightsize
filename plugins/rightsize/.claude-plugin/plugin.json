@@ -22,7 +22,7 @@
     "billing": {
       "type": "string",
       "title": "Reports",
-      "description": "api: subagent reports show dollars. subscription: they show the share of usage, with API prices beside it.",
+      "description": "api: subagent reports show dollars. subscription: they show the share of usage, with API prices beside it. Read off each response's rate limits when they show it; setting it here counts as your answer when they don't.",
       "default": "api",
       "options": [
         "api",

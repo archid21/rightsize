@@ -93,7 +93,7 @@ export function applyPrices(fileText: string, page: PageRows, date: string): str
     ...json,
     source: `Anthropic Claude API first-party prices, checked against ${PRICING_URL.replace(/^https:\/\//, '').replace(/\.md$/, '')} on ${date}. rightsize checks them every ${CHECK_DAYS} days; pick "check now" for Price check in /config to check sooner.`,
     unit: json.unit ?? 'US dollars per 1 million tokens',
-    cacheTtl: json.cacheTtl ?? '5m',
+    cacheTtl: json.cacheTtl ?? '1h',
     models,
   }
   return `${JSON.stringify(next, null, 2)}\n`

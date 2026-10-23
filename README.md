@@ -48,7 +48,8 @@ After your first answer, rightsize asks whether to use your choices in every ses
 
   When the work goes to a cheaper model and still fails after 2 reworks, the main chat finishes it itself.
 - **Handing work down needs a clear saving.** A cheaper subagent is used only when its estimate is under 70% of the cost of staying, counting the brief, report, check and likely rework.
-- **It learns from real costs.** After each rated turn, rightsize measures what the turn really cost from the API's token usage, and moves its estimates toward it, for each task type and route. After 20 runs, the measured average replaces the guess.
+- **It learns from real costs.** After each rated turn, rightsize reads what the turn really cost from Claude Code's own cost ledger (the `/cost` total), which prices cache writes at the TTL they were written at. The Haiku rating call is left out. Where there is no ledger, it prices the API's token counts from `prices.json` instead. It moves its estimates toward that cost, for each task type and route. After 20 runs, the measured average replaces the guess.
+- **It knows how you pay.** Each response carries rate-limit windows: a subscription shows five-hour and seven-day windows, and a Claude gateway shows a spend limit. rightsize reads them and shows reports in dollars (API) or as a share of usage (subscription). Only when a response shows none, as with an API key, does it ask you once. The answer is kept across sessions.
 - **Prices stay current.** Every 30 days it compares `prices.json` with Anthropic's pricing page and writes in any change, keeping the old file as `prices.json.bak`.
 
 After each hand-off, one line in the transcript shows the result, for example:
@@ -60,20 +61,27 @@ rightsize: Sent to Haiku: $0.04 vs about $0.31 on Fable (estimated), saved about
 ## Commands and settings
 
 - `/rightsize`: the state, your answers, the calibration and the cache-switch results.
+- `/rightsize report`: what rightsize did for you this session, in the last 7 days and in the last 30 days.
+  - How many prompts it rated and changed, and how often you kept your level.
+  - The estimated saving after the cost of its own Haiku rating calls. Extra spending from raising effort or using stronger models is shown on its own line.
+  - On a subscription, the share of your 5-hour (and 7-day) window that saving kept, and about how many more minutes that is at the current pace.
+  - What went wrong: lowered turns that stepped back up, hand-offs that cost more or needed rework, hand-offs Claude skipped, effort switches that missed the cache, turns you stopped, and how far its estimates are off.
+
+  A saving is an estimate: what staying at your own level and model would have cost, scaled by what the turn really cost. Turns that stepped back up get no saving.
 - `/rightsize settings`: ask the four questions again.
 - `/rightsize undo`: put the last auto-lowered prompt back in the box, to run at the normal level.
 - `/rightsize clear`: drop a session-wide effort switch.
 - `/rightsize prices`: check prices now.
 - `/config` → rightsize:
   - **Lowest effort**: low, medium or high.
-  - **Reports**: dollars, or share of usage for subscriptions.
+  - **Reports**: dollars, or share of usage for subscriptions. Setting it counts as your answer; rate limits that show a subscription still win.
   - **Price check**: monthly, check now, or off.
 
 ## Logs
 
 These are in `~/.claude/mods-logs/`:
 - `rightsize.log`: each decision.
-- `rightsize-runs.jsonl`: each measured turn, with its estimated and actual cost.
+- `rightsize-runs.jsonl`: each rated turn, changed or not and stopped or not. Each line has the session ID, the change made and the change suggested, the estimated and actual cost (and whether the actual cost came from the `ledger` or from `tokens`), the rating call's cost, the rate-limit windows before and after, the turn's duration and its subagent calls. A rating that came to nothing is logged as an `overhead` line. `/rightsize report` reads this file.
 - `rightsize-switches.jsonl`: each measured effort switch, and whether the cache was kept.
 
 ## Limits

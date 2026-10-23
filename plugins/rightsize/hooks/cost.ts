@@ -45,12 +45,13 @@ export type Price = { input: number; output: number; cacheRead: number; cacheWri
 export type Prices = Record<Tier, Price>
 
 // Anthropic first-party prices from the pricing page, checked 2026-10-23;
-// prices.json beside the mod overrides them. cacheWrite is the 5-minute TTL (1.25x input).
+// prices.json beside the mod overrides them. cacheWrite is the 1-hour TTL (2x input),
+// the one Claude Code sessions usually write.
 export const DEFAULT_PRICES: Prices = {
-  haiku: { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125 },
-  sonnet: { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5 },
-  opus: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 },
-  fable: { input: 10, output: 50, cacheRead: 0.25, cacheWrite: 12.5 },
+  haiku: { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.2 },
+  sonnet: { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 4 },
+  opus: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 8 },
+  fable: { input: 10, output: 50, cacheRead: 0.25, cacheWrite: 20 },
 }
 
 const num = (v: unknown, fallback: number) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : fallback)
@@ -63,7 +64,7 @@ export function parsePrices(raw: string): Prices {
   } catch {
     return DEFAULT_PRICES
   }
-  const writeKey = json.cacheTtl === '1h' ? 'cacheWrite1h' : 'cacheWrite5m'
+  const writeKey = json.cacheTtl === '5m' ? 'cacheWrite5m' : 'cacheWrite1h'
   const out = { ...DEFAULT_PRICES }
   for (const t of TIERS) {
     const m = json.models?.[t] ?? {}
@@ -73,7 +74,7 @@ export function parsePrices(raw: string): Prices {
       input,
       output: num(m.output, d.output),
       cacheRead: num(m.cacheRead, d.cacheRead),
-      cacheWrite: num(m[writeKey], writeKey === 'cacheWrite1h' ? input * 2 : d.cacheWrite),
+      cacheWrite: num(m[writeKey], input * (writeKey === 'cacheWrite1h' ? 2 : 1.25)),
     }
   }
   return out

@@ -59,6 +59,8 @@ test('reads prices.json, keeping defaults for what it lacks', async () => {
   expect(p.haiku.output, 'bad field keeps the default').toBe(DEFAULT_PRICES.haiku.output)
   expect(p.haiku.cacheWrite, '1h write falls back to 2x input').toBe(0.2)
   expect(parsePrices('not json'), 'unreadable file: defaults').toEqual(DEFAULT_PRICES)
+  expect(parsePrices('{}').opus.cacheWrite, 'no TTL named: the 1-hour write').toBe(8)
+  expect(parsePrices(JSON.stringify({ cacheTtl: '5m' })).opus.cacheWrite, '5m with no price: 1.25x input').toBe(5)
 })
 
 test('does not lower effort when the cache rewrite costs more than it saves', async () => {

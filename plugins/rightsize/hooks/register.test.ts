@@ -17,6 +17,7 @@ type Engine = {
 const LOOKUP = 'what does the parseConfig function in src/config.ts return exactly'
 const DEBUG = 'find and fix the race in token refresh across the auth services please'
 const SEARCH = 'find every call site of the old logger across the whole repo and list them'
+const NO_CHANGE = '{"level":"medium","model":"same","size":"small","type":"lookup","read":2000,"write":300,"steps":1}'
 const FREE_SWITCHES = { 'cache:effort-switch': { n: 20, ratio: 0 } }
 
 // Stands for the engine beneath the plugin, and records what reaches it.
@@ -44,12 +45,22 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
     files: {} as Record<string, string>,
     toasts: [] as string[],
     configSet: [] as unknown[],
+    // A gateway's spend limit by default: billed per token, so reports show dollars.
+    rateLimits: [{ kind: 'spend_limit', percentUsed: 1 }] as { kind: string; percentUsed: number }[],
+    /** The session's cost ledger in dollars; undefined: the host keeps none. */
+    ledger: 0 as number | undefined,
+    stepCost: 0.01,
+    /** Percent each main request adds to every rate-limit window. */
+    windowStep: 0,
+    ratingUsage: {} as Record<string, number>,
   }
   on('session.start', async ($, e) => ({ cwd: e.cwd }) as never)
   on('command.register', async () => ({ value: undefined }) as never)
   on('clock.every', async () => ({ value: undefined }) as never)
   on('settings.read', async () => ({ value: {} }) as never)
   on('session.messages', async () => ({ value: [] }) as never)
+  on('session.id', async () => ({ value: 'sess-1' }) as never)
+  on('session.usage', async () => ({ value: { startedAt: 0, context: {}, rateLimits: h.rateLimits, ...(h.ledger === undefined ? {} : { cost: { usd: h.ledger } }) } }) as never)
   on('fs.exists', async ($, e) => {
     const { path } = e as { path: string }
     return { value: path.endsWith('/prices.json') ? h.pricesFile !== '' : path in h.files } as never
@@ -99,7 +110,9 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
   })
   on('model.complete', async () => {
     h.ratings += 1
-    return { value: { isAnswered: true, text: h.rating, usage: {} } } as never
+    // The rating call is priced too; the turn's measured cost leaves it out.
+    if (h.ledger !== undefined) h.ledger += 0.5
+    return { value: { isAnswered: true, text: h.rating, usage: h.ratingUsage } } as never
   })
   ;(on as unknown as LooseOn)('tool.call', { tool: 'AskUserQuestion' }, async (_$, e) => {
     const q = e.questions[0]
@@ -116,6 +129,8 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
   })
   ;(on as unknown as LooseStep)('turn.step', async function* (_$, e) {
     h.sent.push({ effort: e.effort, agentId: e.agentId, turnId: e.turnId })
+    if (h.ledger !== undefined) h.ledger += h.stepCost
+    if (!e.agentId && h.windowStep) h.rateLimits = h.rateLimits.map(l => ({ ...l, percentUsed: l.percentUsed + h.windowStep }))
     const usage = { input_tokens: 200, output_tokens: 400, cache_read_input_tokens: 20_000, cache_creation_input_tokens: 300 }
     return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: { ...usage, model: e.agentId ? h.subModel : h.model } } as never
   })
@@ -390,5 +405,129 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await flush()
     expect(h.fetches).toBe(2)
     expect(h.store.pricesCheckedAt, 'given back: still due').toBe(claimedFrom)
+  })
+
+  test(`reads a subscription off the rate limits and does not ask (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    const d = drive($, h)
+    h.rateLimits = [{ kind: 'five_hour', percentUsed: 12 }, { kind: 'seven_day', percentUsed: 3 }]
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+    expect(h.store.billing).toEqual({ value: 'subscription', by: 'detected' })
+    h.rating = NO_CHANGE
+    await d.submit(LOOKUP)
+    expect(h.asked.length, 'no billing question').toBe(0)
+    expect((await d.command('')).text ?? '').toContain('Billing: subscription (detected)')
+  })
+
+  test(`asks about billing only after a response says nothing, and keeps the answer (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    const d = drive($, h)
+    h.rateLimits = []
+    h.rating = NO_CHANGE
+    h.answers = { Billing: 'API (pay per token)' }
+    await d.start(surface)
+    await d.submit(LOOKUP)
+    expect(h.asked.length, 'no response read yet: nothing to ask on').toBe(0)
+    await d.step('t1')
+    await d.complete('t1')
+
+    await d.submit(LOOKUP)
+    expect(h.asked.map(a => a.header)).toEqual(['Billing'])
+    expect(h.store.billing).toEqual({ value: 'api', by: 'answered' })
+    await d.submit(LOOKUP)
+    expect(h.asked.length, 'asked once').toBe(1)
+
+    // A new session keeps the answer while the rate limits still say nothing.
+    await d.start(surface)
+    await d.step('t2')
+    await d.complete('t2')
+    await d.submit(LOOKUP)
+    expect(h.asked.length).toBe(1)
+
+    // Rate limits that show a subscription win over the old answer.
+    h.rateLimits = [{ kind: 'five_hour', percentUsed: 1 }]
+    await d.step('t3')
+    await d.complete('t3')
+    expect(h.store.billing).toEqual({ value: 'subscription', by: 'detected' })
+  })
+
+  test(`measures a turn's cost off the session's cost ledger, leaving out the rating (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    const d = drive($, h)
+    const runs = () =>
+      (h.files['/home/test/.claude/mods-logs/rightsize-runs.jsonl'] ?? '')
+        .trim()
+        .split('\n')
+        .map(l => JSON.parse(l) as { actual: number; measured: string; tokens: number })
+    await d.start(surface)
+    h.rating = NO_CHANGE
+    await d.submit(LOOKUP)
+    await d.step('t1', 0)
+    await d.step('t1', 1)
+    await d.complete('t1')
+    expect(last(runs())?.measured).toBe('ledger')
+    expect(last(runs())?.actual, 'two requests at $0.01, the $0.50 rating left out').toBe(0.02)
+
+    // No ledger: the token counts priced from prices.json.
+    h.ledger = undefined
+    await d.submit(LOOKUP)
+    await d.step('t2')
+    await d.complete('t2')
+    const r = last(runs())
+    expect(r?.measured).toBe('tokens')
+    expect(r?.actual).toBe(r?.tokens)
+  })
+
+  test(`logs every rated turn with its change, overhead and windows, and /rightsize report adds them up (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { calibration: FREE_SWITCHES } })
+    const d = drive($, h)
+    const runs = () =>
+      (h.files['/home/test/.claude/mods-logs/rightsize-runs.jsonl'] ?? '')
+        .trim()
+        .split('\n')
+        .map(l => JSON.parse(l) as { kind: string; session: string; change: string; offered: string; overhead: number; before?: Record<string, number>; after?: Record<string, number> })
+    // The log's times are the wall clock's: the report's periods count from now.
+    h.now = Date.now()
+    h.rateLimits = [{ kind: 'five_hour', percentUsed: 10 }]
+    h.windowStep = 1
+    h.ratingUsage = { input_tokens: 1000, output_tokens: 100, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+
+    // Unchanged: still logged.
+    h.rating = NO_CHANGE
+    await d.submit(LOOKUP)
+    await d.step('t1')
+    await d.complete('t1')
+    const first = last(runs())
+    expect(first?.kind).toBe('run')
+    expect(first?.session).toBe('sess-1')
+    expect(first?.change).toBe('none')
+    expect(first?.overhead, '1000 in and 100 out on Haiku').toBe(0.00015)
+    expect(first?.before).toEqual({ five_hour: 11 })
+    expect(first?.after).toEqual({ five_hour: 12 })
+
+    // Lowered on its own.
+    h.rating = '{"level":"low","model":"same","size":"small","type":"lookup","read":2000,"write":3000,"steps":1}'
+    h.answers = { Lowering: 'Lower automatically', Remember: 'Just this session' }
+    await d.submit(LOOKUP)
+    await d.step('t2')
+    await d.complete('t2')
+    expect(last(runs())?.change).toBe('lower')
+    expect(last(runs())?.offered).toBe('lower')
+
+    // A rating that comes to nothing: its cost is logged alone.
+    h.rating = 'no json here'
+    await d.submit(LOOKUP)
+    expect(last(runs())?.kind).toBe('overhead')
+
+    const report = (await d.command('report')).text ?? ''
+    expect(report).toContain('This session: 2 prompts rated, 1 changed (1 lowered).')
+    expect(report).toContain('Last 7 days: 2 prompts rated')
+    expect(report).toContain('rating calls')
+    expect(report).toContain('What went wrong (last 30 days):')
   })
 }

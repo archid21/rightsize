@@ -27,20 +27,21 @@ After the first answer, it asks "Use these choices in every session?".
 
   On the way down, if the cheaper model still fails after 2 reworks, the main chat finishes the task itself.
 - **Handing work down needs a clear saving.** A subagent is used only when the estimate is under 70% of the cost of staying, counting the brief, the report and the check.
-- **Calibration.** After each rated turn, the mod measures the real cost from the API's token usage and moves its estimates toward it. Each task type and route is tracked separately, and after 20 runs the measured average replaces the guess.
+- **Calibration.** After each rated turn, the mod reads the real cost from Claude Code's cost ledger (the `/cost` total), leaving out the Haiku rating call, and moves its estimates toward it. Where there is no ledger, it prices the API's token counts from `prices.json`. Each task type and route is tracked separately, and after 20 runs the measured average replaces the guess.
 
 After each hand-off, a line in the transcript shows the result, for example: `Sent to Haiku: $0.04 vs about $0.31 on Fable (estimated), saved about 87%.`
 
 ## Commands and settings
 
 - `/rightsize` shows the state, the answers and the calibration.
+- `/rightsize report` shows what the mod did this session, in the last 7 days and in the last 30 days: prompts rated and changed, the estimated saving after the cost of its rating calls, the share of your 5-hour window kept (on a subscription), and what went wrong. Savings are estimates.
 - `/rightsize settings` asks the questions again.
 - `/rightsize undo` puts the last auto-lowered prompt back in the box to run at the normal level.
 - `/rightsize clear` drops a session-wide switch.
 - `/mods` turns the mod on or off.
 - `/config`, then rightsize:
   - **Lowest effort** (low, medium or high) sets how far it will lower.
-  - **Reports** (api or subscription) sets whether reports show dollars or a share of usage.
+  - **Reports** (api or subscription) sets whether reports show dollars or a share of usage. The mod reads this off each response's rate limits (a subscription shows five-hour and seven-day windows) and asks once only when they show nothing. Setting it here counts as your answer.
   - **Price check** (monthly, check now or off): how often `prices.json` is compared with Anthropic's pricing page.
 - `prices.json` holds the price table, in dollars per 1M tokens.
   - Every 30 days, at session start, the mod reads Anthropic's pricing page and writes in any changed price. It keeps the old file as `prices.json.bak` and adds a line to the transcript naming each change.
@@ -56,4 +57,4 @@ After each hand-off, a line in the transcript shows the result, for example: `Se
 ## Logs
 
 - Decisions: `~/.claude/mods-logs/rightsize.log`
-- One JSON line per measured run: `~/.claude/mods-logs/rightsize-runs.jsonl`
+- One JSON line per rated turn, with its session, change, costs, rating-call cost and rate-limit windows: `~/.claude/mods-logs/rightsize-runs.jsonl`

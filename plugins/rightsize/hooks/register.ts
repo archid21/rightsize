@@ -13,8 +13,10 @@ import {
   type Situation,
   calKey,
   contextOf,
+  delegateCost,
   effortPlan,
   isLevel,
+  levelRank,
   learn,
   mainCost,
   money,
@@ -28,9 +30,11 @@ import {
   tierOf,
   tierRank,
   usageCost,
+  type Usage,
 } from './cost'
 import { PRICING_URL, applyPrices, diffPrices, isDue, parsePricingPage } from './prices'
 import { parseRating, ratingPrompt, ratingSystem } from './rate'
+import { type Change, type RunLine, type SwitchLine, type Windows, buildReport, parseLines } from './report'
 
 // Before a prompt is sent, a quick Haiku call rates the effort, the model and
 // the size of the work, and the cost model prices each route. The first time
@@ -39,7 +43,9 @@ import { parseRating, ratingPrompt, ratingSystem } from './rate'
 // mod follows that answer. Effort changes rewrite each main-thread request
 // (turn.step); a model change hands the work to a subagent through a hidden
 // note beside the prompt (prompt.submit context). After each rated turn the
-// real cost is measured from the API's usage and fed back into the estimates.
+// real cost is read off the session's cost ledger (/cost) and fed back into the
+// estimates. Billing (API or subscription) is read off the rate limits each
+// response carries; the person is asked only when they say nothing.
 
 const NAME = 'rightsize'
 const CMD = 'rightsize'
@@ -50,11 +56,13 @@ const BRAIN_DUMP_WORDS = 120
 const STEP_UP_AFTER = 5
 /** Claude Code's own system prompt and tools, before the first request is seen. */
 const DEFAULT_CONTEXT = 20_000
-const RUNS_LOG_MAX = 200_000
+/** About 30 days of heavy use, for /rightsize report. */
+const RUNS_LOG_MAX = 1_000_000
 
 type Lower = NonNullable<Choices['lower']>
 type Raise = NonNullable<Choices['raise']>
 type Route = NonNullable<Choices['up']>
+type Billing = 'api' | 'subscription'
 type Question<V> = { header: string; question: string; options: readonly (readonly [string, V])[] }
 
 const qLower: Question<Lower> = {
@@ -95,6 +103,14 @@ const qDown = (cur: string, to: string): Question<Route> => ({
     ['Ask me each time', 'each'],
   ],
 })
+const qBilling: Question<Billing> = {
+  header: 'Billing',
+  question: 'I could not tell how you pay for Claude Code. Reports show dollars for the API, or a share of your usage for a subscription. Which is it?',
+  options: [
+    ['Subscription (Pro, Max, Team or Enterprise)', 'subscription'],
+    ['API (pay per token)', 'api'],
+  ],
+}
 const qRemember: Question<boolean> = {
   header: 'Remember',
   question: 'Use these choices in every session?',
@@ -121,6 +137,9 @@ type Run = {
   rawDelegate?: number
   /** Calibrated estimate of staying at the normal level, for the report. */
   stay: number
+  /** The session's cost ledger (/cost) when the turn's first request went out; undefined where the host keeps none. */
+  ledgerStart?: number
+  /** Token counts priced from prices.json: the fallback when there is no ledger. */
   mainCost: number
   subCost: number
   /** What effort-switch cache misses cost this turn. */
@@ -128,12 +147,30 @@ type Run = {
   errors: number
   steppedUp: boolean
   delegated: boolean
+  change: Change
+  offered: Change
+  /** Calibrated estimates of the main-chat route and of the hand-off, as decided. */
+  takenMain: number
+  takenDelegate?: number
+  /** The rating call's cost. */
+  overhead: number
+  agentCalls: number
+  /** Rate-limit windows when the turn's first request went out. */
+  before?: Windows
 }
 
 let home = ''
+let sessionId = ''
 let off = false
 let floor: Level = 'low'
-let billing: 'api' | 'subscription' = 'api'
+let billing: Billing = 'api'
+/**
+ * Where `billing` came from: read off this session's rate limits, the person's
+ * answer (the question or Reports in /config), a reading saved by an earlier
+ * session, or nothing yet (the Reports default).
+ */
+let billingBy: 'detected' | 'answered' | 'saved' | null = null
+let billingAsked = false
 let priceCheck: 'monthly' | 'check now' | 'off' = 'monthly'
 let checking: Promise<string> | null = null
 let prices: Prices = DEFAULT_PRICES
@@ -266,6 +303,40 @@ async function remembers($: EngineInterface) {
 
 const saveCal = ($: EngineInterface) => $.store.set('calibration', cal).catch(() => undefined)
 
+const isBilling = (v: unknown): v is Billing => v === 'api' || v === 'subscription'
+
+async function usageNow($: EngineInterface) {
+  return $.session.usage().catch(() => undefined)
+}
+
+// A subscription's responses carry its five-hour and seven-day windows; a Claude
+// gateway's carry only a spend limit, billed per token. None: an API key, or no
+// response read yet, so it can't tell.
+export function billingOf(limits: readonly { kind: string }[]): Billing | undefined {
+  if (limits.some(l => l.kind === 'five_hour' || l.kind === 'seven_day')) return 'subscription'
+  if (limits.some(l => l.kind === 'spend_limit')) return 'api'
+  return undefined
+}
+
+async function saveBilling($: EngineInterface, v: Billing, by: 'detected' | 'answered') {
+  billing = v
+  billingBy = by
+  await $.store.set('billing', { value: v, by }).catch(() => undefined)
+}
+
+// Reads the billing off the last response's rate limits. When they say nothing
+// after a response, it keeps the person's earlier answer, or (`mayAsk`) asks once a session.
+async function knowBilling($: EngineInterface, mayAsk: boolean) {
+  if (billingBy === 'detected') return
+  const u = await usageNow($)
+  const seen = billingOf(u?.rateLimits ?? [])
+  if (seen) return saveBilling($, seen, 'detected')
+  if (!mayAsk || billingAsked || billingBy === 'answered' || lastContext === 0) return
+  billingAsked = true
+  const v = await pick($, qBilling)
+  if (v !== undefined) await saveBilling($, v, 'answered')
+}
+
 // ---- Questions -------------------------------------------------------------
 
 // Asks in the engine's dialog. Dismissed, typed under Other, or no one to ask: undefined.
@@ -321,7 +392,7 @@ async function situation($: EngineInterface): Promise<Situation> {
   return { tier, level, context: typeof context === 'number' && context > 0 ? context : DEFAULT_CONTEXT, prices, cal }
 }
 
-async function rate($: EngineInterface, text: string, s: Situation): Promise<Rating | undefined> {
+async function rate($: EngineInterface, text: string, s: Situation): Promise<{ rating?: Rating; overhead: number }> {
   let lastReply = ''
   try {
     const rows = await $.session.messages()
@@ -343,13 +414,15 @@ async function rate($: EngineInterface, text: string, s: Situation): Promise<Rat
     effort: 'low',
     timeoutMs: 10_000,
   })
+  const usage = (r as { usage?: Usage }).usage
+  const overhead = usage ? usageCost(prices, RATER, usage) : 0
   if (!r.isAnswered) {
     await log($, `rating failed: ${r.reason}`)
-    return undefined
+    return { overhead }
   }
   const rating = parseRating(r.text)
   if (!rating) await log($, `rating unreadable: ${JSON.stringify(r.text.slice(0, 80))}`)
-  return rating
+  return { rating, overhead }
 }
 
 const costLine = (d: number, stay: number, cur: string) =>
@@ -426,8 +499,20 @@ export function delegateNote(d: NonNullable<Run['delegate']>) {
   ].join('\n')
 }
 
-function startRun(r: Rating, s: Situation, d: Decision): Run {
+const planChange = (p: Plan): Change => (p.kind === 'none' ? 'none' : p.kind === 'effort' ? p.dir : `delegate-${p.dir}`)
+
+/** `base` is the person's own level, before any session switch rightsize made: the level savings are counted against. */
+function startRun(r: Rating, s: Situation, d: Decision, p: Plan, base: Level, overhead: number): Run {
   const level = d.level ?? d.session ?? s.level
+  const change: Change = d.delegate
+    ? `delegate-${d.delegate.dir}`
+    : level === base
+      ? 'none'
+      : levelRank(level) < levelRank(base)
+        ? 'lower'
+        : 'raise'
+  // A per-prompt switch goes and comes back; a session switch goes once.
+  const switches = d.level && d.level !== s.level ? 2 : d.session ? 1 : 0
   return {
     rating: r,
     tier: s.tier,
@@ -437,7 +522,13 @@ function startRun(r: Rating, s: Situation, d: Decision): Run {
     delegate: d.delegate,
     rawMain: rawMainCost(r, s, level),
     rawDelegate: d.delegate ? rawDelegateCost(r, s, d.delegate.tier, d.delegate.level) : undefined,
-    stay: mainCost(r, s, s.level, 0),
+    stay: mainCost(r, s, base, 0),
+    change,
+    offered: planChange(p),
+    takenMain: mainCost(r, s, level, switches),
+    takenDelegate: d.delegate ? delegateCost(r, s, d.delegate.tier, d.delegate.level) : undefined,
+    overhead,
+    agentCalls: 0,
     mainCost: 0,
     subCost: 0,
     missCost: 0,
@@ -468,16 +559,34 @@ export function report(run: Pick<Run, 'tier' | 'stay'> & { delegate: NonNullable
   return `rightsize: Sent to ${to}: ${vs}, ${diff}.`
 }
 
-async function finish($: EngineInterface, run: Run, aborted: boolean) {
+const round = (n: number) => Number(n.toFixed(5))
+
+function windows(limits: readonly { kind: string; percentUsed: number }[] | undefined): Windows | undefined {
+  if (!limits?.length) return undefined
+  return Object.fromEntries(limits.map(l => [l.kind, l.percentUsed]))
+}
+
+async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs: number) {
   const r = run.rating
   const delegated = run.delegate !== undefined && run.delegated
-  const actual = run.mainCost + run.subCost
+  const tokens = run.mainCost + run.subCost
+  // The ledger prices each response as /cost does, with the cache TTL it was really
+  // written at; a background agent from an earlier turn finishing now counts in it too.
+  const u = await usageNow($)
+  const end = run.ledgerStart === undefined ? undefined : u?.cost?.usd
+  const ledger = end === undefined || run.ledgerStart === undefined ? 0 : end - run.ledgerStart
+  const actual = ledger > 0 ? ledger : tokens
   if (!aborted && actual > 0) {
     if (delegated && run.rawDelegate) cal = learn(cal, calKey(r.type, 'delegate'), ratioSample(actual, run.rawDelegate))
     else if (!run.delegate) cal = learn(cal, calKey(r.type, 'main'), ratioSample(Math.max(0, actual - run.missCost), run.rawMain))
     await saveCal($)
-    const line = {
+  }
+  // Every rated turn is logged, changed or not and stopped or not, for /rightsize report.
+  if (actual > 0 || run.overhead > 0) {
+    const line: RunLine & Record<string, unknown> = {
       at: new Date().toISOString(),
+      kind: 'run',
+      session: sessionId,
       type: r.type,
       route: delegated ? `delegate:${run.delegate?.tier}` : 'main',
       tier: run.tier,
@@ -485,8 +594,20 @@ async function finish($: EngineInterface, run: Run, aborted: boolean) {
       auto: run.auto,
       steppedUp: run.steppedUp,
       estimate: Number((delegated ? (run.rawDelegate ?? 0) : run.rawMain).toFixed(5)),
-      actual: Number(actual.toFixed(5)),
-      stay: Number(run.stay.toFixed(5)),
+      actual: round(actual),
+      measured: ledger > 0 ? 'ledger' : 'tokens',
+      tokens: round(tokens),
+      stay: round(run.stay),
+      taken: round(delegated ? (run.takenDelegate ?? run.takenMain) : run.takenMain),
+      change: run.change,
+      offered: run.offered,
+      aborted,
+      overhead: round(run.overhead),
+      missCost: round(run.missCost),
+      agentCalls: run.agentCalls,
+      durationMs,
+      ...(run.before ? { before: run.before } : {}),
+      ...(windows(u?.rateLimits) ? { after: windows(u?.rateLimits) } : {}),
     }
     await append($, 'rightsize-runs.jsonl', JSON.stringify(line), RUNS_LOG_MAX)
   }
@@ -504,12 +625,12 @@ async function summary($: EngineInterface) {
   const runs = Object.entries(cal).filter(([k]) => k !== SWITCH_KEY).reduce((n, [, e]) => n + e.n, 0)
   const sw = cal[SWITCH_KEY]
   return [
-    `Rightsize is ${off ? 'off (turn it on with /mods)' : 'on'}. Lowest level: ${floor}. Reports: ${billing}.`,
+    `Rightsize is ${off ? 'off (turn it on with /mods)' : 'on'}. Lowest level: ${floor}. Billing: ${billingBy ? `${billing} (${billingBy === 'answered' ? 'your answer' : billingBy})` : 'not known yet'}.`,
     `Lowering: ${said(c.lower)}. Raising: ${said(c.raise)}. Stronger model: ${said(c.up)}. Cheaper model: ${said(c.down)}.${(await remembers($)) ? ' Saved for every session.' : ''}`,
     session ? `Session switch: ${session}.` : 'No session switch.',
     `Calibration: ${runs} measured run(s).${sw ? ` Effort switches that missed the cache: ${Math.round(sw.ratio * 100)}% of ${sw.n} (each one in ~/.claude/mods-logs/rightsize-switches.jsonl).` : ''}`,
     `Prices: checked ${priceCheck === 'off' ? 'never (off)' : 'every 30 days'}; /rightsize prices checks now.`,
-    '/rightsize settings asks the questions again; undo re-runs the last auto-lowered prompt; clear drops the session switch.',
+    '/rightsize report shows what it saved and what went wrong; settings asks the questions again; undo re-runs the last auto-lowered prompt; clear drops the session switch.',
   ].join('\n')
 }
 
@@ -520,6 +641,13 @@ export const register: Register = (on, options) => {
   if (isLevel(opts.floor)) floor = opts.floor
   if (opts.billing === 'subscription') billing = 'subscription'
   if (opts.priceCheck === 'off' || opts.priceCheck === 'check now') priceCheck = opts.priceCheck
+
+  // Reports set in /config counts as the answer to the billing question.
+  on('config.set', { key: 'rightsize.billing' }, async ($, e, next) => {
+    const result = await next(e)
+    if (isBilling(e.value)) await saveBilling($, e.value, 'answered')
+    return result
+  })
 
   // "check now" in /config runs a check and leaves the row on its usual value.
   on('config.set', { key: 'rightsize.priceCheck' }, async ($, e, next) => {
@@ -533,11 +661,12 @@ export const register: Register = (on, options) => {
     const result = await next(e)
     // The plugin can live anywhere (a clone, ~/Projects), so ask for HOME rather than reading it off the path.
     home = (await $.env.get('HOME').catch(() => undefined)) || ($.plugin.root.split('/.claude/')[0] ?? '')
+    sessionId = await $.session.id().catch(() => '')
     pending = null
     active = null
     lastApplied = undefined
     lastContext = 0
-    await $.command.register({ name: CMD, description: 'Rightsize: status, settings, undo or clear' })
+    await $.command.register({ name: CMD, description: 'Rightsize: status, report, settings, undo or clear' })
     prices = parsePrices(await readText($, `${$.plugin.root}/prices.json`))
     if (priceCheck === 'check now') {
       // Set by hand in settings: check once, then back to monthly.
@@ -554,6 +683,14 @@ export const register: Register = (on, options) => {
       }
     }
     cal = parseCalibration(await $.store.get('calibration').catch(() => undefined))
+    // Until this session's first response shows its rate limits, an earlier session's reading stands.
+    const saved = (await $.store.get('billing').catch(() => undefined)) as { value?: unknown; by?: unknown } | undefined
+    billingAsked = false
+    billingBy = null
+    if (isBilling(saved?.value)) {
+      billing = saved.value
+      billingBy = saved.by === 'answered' ? 'answered' : 'saved'
+    }
     if (await remembers($)) {
       const saved = await $.store.get('choices').catch(() => undefined)
       if (saved && typeof saved === 'object') await $.state.set({ plugin: 'rightsize', key: 'choices' }, { ...(saved as Choices), ...(await choices($)) })
@@ -584,6 +721,12 @@ export const register: Register = (on, options) => {
       }
     }
     if (arg === 'prices') return { text: await runCheck($, 'manual') }
+    if (arg === 'report') {
+      const dir = `${home}/.claude/mods-logs`
+      const runs = parseLines<RunLine>(await readText($, `${dir}/rightsize-runs.jsonl`))
+      const switches = parseLines<SwitchLine>(await readText($, `${dir}/rightsize-switches.jsonl`))
+      return { text: buildReport(runs, switches, { now: await $.clock.now(), session: sessionId, subscription: billing === 'subscription' }) }
+    }
     if (arg === 'clear') {
       const level = await sessionEffort($)
       await $.state.set({ plugin: 'rightsize', key: 'sessionEffort' }, null)
@@ -595,6 +738,9 @@ export const register: Register = (on, options) => {
       const cur = TIER_NAME[s.tier]
       const up = TIERS.filter(t => tierRank(t) > tierRank(s.tier))
       const down = TIERS.filter(t => tierRank(t) < tierRank(s.tier))
+      billingAsked = false
+      if (billingBy === 'answered') billingBy = 'saved'
+      await knowBilling($, true)
       const next: Choices = {}
       next.lower = await pick($, qLower)
       next.raise = await pick($, qRaise)
@@ -619,20 +765,25 @@ export const register: Register = (on, options) => {
     if (text.startsWith('/') || words(text) < MIN_WORDS) return next(e)
     if (brainDumpWillCatch(text, await readSwitches($))) return next(e)
 
+    await knowBilling($, true)
     $.ui.status('Rightsize: rating the prompt...')
     let out = e
     let run: Run | null = null
     try {
       const s = await situation($)
-      const r = await rate($, text, s)
+      const { rating: r, overhead } = await rate($, text, s)
       if (r) {
         const p = plan(r, s, floor)
         const d = await resolve($, p, r, s)
         if (d.session) await $.state.set({ plugin: 'rightsize', key: 'sessionEffort' }, d.session)
         if (d.delegate) out = { ...e, context: [...(e.context ?? []), delegateNote(d.delegate)] }
-        run = startRun(r, s, d)
+        run = startRun(r, s, d, p, (await seenEffort($)) ?? s.level, overhead)
         const did = d.delegate ? `delegate ${d.delegate.tier}` : d.level ? `${d.auto ? 'auto ' : ''}${d.level} for the prompt` : d.session ? `${d.session} for the session` : 'no change'
         await log($, `${r.type} on ${s.tier}/${s.level}: rated ${r.level}/${r.model}/${r.size}, plan ${p.kind}${'dir' in p ? ` ${p.dir}` : ''}: ${did}`)
+      } else if (overhead > 0) {
+        // A rating that came to nothing still cost something: the report counts it.
+        const line: RunLine = { at: new Date().toISOString(), kind: 'overhead', session: sessionId, overhead: round(overhead) }
+        await append($, 'rightsize-runs.jsonl', JSON.stringify(line), RUNS_LOG_MAX)
       }
     } catch (err) {
       await log($, `rating threw: ${err instanceof Error ? err.message : String(err)}`)
@@ -650,7 +801,9 @@ export const register: Register = (on, options) => {
       return out
     }
     if (pending && active?.turnId !== e.turnId) {
-      active = { ...pending, turnId: e.turnId }
+      // Read after the rating call, so the ledger's difference is the turn's own cost.
+      const u = await usageNow($)
+      active = { ...pending, turnId: e.turnId, ledgerStart: u?.cost?.usd, before: windows(u?.rateLimits) }
       pending = null
     }
     const run = active?.turnId === e.turnId ? active : null
@@ -708,6 +861,7 @@ export const register: Register = (on, options) => {
     if (active && e.agentId === undefined) {
       const model = (e as { model?: unknown }).model
       if (String(e.tool) === 'Agent' && active.delegate && model === active.delegate.tier) active.delegated = true
+      if (String(e.tool) === 'Agent' || String(e.tool) === 'SendMessage') active.agentCalls += 1
       if ((result as { isError?: boolean }).isError) active.errors += 1
     }
     return result
@@ -715,10 +869,11 @@ export const register: Register = (on, options) => {
 
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)
+    if (e.agentId === undefined) await knowBilling($, false)
     if (e.agentId === undefined && active && active.turnId === e.turnId) {
       const run = active
       active = null
-      await finish($, run, e.isAborted)
+      await finish($, run, e.isAborted, e.durationMs)
     }
     return result
   })

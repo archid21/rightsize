@@ -178,6 +178,8 @@ export type Situation = {
   context: number
   prices: Prices
   cal: Calibration
+  /** The hand-off and lowering shares; DEFAULT_RULES when absent. */
+  rules?: Rules
 }
 
 /** The main chat doing the work at `level`, before calibration. */
@@ -235,8 +237,19 @@ export type Plan =
 
 /** Hand work down only when the subagent route costs under this share of staying. */
 export const SAVING_RULE = 0.7
-/** Lower effort only when it saves at least this share after the cache cost. */
-const LOWER_RULE = 0.9
+/** Lower effort only when the lower level, cache cost included, costs under this share of staying. */
+export const LOWER_RULE = 0.9
+
+/** The two shares above, as the person set them in /config. */
+export type Rules = { handOff: number; lower: number }
+export const DEFAULT_RULES: Rules = { handOff: SAVING_RULE, lower: LOWER_RULE }
+
+/** A /config share such as "70%" as 0.7; anything else, the fallback. */
+export function parseShare(v: unknown, fallback: number) {
+  const m = typeof v === 'string' ? /^(\d{1,3})%$/.exec(v.trim()) : null
+  const n = m ? Number(m[1]) / 100 : NaN
+  return n > 0 && n <= 1 ? n : fallback
+}
 
 const clampFloor = (l: Level, floor: Level) => (levelRank(l) < levelRank(floor) ? floor : l)
 
@@ -248,7 +261,7 @@ export function effortPlan(r: Rating, s: Situation, floor: Level): Plan {
   // A per-prompt lower switches twice: down for this turn, back for the next.
   const now = mainCost(r, s, s.level, 0)
   const lowered = mainCost(r, s, target, 2)
-  if (lowered >= now * LOWER_RULE) return { kind: 'none', why: `lowering to ${target} saves less than the cache it costs` }
+  if (lowered >= now * (s.rules ?? DEFAULT_RULES).lower) return { kind: 'none', why: `lowering to ${target} saves less than the cache it costs` }
   return { kind: 'effort', dir: 'lower', level: target, saving: now - lowered }
 }
 
@@ -262,7 +275,7 @@ export function plan(r: Rating, s: Situation, floor: Level): Plan {
   if (tierRank(want) < tierRank(s.tier) && r.size === 'bulky') {
     const lowered = levelRank(level) < levelRank(s.level) ? mainCost(r, s, level, 2) : Infinity
     const d = delegateCost(r, s, want, level)
-    if (d < SAVING_RULE * Math.min(stay, lowered)) return { kind: 'delegate', dir: 'down', tier: want, level, delegateCost: d, mainCost: stay }
+    if (d < (s.rules ?? DEFAULT_RULES).handOff * Math.min(stay, lowered)) return { kind: 'delegate', dir: 'down', tier: want, level, delegateCost: d, mainCost: stay }
   }
   return effortPlan(r, s, floor)
 }

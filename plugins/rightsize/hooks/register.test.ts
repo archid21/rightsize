@@ -246,9 +246,9 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(lines.map(l => `${l.from}>${l.to}`)).toEqual(['medium>low', 'low>medium', 'medium>low', 'low>medium'])
     expect(lines.every(l => l.kept), 'the fake engine keeps the cache').toBe(true)
 
-    // Calibration: every measured main turn is stored.
+    // Calibration: t1 stepped back up and teaches nothing; t2 is stored.
     const cal = h.store.calibration as Record<string, { n: number }>
-    expect(cal['lookup:main']?.n, 'two measured lookup turns').toBe(2)
+    expect(cal['lookup:main']?.n, 'one measured lookup turn').toBe(1)
   })
 
   test(`asks Q2 for more effort, and does not lower when the cache would cost more (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -420,6 +420,49 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.complete('t1')
     expect(await bandText($, surface)).toBe('')
     expect(last(h.logs) ?? '').toContain('did not hand this to a Fable subagent')
+  })
+
+  test(`adds its calibration to what another session saved, and skips turns that stepped up (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { calibration: FREE_SWITCHES } })
+    const d = drive($, h)
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+
+    // Another session saves its runs after this one loaded the calibration.
+    h.store.calibration = { ...FREE_SWITCHES, 'debug:main': { n: 3, ratio: 2 } }
+    h.rating = NO_CHANGE
+    await d.submit(LOOKUP)
+    await d.step('t1')
+    await d.complete('t1')
+    let cal = h.store.calibration as Record<string, { n: number }>
+    expect(cal['debug:main']?.n, "the other session's runs are kept").toBe(3)
+    expect(cal['lookup:main']?.n, "this session's run is added").toBe(1)
+    expect(cal['cache:effort-switch']?.n, 'the switch record is kept').toBe(20)
+
+    // An auto-lowered turn that steps back up teaches nothing.
+    h.rating = LOWER
+    h.answers = { Lowering: 'Lower automatically', Remember: 'Just this session' }
+    await d.submit(LOOKUP)
+    await d.step('t2', 0)
+    await d.step('t2', 5)
+    await d.complete('t2')
+    cal = h.store.calibration as Record<string, { n: number }>
+    expect(cal['lookup:main']?.n, 'the stepped-up turn is not counted').toBe(1)
+  })
+
+  test(`uses the hand-off and lowering thresholds set in /config (${surface})`, { timeoutMs: 30000, options: { handOff: '50%', lowering: '80%' } }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    const d = drive($, h)
+    await d.start(surface)
+    expect((await d.command('')).text ?? '').toContain('Thresholds: hand off under 50% of staying, lower under 80%.')
+  })
+
+  test(`says the thresholds are the defaults when none are set (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    const d = drive($, h)
+    await d.start(surface)
+    expect((await d.command('')).text ?? '').toContain('Thresholds: hand off under 70% of staying, lower under 90% (the defaults).')
   })
 
   test(`skips short prompts, slash commands, other senders, and when off in /mods (${surface})`, { timeoutMs: 30000 }, async ($, on) => {

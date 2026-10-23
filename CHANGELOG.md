@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Hand-off threshold** (default 70%) and **Lowering threshold** (default 90%) in `/config`: how much cheaper a subagent or a lower effort level must be before rightsize uses it. `/rightsize` shows the values in use.
+- Calibration from sessions running at the same time is merged, not overwritten: each save adds its new runs to the stored record.
+- A lowered turn that stepped back up no longer counts toward calibration, since part of it ran at the normal level.
 - A band above the prompt (CLI and desktop app) shows what rightsize did, with buttons to undo it, clear a session switch, change the rule for that case, or close it. It also shows a hand-off's result, which no longer takes a transcript line. **Band** in `/config` (or ⋯ on the band) sets when it shows: when it acts (default), always, or off.
 - Billing is read off each response's rate limits: five-hour and seven-day windows mean a subscription, a spend limit means a gateway. rightsize asks once only when they show nothing, and keeps the answer across sessions.
 - Each turn's actual cost comes from the session's cost ledger (the `/cost` total), leaving out the Haiku rating call. Where there is no ledger, it prices the token counts from `prices.json`. Cache writes are priced at the 1-hour TTL by default.

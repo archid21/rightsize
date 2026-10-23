@@ -47,8 +47,8 @@ After your first answer, rightsize asks whether to use your choices in every ses
   4. tell you how it went
 
   When the work goes to a cheaper model and still fails after 2 reworks, the main chat finishes it itself.
-- **Handing work down needs a clear saving.** A cheaper subagent is used only when its estimate is under 70% of the cost of staying, counting the brief, report, check and likely rework.
-- **It learns from real costs.** After each rated turn, rightsize reads what the turn really cost from Claude Code's own cost ledger (the `/cost` total), which prices cache writes at the TTL they were written at. The Haiku rating call is left out. Where there is no ledger, it prices the API's token counts from `prices.json` instead. It moves its estimates toward that cost, for each task type and route. After 20 runs, the measured average replaces the guess.
+- **Handing work down needs a clear saving.** A cheaper subagent is used only when its estimate is under 70% of the cost of staying, counting the brief, report, check and likely rework. Lowering effort needs the lower level to cost under 90% of staying, counting the cache it may rewrite. Both are defaults you can change in `/config`.
+- **It learns from real costs.** After each rated turn, rightsize reads what the turn really cost from Claude Code's own cost ledger (the `/cost` total), which prices cache writes at the TTL they were written at. The Haiku rating call is left out. Where there is no ledger, it prices the API's token counts from `prices.json` instead. It moves its estimates toward that cost, for each task type and route. After 20 runs, the measured average replaces the guess. A lowered turn that stepped back up is left out, since part of it ran at your normal level. Sessions running at the same time add to one shared record, so none overwrites another's runs.
 - **It knows how you pay.** Each response carries rate-limit windows: a subscription shows five-hour and seven-day windows, and a Claude gateway shows a spend limit. rightsize reads them and shows reports in dollars (API) or as a share of usage (subscription). Only when a response shows none, as with an API key, does it ask you once. The answer is kept across sessions.
 - **Prices stay current.** Every 30 days it compares `prices.json` with Anthropic's pricing page and writes in any change, keeping the old file as `prices.json.bak`.
 
@@ -85,6 +85,8 @@ The band shows in the CLI and the desktop app. VS Code and the mobile app keep t
 - `/config` → rightsize:
   - **Lowest effort**: low, medium or high.
   - **Reports**: dollars, or share of usage for subscriptions. Setting it counts as your answer; rate limits that show a subscription still win.
+  - **Hand-off threshold**: 50%, 60%, 70% (default), 80% or 90%. A cheaper subagent must cost under this share of staying. Lower is stricter.
+  - **Lowering threshold**: 70%, 80%, 90% (default) or 95%. A lower effort level must cost under this share of staying. Lower is stricter.
   - **Band**: when it acts (the default: only when rightsize changes something), always (every rated prompt, "No change" included), or off (status line only).
   - **Price check**: monthly, check now, or off.
 

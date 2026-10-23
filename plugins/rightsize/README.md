@@ -26,8 +26,8 @@ After the first answer, it asks "Use these choices in every session?".
   4. report how it went
 
   On the way down, if the cheaper model still fails after 2 reworks, the main chat finishes the task itself.
-- **Handing work down needs a clear saving.** A subagent is used only when the estimate is under 70% of the cost of staying, counting the brief, the report and the check.
-- **Calibration.** After each rated turn, the mod reads the real cost from Claude Code's cost ledger (the `/cost` total), leaving out the Haiku rating call, and moves its estimates toward it. Where there is no ledger, it prices the API's token counts from `prices.json`. Each task type and route is tracked separately, and after 20 runs the measured average replaces the guess.
+- **Handing work down needs a clear saving.** A subagent is used only when the estimate is under 70% of the cost of staying, counting the brief, the report and the check. Lowering effort needs the lower level to cost under 90% of staying. Both are defaults you can change in `/config`.
+- **Calibration.** After each rated turn, the mod reads the real cost from Claude Code's cost ledger (the `/cost` total), leaving out the Haiku rating call, and moves its estimates toward it. Where there is no ledger, it prices the API's token counts from `prices.json`. Each task type and route is tracked separately, and after 20 runs the measured average replaces the guess. A lowered turn that stepped back up is left out, and sessions running at the same time add to one shared record rather than overwriting each other.
 
 A one-row band above the prompt (CLI and desktop app) shows what the mod did, with buttons: Undo or Clear, a quicker rule for this case (Q1–Q4), ⋯ to choose when the band shows, and × to close it. After a hand-off it shows the result, for example: `Sent to Haiku: $0.04 vs about $0.31 on Fable (estimated), saved about 87%.` With the band off, that result is a line in the transcript.
 
@@ -42,6 +42,7 @@ A one-row band above the prompt (CLI and desktop app) shows what the mod did, wi
 - `/config`, then rightsize:
   - **Lowest effort** (low, medium or high) sets how far it will lower.
   - **Reports** (api or subscription) sets whether reports show dollars or a share of usage. The mod reads this off each response's rate limits (a subscription shows five-hour and seven-day windows) and asks once only when they show nothing. Setting it here counts as your answer.
+  - **Hand-off threshold** (50% to 90%, default 70%) and **Lowering threshold** (70% to 95%, default 90%): how much cheaper a subagent or a lower effort level must be before the mod uses it. Lower is stricter.
   - **Band** (when it acts, always or off): when the band above the prompt shows. "when it acts", the default, shows it only when the mod changes something.
   - **Price check** (monthly, check now or off): how often `prices.json` is compared with Anthropic's pricing page.
 - `prices.json` holds the price table, in dollars per 1M tokens.

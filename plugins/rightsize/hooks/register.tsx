@@ -9,6 +9,7 @@ import type {
 import {
   DEFAULT_LEVEL,
   DEFAULT_PRICES,
+  DEFAULT_RULES,
   SWITCH_KEY,
   TIERS,
   TIER_NAME,
@@ -16,6 +17,7 @@ import {
   type Plan,
   type Prices,
   type Rating,
+  type Rules,
   type Situation,
   calKey,
   contextOf,
@@ -28,6 +30,7 @@ import {
   money,
   parseCalibration,
   parsePrices,
+  parseShare,
   plan,
   ratioSample,
   rawDelegateCost,
@@ -189,6 +192,7 @@ let billingBy: 'detected' | 'answered' | 'saved' | null = null
 let billingAsked = false
 let priceCheck: 'monthly' | 'check now' | 'off' = 'monthly'
 let bandMode: BandMode = 'when it acts'
+let rules: Rules = DEFAULT_RULES
 let checking: Promise<string> | null = null
 let prices: Prices = DEFAULT_PRICES
 let cal: Calibration = {}
@@ -318,7 +322,36 @@ async function remembers($: EngineInterface) {
   return (await $.store.get('remember').catch(() => undefined)) === true
 }
 
-const saveCal = ($: EngineInterface) => $.store.set('calibration', cal).catch(() => undefined)
+// Samples learned since the last save. Other sessions save calibration too, so a
+// save applies these to the stored copy rather than writing this session's over it.
+let unsaved: { key: string; sample: number }[] = []
+let saving: Promise<void> = Promise.resolve()
+
+function teach(key: string, sample: number) {
+  cal = learn(cal, key, sample)
+  unsaved.push({ key, sample })
+}
+
+async function mergeCal($: EngineInterface) {
+  const batch = unsaved
+  if (!batch.length) return
+  unsaved = []
+  try {
+    let stored = parseCalibration(await $.store.get('calibration'))
+    for (const s of batch) stored = learn(stored, s.key, s.sample)
+    await $.store.set('calibration', stored)
+    // Samples learned while this save ran stay pending, on top of the merged copy.
+    cal = unsaved.reduce((c, s) => learn(c, s.key, s.sample), stored)
+  } catch {
+    unsaved = [...batch, ...unsaved]
+  }
+}
+
+// One save at a time, so two saves in this session never read the same stored copy.
+const saveCal = ($: EngineInterface) => {
+  saving = saving.then(() => mergeCal($))
+  return saving
+}
 
 const isBilling = (v: unknown): v is Billing => v === 'api' || v === 'subscription'
 
@@ -406,7 +439,7 @@ async function situation($: EngineInterface): Promise<Situation> {
     level = isLevel(set) ? set : DEFAULT_LEVEL[tier]
   }
   const context = (await $.state.get({ plugin: 'rightsize', key: 'context' }).catch(() => undefined))?.value
-  return { tier, level, context: typeof context === 'number' && context > 0 ? context : DEFAULT_CONTEXT, prices, cal }
+  return { tier, level, context: typeof context === 'number' && context > 0 ? context : DEFAULT_CONTEXT, prices, cal, rules }
 }
 
 async function rate($: EngineInterface, text: string, s: Situation): Promise<{ rating?: Rating; overhead: number }> {
@@ -678,8 +711,10 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
   const ledger = end === undefined || run.ledgerStart === undefined ? 0 : end - run.ledgerStart
   const actual = ledger > 0 ? ledger : tokens
   if (!aborted && actual > 0) {
-    if (delegated && run.rawDelegate) cal = learn(cal, calKey(r.type, 'delegate'), ratioSample(actual, run.rawDelegate))
-    else if (!run.delegate) cal = learn(cal, calKey(r.type, 'main'), ratioSample(Math.max(0, actual - run.missCost), run.rawMain))
+    if (delegated && run.rawDelegate) teach(calKey(r.type, 'delegate'), ratioSample(actual, run.rawDelegate))
+    // A turn that stepped back up ran partly at the normal level, so its cost says
+    // nothing about the lowered estimate: it teaches nothing.
+    else if (!run.delegate && !run.steppedUp) teach(calKey(r.type, 'main'), ratioSample(Math.max(0, actual - run.missCost), run.rawMain))
     await saveCal($)
   }
   // Every rated turn is logged, changed or not and stopped or not, for /rightsize report.
@@ -734,6 +769,7 @@ async function summary($: EngineInterface) {
     `Lowering: ${said(c.lower)}. Raising: ${said(c.raise)}. Stronger model: ${said(c.up)}. Cheaper model: ${said(c.down)}.${(await remembers($)) ? ' Saved for every session.' : ''}`,
     session ? `Session switch: ${session}.` : 'No session switch.',
     `Calibration: ${runs} measured run(s).${sw ? ` Effort switches that missed the cache: ${Math.round(sw.ratio * 100)}% of ${sw.n} (each one in ~/.claude/mods-logs/rightsize-switches.jsonl).` : ''}`,
+    `Thresholds: hand off under ${Math.round(rules.handOff * 100)}% of staying, lower under ${Math.round(rules.lower * 100)}%${rules.handOff === DEFAULT_RULES.handOff && rules.lower === DEFAULT_RULES.lower ? ' (the defaults)' : ''}.`,
     `Prices: checked ${priceCheck === 'off' ? 'never (off)' : 'every 30 days'}; /rightsize prices checks now.`,
     '/rightsize report shows what it saved and what went wrong; settings asks the questions again; undo re-runs the last auto-lowered prompt; clear drops the session switch.',
   ].join('\n')
@@ -747,6 +783,7 @@ export const register: Register = (on, options) => {
   if (opts.billing === 'subscription') billing = 'subscription'
   if (opts.priceCheck === 'off' || opts.priceCheck === 'check now') priceCheck = opts.priceCheck
   if (isBandMode(opts.band)) bandMode = opts.band
+  rules = { handOff: parseShare(opts.handOff, DEFAULT_RULES.handOff), lower: parseShare(opts.lowering, DEFAULT_RULES.lower) }
 
   on('config.set', { key: 'rightsize.band' }, async ($, e, next) => {
     const result = await next(e)
@@ -927,7 +964,7 @@ export const register: Register = (on, options) => {
       // An effort switch may make this request re-write the conversation: measure it.
       if (applied && lastApplied && applied !== lastApplied && lastContext > 5000) {
         const missed = u.cache_read_input_tokens < lastContext * 0.5
-        cal = learn(cal, SWITCH_KEY, missed ? 1 : 0)
+        teach(SWITCH_KEY, missed ? 1 : 0)
         // One line per measured switch: the evidence for whether the engine keeps the cache.
         await append(
           $,

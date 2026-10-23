@@ -29,6 +29,31 @@
         "subscription"
       ]
     },
+    "handOff": {
+      "type": "string",
+      "title": "Hand-off threshold",
+      "description": "Send a big task to a cheaper subagent only when it is estimated to cost under this share of staying on your model, counting the brief, check and likely rework. Lower is stricter.",
+      "default": "70%",
+      "options": [
+        "50%",
+        "60%",
+        "70%",
+        "80%",
+        "90%"
+      ]
+    },
+    "lowering": {
+      "type": "string",
+      "title": "Lowering threshold",
+      "description": "Lower effort only when the lower level is estimated to cost under this share of staying, counting the cache it may rewrite. Lower is stricter.",
+      "default": "90%",
+      "options": [
+        "70%",
+        "80%",
+        "90%",
+        "95%"
+      ]
+    },
     "band": {
       "type": "string",
       "title": "Band",

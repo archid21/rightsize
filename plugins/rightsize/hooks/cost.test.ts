@@ -2,6 +2,7 @@ import { expect, test } from 'claude-code/testing'
 import {
   CAL_FULL,
   DEFAULT_PRICES,
+  DEFAULT_RULES,
   SWITCH_KEY,
   type Rating,
   type Situation,
@@ -12,6 +13,7 @@ import {
   mainCost,
   money,
   parsePrices,
+  parseShare,
   plan,
   share,
   tierOf,
@@ -94,6 +96,29 @@ test('hands a big mechanical task on Fable down to Haiku', async () => {
     expect(p.tier).toBe('haiku')
     expect(p.delegateCost, 'well under staying').toBeLessThan(p.mainCost * 0.7)
   }
+})
+
+test('the hand-off and lowering thresholds follow the settings, 70% and 90% by default', async () => {
+  expect(DEFAULT_RULES).toEqual({ handOff: 0.7, lower: 0.9 })
+  expect(parseShare('50%', 0.7)).toBe(0.5)
+  expect(parseShare('150%', 0.7), 'over 100%: the default').toBe(0.7)
+  expect(parseShare(undefined, 0.9), 'unset: the default').toBe(0.9)
+
+  // Hand-off: the same task passes or not as the threshold moves past its cost ratio.
+  const big = rating({ level: 'low', model: 'haiku', size: 'bulky', type: 'search', read: 150_000, write: 3000, steps: 30 })
+  const sent = plan(big, fable, 'low')
+  if (sent.kind !== 'delegate') throw new Error('expected a hand-off at the default')
+  const ratio = sent.delegateCost / sent.mainCost
+  expect(plan(big, { ...fable, rules: { ...DEFAULT_RULES, handOff: ratio * 0.9 } }, 'low').kind, 'stricter: stays').not.toBe('delegate')
+  expect(plan(big, { ...fable, rules: { ...DEFAULT_RULES, handOff: ratio * 1.1 } }, 'low').kind).toBe('delegate')
+
+  // Lowering: the same.
+  const small = rating({ level: 'low', type: 'lookup', write: 1500 })
+  const s = { ...opus, cal: freeSwitches }
+  const keep = mainCost(small, s, 'medium', 0)
+  const low = mainCost(small, s, 'low', 2)
+  expect(effortPlan(small, { ...s, rules: { ...DEFAULT_RULES, lower: (low / keep) * 0.9 } }, 'low').kind, 'stricter: keeps medium').toBe('none')
+  expect(effortPlan(small, { ...s, rules: { ...DEFAULT_RULES, lower: (low / keep) * 1.1 } }, 'low').kind).toBe('effort')
 })
 
 test('keeps a small task on the main model even when a cheaper one could do it', async () => {

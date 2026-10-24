@@ -58,7 +58,7 @@ import {
 import { PRICING_URL, applyPrices, diffPrices, isDue, parsePricingPage } from './prices'
 import { parseRating, ratingPrompt, ratingSystem } from './rate'
 import { type Signals, type Struggle, callKey, noSignals, noteCall, oneUp, struggle } from './struggle'
-import { type Change, type RunLine, type SwitchLine, type Windows, buildReport, parseLines } from './report'
+import { type Change, type RunLine, type SwitchLine, type Windows, buildReport, parseLines, windowRates } from './report'
 
 // Before a prompt is sent, a quick Haiku call rates the effort, the model and
 // the work needs on each model, and the cost model prices each route that fits. The first time
@@ -818,7 +818,7 @@ export function report(run: Pick<Run, 'tier' | 'stay'> & { delegate: NonNullable
   const to = TIER_NAME[run.delegate.tier]
   const cur = TIER_NAME[run.tier]
   const vs = `${money(actual)} vs about ${money(run.stay)} on ${cur} (estimated)`
-  if (mode === 'subscription') return `rightsize: Sent to ${to}: used ${share(actual, run.stay)} the usage staying on ${cur} would. At API prices: ${vs}.`
+  if (mode === 'subscription') return `rightsize: Sent to ${to}: used ${share(actual, run.stay)} the usage staying on ${cur} would. API-equivalent: ${vs}.`
   const diff = actual <= run.stay ? `saved about ${Math.round((1 - actual / Math.max(run.stay, 1e-9)) * 100)}%` : `cost ${share(actual, run.stay)} staying`
   return `rightsize: Sent to ${to}: ${vs}, ${diff}.`
 }
@@ -918,7 +918,7 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
   }
   if (run.delegate && (!delegated || !aborted)) {
     const text = !delegated
-      ? `rightsize: Claude did not hand this to a ${TIER_NAME[run.delegate.tier]} subagent; it ran on ${TIER_NAME[run.tier]} (${money(actual)}).`
+      ? `rightsize: Claude did not hand this to a ${TIER_NAME[run.delegate.tier]} subagent; it ran on ${TIER_NAME[run.tier]} (${money(actual)}${billing === 'subscription' ? ' API-equivalent' : ''}).`
       : report({ tier: run.tier, stay: run.stay, delegate: run.delegate }, actual, billing)
     // The band shows the result in place of a transcript line; with the band off, the line stays.
     if (bandMode === 'off') $.ui.log(text)
@@ -989,11 +989,26 @@ const idleFor = (ms: number) => {
   return m < 120 ? n(m, 'minute') : m < 48 * 60 ? n(Math.round(m / 60), 'hour') : n(Math.round(m / 1440), 'day')
 }
 
-// After the cache expired, the next request writes the whole conversation again. On
-// a subscription Claude Code warns about this itself, and past 200K tokens it
-// compacts an idle session before the cache expires, so this is for API billing under that.
+/** A subscriber's 5-hour window used per API-equivalent dollar over the last 30 days of runs; undefined until runs show it. */
+async function windowPerDollar($: EngineInterface) {
+  const now = await $.clock.now()
+  const lines = parseLines<RunLine>(await readText($, `${home}/.claude/mods-logs/rightsize-runs.jsonl`))
+  return windowRates(lines.filter(l => now - Date.parse(l.at) <= 30 * 24 * 60 * 60_000), 'five_hour')?.perDollar
+}
+
+/** "$0.16" on the API; on a subscription, "0.8% of your 5-hour window ($0.16 API-equivalent)" once runs show the rate. */
+function usageCostText(d: number, perDollar: number | undefined) {
+  if (billing === 'api') return money(d)
+  if (perDollar === undefined) return `${money(d)} API-equivalent`
+  const pct = d * perDollar
+  return `${pct < 0.1 ? 'under 0.1' : pct.toFixed(1)}% of your 5-hour window (${money(d)} API-equivalent)`
+}
+
+// After the cache expired, the next request writes the whole conversation again. Past
+// 200K tokens Claude Code compacts an idle session before the cache expires, so this is
+// for sessions under that. A subscriber is told the cost in their 5-hour window.
 async function holdIdle($: EngineInterface): Promise<boolean> {
-  if (idleWarning === null || billing !== 'api' || billingBy === null) return false
+  if (idleWarning === null || billingBy === null) return false
   const last: LastTurn | undefined = lastTurnAt ? { at: lastTurnAt, context: lastContext } : (await lastTurns($))[sessionId]
   if (!last || last.at === idleWarnedFor) return false
   const idle = (await $.clock.now()) - last.at
@@ -1003,9 +1018,10 @@ async function holdIdle($: EngineInterface): Promise<boolean> {
   const c = idleCost(prices[s.tier], context)
   if (c.resend < idleWarning) return false
   idleWarnedFor = last.at
+  const perDollar = billing === 'subscription' ? await windowPerDollar($) : undefined
   const a = await pick($, {
     header: 'Idle',
-    question: `This session sat idle for ${idleFor(idle)}, so its cache has likely expired. Sending writes the whole conversation (~${Math.round(context / 1000)}K tokens) to the cache again: about ${money(c.resend)} more on ${TIER_NAME[s.tier]} than a warm cache. /clear costs nothing; /compact about ${money(c.compact)}.`,
+    question: `This session sat idle for ${idleFor(idle)}, so its cache has likely expired. Sending writes the whole conversation (~${Math.round(context / 1000)}K tokens) to the cache again: about ${usageCostText(c.resend, perDollar)} more on ${TIER_NAME[s.tier]} than a warm cache. /clear costs nothing; /compact about ${usageCostText(c.compact, perDollar)}.`,
     options: [
       ['Send it', false],
       ['Hold it: I will /clear or /compact first', true],

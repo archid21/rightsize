@@ -22,7 +22,7 @@
     "billing": {
       "type": "string",
       "title": "Reports",
-      "description": "api: subagent reports show dollars. subscription: they show the share of usage, with API prices beside it. Read off each response's rate limits when they show it; setting it here counts as your answer when they don't.",
+      "description": "api: subagent reports show dollars. subscription: they show the share of usage and of the 5-hour window, with API-equivalent dollars beside it. Read off each response's rate limits when they show it; setting it here counts as your answer when they don't.",
       "default": "api",
       "options": [
         "api",
@@ -87,7 +87,7 @@
     "idleWarning": {
       "type": "string",
       "title": "Idle warning",
-      "description": "On API billing, when a session under 200K tokens sat idle past the cache's life (1 hour, or 5 minutes when prices.json says 5m), ask before the next prompt writes the whole conversation to the cache again, when that costs over this much more than a warm cache. You can send it or hold it to /clear or /compact first. Subscriptions are left to Claude Code's own warning.",
+      "description": "When a session under 200K tokens sat idle past the cache's life (1 hour, or 5 minutes when prices.json says 5m), ask before the next prompt writes the whole conversation to the cache again, when that costs over this much more than a warm cache. You can send it or hold it to /clear or /compact first. On a subscription the bar is in API-equivalent dollars, and the question gives the cost as a share of the 5-hour window once runs show the rate.",
       "default": "over $0.10",
       "options": [
         "over $0.10",

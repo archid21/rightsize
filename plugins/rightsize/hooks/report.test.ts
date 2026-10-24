@@ -36,14 +36,23 @@ test('reports each period, the window kept for a subscriber, and says when it co
   ]
   const text = buildReport(lines, [], { now: NOW, session: 's1', subscription: true })
   expect(text).toContain('This session: 2 prompts rated, 1 changed (1 lowered).')
-  expect(text).toContain('Saved ~$0.49 (~33% of what these turns would have cost) after $0.01 of rating calls.')
-  // 2% of the window for $1 over 2 minutes: $0.49 saved is ~1% and about 1 minute.
-  expect(text).toContain('Kept ~1.0% of your 5-hour window, about 1 more minute at this pace.')
+  // 2% of the window for $1 over 2 minutes: $0.49 saved is ~1% and about 1 minute. The window leads; dollars follow as API-equivalent.
+  expect(text).toContain(
+    '  Kept ~1.0% of your 5-hour window, about 1 more minute at this pace.\n  Saved ~33% of the usage these turns would have taken, after rating calls (API-equivalent: ~$0.49 saved, $0.01 of rating calls).',
+  )
+  expect(text).toContain('Dollar amounts are API-equivalent')
+  const api = buildReport(lines, [], { now: NOW, session: 's1', subscription: false })
+  expect(api).toContain('Saved ~$0.49 (~33% of what these turns would have cost) after $0.01 of rating calls.')
+  expect(api, 'no API-equivalent label on the API').not.toContain('API-equivalent')
   expect(text, 'the old session is in 30 days only').toContain('Last 7 days: 2 prompts rated')
   expect(text).toContain('Last 30 days: 3 prompts rated, 2 changed')
   expect(buildReport(lines, [], { now: NOW, session: 's1', subscription: false }), 'no window line on the API').not.toContain('5-hour')
   const worse = buildReport([run({ change: 'none', overhead: 0.03 })], [], { now: NOW, session: 's1', subscription: false })
   expect(worse).toContain('Cost ~$0.03 more than it saved, counting $0.03 of rating calls.')
+  const worseSub = buildReport([run({ change: 'none', overhead: 0.03 })], [], { now: NOW, session: 's1', subscription: true })
+  expect(worseSub, 'no window measured yet: the share line alone').toContain(
+    'This session: 1 prompt rated, 0 changed.\n  Used more than it saved, counting rating calls (API-equivalent: ~$0.03 more, $0.03 of rating calls).',
+  )
 })
 
 test('lists what went wrong, and how far the estimates were off', async () => {

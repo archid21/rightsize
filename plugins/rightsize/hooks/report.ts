@@ -179,8 +179,21 @@ function savedLine(t: Totals) {
   return `About even: savings and rating calls (${money(t.overhead)}) cancel out.${extra}`
 }
 
+/** The saving as a share of usage, with dollars as API-equivalent: a subscription is not billed them. */
+function usageLine(t: Totals) {
+  const net = t.saved - t.overhead
+  const rating = `${money(t.overhead)} of rating calls`
+  const extra = t.extra > 0.005 ? ` Raising effort and stronger models: ${money(t.extra)} more API-equivalent, for harder work.` : ''
+  if (net >= 0.005) {
+    const pct = Math.round((net / (t.spent + t.overhead + net)) * 100)
+    return `Saved ~${pct}% of the usage these turns would have taken, after rating calls (API-equivalent: ~${money(net)} saved, ${rating}).${extra}`
+  }
+  if (net <= -0.005) return `Used more than it saved, counting rating calls (API-equivalent: ~${money(-net)} more, ${rating}).${extra}`
+  return `About even: savings and rating calls cancel out (API-equivalent: ${rating}).${extra}`
+}
+
 /** Percent of a window per dollar, and per minute of turn time, over runs whose window did not reset. */
-function windowRates(lines: readonly RunLine[], kind: string) {
+export function windowRates(lines: readonly RunLine[], kind: string) {
   let pct = 0
   let usd = 0
   let ms = 0
@@ -217,9 +230,11 @@ function windowLine(lines: readonly RunLine[], t: Totals) {
 function period(title: string, lines: readonly RunLine[], subscription: boolean, withTies = false) {
   const t = totals(lines)
   if (!t.rated && !t.overhead && !t.subagents) return [`${title}: nothing rated yet.`]
-  const out = [`${title}: ${changedLine(t)}`, `  ${savedLine(t)}`]
+  const out = [`${title}: ${changedLine(t)}`]
+  // A subscriber reads the window first; dollars follow as API-equivalent.
   const w = subscription ? windowLine(lines, t) : undefined
   if (w) out.push(`  ${w}`)
+  out.push(`  ${subscription ? usageLine(t) : savedLine(t)}`)
   const ties = withTies ? tieCounts(lines) : { guided: 0, explored: 0 }
   if (ties.guided + ties.explored > 0) out.push(`  ${plural(ties.guided, 'close call')} decided by the task-type guide, ${ties.explored} explored.`)
   return out
@@ -315,6 +330,7 @@ export function buildReport(
   const month = lines.filter(since(30))
   const out = [
     'Rightsize report. Savings are estimated: what staying at your own level and model would have cost, scaled by what each turn really cost.',
+    ...(opts.subscription ? ['Dollar amounts are API-equivalent: what the same tokens would cost at API prices. Your subscription is not billed them.'] : []),
     '',
     ...period('This session', lines.filter(l => opts.session !== '' && l.session === opts.session), opts.subscription),
     ...period('Last 7 days', lines.filter(since(7)), opts.subscription, true),

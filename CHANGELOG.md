@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- **Subscription wording leads with usage.** On a subscription, `/rightsize report` puts the share of the 5-hour window kept first, then the share of usage saved, with dollars marked API-equivalent; a line at the top says dollar amounts are API-equivalent. Before runs show the window rate, the share of usage leads. A hand-off's result says "API-equivalent" instead of "At API prices".
+- **Idle warning on a subscription.** The idle question now comes up on a subscription too. It gives the cost as a share of the 5-hour window (from the last 30 days of runs) with API-equivalent dollars beside it, or API-equivalent dollars alone until runs show the rate. The **Idle warning** bar is compared in API-equivalent dollars.
+
 ## 0.6.0 (2026-10-24)
 
 - **Estimates follow the work each model does at each effort.** The same task takes different output tokens and tool calls depending on the model and its level: Opus at low effort takes far fewer steps than at medium, Haiku writes more than Sonnet, Fable more than Opus. A table of work per model and level (Sonnet as the baseline, so its estimates do not change) now scales the rated output tokens and steps for the main chat and for subagents. The values come from Anthropic's cost and intelligence guide and Artificial Analysis, with guesses interpolated; calibration corrects them.

@@ -878,16 +878,31 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.asked.length).toBe(0)
   })
 
-  test(`no idle guard on a subscription (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`idle on a subscription: gives the cost in API-equivalent dollars, then in the 5-hour window once runs show it (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
     h.rateLimits = [{ kind: 'five_hour', percentUsed: 10 }]
     const d = drive($, h)
     await d.start(surface)
+    h.rating = NO_CHANGE
     await d.step('t0')
     await d.complete('t0')
     h.now += 3 * 60 * MIN
+    h.answers = { Idle: 'Send it' }
     await d.submit('continue')
-    expect(h.asked.length).toBe(0)
+    expect(h.asked.map(a => a.question)).toEqual([
+      'This session sat idle for 3 hours, so its cache has likely expired. Sending writes the whole conversation (~21K tokens) to the cache again: about $0.16 API-equivalent more on Opus than a warm cache. /clear costs nothing; /compact about $0.08 API-equivalent.',
+    ])
+    await d.step('t1')
+    await d.complete('t1')
+
+    // 5% of the window for $1 of turns: $0.16 is 0.8%.
+    const at = new Date(h.now).toISOString()
+    h.files['/home/test/.claude/mods-logs/rightsize-runs.jsonl'] = `${JSON.stringify({ at, kind: 'run', actual: 1, before: { five_hour: 10 }, after: { five_hour: 15 } })}\n`
+    h.now += 3 * 60 * MIN
+    await d.submit('continue')
+    expect(last(h.asked)?.question).toContain(
+      'about 0.8% of your 5-hour window ($0.16 API-equivalent) more on Opus than a warm cache. /clear costs nothing; /compact about 0.4% of your 5-hour window ($0.08 API-equivalent).',
+    )
   })
 
   test(`Idle warning in /config sets the bar (${surface})`, { timeoutMs: 30000, options: { idleWarning: 'over $1' } }, async ($, on) => {

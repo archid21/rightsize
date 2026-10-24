@@ -29,7 +29,7 @@ Not every prompt needs your strongest model thinking its hardest. "Rename this v
 ### It looks after your budget
 
 - On a subscription, it watches your 5-hour and weekly limits. If you are using them up too fast, it saves harder. If you will have plenty left over, it lets Claude work harder.
-- On API billing, it warns you before an old, idle session would cost you a lot to pick up again, and shows cheaper options.
+- It warns you before an old, idle session would cost you a lot to pick up again, and shows cheaper options. On a subscription it gives the cost as a share of your 5-hour window.
 - It keeps its price list up to date with Anthropic's pricing page.
 
 ### It learns and shows its work
@@ -128,7 +128,7 @@ After your first answer, rightsize asks whether to use your choices in every ses
 
   The band starts at 25% and shrinks to nothing once both routes have 20 measured runs. One close call in five takes the other model, so both get measured. It only chooses between routes that already pass the hand-off threshold, so it never makes a hand-off happen. Close calls are most common in Fable sessions.
 - **It raises effort when Claude gets stuck.** During a turn, rightsize watches the main chat's tool calls. When the same call fails twice, 3 calls fail, the same call runs 3 times, or the turn passes 3x the steps the rating guessed (at least 15), it raises effort one level for the rest of the turn: at most twice a turn, and never to max. It follows your Raising rule (Q2): automatic raises without asking, "Ask" asks mid-turn, never does nothing. A call you refused permission for does not count. These turns teach calibration nothing and claim no saving. **Raise when stuck** in `/config` turns it off.
-- **It warns before an expensive resume.** On API billing, the cache lives an hour (or 5 minutes, per `prices.json`). When a session under 200K tokens sat idle past that, the next prompt writes the whole conversation to the cache again. rightsize asks first, for example: `This session sat idle for 3 days, so its cache has likely expired. Sending writes the whole conversation (~120K tokens) to the cache again: about $0.94 more on Opus than a warm cache. /clear costs nothing; /compact about $0.48.` Hold it and the prompt goes back in the box. It remembers each session's last turn, so a `--resume` days later is caught too. Subscriptions get Claude Code's own warning, and sessions over 200K its idle compaction, so rightsize leaves those alone. **Idle warning** in `/config` sets the bar.
+- **It warns before an expensive resume.** The cache lives an hour (or 5 minutes, per `prices.json`). When a session under 200K tokens sat idle past that, the next prompt writes the whole conversation to the cache again. rightsize asks first, for example: `This session sat idle for 3 days, so its cache has likely expired. Sending writes the whole conversation (~120K tokens) to the cache again: about $0.94 more on Opus than a warm cache. /clear costs nothing; /compact about $0.48.` Hold it and the prompt goes back in the box. It remembers each session's last turn, so a `--resume` days later is caught too. On a subscription the question gives the cost as a share of your 5-hour window, with API-equivalent dollars beside it (dollars alone until runs show the rate). Sessions over 200K get Claude Code's idle compaction, so rightsize leaves those alone. **Idle warning** in `/config` sets the bar.
 - **It paces your usage windows.** On a subscription, each response reports how much of the 5-hour and 7-day windows is used and when each resets. rightsize divides the share used by the share of time gone, and acts on whichever window would stop you first:
 
   | Pace | Hand-off threshold | Lowering threshold | Also |
@@ -166,7 +166,7 @@ The band shows in the CLI and the desktop app. VS Code and the mobile app keep t
 - `/rightsize report`: what rightsize did for you this session, in the last 7 days and in the last 30 days.
   - How many prompts it rated and changed, how often you kept your level, and how many of Claude's subagents ran on a cheaper model.
   - The estimated saving after the cost of its own Haiku rating calls. Extra spending from raising effort or using stronger models is shown on its own line.
-  - On a subscription, the share of your 5-hour (and 7-day) window that saving kept, and about how many more minutes that is at the current pace.
+  - On a subscription, the share of your 5-hour (and 7-day) window that saving kept, and about how many more minutes that is at the current pace. This comes first, and dollar amounts are marked API-equivalent.
   - Fixed context: the tokens every request carried that rightsize can't trim (MCP tools by server, CLAUDE.md and memory, skills and commands, agent descriptions), what re-reading them cost, and how to cut it.
   - Close calls, in the last 7 and 30 days: how many the task-type guide decided, and how many took the other model to measure it.
   - What went wrong: lowered turns that stepped back up, turns raised mid-turn because Claude looked stuck, hand-offs that cost more or needed rework, hand-offs Claude skipped, effort switches that missed the cache, turns you stopped, and how far its estimates are off.

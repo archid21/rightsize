@@ -39,6 +39,8 @@ export type RightsizeBand = {
   canClear?: boolean
   /** A suggested starting model and level (`sonnet:high`): the band offers Not now and Stop suggesting. */
   tip?: string
+  /** The id of the run this band is about: the band offers 👍 and 👎, which tune rightsize on this machine only. */
+  rate?: string
 }
 
 declare module 'claude-code' {

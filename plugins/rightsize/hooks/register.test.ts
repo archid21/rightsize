@@ -42,6 +42,9 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
     now: 1_800_000_000_000,
     page: '',
     fetches: 0,
+    /** POST requests: the sharing sends. */
+    posts: [] as { url: string; body: string }[],
+    env: {} as Record<string, string>,
     hold: null as Promise<void> | null,
     fetchFails: false,
     pricesFile: '',
@@ -57,6 +60,15 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
     /** Percent each main request adds to every rate-limit window. */
     windowStep: 0,
     ratingUsage: {} as Record<string, number>,
+    /** Every model.complete call's model, in order: the rater is haiku, the spot-check sonnet. */
+    completions: [] as string[],
+    /** What the spot-check answers; the rating's own reply when unset. */
+    checkRating: undefined as string | undefined,
+    checkUsage: {} as Record<string, number>,
+    /** What a spot-check adds to the session's ledger when it answers. */
+    checkCost: 0,
+    /** While set, the spot-check waits on it before it answers. */
+    checkHold: null as Promise<void> | null,
     spawned: [] as { description: string; model?: string }[],
     /** While set, a spawn waits on it before it settles: its subagent can step first. */
     spawnHold: null as Promise<void> | null,
@@ -90,8 +102,16 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
     return { value: undefined } as never
   })
   on('clock.now', async () => ({ value: h.now }) as never)
-  on('env.get', async ($, e) => ({ value: (e as { name: string }).name === 'HOME' ? '/home/test' : undefined }) as never)
-  on('http.fetch', async () => {
+  on('env.get', async ($, e) => {
+    const name = (e as { name: string }).name
+    return { value: name === 'HOME' ? '/home/test' : h.env[name] } as never
+  })
+  on('http.fetch', async ($, e) => {
+    const { url, init } = e as { url: string; init?: { method?: string; body?: string } }
+    if (init?.method === 'POST') {
+      h.posts.push({ url, body: init.body ?? '' })
+      return { value: { status: 200, ok: true, headers: {}, text: '{"accepted":1}' } } as never
+    }
     h.fetches += 1
     if (h.hold) await h.hold
     if (h.fetchFails) return { value: { status: 503, ok: false, headers: {}, text: '' } } as never
@@ -121,7 +141,14 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
     h.filled.push((e as { text: string }).text)
     return { isFilled: true } as never
   })
-  on('model.complete', async () => {
+  on('model.complete', async (_$, e) => {
+    const model = String((e as { model?: unknown }).model ?? '')
+    h.completions.push(model)
+    if (model === 'sonnet') {
+      if (h.checkHold) await h.checkHold
+      if (h.ledger !== undefined) h.ledger += h.checkCost
+      return { value: { isAnswered: true, text: h.checkRating ?? h.rating, usage: h.checkUsage } } as never
+    }
     h.ratings += 1
     // The rating call is priced too; the turn's measured cost leaves it out.
     if (h.ledger !== undefined) h.ledger += 0.5
@@ -186,6 +213,7 @@ const drive = ($: unknown, h: ReturnType<typeof engine>) => {
     // The engine starting a subagent from the main chat's Agent call; its steps carry `agent-<description>`.
     spawn: (description: string, model?: string, over: Record<string, unknown> = {}) =>
       e.agent.spawn({ prompt: 'brief', description, subagentType: 'general-purpose', provider: { kind: 'core' }, parentModel: h.model, background: false, fork: false, ...(model ? { model } : {}), ...over }),
+    raterCheck: (value: string) => (e as unknown as { config: { set: (x: unknown) => Promise<unknown> } }).config.set({ key: 'rightsize.raterCheck', value }),
     configSet: (value: string) => (e as unknown as { config: { set: (x: unknown) => Promise<unknown> } }).config.set({ key: 'rightsize.priceCheck', value }),
     command: (args: string) => e.command.run({ command: 'rightsize', args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } }),
   }
@@ -972,13 +1000,13 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.submit(LOOKUP)
     expect(await bandText($, surface)).toBe('rightsize: Effort lowered: medium → low for this prompt (automatically).')
     const ui = await mount($, surface)
-    expect((await ui.findAll({ type: 'Button' })).map(b => b.key)).toEqual(['undo', 'rule-ask', 'rule-never', 'mode', 'close'])
+    expect((await ui.findAll({ type: 'Button' })).map(b => b.key), 'a lowering can be marked 👍 or 👎').toEqual(['undo', 'good', 'bad', 'rule-ask', 'rule-never', 'mode', 'close'])
 
     // A rule button changes the answer to Q1 in one press.
     await ui.press({ key: 'rule-ask' })
     expect(last(h.toasts)).toBe('Rightsize: Lowering is now "Ask me each time".')
     expect((await d.command('')).text ?? '').toContain('Lowering: ask.')
-    expect((await ui.findAll({ type: 'Button' })).map(b => b.key), 'the new rule is not offered again').toEqual(['undo', 'rule-auto', 'rule-never', 'mode', 'close'])
+    expect((await ui.findAll({ type: 'Button' })).map(b => b.key), 'the new rule is not offered again').toEqual(['undo', 'good', 'bad', 'rule-auto', 'rule-never', 'mode', 'close'])
 
     // Undo puts the prompt back in the box and closes the band.
     await ui.press({ key: 'undo' })
@@ -1033,6 +1061,67 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.files[RUNS] = easyLog(h.now)
     await d.start(surface)
     expect(await bandText($, surface), 'the 14 days are over').toContain('Starting on Sonnet')
+  })
+
+  const shareLog = (now: number, n: number) =>
+    Array.from({ length: n }, (_, i) =>
+      JSON.stringify({ at: new Date(now - (n - i) * 60_000).toISOString(), kind: 'run', id: `sess-0:${i}`, session: 'sess-0', type: 'lookup', route: 'main', tier: 'opus', level: 'medium', normal: 'medium', fit: { haiku: 'low', sonnet: 'low', opus: 'low', fable: 'low' }, read: 800, write: 60, steps: 2, actual: 0.1, fixed: { tokens: 1000, servers: { secret_server: 500 } }, escalations: [{ step: 2, from: 'low', to: 'medium', why: 'Bash failed on /Users/x' }] }),
+    ).join('\n')
+
+  test(`after 20 rated prompts, asks once whether to share anonymous numbers (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    h.files[RUNS] = shareLog(h.now, 20)
+    const d = drive($, h)
+    await d.start(surface)
+    await flush()
+    expect(h.posts.length, 'off by default: nothing sent').toBe(0)
+    h.rating = NO_CHANGE
+    h.answers = { Share: 'Share anonymous numbers' }
+    await d.submit(LOOKUP)
+    await d.step('t1')
+    await d.complete('t1')
+    expect(h.asked.filter(a => a.header === 'Share').length).toBe(1)
+    expect(last(h.configSet)).toBe('on')
+    expect(String(h.store.shareInstall)).toMatch(/^[a-f0-9]{32}$/)
+    expect((await d.command('')).text ?? '').toContain('Sharing: on')
+
+    await d.submit(LOOKUP)
+    await d.step('t2')
+    await d.complete('t2')
+    expect(h.asked.filter(a => a.header === 'Share').length, 'asked once').toBe(1)
+  })
+
+  test(`sharing sends only new, anonymous numbers, at most once an hour (${surface})`, { timeoutMs: 30000, options: { share: 'on' } }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { shareInstall: 'b'.repeat(32), sharedUpTo: new Date(1_800_000_000_000 - 3 * 60_000).toISOString() } })
+    h.files[RUNS] = shareLog(h.now, 10)
+    const d = drive($, h)
+    await d.start(surface)
+    while (!h.posts.length) await flush()
+    expect(h.posts.length).toBe(1)
+    expect(h.posts[0]?.url).toBe('https://rightsize-feedback.vercel.app/api/v1/events')
+    const body = JSON.parse(h.posts[0]?.body ?? '{}') as { install: string; events: Record<string, unknown>[] }
+    expect(body.install).toBe('b'.repeat(32))
+    expect(body.events.length, 'only the lines after the last send').toBe(2)
+    const text = h.posts[0]?.body ?? ''
+    for (const secret of ['sess-0', 'secret_server', '/Users/x', 'Bash failed']) expect(text, secret).not.toContain(secret)
+    expect(body.events[0]?.escalations, 'a count, not the reasons').toBe(1)
+
+    await d.start(surface)
+    h.now += 10 * MIN
+    await d.step('t0')
+    await d.complete('t0')
+    await flush()
+    expect(h.posts.length, 'within the hour: nothing more').toBe(1)
+  })
+
+  test(`sharing sends nothing while Claude Code's nonessential traffic is off (${surface})`, { timeoutMs: 30000, options: { share: 'on' } }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { shareInstall: 'b'.repeat(32), sharedUpTo: '2020-01-01T00:00:00.000Z' } })
+    h.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = '1'
+    h.files[RUNS] = shareLog(h.now, 5)
+    const d = drive($, h)
+    await d.start(surface)
+    await flush()
+    expect(h.posts.length).toBe(0)
   })
 
   test(`Stop suggesting turns start suggestions off in /config (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -1467,5 +1556,267 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.complete('t1')
     const runs = (h.files['/home/test/.claude/mods-logs/rightsize-runs.jsonl'] ?? '').trim().split('\n').map(l => JSON.parse(l) as { resized?: { tier: string; tie?: unknown }[] })
     expect(last(runs)?.resized?.map(r => [r.tier, r.tie])).toEqual([['sonnet', { by: 'guide', over: 'opus' }]])
+  })
+
+  // Rater check: Sonnet's second opinion on every 50th rating, in the background.
+  const FIT_NO = '{"fit":{"haiku":"no","sonnet":"no","opus":"medium","fable":"medium"},"type":"feature","read":2000,"write":300,"steps":1,"reason":"plain change"}'
+  const CHECK_NO = '{"fit":{"haiku":"no","sonnet":"no","opus":"no","fable":"high"},"type":"feature","read":2000,"write":300,"steps":1}'
+  const runLines = (h: ReturnType<typeof engine>) =>
+    (h.files[RUNS] ?? '')
+      .split('\n')
+      .filter(Boolean)
+      .map(l => JSON.parse(l) as Record<string, unknown>)
+  const SONNET_USAGE = { input_tokens: 1_000_000, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+
+  test(`the 50th rated prompt gets Sonnet's second opinion in the background, logged as a check line (${surface})`, { timeoutMs: 60000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES } })
+    const d = drive($, h)
+    h.now = Date.now()
+    await d.start(surface)
+    h.rating = FIT_NO
+    h.checkRating = CHECK_NO
+    for (let i = 1; i < 50; i++) await d.submit(LOOKUP)
+    expect(h.completions.filter(m => m === 'sonnet'), 'none before the 50th').toEqual([])
+    expect(h.store.spotChecks).toBe(49)
+
+    // The 50th: Sonnet is asked, and the prompt goes through while it is still thinking.
+    let release = () => {}
+    h.checkHold = new Promise<void>(resolve => {
+      release = resolve
+    })
+    const sent = h.submitted.length
+    await d.submit(LOOKUP)
+    expect(h.submitted.length, 'the prompt was not held back').toBe(sent + 1)
+    expect(h.completions.filter(m => m === 'sonnet'), 'asked once, after Haiku').toEqual(['sonnet'])
+    expect(last(h.completions.slice(0, -1))).toBe('haiku')
+    expect(h.store.spotChecks).toBe(50)
+    expect(runLines(h).some(l => l.kind === 'check'), 'no line until it answers').toBe(false)
+
+    release()
+    await flush()
+    const check = runLines(h).find(l => l.kind === 'check') as { kind: string; session: string; type: string; fit: unknown; check: unknown; overhead: number } | undefined
+    expect(check?.session).toBe('sess-1')
+    expect(check?.type).toBe('feature')
+    expect(check?.fit, "Haiku's fit").toEqual({ haiku: null, sonnet: null, opus: 'medium', fable: 'medium' })
+    expect(check?.check, "Sonnet's fit: Opus would struggle").toEqual({ by: 'sonnet', fit: { haiku: null, sonnet: null, opus: null, fable: 'high' } })
+    expect(check?.overhead, 'its cost is logged').toBe(0)
+    expect(runLines(h).filter(l => l.kind === 'run').length, 'a check line is not a rated run').toBe(0)
+
+    // The 51st to 99th are not checked; the report counts the disagreement.
+    await d.submit(LOOKUP)
+    expect(h.completions.filter(m => m === 'sonnet').length).toBe(1)
+    const report = (await d.command('report')).text ?? ''
+    expect(report).toContain("Haiku's judgement was wrong on 1 of 2 checked prompts (50%)")
+    expect(report, 'a check line is not a prompt').not.toContain('prompts rated')
+  })
+
+  test(`a check that lands during a turn is left out of that turn's cost (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES, spotChecks: 49 } })
+    const d = drive($, h)
+    h.now = Date.now()
+    await d.start(surface)
+    h.rating = FIT_NO
+    h.checkRating = CHECK_NO
+    h.checkUsage = SONNET_USAGE
+    h.checkCost = 2
+    let release = () => {}
+    h.checkHold = new Promise<void>(resolve => {
+      release = resolve
+    })
+    await d.submit(LOOKUP)
+    await d.step('t1')
+    release()
+    await flush()
+    await d.complete('t1')
+    const lines = runLines(h)
+    expect((lines.find(l => l.kind === 'check') as { overhead: number }).overhead, '1M Sonnet input tokens').toBe(2)
+    expect((lines.find(l => l.kind === 'run') as { actual: number }).actual, "the turn's own cost: one step").toBe(0.01)
+  })
+
+  test(`Rater check off in /config: no second opinion, and the count does not move (${surface})`, { timeoutMs: 30000, options: { raterCheck: 'off' } }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { spotChecks: 49 } })
+    const d = drive($, h)
+    await d.start(surface)
+    h.rating = FIT_NO
+    await d.submit(LOOKUP)
+    await d.submit(LOOKUP)
+    expect(h.completions.filter(m => m === 'sonnet')).toEqual([])
+    expect(h.store.spotChecks).toBe(49)
+    expect((await d.command('')).text ?? '').toContain('Rater check: off.')
+    // Turned on again in /config: the next rating is the 50th.
+    await d.raterCheck('on')
+    await d.submit(LOOKUP)
+    await flush()
+    expect(h.completions.filter(m => m === 'sonnet')).toEqual(['sonnet'])
+    expect((await d.command('')).text ?? '').toContain('Rater check: on (every 50th rating).')
+  })
+
+  test(`Rater check turned off in /config stops the second opinions (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { spotChecks: 49 } })
+    const d = drive($, h)
+    await d.start(surface)
+    h.rating = FIT_NO
+    await d.raterCheck('off')
+    await d.submit(LOOKUP)
+    expect(h.completions.filter(m => m === 'sonnet')).toEqual([])
+  })
+
+  test(`a check that fails or cannot be read adds no check line, only its cost (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { spotChecks: 49 } })
+    const d = drive($, h)
+    await d.start(surface)
+    h.rating = FIT_NO
+    h.checkRating = 'no json here'
+    h.checkUsage = SONNET_USAGE
+    await d.submit(LOOKUP)
+    await flush()
+    expect(runLines(h).map(l => l.kind)).toEqual(['overhead'])
+    expect((runLines(h)[0] as { overhead: number }).overhead).toBe(2)
+  })
+
+  // 👍 and 👎: a hand-off's result and an automatic lowering can be marked, on this machine only.
+  const buttons = async ($: unknown) => {
+    const ui = await mount($, surface)
+    const keys = (await ui.findAll({ type: 'Button' })).map(b => b.key)
+    await ui.unmount()
+    return keys
+  }
+
+  test(`👍 and 👎 on a hand-off's result write a feedback line for that run, once (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high' })
+    const d = drive($, h)
+    h.now = Date.now()
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+
+    h.rating = '{"level":"low","model":"haiku","size":"bulky","type":"search","read":150000,"write":3000,"steps":30,"reason":"repo-wide search"}'
+    h.answers = { Cheaper: 'Send it to a cheaper subagent (Recommended)', Remember: 'Just this session' }
+    // Claude answers without the subagent: nothing to mark.
+    await d.submit(SEARCH)
+    await d.step('t1')
+    await d.complete('t1')
+    expect(await buttons($), 'no hand-off happened').toEqual(['rule-ask', 'rule-stay', 'mode', 'close'])
+
+    await d.submit(SEARCH)
+    await d.step('t2', 0)
+    await d.agent('haiku')
+    await d.step('t2', 0, 'a2')
+    await d.step('t2', 1)
+    await d.complete('t2')
+    expect(await bandText($, surface)).toMatch(/^rightsize: Sent to Haiku:/)
+    expect(await buttons($)).toEqual(['good', 'bad', 'rule-ask', 'rule-stay', 'mode', 'close'])
+
+    const ui = await mount($, surface)
+    await ui.press({ key: 'bad' })
+    await flush()
+    expect(last(h.toasts)).toBe('Rightsize: thanks — this tunes its choices on this machine.')
+    const lines = runLines(h)
+    const handOff = lines.filter(l => l.kind === 'run').find(l => l.route === 'delegate:haiku') as { id: string } | undefined
+    expect(handOff?.id, 'the run line carries an id').toBeTruthy()
+    const feedback = lines.filter(l => l.kind === 'feedback')
+    expect(feedback.length).toBe(1)
+    expect(feedback[0]).toMatchObject({ kind: 'feedback', session: 'sess-1', ref: handOff?.id, value: 'down' })
+    expect(typeof feedback[0]?.at).toBe('string')
+    expect((await ui.findAll({ type: 'Button' })).map(b => b.key), 'the marks go once pressed').toEqual(['rule-ask', 'rule-stay', 'mode', 'close'])
+    await ui.unmount()
+    expect(await bandText($, surface), 'the band itself stays').toMatch(/^rightsize: Sent to Haiku:/)
+    // Nothing leaves the machine: no fetch beyond the price check, and the line is only in the run log.
+    expect(h.fetches).toBeLessThanOrEqual(1)
+    // One hit (no rework) and one 👎, both Haiku's.
+    expect((await d.command('report')).text ?? '').toContain("Haiku's judgement was wrong on 1 of 2 checked prompts (50%)")
+  })
+
+  test(`👍 and 👎 on an automatic lowering write a feedback line for that run, and 👍 counts as a hit (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES } })
+    const d = drive($, h)
+    h.now = Date.now()
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+
+    h.rating = LOWER
+    h.answers = { Lowering: 'Lower automatically', Remember: 'Just this session' }
+    await d.submit(LOOKUP)
+    await d.step('t1')
+    await d.complete('t1')
+    expect(await buttons($)).toEqual(['undo', 'good', 'bad', 'rule-ask', 'rule-never', 'mode', 'close'])
+
+    const ui = await mount($, surface)
+    await ui.press({ key: 'good' })
+    await flush()
+    const run = runLines(h).find(l => l.kind === 'run') as { id: string; change: string }
+    expect(run.change).toBe('lower')
+    expect(runLines(h).filter(l => l.kind === 'feedback')).toMatchObject([{ ref: run.id, value: 'up', session: 'sess-1' }])
+    expect(last(h.toasts)).toBe('Rightsize: thanks — this tunes its choices on this machine.')
+    expect((await ui.findAll({ type: 'Button' })).map(b => b.key)).toEqual(['undo', 'rule-ask', 'rule-never', 'mode', 'close'])
+    await ui.unmount()
+    expect(await bandText($, surface)).toBe('rightsize: Effort lowered: medium → low for this prompt (automatically).')
+    // The next lowering has its own id.
+    await d.submit(LOOKUP)
+    await d.step('t2')
+    await d.complete('t2')
+    expect(await buttons($)).toEqual(['undo', 'good', 'bad', 'rule-ask', 'rule-never', 'mode', 'close'])
+    const ui2 = await mount($, surface)
+    await ui2.press({ key: 'bad' })
+    await flush()
+    await ui2.unmount()
+    const ids = runLines(h).filter(l => l.kind === 'run').map(l => l.id)
+    expect(new Set(ids).size, 'two runs, two ids').toBe(2)
+    expect(runLines(h).filter(l => l.kind === 'feedback').map(l => [l.ref, l.value])).toEqual([[ids[0], 'up'], [ids[1], 'down']])
+  })
+
+  test(`a raise and a no-change band offer no 👍 or 👎 (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    const d = drive($, h)
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+    h.rating = '{"level":"high","model":"same","type":"debug","read":20000,"write":3000,"steps":8,"reason":"unknown cause"}'
+    h.answers = { Raising: 'Raise automatically (Recommended)', Remember: 'Just this session' }
+    await d.submit(DEBUG)
+    expect(await bandText($, surface)).toContain('Effort raised')
+    expect(await buttons($)).toEqual(['rule-ask', 'rule-never', 'mode', 'close'])
+  })
+
+  // The record steers the next decisions: a model the rater has often got wrong gets no lowering.
+  test(`a task type the rater keeps getting wrong is not lowered, once the log shows it (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES } })
+    const d = drive($, h)
+    h.files[RUNS] = Array.from({ length: 6 }, (_, i) =>
+      JSON.stringify({ at: new Date(h.now - (6 - i) * 60_000).toISOString(), kind: 'run', type: 'lookup', route: 'main', tier: 'opus', change: 'lower', steppedUp: i < 3 }),
+    ).join('\n') + '\n'
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+    h.rating = LOWER
+    h.answers = { Lowering: 'Lower automatically', Remember: 'Just this session' }
+    await d.submit(LOOKUP)
+    expect(h.asked.length, 'wrong on 3 of 6 lookups on Opus: lowering is paused, so nothing is asked').toBe(0)
+    await d.step('t1')
+    expect(last(h.sent)?.effort, 'stays at medium').toBe('medium')
+    await d.complete('t1')
+    expect(await bandText($, surface)).toBe('')
+    // The report says what the record is and what it paused.
+    const report = (await d.command('report')).text ?? ''
+    expect(report).toContain("Haiku's judgement was wrong on 3 of 6 checked prompts (50%)")
+    expect(report).toContain('Hand-downs of lookup work to Opus (and lowering effort on it) are paused: wrong on 50% of 6.')
+  })
+
+  test(`with a clean record the same lowering goes ahead (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES } })
+    const d = drive($, h)
+    h.files[RUNS] = Array.from({ length: 6 }, (_, i) =>
+      JSON.stringify({ at: new Date(h.now - (6 - i) * 60_000).toISOString(), kind: 'run', type: 'lookup', route: 'main', tier: 'opus', change: 'lower', steppedUp: i < 1 }),
+    ).join('\n') + '\n'
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+    h.rating = LOWER
+    h.answers = { Lowering: 'Lower automatically', Remember: 'Just this session' }
+    await d.submit(LOOKUP)
+    await d.step('t1')
+    expect(last(h.sent)?.effort, 'wrong on 1 of 6: under the line').toBe('low')
+    await d.complete('t1')
   })
 }

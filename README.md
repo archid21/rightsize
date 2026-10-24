@@ -127,6 +127,8 @@ After your first answer, rightsize asks whether to use your choices in every ses
   - Opus for design.
 
   The band starts at 25% and shrinks to nothing once both routes have 20 measured runs. One close call in five takes the other model, so both get measured. It only chooses between routes that already pass the hand-off threshold, so it never makes a hand-off happen. Close calls are most common in Fable sessions.
+- **It scores Haiku's rating against what happens.** Every choice rests on one Haiku call, so rightsize checks how often that call was wrong, per task type and model. A hand-off counts as wrong when it needed rework (more than one subagent call) and right when it did not. A lowered turn counts as wrong when it stepped back up or was raised mid-turn, and right otherwise. A turn that stayed as it was counts only when it was raised mid-turn. A 👎 counts as wrong and a 👍 as right (see [The band](#the-band)), and so does each Sonnet check (next point). A task type needs 5 such outcomes on a model before its own rate counts; before that, the model's rate across all task types counts once it has 5. Only the last 30 days of the log count. When a rate reaches 30%, rightsize stops handing that kind of work down to that model, and stops lowering effort on it, until the rate falls back under 30%. `/rightsize report` says when this is happening. Nothing is sent anywhere: the outcomes are read from the run log on your machine.
+- **Sonnet spot-checks Haiku.** On every 50th rated prompt, after Haiku's rating, rightsize sends the same prompt to Sonnet at low effort in the background. It never delays your prompt. Where Haiku said a model does the work and Sonnet says that model would struggle, that counts as a miss for that model and task type; where both name a level, it counts as a hit. The check is logged as a `check` line with its cost, which the report counts with the rating calls. A check that fails or can't be read is dropped. **Rater check** in `/config` turns it off.
 - **It raises effort when Claude gets stuck.** During a turn, rightsize watches the main chat's tool calls. When the same call fails twice, 3 calls fail, the same call runs 3 times, or the turn passes 3x the steps the rating guessed (at least 15), it raises effort one level for the rest of the turn: at most twice a turn, and never to max. It follows your Raising rule (Q2): automatic raises without asking, "Ask" asks mid-turn, never does nothing. A call you refused permission for does not count. These turns teach calibration nothing and claim no saving. **Raise when stuck** in `/config` turns it off.
 - **It warns before an expensive resume.** The cache lives an hour (or 5 minutes, per `prices.json`). When a session under 200K tokens sat idle past that, the next prompt writes the whole conversation to the cache again. rightsize asks first, for example: `This session sat idle for 3 days, so its cache has likely expired. Sending writes the whole conversation (~120K tokens) to the cache again: about $0.94 more on Opus than a warm cache. /clear costs nothing; /compact about $0.48.` Hold it and the prompt goes back in the box. It remembers each session's last turn, so a `--resume` days later is caught too. On a subscription the question gives the cost as a share of your 5-hour window, with API-equivalent dollars beside it (dollars alone until runs show the rate). Sessions over 200K get Claude Code's idle compaction, so rightsize leaves those alone. **Idle warning** in `/config` sets the bar.
 - **It paces your usage windows.** On a subscription, each response reports how much of the 5-hour and 7-day windows is used and when each resets. rightsize divides the share used by the share of time gone, and acts on whichever window would stop you first:
@@ -158,20 +160,21 @@ Avoid starting on Opus at low, which makes rightsize raise effort often (each ra
 - another start is at least 15% cheaper (25% while rightsize has measured few runs on it), and it would send no more than 1 prompt in 10 to a stronger model; or
 - more than 15% of your prompts needed a stronger model, or Claude got stuck and effort went up mid-turn. Then it suggests a stronger start.
 
-It waits for 50 rated prompts in 30 days, and 20 on your current start. **Not now** quiets the same suggestion for 14 days; **Stop suggesting** turns it off. `/rightsize report` always shows the comparison. rightsize never changes your model itself: switch with `/model`, which also sets the effort level.
+Where Haiku's rating of a model has been wrong for a task type (see [How it decides](#how-it-decides)), that share of those prompts is estimated as if the model had been rated unable, so a start that leans on a model Haiku keeps misjudging looks dearer and sends more work up. It waits for 50 rated prompts in 30 days, and 20 on your current start. **Not now** quiets the same suggestion for 14 days; **Stop suggesting** turns it off. `/rightsize report` always shows the comparison. rightsize never changes your model itself: switch with `/model`, which also sets the effort level.
 
 ## The band
 
 A one-row band above the prompt shows what rightsize did, with buttons to act on it:
 
 ```
-rightsize: Effort lowered: high → medium for this prompt (automatically).  [Undo] [Ask me each time] [Never lower] [⋯] [×]
+rightsize: Effort lowered: high → medium for this prompt (automatically).  [Undo] [👍] [👎] [Ask me each time] [Never lower] [⋯] [×]
 ```
 
 - **Undo** puts the prompt back in the box, to run at your normal level. **Clear** drops a session-wide switch.
 - The rule buttons change your answer for this case (Q1–Q4) in one press. Your current answer is not shown.
 - **⋯** chooses when the band shows. **×** closes it until your next prompt.
 - In the CLI, focus the band (ctrl+x tab or a click) and press a button's number.
+- **👍 and 👎** appear on a hand-off's result and on a lowering, so you can say whether it was the right call. Pressing one writes a `feedback` line to the run log, takes the buttons off the band so they can't be pressed twice, and shows a short thanks. Nothing is sent anywhere: the mark tunes rightsize's choices on this machine (see [How it decides](#how-it-decides)).
 - After a hand-off, the band shows the result, for example `Sent to Haiku: $0.04 vs about $0.31 on Fable (estimated), saved about 87%.` With the band off, that result is a line in the transcript instead.
 
 The band shows in the CLI and the desktop app. VS Code and the mobile app keep the status line.
@@ -186,6 +189,7 @@ The band shows in the CLI and the desktop app. VS Code and the mobile app keep t
   - Fixed context: the tokens every request carried that rightsize can't trim (MCP tools by server, CLAUDE.md and memory, skills and commands, agent descriptions), what re-reading them cost, and how to cut it.
   - Close calls, in the last 7 and 30 days: how many the task-type guide decided, and how many took the other model to measure it.
   - Starting point: what your last 30 days of rated prompts would have cost from Sonnet and Opus at medium and high, and whether another start would suit you better (see [Choosing a starting model](#choosing-a-starting-model)).
+  - How often Haiku's judgement was wrong, counted from rework, lowered turns that stepped back up, mid-turn raises, 👎, and Sonnet checks that disagreed. When a task type's rate reaches 30%, the report says which hand-downs and lowerings are paused.
   - What went wrong: lowered turns that stepped back up, turns raised mid-turn because Claude looked stuck, hand-offs that cost more or needed rework, hand-offs Claude skipped, effort switches that missed the cache, turns you stopped, and how far its estimates are off.
 
   A saving is an estimate: what staying at your own level and model would have cost, scaled by what the turn really cost. Turns that stepped back up get no saving.
@@ -203,6 +207,8 @@ The band shows in the CLI and the desktop app. VS Code and the mobile app keep t
   - **Raise when stuck**: on (default) or off.
   - **Idle warning**: over $0.10 (default), over $0.50, over $1, or off.
   - **Start suggestions**: on (default) or off. Off stops the weekly band suggestion; the report still shows the comparison.
+  - **Share anonymous feedback**: off (default) or on. See [Privacy](#privacy).
+  - **Rater check**: on (default) or off. On: every 50th rated prompt is also rated by Sonnet in the background, to measure how often Haiku is wrong. Off: no checks, and no cost for them.
   - **Band**: when it acts (the default: only when rightsize changes something), always (every rated prompt, "No change" included), or off (status line only).
   - **Price check**: monthly, check now, or off.
 
@@ -210,15 +216,33 @@ The band shows in the CLI and the desktop app. VS Code and the mobile app keep t
 
 These are in `~/.claude/mods-logs/`:
 - `rightsize.log`: each decision.
-- `rightsize-runs.jsonl`: each rated turn, changed or not and stopped or not. Each line has the session ID, the change made and the change suggested, the estimated and actual cost (and whether the actual cost came from the `ledger` or from `tokens`), the rating call's cost, the rate-limit windows before and after, the turn's duration and its subagent calls, each model's rated level (`fit`), the rater's guesses of the tokens read and written and the tool calls (`read`, `write`, `steps`), for a hand-off the level its subagent ran at (`subLevel`), Claude's own subagents it moved to a cheaper model (`resized`), how a close call was decided (`tie`, also on each `resized` entry), the usage pace when it moved the thresholds (`pace`), mid-turn raises with their step and reason (`escalations`), main-chat requests (`requests`), the fixed context every request carried and what re-reading it cost (`fixed`), and its workflow calls (`workflows`, and `afterWorkflow` once one has run in the session). A rating that came to nothing is logged as an `overhead` line. Each of Claude's subagents it moved to a cheaper model gets a `subagent` line when it answers: its models, level, real cost and the raw estimates on its model and on the parent's. `/rightsize report` reads this file.
+- `rightsize-runs.jsonl`: each rated turn, changed or not and stopped or not. Each line has the session ID, the change made and the change suggested, the estimated and actual cost (and whether the actual cost came from the `ledger` or from `tokens`), the rating call's cost, the rate-limit windows before and after, the turn's duration and its subagent calls, each model's rated level (`fit`), the rater's guesses of the tokens read and written and the tool calls (`read`, `write`, `steps`), for a hand-off the level its subagent ran at (`subLevel`), Claude's own subagents it moved to a cheaper model (`resized`), how a close call was decided (`tie`, also on each `resized` entry), the usage pace when it moved the thresholds (`pace`), mid-turn raises with their step and reason (`escalations`), main-chat requests (`requests`), the fixed context every request carried and what re-reading it cost (`fixed`), and its workflow calls (`workflows`, and `afterWorkflow` once one has run in the session). A rating that came to nothing is logged as an `overhead` line. Each line has an `id`. Every 50th rating also gets a `check` line: Haiku's `fit`, Sonnet's `fit` (under `check`) and Sonnet's cost. A 👍 or 👎 gets a `feedback` line with the run's `id` as `ref`, and `value` up or down. Each of Claude's subagents it moved to a cheaper model gets a `subagent` line when it answers: its models, level, real cost and the raw estimates on its model and on the parent's. `/rightsize report` reads this file.
 - `rightsize-switches.jsonl`: each measured effort switch, and whether the cache was kept.
+
+## Privacy
+
+rightsize keeps its logs on your machine. It sends nothing to its author unless you say yes.
+
+**Sharing is opt-in.** After 20 rated prompts, rightsize asks once: "Help improve rightsize? Share anonymous numbers with its author." If you say no, or close the question, nothing is ever sent. You can change your answer any time with **Share anonymous feedback** in `/config`.
+
+**What is sent when you say yes,** at most once an hour, only for what is logged after you said yes:
+- For each rated prompt: the task type, the models and effort levels (rated, used and suggested), the change made, the rater's guesses of tokens read and written and tool calls, the conversation's size, the estimated and real cost, the rating call's cost, how many subagent calls and requests it took, whether it stepped back up, was raised mid-turn (a count, not the reason), was stopped or ran after a workflow, how a close call was decided, and how long it took. Times are rounded to the hour.
+- Each 👍 or 👎, linked to its prompt by a one-way code.
+- Each Sonnet spot-check: the levels Haiku and Sonnet gave each model, and its cost.
+- Your rightsize version, whether you pay by API or subscription, and a random install ID that is not made from anything on your machine.
+
+**What is never sent:** your prompts, Claude's replies, code, file names, paths, tool and MCP server names, the reasons Claude got stuck, session IDs, or anything that names you. The server also rebuilds every event from a fixed list of fields and drops anything else.
+
+**Turning it off** stops all sending at once. Turning it on again later starts a new install ID, so the old and new data can't be linked. rightsize also sends nothing while Claude Code's `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` is set.
+
+The numbers go to a private store that only the author can read. They are used to tune rightsize's defaults, such as the hand-off threshold, the task-type guide and the estimates of work per model.
 
 ## Limits
 
 - **Workflows (ultracode).** When Claude runs a workflow, it fans the work out to many agents. Once rightsize sees one in a session, it stops handing work off for the rest of that session, and later turns teach calibration nothing and claim no saving, since a workflow keeps running in the background and its cost lands in later turns. It still rates prompts and changes effort. It can't see that ultracode is on until the first workflow runs. `/rightsize report` lists these turns on their own line.
 
 - The app's effort picker does not move. The status line shows the level in use.
-- The rating is an estimate from Haiku. Calibration corrects cost guesses, but it can't correct a wrong choice of model.
+- The rating is an estimate from Haiku. Calibration corrects cost guesses, but it can't correct a wrong choice of model. rightsize does measure how often the rating was wrong and stops trusting it where it keeps missing (see [How it decides](#how-it-decides)), but that takes enough outcomes: until they are in, a wrong call can still cost a rework or a step back up.
 - Model facts (names, default effort levels, which models can switch effort mid-conversation) are built in for Claude Fable 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5. See [CONTRIBUTING.md](CONTRIBUTING.md) for how to update them when models change.
 - This is an independent project, not made or endorsed by Anthropic.
 

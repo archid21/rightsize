@@ -56,6 +56,8 @@ import {
   CAL_STORE,
 } from './cost'
 import { PRICING_URL, applyPrices, diffPrices, isDue, parsePricingPage } from './prices'
+import { missMap, missRates } from './misses'
+import { SHARE_ASK_AFTER, SHARE_EVERY_MS, SHARE_URL, newInstall, nextBatch } from './share'
 import { START_CHECK_DAYS, START_SNOOZE_DAYS, adviseFromLog, startKey, startLines, startTip } from './start'
 import { parseRating, ratingPrompt, ratingSystem } from './rate'
 import { type Signals, type Struggle, callKey, noSignals, noteCall, oneUp, struggle } from './struggle'
@@ -89,6 +91,10 @@ const STEP_UP_AFTER = 5
 const DEFAULT_CONTEXT = 20_000
 /** About 30 days of heavy use, for /rightsize report. */
 const RUNS_LOG_MAX = 1_000_000
+/** Every this many rated prompts, Sonnet checks Haiku's rating. */
+const SPOT_CHECK_EVERY = 50
+const SPOT_CHECKER = 'sonnet'
+const MISS_WINDOW_DAYS = 30
 
 type Lower = NonNullable<Choices['lower']>
 type Raise = NonNullable<Choices['raise']>
@@ -168,6 +174,8 @@ const qRemember: Question<boolean> = {
 
 /** One rated prompt, from prompt.submit until its turn completes. */
 type Run = {
+  /** Unique to this run: its log line carries it, and 👍 and 👎 name it. */
+  id: string
   turnId?: string
   rating: Rating
   tier: Tier
@@ -202,6 +210,8 @@ type Run = {
   subCost: number
   /** What effort-switch cache misses cost this turn. */
   missCost: number
+  /** A rater check's cost that landed in the ledger while the turn ran: not the turn's own. */
+  sideCost: number
   errors: number
   steppedUp: boolean
   delegated: boolean
@@ -268,6 +278,21 @@ let paceNow: Pace = NORMAL_PACE
 let escalation = true
 /** Suggest a different starting model and level, at most once a week. */
 let startTips = true
+/** Ask Sonnet for a second opinion on every 50th rating, in the background. */
+let raterCheck = true
+/** Send anonymous numbers to the rightsize author: off until the person says yes. */
+let sharing = false
+/** When this process last sent, or tried to: at most one send an hour. */
+let sharedAt = 0
+/** The mod's version, sent with each batch. */
+let version = ''
+/** The run log's last 30 days, kept in memory to score the rater (misses.ts) without re-reading the file. */
+let runLog: RunLine[] = []
+/** How often the rater was wrong, by `${type}:${tier}`: what plan() skips hand-downs and lowerings on. */
+let misses: Record<string, number> = {}
+/** Runs already given a 👍 or 👎, so a double press counts once. */
+const ratedRuns = new Set<string>()
+let runSeq = 0
 /** Warn before sending into an expired cache when that costs over this many dollars; null: off. */
 let idleWarning: number | null = 0.1
 let cacheTtl = 60 * 60_000
@@ -323,6 +348,24 @@ async function append($: EngineInterface, name: string, line: string, max: numbe
 }
 
 const log = ($: EngineInterface, line: string) => append($, 'rightsize.log', `${new Date().toISOString()} ${line}`, 50_000)
+
+// Scores the rater again from the last 30 days of the run log (misses.ts).
+async function refreshMisses($: EngineInterface) {
+  try {
+    const now = await $.clock.now()
+    runLog = runLog.filter(l => now - Date.parse(l.at) <= MISS_WINDOW_DAYS * 24 * 60 * 60_000)
+    misses = missMap(missRates(runLog))
+  } catch {
+    // The old rates stand.
+  }
+}
+
+/** Adds a line to the run log, and to the rater's record in memory. */
+async function appendRun($: EngineInterface, line: RunLine) {
+  await append($, 'rightsize-runs.jsonl', JSON.stringify(line), RUNS_LOG_MAX)
+  runLog.push(line)
+  await refreshMisses($)
+}
 
 // ---- Prices ----------------------------------------------------------------
 
@@ -515,7 +558,7 @@ async function situation($: EngineInterface): Promise<Situation> {
     level = isLevel(set) ? set : DEFAULT_LEVEL[tier]
   }
   const context = (await $.state.get({ plugin: 'rightsize', key: 'context' }).catch(() => undefined))?.value
-  return { tier, level, context: typeof context === 'number' && context > 0 ? context : DEFAULT_CONTEXT, prices, cal, rules, ties: await tiesSeen($) }
+  return { tier, level, context: typeof context === 'number' && context > 0 ? context : DEFAULT_CONTEXT, prices, cal, rules, ties: await tiesSeen($), misses }
 }
 
 // Close calls seen so far, kept in the store so the one-in-five exploration holds across sessions.
@@ -531,7 +574,7 @@ async function countTie($: EngineInterface) {
   await $.store.set(TIES_STORE, (await tiesSeen($)) + 1).catch(() => undefined)
 }
 
-async function rate($: EngineInterface, text: string, s: Situation): Promise<{ rating?: Rating; overhead: number }> {
+async function rate($: EngineInterface, text: string, s: Situation): Promise<{ rating?: Rating; overhead: number; prompt: string }> {
   let lastReply = ''
   try {
     const rows = await $.session.messages()
@@ -545,7 +588,54 @@ async function rate($: EngineInterface, text: string, s: Situation): Promise<{ r
   } catch {
     // Rated on the prompt alone.
   }
-  return askRater($, s.tier, s.level, ratingPrompt(text, lastReply))
+  const prompt = ratingPrompt(text, lastReply)
+  return { ...(await askRater($, s.tier, s.level, prompt)), prompt }
+}
+
+// ---- Rater check -------------------------------------------------------------
+
+// Every 50th rating, Sonnet rates the same prompt in the background. Where it says a
+// model would struggle that Haiku said does the work, Haiku missed (misses.ts). The
+// check never holds up the prompt, and its cost is logged as overhead.
+
+const SPOT_STORE = 'spotChecks'
+
+/** Counts one rating; true when it is the 50th, 100th and so on. Off: not counted. */
+async function dueCheck($: EngineInterface) {
+  if (!raterCheck) return false
+  const v = await $.store.get(SPOT_STORE).catch(() => undefined)
+  const n = (typeof v === 'number' && Number.isInteger(v) && v > 0 ? v : 0) + 1
+  await $.store.set(SPOT_STORE, n).catch(() => undefined)
+  return n % SPOT_CHECK_EVERY === 0
+}
+
+async function spotCheck($: EngineInterface, session: string, tier: Tier, level: Level, prompt: string, first: Rating) {
+  try {
+    const r = await $.model.complete({
+      model: SPOT_CHECKER,
+      system: ratingSystem(tier, level),
+      prompt,
+      maxTokens: 300,
+      effort: 'low',
+      timeoutMs: 15_000,
+    })
+    const usage = (r as { usage?: Usage }).usage
+    const overhead = usage ? usageCost(prices, SPOT_CHECKER, usage) : 0
+    // The check ran beside a turn, so the ledger counts it in that turn: take it out of the turn's cost.
+    if (active) active.sideCost += overhead
+    const second = r.isAnswered ? parseRating(r.text, tier) : undefined
+    if (!second) {
+      await log($, r.isAnswered ? 'rater check unreadable' : `rater check failed: ${r.reason}`)
+      if (overhead > 0) await append($, 'rightsize-runs.jsonl', JSON.stringify({ at: new Date().toISOString(), kind: 'overhead', session, overhead: round(overhead) } satisfies RunLine), RUNS_LOG_MAX)
+      return
+    }
+    const line: RunLine = { at: new Date().toISOString(), kind: 'check', session, type: first.type, fit: first.fit, check: { by: SPOT_CHECKER, fit: second.fit }, overhead: round(overhead) }
+    await appendRun($, line)
+    const fit = (f: Rating['fit']) => TIERS.map(t => `${t[0]}:${f[t] ?? (f[t] === null ? 'no' : '?')}`).join(' ')
+    await log($, `rater check on ${first.type}: haiku ${fit(first.fit)}; sonnet ${fit(second.fit)}`)
+  } catch (err) {
+    await log($, `rater check threw: ${err instanceof Error ? err.message : String(err)}`)
+  }
 }
 
 async function askRater($: EngineInterface, tier: Tier, level: Level, prompt: string): Promise<{ rating?: Rating; overhead: number }> {
@@ -681,6 +771,7 @@ function startRun(r: Rating, s: Situation, d: Decision, p: Plan, base: Level, ov
   // A per-prompt switch goes and comes back; a session switch goes once.
   const switches = d.level && d.level !== s.level ? 2 : d.session ? 1 : 0
   return {
+    id: `${sessionId}:${Date.now()}-${++runSeq}`,
     rating: r,
     tier: s.tier,
     normal: s.level,
@@ -704,6 +795,7 @@ function startRun(r: Rating, s: Situation, d: Decision, p: Plan, base: Level, ov
     mainCost: 0,
     subCost: 0,
     missCost: 0,
+    sideCost: 0,
     errors: 0,
     steppedUp: false,
     delegated: false,
@@ -753,7 +845,7 @@ const RULES: Record<keyof Choices, readonly (readonly [string, string])[]> = {
 }
 
 /** What the band shows for a rated prompt: what was done, or what was suggested and not done. */
-export function bandFor(run: Pick<Run, 'tier' | 'normal' | 'auto' | 'delegate' | 'stay' | 'takenDelegate'>, d: Decision, p: Plan): Band {
+export function bandFor(run: Pick<Run, 'id' | 'tier' | 'normal' | 'auto' | 'delegate' | 'stay' | 'takenDelegate'>, d: Decision, p: Plan): Band {
   const cur = TIER_NAME[run.tier]
   if (run.delegate) {
     const to = `${TIER_NAME[run.delegate.tier]} subagent at ${run.delegate.level} effort`
@@ -768,6 +860,8 @@ export function bandFor(run: Pick<Run, 'tier' | 'normal' | 'auto' | 'delegate' |
       text: `Effort ${lower ? 'lowered' : 'raised'}: ${run.normal} → ${level} for ${scope}.`,
       acted: true,
       rule: lower ? 'lower' : 'raise',
+      // A lowering can be marked right or wrong: it was a bet on the rating.
+      ...(lower ? { rate: run.id } : {}),
       ...(run.auto && d.level ? { canUndo: true } : {}),
       ...(d.session ? { canClear: true } : {}),
     }
@@ -803,6 +897,19 @@ async function clearSession($: EngineInterface) {
   await setBand($, null)
   await showStatus($)
   return level ? `Cleared the session switch to ${level}.` : 'No session switch was set.'
+}
+
+// 👍 or 👎 on a hand-off or a lowering: one line in the run log, read back on this machine only.
+async function giveFeedback($: EngineInterface, ref: string, value: 'up' | 'down') {
+  if (ratedRuns.has(ref)) return
+  ratedRuns.add(ref)
+  await appendRun($, { at: new Date().toISOString(), kind: 'feedback', session: sessionId, ref, value })
+  const band = (await $.state.get(BAND).catch(() => undefined))?.value
+  if (band?.rate === ref) {
+    const { rate: _, ...rest } = band
+    await setBand($, rest)
+  }
+  $.ui.toast('Rightsize: thanks — this tunes its choices on this machine.')
 }
 
 async function chooseBandMode($: EngineInterface) {
@@ -860,7 +967,7 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
   // written at; a background agent from an earlier turn finishing now counts in it too.
   const u = await usageNow($)
   const end = run.ledgerStart === undefined ? undefined : u?.cost?.usd
-  const ledger = end === undefined || run.ledgerStart === undefined ? 0 : end - run.ledgerStart
+  const ledger = end === undefined || run.ledgerStart === undefined ? 0 : end - run.ledgerStart - run.sideCost
   const actual = ledger > 0 ? ledger : tokens
   // A workflow's agents say nothing about one route's estimate, in this turn or the ones after it.
   if (!aborted && actual > 0 && !workflowSeen) {
@@ -882,6 +989,7 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
     const line: RunLine & Record<string, unknown> = {
       at: new Date().toISOString(),
       kind: 'run',
+      id: run.id,
       session: sessionId,
       type: r.type,
       route: delegated ? `delegate:${run.delegate?.tier}` : 'main',
@@ -923,7 +1031,7 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
       ...(run.before ? { before: run.before } : {}),
       ...(windows(u?.rateLimits) ? { after: windows(u?.rateLimits) } : {}),
     }
-    await append($, 'rightsize-runs.jsonl', JSON.stringify(line), RUNS_LOG_MAX)
+    await appendRun($, line)
   }
   if (run.delegate && (!delegated || !aborted)) {
     const text = !delegated
@@ -931,7 +1039,7 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
       : report({ tier: run.tier, stay: run.stay, delegate: run.delegate }, actual, billing)
     // The band shows the result in place of a transcript line; with the band off, the line stays.
     if (bandMode === 'off') $.ui.log(text)
-    else await setBand($, { text: text.replace(/^rightsize: /, ''), acted: true, rule: run.delegate.dir })
+    else await setBand($, { text: text.replace(/^rightsize: /, ''), acted: true, rule: run.delegate.dir, ...(delegated ? { rate: run.id } : {}) })
   }
   if (run.resized.length && bandMode !== 'off') {
     const text = resizedText(run.resized)
@@ -1095,9 +1203,74 @@ async function summary($: EngineInterface) {
     session ? `Session switch: ${session}.` : 'No session switch.',
     `Calibration: ${runs} measured run(s).${sw ? ` Effort switches that missed the cache: ${Math.round(sw.ratio * 100)}% of ${sw.n} (each one in ~/.claude/mods-logs/rightsize-switches.jsonl).` : ''}`,
     `Thresholds: hand off under ${Math.round(rules.handOff * 100)}% of staying, lower under ${Math.round(rules.lower * 100)}%${rules.handOff === DEFAULT_RULES.handOff && rules.lower === DEFAULT_RULES.lower ? ' (the defaults)' : ''}. Budget pacing: ${pacing ? 'on' : 'off'}.${pacing && paceNow.mode !== 'normal' ? ` ${paceNote(paceNow)}` : ''}`,
-    `Prices: checked ${priceCheck === 'off' ? 'never (off)' : 'every 30 days'}; /rightsize prices checks now. Start suggestions: ${startTips ? `on (checked every ${START_CHECK_DAYS} days)` : 'off'}.`,
+    `Prices: checked ${priceCheck === 'off' ? 'never (off)' : 'every 30 days'}; /rightsize prices checks now. Start suggestions: ${startTips ? `on (checked every ${START_CHECK_DAYS} days)` : 'off'}. Rater check: ${raterCheck ? `on (every ${SPOT_CHECK_EVERY}th rating)` : 'off'}. Sharing: ${sharing ? 'on (anonymous numbers to the rightsize author)' : 'off'}.`,
     '/rightsize report shows what it saved and what went wrong; settings asks the questions again; undo re-runs the last auto-lowered prompt; clear drops the session switch.',
   ].join('\n')
+}
+
+// ---- Sharing -------------------------------------------------------------------
+
+// Opt-in only. After 20 rated prompts, rightsize asks once whether to share anonymous
+// numbers (share.ts says exactly which) with its author. On a yes it sends what the
+// log gains from then on, at most once an hour; it never sends what came before.
+
+const qShare: Question<boolean> = {
+  header: 'Share',
+  question:
+    'Help improve rightsize? Share anonymous numbers with its author: task types, models, effort levels, estimated and real costs, what went wrong, and your 👍 and 👎. Never your prompts, code, file names or paths. Turn it off any time with Share anonymous feedback in /config.',
+  options: [
+    ['Share anonymous numbers', true],
+    ["Don't share", false],
+  ],
+}
+
+async function setShare($: EngineInterface, on: boolean) {
+  sharing = on
+  if (!on) {
+    // A new yes later starts a new install id.
+    await $.store.set('shareInstall', null).catch(() => undefined)
+    return
+  }
+  const install = await $.store.get('shareInstall').catch(() => undefined)
+  if (typeof install === 'string' && /^[a-f0-9]{32}$/.test(install)) return
+  await $.store.set('shareInstall', newInstall()).catch(() => undefined)
+  await $.store.set('sharedUpTo', new Date(await $.clock.now()).toISOString()).catch(() => undefined)
+}
+
+async function askShare($: EngineInterface) {
+  if (sharing || (await $.store.get('shareAsked').catch(() => undefined)) === true) return
+  if (runLog.filter(l => (l.kind ?? 'run') === 'run').length < SHARE_ASK_AFTER) return
+  await $.store.set('shareAsked', true).catch(() => undefined)
+  const yes = await pick($, qShare)
+  await log($, `share question: ${yes === true ? 'yes' : yes === false ? 'no' : 'dismissed'}`)
+  if (yes !== true) return
+  await setShare($, true)
+  await $.config.set({ key: 'rightsize.share', value: 'on' }).catch(() => undefined)
+  $.ui.toast('Rightsize: thanks. Anonymous numbers will be shared; Share anonymous feedback in /config turns it off.')
+}
+
+async function sendShare($: EngineInterface) {
+  try {
+    if (!sharing || off) return
+    const now = await $.clock.now()
+    if (now - sharedAt < SHARE_EVERY_MS) return
+    if (await $.env.get('CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC').catch(() => undefined)) return
+    const install = await $.store.get('shareInstall').catch(() => undefined)
+    if (typeof install !== 'string') return
+    const after = await $.store.get('sharedUpTo').catch(() => undefined)
+    const { events, upTo } = nextBatch(runLog, install, typeof after === 'string' ? after : undefined)
+    if (!upTo) return
+    sharedAt = now
+    if (events.length) {
+      const body = JSON.stringify({ install, version, billing, events })
+      const res = await $.http.fetch(SHARE_URL, { method: 'POST', headers: { 'content-type': 'application/json' }, body })
+      if (!res.ok) return log($, `share: the server answered ${res.status}; sent again later`)
+      await log($, `share: sent ${events.length} event(s)`)
+    }
+    await $.store.set('sharedUpTo', upTo).catch(() => undefined)
+  } catch (err) {
+    await log($, `share failed: ${err instanceof Error ? err.message : String(err)}`)
+  }
 }
 
 // ---- Starting point ----------------------------------------------------------
@@ -1152,6 +1325,8 @@ export const register: Register = (on, options) => {
   if (opts.pacing === 'off') pacing = false
   if (opts.escalation === 'off') escalation = false
   if (opts.startTips === 'off') startTips = false
+  if (opts.raterCheck === 'off') raterCheck = false
+  if (opts.share === 'on') sharing = true
   idleWarning = parseIdleWarning(opts.idleWarning)
 
   on('config.set', { key: 'rightsize.band' }, async ($, e, next) => {
@@ -1163,6 +1338,18 @@ export const register: Register = (on, options) => {
   on('config.set', { key: 'rightsize.startTips' }, async ($, e, next) => {
     const result = await next(e)
     startTips = e.value !== 'off'
+    return result
+  })
+
+  on('config.set', { key: 'rightsize.share' }, async ($, e, next) => {
+    const result = await next(e)
+    await setShare($, e.value === 'on')
+    return result
+  })
+
+  on('config.set', { key: 'rightsize.raterCheck' }, async ($, e, next) => {
+    const result = await next(e)
+    raterCheck = e.value !== 'off'
     return result
   })
 
@@ -1228,8 +1415,18 @@ export const register: Register = (on, options) => {
       const saved = await $.store.get('choices').catch(() => undefined)
       if (saved && typeof saved === 'object') await $.state.set({ plugin: 'rightsize', key: 'choices' }, { ...(saved as Choices), ...(await choices($)) })
     }
+    runLog = parseLines<RunLine>(await readText($, `${home}/.claude/mods-logs/rightsize-runs.jsonl`))
+    ratedRuns.clear()
+    await refreshMisses($)
     off = (await readSwitches($))[NAME] === false
     await checkStart($).catch(() => undefined)
+    try {
+      version = String((JSON.parse(await readText($, `${$.plugin.root}/.claude-plugin/plugin.json`)) as { version?: unknown }).version ?? '')
+    } catch {
+      version = ''
+    }
+    sharedAt = 0
+    void sendShare($)
     $.clock.every(3000, () => {
       void readSwitches($).then(json => {
         off = json[NAME] === false
@@ -1299,7 +1496,7 @@ export const register: Register = (on, options) => {
       const base = await situation($)
       paceNow = pacing ? paceOf((await usageNow($))?.rateLimits ?? [], await $.clock.now()) : NORMAL_PACE
       const s: Situation = { ...base, rules: pacedRules(base.rules ?? DEFAULT_RULES, paceNow) }
-      const { rating: r, overhead } = await rate($, text, s)
+      const { rating: r, overhead, prompt } = await rate($, text, s)
       if (r) {
         // While Claude fans work out to workflows, a single hand-off would only cut across it.
         const planned = plan(r, s, floor)
@@ -1326,6 +1523,8 @@ export const register: Register = (on, options) => {
         if (unfanned !== planned) await log($, `hand-off to ${planned.kind === 'delegate' ? planned.tier : '?'} skipped: a workflow ran this session`)
         const paced = paceNow.mode === 'normal' ? '' : `, ${paceNow.mode} pace on ${paceNow.window}${paceNow.pace === undefined ? '' : ` (${paceNow.pace.toFixed(2)})`}`
         await log($, `${r.type} on ${s.tier}/${s.level}${paced}: rated ${fit}, plan ${p.kind}${'dir' in p ? ` ${p.dir}` : ''}${run.tie ? ` (tie ${run.tie.by} over ${run.tie.over})` : ''}: ${did}`)
+        // Every 50th rating gets Sonnet's second opinion, in the background.
+        if (await dueCheck($)) void spotCheck($, sessionId, s.tier, s.level, prompt, r)
       } else if (overhead > 0) {
         // A rating that came to nothing still cost something: the report counts it.
         const line: RunLine = { at: new Date().toISOString(), kind: 'overhead', session: sessionId, overhead: round(overhead) }
@@ -1485,6 +1684,11 @@ export const register: Register = (on, options) => {
       buttons.push({ key: 'tip-later', label: 'Not now', press: () => snoozeStart($, tip) })
       buttons.push({ key: 'tip-stop', label: 'Stop suggesting', press: () => stopStartTips($) })
     }
+    if (band.rate) {
+      const ref = band.rate
+      buttons.push({ key: 'good', label: '👍', press: () => giveFeedback($, ref, 'up') })
+      buttons.push({ key: 'bad', label: '👎', press: () => giveFeedback($, ref, 'down') })
+    }
     if (rule) {
       for (const [value, label] of RULES[rule]) {
         if (value !== have) buttons.push({ key: `rule-${value}`, label, press: () => setRule($, rule, value) })
@@ -1518,7 +1722,9 @@ export const register: Register = (on, options) => {
       const run = active
       active = null
       await finish($, run, e.isAborted, e.durationMs)
+      await askShare($).catch(() => undefined)
     }
+    if (e.agentId === undefined) void sendShare($)
     return result
   })
 }

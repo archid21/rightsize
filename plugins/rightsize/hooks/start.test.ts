@@ -74,3 +74,35 @@ test('the report block: each start per 100 prompts, or a share of yours on a sub
   expect(startLines(a, true, money)[1]).toContain('Opus at medium (yours) 100% of yours')
   expect(startLines(adviseStart([], C, NOW), false, money)).toEqual(['Starting point: needs 50 rated prompts to compare starts (has 0).'])
 })
+
+test('a miss rate on the start model raises its cost and hand-ups in proportion', async () => {
+  const lines = many(10, easy)
+  const start = { tier: 'sonnet' as const, level: 'medium' as const }
+  const base = replay(lines, start, C)
+  expect(base.up, 'rated as it is, Sonnet does it all').toBe(0)
+  const rate = { 'feature:sonnet': { n: 10, misses: 3 } }
+  const m = replay(lines, start, { ...C, misses: rate })
+  // Wrong 3 times in 10: that share is replayed as if Sonnet had been rated unable, so it goes to Opus.
+  const wrong = replay(many(10, { ...easy, sonnet: null }), start, C)
+  expect(wrong.up).toBe(10)
+  expect(Math.abs(m.cost - (0.7 * base.cost + 0.3 * wrong.cost)) < 1e-9, 'a blend of the two costs').toBe(true)
+  expect(m.cost).toBeGreaterThan(base.cost)
+  expect(Math.abs(m.up - 3) < 1e-9, '3 of 10 prompts handed up').toBe(true)
+  expect(replay(lines, { tier: 'opus', level: 'medium' }, { ...C, misses: rate }).cost, "Sonnet's record does not touch an Opus start").toBe(replay(lines, { tier: 'opus', level: 'medium' }, C).cost)
+  const thin = replay(lines, start, { ...C, misses: { 'feature:sonnet': { n: 4, misses: 4 } } })
+  expect(thin.cost, 'under 5 outcomes: not used').toBe(base.cost)
+  const across = replay(lines, start, { ...C, misses: { 'debug:sonnet': { n: 10, misses: 10 } } })
+  expect(across.up, "no record for this type: Sonnet's across types is used").toBe(10)
+  const unable = replay(many(4, { ...easy, sonnet: null }), start, { ...C, misses: { 'feature:sonnet': { n: 10, misses: 10 } } })
+  expect(unable.up, 'where the rater already said Sonnet would struggle, nothing more to blend').toBe(4)
+})
+
+test("the advice reads the rater's record off the log: a Sonnet start is no longer cheaper when checks say Sonnet would struggle", async () => {
+  const lines = many(60, easy)
+  expect(adviseStart(lines, C, NOW), 'without a record').toMatchObject({ kind: 'switch', to: { tier: 'sonnet' } })
+  const checks = Array.from({ length: 20 }, (_, i) => ({ at: at(i), kind: 'check', type: 'feature', fit: easy, check: { by: 'sonnet', fit: { ...easy, sonnet: null } } }) as RunLine)
+  const a = adviseStart([...lines, ...checks], C, NOW)
+  expect(a.kind === 'switch' ? a.to.tier : 'opus', 'Sonnet wrong on every check: too many hand-ups').not.toBe('sonnet')
+  expect(a.kind === 'switch' ? a.replays[0]?.prompts : 60, 'check lines are not prompts').toBe(60)
+  expect(adviseStart([...lines, ...checks], { ...C, misses: {} }, NOW), 'a given record replaces the log\'s').toMatchObject({ kind: 'switch', to: { tier: 'sonnet' } })
+})

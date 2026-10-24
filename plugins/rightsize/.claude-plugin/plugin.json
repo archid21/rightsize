@@ -1,7 +1,7 @@
 {
   "name": "rightsize",
   "version": "0.6.0",
-  "description": "Right-sizes each Claude Code prompt: rates the effort, model and cost it needs, then lowers or raises effort, or hands the work to a stronger or cheaper subagent, the way you chose the first time each case came up",
+  "description": "Right-sizes each Claude Code prompt: rates the effort, model and cost it needs, then lowers or raises effort, or hands the work to a stronger or cheaper subagent, the way you chose the first time each case came up. It scores Haiku's ratings against what happened, with a Sonnet spot-check and your 👍 and 👎, and stops trusting them where they keep missing",
   "types": "./types/index.d.ts",
   "author": {
     "name": "Archi Dubey",
@@ -84,10 +84,30 @@
         "off"
       ]
     },
+    "share": {
+      "type": "string",
+      "title": "Share anonymous feedback",
+      "description": "on: send anonymous numbers to the rightsize author, at most once an hour, to tune its defaults: task types, models, effort levels, rated levels, token guesses, estimated and real costs, what went wrong, Sonnet checks, and your 👍 and 👎, with a random install id. Never prompts, code, file names, paths, tool or server names, or session ids. Only what is logged after you turn it on is sent. off (default): nothing is sent; turning it off and on again starts a new install id.",
+      "default": "off",
+      "options": [
+        "off",
+        "on"
+      ]
+    },
     "startTips": {
       "type": "string",
       "title": "Start suggestions",
-      "description": "on: once a week, estimate what the last 30 days of rated prompts would have cost from Sonnet and Opus at medium and high, rightsize's changes counted. When another start is at least 15% cheaper (25% while it has few measured runs) without sending over 1 prompt in 10 to a stronger model, or when over 15% of prompts needed a stronger model or more effort, the band suggests switching with /model. rightsize never changes your model itself. off: no suggestions; /rightsize report still shows the comparison.",
+      "description": "on: once a week, estimate what the last 30 days of rated prompts would have cost from Sonnet and Opus at medium and high, rightsize's changes counted. Prompts Haiku's rating has often got wrong for a model count against that model's start. When another start is at least 15% cheaper (25% while it has few measured runs) without sending over 1 prompt in 10 to a stronger model, or when over 15% of prompts needed a stronger model or more effort, the band suggests switching with /model. rightsize never changes your model itself. off: no suggestions; /rightsize report still shows the comparison.",
+      "default": "on",
+      "options": [
+        "on",
+        "off"
+      ]
+    },
+    "raterCheck": {
+      "type": "string",
+      "title": "Rater check",
+      "description": "on: on every 50th rated prompt, ask Sonnet in the background to rate the same prompt, and log where it says a model would struggle that Haiku said does the work. These checks, rework on hand-offs, lowered turns that stepped back up, mid-turn raises and your 👍 and 👎 give a miss rate per task type and model; at 30% rightsize stops handing that work down to that model and stops lowering effort on it. Each check costs one Sonnet call and never delays the prompt. off: no checks (the other outcomes still count).",
       "default": "on",
       "options": [
         "on",
@@ -109,7 +129,7 @@
     "band": {
       "type": "string",
       "title": "Band",
-      "description": "The row above the prompt that shows what rightsize did, with buttons to undo it or change the rule. when it acts: only when it changes something. always: on every rated prompt, no change included. off: status line only.",
+      "description": "The row above the prompt that shows what rightsize did, with buttons to undo it, mark a hand-off or lowering 👍 or 👎 (kept on this machine) or change the rule. when it acts: only when it changes something. always: on every rated prompt, no change included. off: status line only.",
       "default": "when it acts",
       "options": [
         "when it acts",

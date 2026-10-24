@@ -260,7 +260,13 @@ export type Situation = {
   rules?: Rules
   /** Close calls seen so far, persisted: every fifth takes the route the guide did not pick. */
   ties?: number
+  /** How often the rater's judgement was wrong, by `${type}:${tier}` (see misses.ts): at MISS_BLOCK or more, that model gets no hand-down and no lowering. */
+  misses?: Record<string, number>
 }
+
+/** The share of wrong judgements at which rightsize stops trusting the rater for a task type and model. */
+export const MISS_BLOCK = 0.3
+const blocked = (s: Situation, type: TaskType, tier: Tier) => (s.misses?.[`${type}:${tier}`] ?? 0) >= MISS_BLOCK
 
 /** The main chat doing the work at `level`, before calibration. */
 export function rawMainCost(r: Rating, s: Situation, level: Level) {
@@ -491,6 +497,7 @@ export function effortPlan(r: Rating, s: Situation, floor: Level): Plan {
   const target = clampFloor(r.level, floor)
   if (target === s.level) return { kind: 'none', why: 'the level in use fits' }
   if (levelRank(target) > levelRank(s.level)) return { kind: 'effort', dir: 'raise', level: target }
+  if (blocked(s, r.type, s.tier)) return { kind: 'none', why: `lowering ${r.type} work on ${TIER_NAME[s.tier]} is paused: the rating was wrong too often` }
   // A per-prompt lower switches twice: down for this turn, back for the next.
   const now = mainCost(r, s, s.level, 0)
   const lowered = mainCost(r, s, target, 2)
@@ -508,6 +515,8 @@ export function plan(r: Rating, s: Situation, floor: Level): Plan {
   const routes = TIERS.flatMap(t => {
     const need = r.fit[t]
     if (t === s.tier || !need) return []
+    // A hand-down to a model the rater has been wrong about for this kind of work waits until its record mends.
+    if (tierRank(t) < tierRank(s.tier) && blocked(s, r.type, t)) return []
     const level = clampFloor(need, floor)
     return [{ tier: t, level, cost: delegateCost(r, s, t, level), n: runsOn(s.cal, delegateKeys(r.type, t, level)) }]
   }).sort((a, b) => a.cost - b.cost)

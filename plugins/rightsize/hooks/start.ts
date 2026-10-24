@@ -5,6 +5,7 @@ import type {
   RightsizeTier as Tier,
 } from '../types'
 import { type Calibration, type Fit, type Prices, type Rules, TIER_NAME, effortPlan, isLevel, isTaskType, isTier, levelRank, mainCost, needOn, plan, tierRank } from './cost'
+import { type Rates, missRate, missRates } from './misses'
 import { type RunLine, parseLines } from './report'
 
 // Which model and effort a session should start on. Every rated prompt in the run log
@@ -12,7 +13,9 @@ import { type RunLine, parseLines } from './report'
 // session ran on, so the log can be replayed through plan() from any start. The start
 // with the lowest total cost (rightsize's hand-offs and effort changes counted) wins,
 // unless too many of its prompts would go to a stronger model, checked by a weaker one.
-// Pure functions, no engine calls.
+// The rating is not taken on trust: where it has been wrong about a model for a kind of
+// work (misses.ts), that share of the prompts is replayed as if the model had been
+// rated unable. Pure functions, no engine calls.
 
 export type Start = { tier: Tier; level: Level }
 
@@ -63,7 +66,15 @@ export function startOf(l: RunLine): Start | undefined {
   return isTier(l.tier) && isLevel(level) ? { tier: l.tier, level } : undefined
 }
 
-export type StartContext = { prices: Prices; cal: Calibration; rules: Rules; floor: Level; choices: Choices }
+export type StartContext = {
+  prices: Prices
+  cal: Calibration
+  rules: Rules
+  floor: Level
+  choices: Choices
+  /** How often the rater's judgement was wrong (misses.ts); read off the log's lines when absent. */
+  misses?: Rates
+}
 
 export type Replay = {
   start: Start
@@ -76,25 +87,38 @@ export type Replay = {
   measured: number
 }
 
-/** What rightsize would have spent on these prompts from `start`, following the person's rules. */
+/** What rightsize would have spent on one prompt from `start`, and whether it goes to a stronger model, for the rating `fit`. */
+function once(l: Rated, fit: Fit, start: Start, context: number, c: StartContext) {
+  const r = { level: needOn(fit, start.tier), fit, type: l.type, read: l.read, write: l.write, steps: l.steps, reason: '' }
+  // ties 1: no exploring, so the replay picks what the guide would.
+  const s = { tier: start.tier, level: start.level, context, prices: c.prices, cal: c.cal, rules: c.rules, ties: 1 }
+  let p = plan(r, s, c.floor)
+  if (p.kind === 'delegate' && c.choices[p.dir] === 'stay') p = effortPlan(r, s, c.floor)
+  if (p.kind === 'delegate') return { cost: p.delegateCost, up: p.dir === 'up' ? 1 : 0 }
+  if (p.kind === 'effort' && c.choices[p.dir] !== 'never') return { cost: mainCost(r, s, p.level, 2), up: 0 }
+  return { cost: mainCost(r, s, start.level, 0), up: 0 }
+}
+
+/**
+ * What rightsize would have spent on these prompts from `start`, following the person's rules.
+ * The rater is sometimes wrong that the start's model does the work: with a miss rate m for the
+ * task type on that model, a prompt costs (1 - m) of its cost as rated plus m of its cost had
+ * the model been rated unable, and counts the same way toward the hand-ups.
+ */
 export function replay(lines: readonly RunLine[], start: Start, c: StartContext): Replay {
   const rated = lines.filter(isRated)
   const sized = rated.map(l => l.context).filter((v): v is number => typeof v === 'number' && v > 0)
   const fallback = sized.length ? [...sized].sort((a, b) => a - b)[Math.floor(sized.length / 2)] ?? START_CONTEXT : START_CONTEXT
+  const rates = c.misses ?? {}
   let cost = 0
   let up = 0
   for (const l of rated) {
     const context = typeof l.context === 'number' && l.context > 0 ? l.context : fallback
-    const r = { level: needOn(l.fit, start.tier), fit: l.fit, type: l.type, read: l.read, write: l.write, steps: l.steps, reason: '' }
-    // ties 1: no exploring, so the replay picks what the guide would.
-    const s = { tier: start.tier, level: start.level, context, prices: c.prices, cal: c.cal, rules: c.rules, ties: 1 }
-    let p = plan(r, s, c.floor)
-    if (p.kind === 'delegate' && c.choices[p.dir] === 'stay') p = effortPlan(r, s, c.floor)
-    if (p.kind === 'delegate') {
-      cost += p.delegateCost
-      if (p.dir === 'up') up += 1
-    } else if (p.kind === 'effort' && c.choices[p.dir] !== 'never') cost += mainCost(r, s, p.level, 2)
-    else cost += mainCost(r, s, start.level, 0)
+    const asRated = once(l, l.fit, start, context, c)
+    const m = l.fit[start.tier] ? missRate(rates, l.type, start.tier) : 0
+    const wrong = m > 0 ? once(l, { ...l.fit, [start.tier]: null }, start, context, c) : asRated
+    cost += (1 - m) * asRated.cost + m * wrong.cost
+    up += (1 - m) * asRated.up + m * wrong.up
   }
   const measured = rated.filter(l => l.route === 'main' && l.tier === start.tier && l.level === start.level).length
   return { start, cost, prompts: rated.length, up, measured }
@@ -107,7 +131,8 @@ export type StartAdvice =
 
 /** The start to suggest from the last 30 days of the run log. */
 export function adviseStart(lines: readonly RunLine[], c: StartContext, now: number): StartAdvice {
-  const recent = lines.filter(l => now - Date.parse(l.at) <= START_WINDOW_DAYS * DAY).filter(isRated)
+  const windowed = lines.filter(l => now - Date.parse(l.at) <= START_WINDOW_DAYS * DAY)
+  const recent = windowed.filter(isRated)
   const current = [...recent].reverse().map(startOf).find(s => s !== undefined)
   if (recent.length < START_MIN_PROMPTS || !current) return { kind: 'wait', prompts: recent.length, need: START_MIN_PROMPTS, ...(current ? { current } : {}) }
   // Judge the current start only on prompts run from it, counted back from the newest.
@@ -119,7 +144,8 @@ export function adviseStart(lines: readonly RunLine[], c: StartContext, now: num
   }
   if (onCurrent < START_MIN_ON_CURRENT) return { kind: 'wait', prompts: onCurrent, need: START_MIN_ON_CURRENT, current }
   const starts = STARTS.some(s => same(s, current)) ? STARTS : [...STARTS, current]
-  const replays = starts.map(s => replay(recent, s, c))
+  const ctx = { ...c, misses: c.misses ?? missRates(windowed) }
+  const replays = starts.map(s => replay(recent, s, ctx))
   const mine = replays.find(r => same(r.start, current))
   if (!mine || mine.cost <= 0) return { kind: 'stay', current, replays }
   const share = (r: Replay) => (r.prompts ? r.up / r.prompts : 0)

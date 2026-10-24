@@ -33,20 +33,22 @@ After the first answer, it asks "Use these choices in every session?".
   - Opus for design.
 
   "Close" starts at 25% and shrinks to nothing by 20 measured runs. One close call in five takes the other model, so both get measured. It never overrides the hand-off threshold.
+- **Haiku's rating is scored against what happens.** Per task type and model, a hand-off that needed rework, a lowered turn that stepped back up or was raised mid-turn, an unchanged turn raised mid-turn, a 👎, and a Sonnet check that disagreed each count as a miss; a hand-off without rework, a lowered turn that held, a 👍 and an agreeing check count as hits. A type needs 5 outcomes on a model before its own rate counts, else the model's rate across types does (also from 5). Over the last 30 days, a rate of 30% or more stops hand-downs to that model for that kind of work, and lowering effort on it. The starting-point comparison weighs the same rate. All of it is read from the run log on your machine.
+- **Sonnet spot-checks Haiku.** On every 50th rated prompt the mod sends the same prompt to Sonnet at low effort in the background, never delaying the prompt, and logs a `check` line with its cost. Where Haiku said a model fits and Sonnet says it would struggle, that is a miss. **Rater check** in `/config` turns it off.
 - **Calibration.** After each rated turn, the mod reads the real cost from Claude Code's cost ledger (the `/cost` total), leaving out the Haiku rating call, and moves its estimates toward it. Where there is no ledger, it prices the API's token counts from `prices.json`. Each task type and route is tracked separately, and after 20 runs the measured average replaces the guess. A lowered turn that stepped back up is left out, and sessions running at the same time add to one shared record rather than overwriting each other. When the work-per-model estimates came in, calibration started over once: earlier learning is ignored, not deleted.
 
-A one-row band above the prompt (CLI and desktop app) shows what the mod did, with buttons: Undo or Clear, a quicker rule for this case (Q1–Q4), ⋯ to choose when the band shows, and × to close it. After a hand-off it shows the result, for example: `Sent to Haiku: $0.04 vs about $0.31 on Fable (estimated), saved about 87%.` With the band off, that result is a line in the transcript.
+A one-row band above the prompt (CLI and desktop app) shows what the mod did, with buttons: Undo or Clear, a quicker rule for this case (Q1–Q4), ⋯ to choose when the band shows, and × to close it. After a hand-off it shows the result, for example: `Sent to Haiku: $0.04 vs about $0.31 on Fable (estimated), saved about 87%.` With the band off, that result is a line in the transcript. A hand-off's result and a lowering also show 👍 and 👎: pressing one logs a `feedback` line, removes the buttons, and tunes the mod's choices on this machine. Nothing is sent anywhere.
 
 ## Choosing a starting model
 
 Start on Sonnet 5.5 at medium (cheapest for lookups, searches, edits and writing) or Opus 5.5 at medium (safer for features, debugging and design: hand-offs only go down, and Opus checks them). Avoid Opus at low (frequent raises re-write the cache) and Fable (the biggest saving percent, but the highest total).
 
-Once a week at session start, the mod estimates what the last 30 days of rated prompts would have cost from Sonnet and Opus at medium and high, its own changes counted. The band suggests a switch when another start is at least 15% cheaper (25% while it has few measured runs) and sends no more than 1 prompt in 10 to a stronger model, or when over 15% of prompts needed a stronger model or a mid-turn raise. It needs 50 rated prompts in 30 days and 20 on the current start. **Not now** quiets it for 14 days; **Stop suggesting** turns it off. It never changes the model itself: switch with `/model`.
+Once a week at session start, the mod estimates what the last 30 days of rated prompts would have cost from Sonnet and Opus at medium and high, its own changes counted and Haiku's miss rate on the start's model weighed in. The band suggests a switch when another start is at least 15% cheaper (25% while it has few measured runs) and sends no more than 1 prompt in 10 to a stronger model, or when over 15% of prompts needed a stronger model or a mid-turn raise. It needs 50 rated prompts in 30 days and 20 on the current start. **Not now** quiets it for 14 days; **Stop suggesting** turns it off. It never changes the model itself: switch with `/model`.
 
 ## Commands and settings
 
 - `/rightsize` shows the state, the answers and the calibration.
-- `/rightsize report` shows what the mod did this session, in the last 7 days and in the last 30 days: prompts rated and changed, the estimated saving after the cost of its rating calls (on a subscription: the share of your 5-hour window kept first, then the share of usage saved, with dollars marked API-equivalent), close calls decided by the task-type guide, a starting-point comparison, and what went wrong. Savings are estimates.
+- `/rightsize report` shows what the mod did this session, in the last 7 days and in the last 30 days: prompts rated and changed, the estimated saving after the cost of its rating calls (on a subscription: the share of your 5-hour window kept first, then the share of usage saved, with dollars marked API-equivalent), close calls decided by the task-type guide, a starting-point comparison, how often Haiku's judgement was wrong (with any hand-downs paused for it), and what went wrong. Savings are estimates.
 - `/rightsize settings` asks the questions again.
 - `/rightsize undo` puts the last auto-lowered prompt back in the box to run at the normal level.
 - `/rightsize clear` drops a session-wide switch.
@@ -60,6 +62,8 @@ Once a week at session start, the mod estimates what the last 30 days of rated p
   - **Raise when stuck** (on or off): raise effort one level for the rest of a turn when Claude looks stuck (a tool call failing twice, 3 failing, one call running 3 times, or 3x the rated steps), following your Raising rule.
   - **Idle warning** (over $0.10, over $0.50, over $1 or off): ask before a prompt sent after the cache expired writes the whole conversation again, when that costs over this much (in API-equivalent dollars on a subscription). A subscriber sees the cost as a share of their 5-hour window once runs show the rate.
   - **Start suggestions** (on or off): once a week, suggest a different starting model and level in the band when your log shows one is clearly better. Off: `/rightsize report` still shows the comparison.
+  - **Share anonymous feedback** (off or on): send anonymous numbers to the rightsize author, at most once an hour, from when you turn it on: task types, models, effort levels, token guesses, costs, what went wrong, Sonnet checks and your 👍/👎, with a random install ID. Never prompts, code, file names, paths, tool or server names, or session IDs. The mod asks once, after 20 rated prompts. Nothing is sent while `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` is set.
+  - **Rater check** (on or off): on every 50th rated prompt, ask Sonnet in the background for a second opinion on Haiku's rating, to measure how often Haiku is wrong. Off: no checks.
   - **Band** (when it acts, always or off): when the band above the prompt shows. "when it acts", the default, shows it only when the mod changes something.
   - **Price check** (monthly, check now or off): how often `prices.json` is compared with Anthropic's pricing page.
 - `prices.json` holds the price table, in dollars per 1M tokens.
@@ -71,9 +75,9 @@ Once a week at session start, the mod estimates what the last 30 days of rated p
 
 - The app's effort picker does not move. The status line shows the level in use.
 - Subagents keep their own model and effort unless the mod hands them work, or Claude started them as general-purpose without naming a model. Those the mod may move to a cheaper model.
-- The rating is an estimate from Haiku. Calibration corrects the cost guesses, but it can't correct a wrong choice of model.
+- The rating is an estimate from Haiku. Calibration corrects the cost guesses, but it can't correct a wrong choice of model. The mod measures how often the rating was wrong and stops trusting it where it keeps missing, but only once enough outcomes are in.
 
 ## Logs
 
 - Decisions: `~/.claude/mods-logs/rightsize.log`
-- One JSON line per rated turn, with its session, change, costs, rating-call cost and rate-limit windows: `~/.claude/mods-logs/rightsize-runs.jsonl`
+- One JSON line per rated turn, with its session, an `id`, change, costs, rating-call cost and rate-limit windows: `~/.claude/mods-logs/rightsize-runs.jsonl`. It also holds a `check` line for each Sonnet spot-check and a `feedback` line for each 👍 or 👎.

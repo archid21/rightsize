@@ -1,4 +1,5 @@
-import { money } from './cost'
+import { MISS_BLOCK, TIER_NAME, isTier, money } from './cost'
+import { MISS_MIN, missRates, missTotals } from './misses'
 
 // /rightsize report: what the mod saved, what it cost to run, and what went
 // wrong, read from its run log. Pure functions, no engine calls.
@@ -14,8 +15,13 @@ export type Windows = Record<string, number>
 /** One line of rightsize-runs.jsonl. Lines from before 0.5 lack the newer fields. */
 export type RunLine = {
   at: string
-  /** 'overhead': a rating call that came to nothing (failed or unreadable). 'subagent': one of Claude's subagents moved to a cheaper model, when it answered. */
-  kind?: 'run' | 'overhead' | 'subagent'
+  /**
+   * 'overhead': a rating call that came to nothing (failed or unreadable). 'subagent': one of Claude's subagents moved to a cheaper model, when it answered.
+   * 'check': Sonnet's second opinion on a rating. 'feedback': a 👍 or 👎 on a run. Neither counts as a rated run.
+   */
+  kind?: 'run' | 'overhead' | 'subagent' | 'check' | 'feedback'
+  /** A run line's own id, which feedback lines name in `ref`. */
+  id?: string
   session?: string
   type?: string
   route?: string
@@ -60,6 +66,13 @@ export type RunLine = {
   /** The session's own level, before rightsize's change, and the conversation's size: from 0.7. */
   normal?: string
   context?: number
+  /** Each model's lowest level for the work, or null where it would struggle: the rater's judgement. */
+  fit?: Record<string, string | null>
+  /** A check line: the second opinion, and who gave it. `fit` is then the first rater's. */
+  check?: { by: string; fit: Record<string, string | null> }
+  /** A feedback line: the run's `id` and the verdict. */
+  ref?: string
+  value?: 'up' | 'down'
 }
 
 type Tie = { by?: string; over?: string }
@@ -249,6 +262,23 @@ function offBy(lines: readonly RunLine[]) {
   return xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0
 }
 
+/** How often the rater was wrong where the log shows how it turned out, and the hand-downs paused for it. */
+export function haikuLines(lines: readonly RunLine[]) {
+  const rates = missRates(lines)
+  const { n, misses } = missTotals(rates)
+  if (!misses) return []
+  const out = [`Haiku's judgement was wrong on ${misses} of ${n} checked prompts (${Math.round((misses / n) * 100)}%): rework, effort stepped back up, mid-turn raises, 👎, or the Sonnet check disagreed.`]
+  const worst = Object.entries(rates)
+    .filter(([, e]) => e.n >= MISS_MIN)
+    .map(([key, e]) => ({ key, n: e.n, rate: e.misses / e.n }))
+    .sort((a, b) => b.rate - a.rate || b.n - a.n)[0]
+  const [type, tier] = worst ? worst.key.split(':') : []
+  if (worst && worst.rate >= MISS_BLOCK && type && isTier(tier)) {
+    out.push(`Hand-downs of ${type} work to ${TIER_NAME[tier]} (and lowering effort on it) are paused: wrong on ${Math.round(worst.rate * 100)}% of ${worst.n}.`)
+  }
+  return out
+}
+
 export function wentWrong(lines: readonly RunLine[], switches: readonly SwitchLine[]) {
   const runs = lines.filter(l => isRun(l) && !l.aborted)
   const out: string[] = []
@@ -269,6 +299,7 @@ export function wentWrong(lines: readonly RunLine[], switches: readonly SwitchLi
   }
   const rework = runs.filter(l => delegated(l) && num(l.agentCalls) > 1).length
   if (rework) out.push(`${plural(rework, 'hand-off')} needed rework (more than one subagent call).`)
+  out.push(...haikuLines(lines))
   const skipped = runs.filter(l => (l.change === 'delegate-up' || l.change === 'delegate-down') && !delegated(l)).length
   if (skipped) out.push(`Claude skipped ${plural(skipped, 'hand-off')} you chose and did the work itself.`)
   const missed = switches.filter(s => s.kept === false).length

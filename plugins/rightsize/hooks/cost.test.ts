@@ -6,6 +6,7 @@ import {
   PREFERRED,
   SWITCH_KEY,
   TASK_TYPES,
+  MISS_BLOCK,
   TIE_BAND,
   TIERS,
   WORK,
@@ -561,4 +562,40 @@ test("sizing Claude's own subagent breaks a close call the same way", async () =
   // The hand-off share still decides first: a close route above it is not a candidate.
   const strict = sizeSubagent(r, at(0.9, { rules: { ...DEFAULT_RULES, handOff: 0.01 } }), 'fable', 'low')
   expect(strict).toBeUndefined()
+})
+
+// The rater's record (Situation.misses, from misses.ts): where it has been wrong too often, rightsize stops betting on it.
+
+test('a model the rater is wrong about for this task type gets no hand-down, at MISS_BLOCK and over', async () => {
+  const r = rating({ level: 'low', fit: { haiku: 'low', sonnet: 'low', fable: 'low' }, type: 'search', read: 150_000, write: 3000, steps: 30 })
+  expect(MISS_BLOCK).toBe(0.3)
+  const open = plan(r, fable, 'low')
+  expect(open.kind === 'delegate' && open.tier, 'the cheapest fit').toBe('haiku')
+  const under = plan(r, { ...fable, misses: { 'search:haiku': 0.29 } }, 'low')
+  expect(under.kind === 'delegate' && under.tier, 'under the bar: still Haiku').toBe('haiku')
+  const paused = plan(r, { ...fable, misses: { 'search:haiku': MISS_BLOCK } }, 'low')
+  expect(paused.kind === 'delegate' && paused.tier, 'Haiku skipped: the next cheapest fit').toBe('sonnet')
+  const other = plan(r, { ...fable, misses: { 'debug:haiku': 0.9 } }, 'low')
+  expect(other.kind === 'delegate' && other.tier, 'another task type is not affected').toBe('haiku')
+  const both = plan(r, { ...fable, misses: { 'search:haiku': 0.5, 'search:sonnet': 0.5 } }, 'low')
+  expect(both.kind, 'every cheaper model paused: no hand-down').not.toBe('delegate')
+})
+
+test('a hand-up is never paused by the record of the stronger model', async () => {
+  const r = rating({ level: 'high', fit: { sonnet: null, opus: 'high', fable: 'medium' }, type: 'debug', read: 30_000, write: 4000, steps: 12 })
+  const s = { ...opus, tier: 'sonnet' as const, level: 'high' as const }
+  const p = plan(r, { ...s, misses: { 'debug:opus': 0.9, 'debug:fable': 0.9 } }, 'low')
+  expect(p.kind === 'delegate' && p.dir).toBe('up')
+})
+
+test('effort is not lowered on a model the rater is wrong about for this task type', async () => {
+  const r = rating({ level: 'low', type: 'lookup', write: 1500 })
+  const s = { ...opus, cal: freeSwitches }
+  expect(effortPlan(r, s, 'low').kind, 'lowers without a record').toBe('effort')
+  expect(effortPlan(r, { ...s, misses: { 'lookup:opus': 0.29 } }, 'low').kind).toBe('effort')
+  const p = effortPlan(r, { ...s, misses: { 'lookup:opus': MISS_BLOCK } }, 'low')
+  expect(p.kind).toBe('none')
+  if (p.kind === 'none') expect(p.why).toContain('paused')
+  expect(effortPlan(r, { ...s, misses: { 'lookup:haiku': 0.9 } }, 'low').kind, 'another model: not affected').toBe('effort')
+  expect(effortPlan(rating({ level: 'xhigh' }), { ...s, misses: { 'other:opus': 0.9 } }, 'low'), 'a raise is never paused').toEqual({ kind: 'effort', dir: 'raise', level: 'xhigh' })
 })

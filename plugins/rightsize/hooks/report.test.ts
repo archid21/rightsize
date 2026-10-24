@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { type RunLine, buildReport, counterfactual, fixedLines, parseLines, tieCounts, totals, wentWrong } from './report'
+import { type RunLine, buildReport, counterfactual, fixedLines, haikuLines, parseLines, tieCounts, totals, wentWrong } from './report'
 
 const NOW = Date.parse('2026-10-23T18:00:00.000Z')
 const ago = (days: number) => new Date(NOW - days * 24 * 60 * 60 * 1000).toISOString()
@@ -133,4 +133,29 @@ test('close calls: how many the task-type guide decided and how many were explor
   expect(none, 'nothing to say without ties').not.toContain('close call')
   expect(tieCounts([{ at: ago(0), kind: 'overhead', overhead: 0.1 }])).toEqual({ guided: 0, explored: 0 })
   expect(buildReport([run({ tie: { by: 'explore', over: 'opus' } })], [], { now: NOW, session: 's1', subscription: false })).toContain('0 close calls decided by the task-type guide, 1 explored.')
+})
+
+test("check and feedback lines are not rated runs, but a check's cost counts as overhead", async () => {
+  const lines: RunLine[] = [
+    run({ change: 'none', overhead: 0.001 }),
+    { at: ago(0), kind: 'check', type: 'debug', fit: { sonnet: 'low' }, check: { by: 'sonnet', fit: { sonnet: null } }, overhead: 0.004 },
+    { at: ago(0), kind: 'feedback', ref: 'a', value: 'down' },
+  ]
+  const t = totals(lines)
+  expect(t.rated).toBe(1)
+  expect(Number(t.overhead.toFixed(5))).toBe(0.005)
+  expect(buildReport(lines, [], { now: NOW, session: 's1', subscription: false })).toContain('This session: 1 prompt rated, 0 changed.')
+})
+
+test("says how often Haiku's judgement was wrong, and which hand-downs are paused", async () => {
+  expect(haikuLines([run({}), run({ change: 'lower', steppedUp: false })]), 'no misses: nothing to say').toEqual([])
+  const handDown = (rework: boolean) => run({ type: 'search', route: 'delegate:haiku', change: 'delegate-down', agentCalls: rework ? 2 : 1 })
+  const lines = [handDown(true), handDown(true), handDown(false), handDown(false), handDown(false), run({ type: 'lookup', change: 'lower', tier: 'opus', steppedUp: true })]
+  const out = haikuLines(lines)
+  expect(out[0]).toBe("Haiku's judgement was wrong on 3 of 6 checked prompts (50%): rework, effort stepped back up, mid-turn raises, 👎, or the Sonnet check disagreed.")
+  expect(out[1], 'Haiku was wrong on 2 of 5 search hand-downs: 40%, over the 30% line').toBe('Hand-downs of search work to Haiku (and lowering effort on it) are paused: wrong on 40% of 5.')
+  const calm = haikuLines([...lines.slice(2, 5), run({ type: 'lookup', change: 'lower', tier: 'opus', steppedUp: true })])
+  expect(calm.length, 'under 5 outcomes on any one key: nothing paused').toBe(1)
+  expect(wentWrong(lines, []).some(w => w.startsWith("Haiku's judgement was wrong on 3 of 6")), 'in the report').toBe(true)
+  expect(buildReport(lines, [], { now: NOW, session: 's1', subscription: false })).toContain("- Hand-downs of search work to Haiku")
 })

@@ -47,6 +47,10 @@ export type RunLine = {
   level?: string
   estimate?: number
   parentEstimate?: number
+  /** The hand-off was a close call between two models, and how it was broken. */
+  tie?: Tie
+  /** Claude's subagents moved to a cheaper model this turn; each may carry a close call too. */
+  resized?: { tie?: Tie }[]
   /** Main-chat requests in the turn. */
   requests?: number
   /** Tokens every request carried that the person can trim (MCP tools, memory, agents, skills), and what re-reading them cost. */
@@ -54,6 +58,8 @@ export type RunLine = {
   before?: Windows
   after?: Windows
 }
+
+type Tie = { by?: string; over?: string }
 
 export type SwitchLine = { at: string; kept?: boolean }
 
@@ -131,6 +137,20 @@ export function totals(lines: readonly RunLine[]): Totals {
   return t
 }
 
+/** Close calls between two models, from hand-offs and from Claude's moved subagents: broken by the task-type guide (or by the stronger model), and explored. */
+export function tieCounts(lines: readonly RunLine[]) {
+  let guided = 0
+  let explored = 0
+  for (const l of lines) {
+    if (!isRun(l)) continue
+    for (const t of [l.tie, ...(l.resized ?? []).map(x => x.tie)]) {
+      if (t?.by === 'explore') explored += 1
+      else if (t?.by === 'guide' || t?.by === 'stronger') guided += 1
+    }
+  }
+  return { guided, explored }
+}
+
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
 
 function changedLine(t: Totals) {
@@ -194,12 +214,14 @@ function windowLine(lines: readonly RunLine[], t: Totals) {
   return undefined
 }
 
-function period(title: string, lines: readonly RunLine[], subscription: boolean) {
+function period(title: string, lines: readonly RunLine[], subscription: boolean, withTies = false) {
   const t = totals(lines)
   if (!t.rated && !t.overhead && !t.subagents) return [`${title}: nothing rated yet.`]
   const out = [`${title}: ${changedLine(t)}`, `  ${savedLine(t)}`]
   const w = subscription ? windowLine(lines, t) : undefined
   if (w) out.push(`  ${w}`)
+  const ties = withTies ? tieCounts(lines) : { guided: 0, explored: 0 }
+  if (ties.guided + ties.explored > 0) out.push(`  ${plural(ties.guided, 'close call')} decided by the task-type guide, ${ties.explored} explored.`)
   return out
 }
 
@@ -295,8 +317,8 @@ export function buildReport(
     'Rightsize report. Savings are estimated: what staying at your own level and model would have cost, scaled by what each turn really cost.',
     '',
     ...period('This session', lines.filter(l => opts.session !== '' && l.session === opts.session), opts.subscription),
-    ...period('Last 7 days', lines.filter(since(7)), opts.subscription),
-    ...period('Last 30 days', month, opts.subscription),
+    ...period('Last 7 days', lines.filter(since(7)), opts.subscription, true),
+    ...period('Last 30 days', month, opts.subscription, true),
     '',
   ]
   const fixed = fixedLines(month)

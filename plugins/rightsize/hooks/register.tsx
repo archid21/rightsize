@@ -22,6 +22,7 @@ import {
   type Rating,
   type Rules,
   type Situation,
+  type Tie,
   cacheTtlMs,
   contextOf,
   idleCost,
@@ -92,7 +93,7 @@ type Lower = NonNullable<Choices['lower']>
 type Raise = NonNullable<Choices['raise']>
 type Route = NonNullable<Choices['up']>
 type Billing = 'api' | 'subscription'
-type Resized = { from: Tier; tier: Tier; level: Level; type: Rating['type'] }
+type Resized = { from: Tier; tier: Tier; level: Level; type: Rating['type']; tie?: Tie }
 /** A moved subagent: its estimates on the model it runs on and on its parent's, and what its own requests cost so far. */
 type Measured = Resized & { raw: number; parentRaw: number; spend: number }
 /** A spawn the engine is starting: its first step can come before its id does. */
@@ -186,6 +187,8 @@ type Run = {
   subLevel?: Level
   /** Claude's own subagents moved to a cheaper model this turn. */
   resized: Resized[]
+  /** The hand-off was a close call that the task-type guide broke. */
+  tie?: Tie
   /** Uncalibrated estimates of the route taken, for calibration. */
   rawMain: number
   rawDelegate?: number
@@ -507,7 +510,20 @@ async function situation($: EngineInterface): Promise<Situation> {
     level = isLevel(set) ? set : DEFAULT_LEVEL[tier]
   }
   const context = (await $.state.get({ plugin: 'rightsize', key: 'context' }).catch(() => undefined))?.value
-  return { tier, level, context: typeof context === 'number' && context > 0 ? context : DEFAULT_CONTEXT, prices, cal, rules }
+  return { tier, level, context: typeof context === 'number' && context > 0 ? context : DEFAULT_CONTEXT, prices, cal, rules, ties: await tiesSeen($) }
+}
+
+// Close calls seen so far, kept in the store so the one-in-five exploration holds across sessions.
+const TIES_STORE = 'ties'
+
+async function tiesSeen($: EngineInterface) {
+  const v = await $.store.get(TIES_STORE).catch(() => undefined)
+  return typeof v === 'number' && Number.isInteger(v) && v > 0 ? v : 0
+}
+
+// Counts one close call. It reads the stored count again, so another session's calls are not lost.
+async function countTie($: EngineInterface) {
+  await $.store.set(TIES_STORE, (await tiesSeen($)) + 1).catch(() => undefined)
 }
 
 async function rate($: EngineInterface, text: string, s: Situation): Promise<{ rating?: Rating; overhead: number }> {
@@ -561,9 +577,12 @@ async function sizeSpawn($: EngineInterface, e: AgentSpawnInput, run: Run | null
   if (run) run.overhead += overhead
   if (!r) return undefined
   const size = sizeSubagent(r, { ...s, tier: parent }, parent, floor)
+  if (size?.tie) await countTie($)
   const fit = TIERS.map(t => `${t[0]}:${r.fit[t] ?? (r.fit[t] === null ? 'no' : '?')}`).join(' ')
-  await log($, `subagent "${e.description}" on ${parent}: rated ${fit}, ${size ? `sent to ${size.tier}/${size.level}` : 'kept'}`)
-  return size ? { from: parent, tier: size.tier, level: size.level, type: r.type, raw: size.raw, parentRaw: size.parentRaw } : undefined
+  await log($, `subagent "${e.description}" on ${parent}: rated ${fit}, ${size ? `sent to ${size.tier}/${size.level}${size.tie ? `, tie ${size.tie.by} over ${size.tie.over}` : ''}` : 'kept'}`)
+  return size
+    ? { from: parent, tier: size.tier, level: size.level, type: r.type, raw: size.raw, parentRaw: size.parentRaw, ...(size.tie ? { tie: size.tie } : {}) }
+    : undefined
 }
 
 const costLine = (d: number, stay: number, cur: string) =>
@@ -869,6 +888,7 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
       steps: r.steps,
       ...(delegated ? { subLevel: run.subLevel ?? null } : {}),
       ...(run.resized.length ? { resized: run.resized } : {}),
+      ...(run.tie ? { tie: run.tie } : {}),
       ...(run.pace.mode !== 'normal' ? { pace: { ...run.pace, ...(run.pace.pace === undefined ? {} : { pace: Number(run.pace.pace.toFixed(2)) }) } } : {}),
       auto: run.auto,
       steppedUp: run.steppedUp,
@@ -1217,6 +1237,11 @@ export const register: Register = (on, options) => {
         if (d.session) await $.state.set({ plugin: 'rightsize', key: 'sessionEffort' }, d.session)
         if (d.delegate) out = { ...e, context: [...(e.context ?? []), delegateNote(d.delegate)] }
         run = startRun(r, s, d, p, (await seenEffort($)) ?? s.level, overhead)
+        // A close call the guide broke: kept on the run for the log, and counted so every fifth explores.
+        if (planned.kind === 'delegate' && planned.tie) {
+          run.tie = planned.tie
+          await countTie($)
+        }
         const note = paceNote(paceNow)
         const band = p !== unfanned
           ? { text: `Kept ${s.level} on ${TIER_NAME[s.tier]} instead of ${unfanned.kind === 'delegate' ? `a ${TIER_NAME[unfanned.tier]} subagent` : `raising to ${unfanned.kind === 'effort' ? unfanned.level : ''}`}.`, acted: true }
@@ -1226,7 +1251,7 @@ export const register: Register = (on, options) => {
         const fit = TIERS.map(t => `${t[0]}:${r.fit[t] ?? (r.fit[t] === null ? 'no' : '?')}`).join(' ')
         if (unfanned !== planned) await log($, `hand-off to ${planned.kind === 'delegate' ? planned.tier : '?'} skipped: a workflow ran this session`)
         const paced = paceNow.mode === 'normal' ? '' : `, ${paceNow.mode} pace on ${paceNow.window}${paceNow.pace === undefined ? '' : ` (${paceNow.pace.toFixed(2)})`}`
-        await log($, `${r.type} on ${s.tier}/${s.level}${paced}: rated ${fit}, plan ${p.kind}${'dir' in p ? ` ${p.dir}` : ''}: ${did}`)
+        await log($, `${r.type} on ${s.tier}/${s.level}${paced}: rated ${fit}, plan ${p.kind}${'dir' in p ? ` ${p.dir}` : ''}${run.tie ? ` (tie ${run.tie.by} over ${run.tie.over})` : ''}: ${did}`)
       } else if (overhead > 0) {
         // A rating that came to nothing still cost something: the report counts it.
         const line: RunLine = { at: new Date().toISOString(), kind: 'overhead', session: sessionId, overhead: round(overhead) }
@@ -1364,7 +1389,7 @@ export const register: Register = (on, options) => {
     if (run && ours && id && !run.subAgents.includes(id)) run.subAgents.push(id)
     if (size && id && tierOf(result.model) === size.tier) {
       if (!resizedRuns.has(id)) resizedRuns.set(id, { ...size, spend: 0 })
-      run?.resized.push({ from: size.from, tier: size.tier, level: size.level, type: size.type })
+      run?.resized.push({ from: size.from, tier: size.tier, level: size.level, type: size.type, ...(size.tie ? { tie: size.tie } : {}) })
     } else if (id) resizedRuns.delete(id)
     return result
   }).catch(($, e, next) => next(e))

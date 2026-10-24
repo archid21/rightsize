@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { type RunLine, buildReport, counterfactual, fixedLines, parseLines, totals, wentWrong } from './report'
+import { type RunLine, buildReport, counterfactual, fixedLines, parseLines, tieCounts, totals, wentWrong } from './report'
 
 const NOW = Date.parse('2026-10-23T18:00:00.000Z')
 const ago = (days: number) => new Date(NOW - days * 24 * 60 * 60 * 1000).toISOString()
@@ -101,4 +101,27 @@ test("Claude's subagents moved to a cheaper model: counted, and their saving add
   expect(text).toContain("This session: 1 prompt rated, 0 changed. 1 subagent Claude started ran on a cheaper model.")
   expect(text).toContain('Saved ~$0.38')
   expect(buildReport([sub({})], [], { now: NOW, session: 's1', subscription: false }), 'a session with only a subagent line').toContain('This session: 0 prompts rated, 0 changed. 1 subagent Claude started ran on a cheaper model.')
+})
+
+test('close calls: how many the task-type guide decided and how many were explored, only when there were some', async () => {
+  const lines = [
+    run({ tie: { by: 'guide', over: 'opus' } }),
+    run({ tie: { by: 'stronger', over: 'sonnet' } }),
+    run({ tie: { by: 'explore', over: 'sonnet' } }),
+    // A moved subagent's close call counts too; a line from 20 days ago is in 30 days only.
+    run({ resized: [{ tie: { by: 'guide', over: 'opus' } }, {}] }),
+    run({ at: ago(20), tie: { by: 'guide', over: 'opus' } }),
+    run({}),
+  ]
+  expect(tieCounts(lines)).toEqual({ guided: 4, explored: 1 })
+  const text = buildReport(lines, [], { now: NOW, session: 's1', subscription: false })
+  const out = text.split('\n')
+  const week = out.slice(out.findIndex(l => l.startsWith('Last 7 days')), out.findIndex(l => l.startsWith('Last 30 days')))
+  expect(week.join('\n'), '7 days: three guided, one explored').toContain('3 close calls decided by the task-type guide, 1 explored.')
+  expect(text, '30 days adds the older one').toContain('4 close calls decided by the task-type guide, 1 explored.')
+  expect(text.match(/close calls? decided/g)?.length, 'not in the session section').toBe(2)
+  const none = buildReport([run({}), run({ resized: [{}] })], [], { now: NOW, session: 's1', subscription: false })
+  expect(none, 'nothing to say without ties').not.toContain('close call')
+  expect(tieCounts([{ at: ago(0), kind: 'overhead', overhead: 0.1 }])).toEqual({ guided: 0, explored: 0 })
+  expect(buildReport([run({ tie: { by: 'explore', over: 'opus' } })], [], { now: NOW, session: 's1', subscription: false })).toContain('0 close calls decided by the task-type guide, 1 explored.')
 })

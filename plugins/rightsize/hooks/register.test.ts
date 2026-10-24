@@ -1,5 +1,5 @@
 import { type TestBody, expect, test } from 'claude-code/testing'
-import { CAL_STORE } from './cost'
+import { CAL_FULL, CAL_STORE, DEFAULT_PRICES, type Calibration, type Rating, type Situation, delegateCost, delegateKeys, plan, sizeSubagent, subagentKeys, subWork } from './cost'
 
 // Typed loosely: the AskUserQuestion matcher's full type is too deep for tsc.
 type AskInput = { questions: { question: string; header?: string; options?: { label: string }[] }[] }
@@ -1277,5 +1277,100 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(report).toContain('Last 7 days: 2 prompts rated')
     expect(report).toContain('rating calls')
     expect(report).toContain('What went wrong (last 30 days):')
+  })
+
+  // Close calls. A Fable session at high effort, a feature that Sonnet, Opus and Fable all do at medium.
+  // Opus is measured (20 runs) at 0.9x Sonnet's estimate, Sonnet not at all: the 25% band is open, so the
+  // two are close and the task-type guide (feature: Sonnet) decides. The stored count says which close call this is:
+  // the fourth (3 before it) goes to the guide, the fifth explores.
+  const TIE_RATING = '{"fit":{"haiku":"no","sonnet":"medium","opus":"medium","fable":"medium"},"type":"feature","read":150000,"write":3000,"steps":30,"reason":"big feature"}'
+  const tieRating: Rating = { level: 'medium', fit: { haiku: null, sonnet: 'medium', opus: 'medium', fable: 'medium' }, type: 'feature', read: 150_000, write: 3000, steps: 30, reason: '' }
+  const fableHigh: Situation = { tier: 'fable', level: 'high', context: 20_000, prices: DEFAULT_PRICES, cal: {} }
+  // Opus's key pinned to `x` times Sonnet's estimate, from the raw cost of each route.
+  const opusAt = (x: number, raw: (t: 'sonnet' | 'opus') => number, keys: readonly string[]): Calibration => ({
+    [keys[keys.length - 1] ?? '']: { n: CAL_FULL, ratio: (raw('sonnet') * x) / raw('opus') },
+  })
+  const tieCal = (x: number) => opusAt(x, t => delegateCost(tieRating, fableHigh, t, 'medium'), delegateKeys('feature', 'opus', 'medium'))
+
+  test(`a close call decided by the guide is counted in the store and logged on the run (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const cal = { ...tieCal(0.9), ...FREE_SWITCHES }
+    const p = plan(tieRating, { ...fableHigh, cal, ties: 3 }, 'low')
+    expect(p.kind === 'delegate' && p.tie, 'the setup is a close call').toEqual({ by: 'guide', over: 'opus' })
+    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: { [CAL_STORE]: cal, ties: 3 } })
+    const d = drive($, h)
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+
+    h.rating = TIE_RATING
+    h.answers = { Cheaper: 'Send it to a cheaper subagent (Recommended)', Remember: 'Just this session' }
+    await d.submit(SEARCH)
+    expect(h.store.ties, 'the close call is counted').toBe(4)
+    expect(last(h.submitted)?.context?.join('\n') ?? '', 'the guide\'s pick, not the cheaper Opus').toContain('model "sonnet"')
+    h.subModel = 'claude-sonnet-5-5'
+    await d.step('t1', 0)
+    await d.agent('sonnet')
+    await d.step('t1', 0, 'a1')
+    await d.step('t1', 1)
+    await d.complete('t1')
+    const runs = (h.files['/home/test/.claude/mods-logs/rightsize-runs.jsonl'] ?? '').trim().split('\n').map(l => JSON.parse(l) as Record<string, unknown>)
+    expect(last(runs)?.route).toBe('delegate:sonnet')
+    expect(last(runs)?.tie).toEqual({ by: 'guide', over: 'opus' })
+    expect((h.files['/home/test/.claude/mods-logs/rightsize.log'] ?? '').includes('tie guide over opus'), 'the log says so').toBe(true)
+
+    // The next close call is the fifth (4 before it): it explores, and is counted too.
+    await d.submit(SEARCH)
+    expect(h.store.ties, 'counted again').toBe(5)
+    expect(last(h.submitted)?.context?.join('\n') ?? '', 'the fifth takes the other close route').toContain('model "opus"')
+    await d.step('t3', 0)
+    await d.agent('opus')
+    await d.step('t3', 1)
+    await d.complete('t3')
+    const again = (h.files['/home/test/.claude/mods-logs/rightsize-runs.jsonl'] ?? '').trim().split('\n').map(l => JSON.parse(l) as Record<string, unknown>)
+    expect(last(again)?.tie).toEqual({ by: 'explore', over: 'sonnet' })
+  })
+
+  test(`a prompt with no close call leaves the count alone and logs no tie (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const cal = { ...tieCal(0.7), ...FREE_SWITCHES }
+    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: { [CAL_STORE]: cal, ties: 2 } })
+    const d = drive($, h)
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+    h.rating = TIE_RATING
+    h.answers = { Cheaper: 'Send it to a cheaper subagent (Recommended)', Remember: 'Just this session' }
+    await d.submit(SEARCH)
+    expect(last(h.submitted)?.context?.join('\n') ?? '', 'the cheapest').toContain('model "opus"')
+    expect(h.store.ties, 'no close call: not counted').toBe(2)
+    h.subModel = 'claude-opus-5-5'
+    await d.step('t1', 0)
+    await d.agent('opus')
+    await d.step('t1', 1)
+    await d.complete('t1')
+    const runs = (h.files['/home/test/.claude/mods-logs/rightsize-runs.jsonl'] ?? '').trim().split('\n').map(l => JSON.parse(l) as Record<string, unknown>)
+    expect('tie' in (last(runs) ?? {})).toBe(false)
+  })
+
+  test(`a close call in sizing Claude's subagent is counted and logged on its resize (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const sub: Situation = { ...fableHigh, tier: 'fable' }
+    // Both models carry the same rework factor under a Fable parent, so the raw estimates compare as the calibrated ones do.
+    const raw = (t: 'sonnet' | 'opus') => subWork(tieRating, sub, t, 'medium')
+    const cal = opusAt(0.9, raw, subagentKeys('feature', 'opus', 'medium'))
+    const size = sizeSubagent(tieRating, { ...sub, cal }, 'fable', 'low')
+    expect(size?.tie, 'the setup is a close call').toEqual({ by: 'guide', over: 'opus' })
+    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: { [CAL_STORE]: cal } })
+    const d = drive($, h)
+    await d.start(surface)
+    h.rating = NO_CHANGE
+    await d.submit(SEARCH)
+    await d.step('t1', 0)
+    h.rating = TIE_RATING
+    await d.spawn('lister')
+    expect(h.spawned.map(x => x.model), 'sent to the guide\'s model').toEqual(['sonnet'])
+    expect(h.store.ties, 'counted').toBe(1)
+    await d.step('t1', 1)
+    await d.complete('t1')
+    const runs = (h.files['/home/test/.claude/mods-logs/rightsize-runs.jsonl'] ?? '').trim().split('\n').map(l => JSON.parse(l) as { resized?: { tier: string; tie?: unknown }[] })
+    expect(last(runs)?.resized?.map(r => [r.tier, r.tie])).toEqual([['sonnet', { by: 'guide', over: 'opus' }]])
   })
 }

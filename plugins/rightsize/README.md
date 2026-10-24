@@ -37,10 +37,16 @@ After the first answer, it asks "Use these choices in every session?".
 
 A one-row band above the prompt (CLI and desktop app) shows what the mod did, with buttons: Undo or Clear, a quicker rule for this case (Q1–Q4), ⋯ to choose when the band shows, and × to close it. After a hand-off it shows the result, for example: `Sent to Haiku: $0.04 vs about $0.31 on Fable (estimated), saved about 87%.` With the band off, that result is a line in the transcript.
 
+## Choosing a starting model
+
+Start on Sonnet 5.5 at medium (cheapest for lookups, searches, edits and writing) or Opus 5.5 at medium (safer for features, debugging and design: hand-offs only go down, and Opus checks them). Avoid Opus at low (frequent raises re-write the cache) and Fable (the biggest saving percent, but the highest total).
+
+Once a week at session start, the mod estimates what the last 30 days of rated prompts would have cost from Sonnet and Opus at medium and high, its own changes counted. The band suggests a switch when another start is at least 15% cheaper (25% while it has few measured runs) and sends no more than 1 prompt in 10 to a stronger model, or when over 15% of prompts needed a stronger model or a mid-turn raise. It needs 50 rated prompts in 30 days and 20 on the current start. **Not now** quiets it for 14 days; **Stop suggesting** turns it off. It never changes the model itself: switch with `/model`.
+
 ## Commands and settings
 
 - `/rightsize` shows the state, the answers and the calibration.
-- `/rightsize report` shows what the mod did this session, in the last 7 days and in the last 30 days: prompts rated and changed, the estimated saving after the cost of its rating calls (on a subscription: the share of your 5-hour window kept first, then the share of usage saved, with dollars marked API-equivalent), close calls decided by the task-type guide, and what went wrong. Savings are estimates.
+- `/rightsize report` shows what the mod did this session, in the last 7 days and in the last 30 days: prompts rated and changed, the estimated saving after the cost of its rating calls (on a subscription: the share of your 5-hour window kept first, then the share of usage saved, with dollars marked API-equivalent), close calls decided by the task-type guide, a starting-point comparison, and what went wrong. Savings are estimates.
 - `/rightsize settings` asks the questions again.
 - `/rightsize undo` puts the last auto-lowered prompt back in the box to run at the normal level.
 - `/rightsize clear` drops a session-wide switch.
@@ -53,6 +59,7 @@ A one-row band above the prompt (CLI and desktop app) shows what the mod did, wi
   - **Budget pacing** (on or off): on a subscription, move the thresholds by how fast the 5-hour and 7-day windows are being used. Running out early, it hands off and lowers more readily; with much left near a reset, it puts quality first; over 90% used, it saves all it can and skips raises.
   - **Raise when stuck** (on or off): raise effort one level for the rest of a turn when Claude looks stuck (a tool call failing twice, 3 failing, one call running 3 times, or 3x the rated steps), following your Raising rule.
   - **Idle warning** (over $0.10, over $0.50, over $1 or off): ask before a prompt sent after the cache expired writes the whole conversation again, when that costs over this much (in API-equivalent dollars on a subscription). A subscriber sees the cost as a share of their 5-hour window once runs show the rate.
+  - **Start suggestions** (on or off): once a week, suggest a different starting model and level in the band when your log shows one is clearly better. Off: `/rightsize report` still shows the comparison.
   - **Band** (when it acts, always or off): when the band above the prompt shows. "when it acts", the default, shows it only when the mod changes something.
   - **Price check** (monthly, check now or off): how often `prices.json` is compared with Anthropic's pricing page.
 - `prices.json` holds the price table, in dollars per 1M tokens.

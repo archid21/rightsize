@@ -144,6 +144,22 @@ After your first answer, rightsize asks whether to use your choices in every ses
 - **It knows how you pay.** Each response carries rate-limit windows: a subscription shows five-hour and seven-day windows, and a Claude gateway shows a spend limit. rightsize reads them and shows reports in dollars (API) or as a share of usage (subscription). Only when a response shows none, as with an API key, does it ask you once. The answer is kept across sessions.
 - **Prices stay current.** Every 30 days it compares `prices.json` with Anthropic's pricing page and writes in any change, keeping the old file as `prices.json.bak`.
 
+## Choosing a starting model
+
+rightsize works from the model and effort level your session starts on. It can lower effort, hand work down to a cheaper model, or hand it up to a stronger one, so the start changes what you spend.
+
+**Start on Sonnet 5.5 at medium or Opus 5.5 at medium.**
+- **Sonnet 5.5 at medium** costs the least when most of your work is lookups, searches, edits and writing. Work that needs Opus goes to an Opus helper, and the Sonnet main chat checks it.
+- **Opus 5.5 at medium** is the safer start when most of your work is features, debugging or design. rightsize then only hands work down, and Opus checks each result. Anthropic's benchmarks put Sonnet at high effort about 5 points behind Opus at medium on coding tasks.
+
+Avoid starting on Opus at low, which makes rightsize raise effort often (each raise re-writes the whole conversation to the cache), or on Fable. A high start gives rightsize more to save, but the total is still the highest: a big saving percent means a high start, not a cheap one.
+
+**rightsize tells you when another start would suit you better.** Once a week, at the start of a session, it estimates what your last 30 days of rated prompts would have cost from Sonnet and Opus at medium and at high. Every rated prompt records the level each model would need, so the same prompts can be estimated from any start, with rightsize's hand-offs and effort changes counted. The band suggests a switch when:
+- another start is at least 15% cheaper (25% while rightsize has measured few runs on it), and it would send no more than 1 prompt in 10 to a stronger model; or
+- more than 15% of your prompts needed a stronger model, or Claude got stuck and effort went up mid-turn. Then it suggests a stronger start.
+
+It waits for 50 rated prompts in 30 days, and 20 on your current start. **Not now** quiets the same suggestion for 14 days; **Stop suggesting** turns it off. `/rightsize report` always shows the comparison. rightsize never changes your model itself: switch with `/model`, which also sets the effort level.
+
 ## The band
 
 A one-row band above the prompt shows what rightsize did, with buttons to act on it:
@@ -169,6 +185,7 @@ The band shows in the CLI and the desktop app. VS Code and the mobile app keep t
   - On a subscription, the share of your 5-hour (and 7-day) window that saving kept, and about how many more minutes that is at the current pace. This comes first, and dollar amounts are marked API-equivalent.
   - Fixed context: the tokens every request carried that rightsize can't trim (MCP tools by server, CLAUDE.md and memory, skills and commands, agent descriptions), what re-reading them cost, and how to cut it.
   - Close calls, in the last 7 and 30 days: how many the task-type guide decided, and how many took the other model to measure it.
+  - Starting point: what your last 30 days of rated prompts would have cost from Sonnet and Opus at medium and high, and whether another start would suit you better (see [Choosing a starting model](#choosing-a-starting-model)).
   - What went wrong: lowered turns that stepped back up, turns raised mid-turn because Claude looked stuck, hand-offs that cost more or needed rework, hand-offs Claude skipped, effort switches that missed the cache, turns you stopped, and how far its estimates are off.
 
   A saving is an estimate: what staying at your own level and model would have cost, scaled by what the turn really cost. Turns that stepped back up get no saving.
@@ -185,6 +202,7 @@ The band shows in the CLI and the desktop app. VS Code and the mobile app keep t
   - **Budget pacing**: on (default) or off.
   - **Raise when stuck**: on (default) or off.
   - **Idle warning**: over $0.10 (default), over $0.50, over $1, or off.
+  - **Start suggestions**: on (default) or off. Off stops the weekly band suggestion; the report still shows the comparison.
   - **Band**: when it acts (the default: only when rightsize changes something), always (every rated prompt, "No change" included), or off (status line only).
   - **Price check**: monthly, check now, or off.
 

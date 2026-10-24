@@ -37,6 +37,8 @@ export type RightsizeBand = {
   canUndo?: boolean
   /** A session switch can be dropped. */
   canClear?: boolean
+  /** A suggested starting model and level (`sonnet:high`): the band offers Not now and Stop suggesting. */
+  tip?: string
 }
 
 declare module 'claude-code' {

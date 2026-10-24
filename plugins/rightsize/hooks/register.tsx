@@ -56,6 +56,7 @@ import {
   CAL_STORE,
 } from './cost'
 import { PRICING_URL, applyPrices, diffPrices, isDue, parsePricingPage } from './prices'
+import { START_CHECK_DAYS, START_SNOOZE_DAYS, adviseFromLog, startKey, startLines, startTip } from './start'
 import { parseRating, ratingPrompt, ratingSystem } from './rate'
 import { type Signals, type Struggle, callKey, noSignals, noteCall, oneUp, struggle } from './struggle'
 import { type Change, type RunLine, type SwitchLine, type Windows, buildReport, parseLines, windowRates } from './report'
@@ -223,6 +224,8 @@ type Run = {
   escalations: { step: number; from: Level; to: Level; why: string }[]
   /** Main-chat requests in the turn: each re-reads the fixed context. */
   requests: number
+  /** Tokens in the main conversation when the prompt was rated. */
+  context: number
 }
 
 let home = ''
@@ -263,6 +266,8 @@ let pacing = true
 let paceNow: Pace = NORMAL_PACE
 /** Raise effort mid-turn when the turn shows it is struggling. */
 let escalation = true
+/** Suggest a different starting model and level, at most once a week. */
+let startTips = true
 /** Warn before sending into an expired cache when that costs over this many dollars; null: off. */
 let idleWarning: number | null = 0.1
 let cacheTtl = 60 * 60_000
@@ -681,6 +686,7 @@ function startRun(r: Rating, s: Situation, d: Decision, p: Plan, base: Level, ov
     normal: s.level,
     level: d.level,
     ranAt: level,
+    context: s.context,
     workflows: 0,
     auto: d.auto === true,
     delegate: d.delegate,
@@ -881,6 +887,9 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
       route: delegated ? `delegate:${run.delegate?.tier}` : 'main',
       tier: run.tier,
       level: run.steppedUp ? run.normal : (run.level ?? run.normal),
+      // The session's own level and size: what the starting-point check replays from.
+      normal: run.normal,
+      context: run.context,
       fit: r.fit,
       // The rater's guesses behind the estimate, to tell a bad guess from a bad cost model.
       read: r.read,
@@ -1086,9 +1095,48 @@ async function summary($: EngineInterface) {
     session ? `Session switch: ${session}.` : 'No session switch.',
     `Calibration: ${runs} measured run(s).${sw ? ` Effort switches that missed the cache: ${Math.round(sw.ratio * 100)}% of ${sw.n} (each one in ~/.claude/mods-logs/rightsize-switches.jsonl).` : ''}`,
     `Thresholds: hand off under ${Math.round(rules.handOff * 100)}% of staying, lower under ${Math.round(rules.lower * 100)}%${rules.handOff === DEFAULT_RULES.handOff && rules.lower === DEFAULT_RULES.lower ? ' (the defaults)' : ''}. Budget pacing: ${pacing ? 'on' : 'off'}.${pacing && paceNow.mode !== 'normal' ? ` ${paceNote(paceNow)}` : ''}`,
-    `Prices: checked ${priceCheck === 'off' ? 'never (off)' : 'every 30 days'}; /rightsize prices checks now.`,
+    `Prices: checked ${priceCheck === 'off' ? 'never (off)' : 'every 30 days'}; /rightsize prices checks now. Start suggestions: ${startTips ? `on (checked every ${START_CHECK_DAYS} days)` : 'off'}.`,
     '/rightsize report shows what it saved and what went wrong; settings asks the questions again; undo re-runs the last auto-lowered prompt; clear drops the session switch.',
   ].join('\n')
+}
+
+// ---- Starting point ----------------------------------------------------------
+
+// Once a week at session start, replay the last 30 days of rated prompts from each
+// starting model and level; when another start is clearly better, the band says so.
+// rightsize never changes the default model itself: the person switches with /model.
+
+const DAY_MS = 24 * 60 * 60_000
+
+const startContext = async ($: EngineInterface) => ({ prices, cal, rules, floor, choices: await choices($) })
+
+async function checkStart($: EngineInterface) {
+  if (off || !startTips) return
+  const now = await $.clock.now()
+  const last = await $.store.get('startCheckedAt').catch(() => undefined)
+  if (typeof last === 'number' && now - last < START_CHECK_DAYS * DAY_MS) return
+  await $.store.set('startCheckedAt', now).catch(() => undefined)
+  const a = adviseFromLog(await readText($, `${home}/.claude/mods-logs/rightsize-runs.jsonl`), await startContext($), now)
+  await log($, `start check: ${a.kind}${a.kind === 'switch' ? ` ${startKey(a.current)} -> ${startKey(a.to)} (${a.why}, ${Math.round(a.saving * 100)}%)` : ''}`)
+  if (a.kind !== 'switch') return
+  const key = startKey(a.to)
+  const snooze = (await $.store.get('startSnooze').catch(() => undefined)) as { key?: unknown; until?: unknown } | undefined
+  if (snooze?.key === key && typeof snooze.until === 'number' && now < snooze.until) return
+  const text = startTip(a, billing === 'subscription')
+  if (bandMode === 'off') $.ui.log(`rightsize: ${text}`)
+  else await setBand($, { text, acted: true, tip: key })
+}
+
+async function snoozeStart($: EngineInterface, key: string) {
+  await $.store.set('startSnooze', { key, until: (await $.clock.now()) + START_SNOOZE_DAYS * DAY_MS }).catch(() => undefined)
+  await setBand($, null)
+}
+
+async function stopStartTips($: EngineInterface) {
+  startTips = false
+  await $.config.set({ key: 'rightsize.startTips', value: 'off' }).catch(() => undefined)
+  await setBand($, null)
+  $.ui.toast('Rightsize: no more starting-model suggestions. Start suggestions in /config turns them back on.')
 }
 
 // ---- Hooks -----------------------------------------------------------------
@@ -1103,11 +1151,18 @@ export const register: Register = (on, options) => {
   if (opts.subagents === 'off') subagentMode = 'off'
   if (opts.pacing === 'off') pacing = false
   if (opts.escalation === 'off') escalation = false
+  if (opts.startTips === 'off') startTips = false
   idleWarning = parseIdleWarning(opts.idleWarning)
 
   on('config.set', { key: 'rightsize.band' }, async ($, e, next) => {
     const result = await next(e)
     if (isBandMode(e.value)) await setBandMode($, e.value)
+    return result
+  })
+
+  on('config.set', { key: 'rightsize.startTips' }, async ($, e, next) => {
+    const result = await next(e)
+    startTips = e.value !== 'off'
     return result
   })
 
@@ -1174,6 +1229,7 @@ export const register: Register = (on, options) => {
       if (saved && typeof saved === 'object') await $.state.set({ plugin: 'rightsize', key: 'choices' }, { ...(saved as Choices), ...(await choices($)) })
     }
     off = (await readSwitches($))[NAME] === false
+    await checkStart($).catch(() => undefined)
     $.clock.every(3000, () => {
       void readSwitches($).then(json => {
         off = json[NAME] === false
@@ -1191,7 +1247,9 @@ export const register: Register = (on, options) => {
       const dir = `${home}/.claude/mods-logs`
       const runs = parseLines<RunLine>(await readText($, `${dir}/rightsize-runs.jsonl`))
       const switches = parseLines<SwitchLine>(await readText($, `${dir}/rightsize-switches.jsonl`))
-      return { text: buildReport(runs, switches, { now: await $.clock.now(), session: sessionId, subscription: billing === 'subscription' }) }
+      const now = await $.clock.now()
+      const start = startLines(adviseFromLog(await readText($, `${dir}/rightsize-runs.jsonl`), await startContext($), now), billing === 'subscription', money)
+      return { text: buildReport(runs, switches, { now, session: sessionId, subscription: billing === 'subscription', start }) }
     }
     if (arg === 'clear') return { text: await clearSession($) }
     if (arg === 'settings') {
@@ -1422,6 +1480,11 @@ export const register: Register = (on, options) => {
     const buttons: { key: string; label: string; press: () => Promise<unknown> }[] = []
     if (band.canUndo) buttons.push({ key: 'undo', label: 'Undo', press: async () => $.ui.toast(await undo($)) })
     if (band.canClear) buttons.push({ key: 'clear', label: 'Clear', press: async () => $.ui.toast(await clearSession($)) })
+    if (band.tip) {
+      const tip = band.tip
+      buttons.push({ key: 'tip-later', label: 'Not now', press: () => snoozeStart($, tip) })
+      buttons.push({ key: 'tip-stop', label: 'Stop suggesting', press: () => stopStartTips($) })
+    }
     if (rule) {
       for (const [value, label] of RULES[rule]) {
         if (value !== have) buttons.push({ key: `rule-${value}`, label, press: () => setRule($, rule, value) })

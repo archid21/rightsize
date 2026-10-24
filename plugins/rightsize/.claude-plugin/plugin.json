@@ -84,6 +84,16 @@
         "off"
       ]
     },
+    "startTips": {
+      "type": "string",
+      "title": "Start suggestions",
+      "description": "on: once a week, estimate what the last 30 days of rated prompts would have cost from Sonnet and Opus at medium and high, rightsize's changes counted. When another start is at least 15% cheaper (25% while it has few measured runs) without sending over 1 prompt in 10 to a stronger model, or when over 15% of prompts needed a stronger model or more effort, the band suggests switching with /model. rightsize never changes your model itself. off: no suggestions; /rightsize report still shows the comparison.",
+      "default": "on",
+      "options": [
+        "on",
+        "off"
+      ]
+    },
     "idleWarning": {
       "type": "string",
       "title": "Idle warning",

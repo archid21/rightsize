@@ -988,6 +988,84 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await bandText($, surface)).toBe('')
   })
 
+  const RUNS = '/home/test/.claude/mods-logs/rightsize-runs.jsonl'
+  /** 60 rated prompts on Opus at medium that Sonnet could do at medium: a cheaper start. */
+  const easyLog = (now: number) =>
+    Array.from({ length: 60 }, (_, i) =>
+      JSON.stringify({
+        at: new Date(now - (60 - i) * 60_000).toISOString(),
+        kind: 'run',
+        type: 'feature',
+        route: 'main',
+        tier: 'opus',
+        level: 'medium',
+        normal: 'medium',
+        fit: { haiku: null, sonnet: 'medium', opus: 'low', fable: 'low' },
+        read: 8000,
+        write: 2000,
+        steps: 8,
+        context: 60_000,
+      }),
+    ).join('\n')
+
+  test(`once a week the band suggests a cheaper start, and Not now quiets it for 14 days (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    h.files[RUNS] = easyLog(h.now)
+    const d = drive($, h)
+    await d.start(surface)
+    expect(await bandText($, surface)).toMatch(/^rightsize: Starting on Sonnet at (medium|high) would have cost ~\d+% less than Opus at medium on your last 60 rated prompts\. Switch with \/model\.$/)
+    const ui = await mount($, surface)
+    expect((await ui.findAll({ type: 'Button' })).map(b => b.key)).toEqual(['tip-later', 'tip-stop', 'mode', 'close'])
+    await ui.press({ key: 'tip-later' })
+    await ui.unmount()
+    expect(await bandText($, surface)).toBe('')
+    expect(String((await d.command('report')).text)).toContain('Starting point (last 30 days, 60 rated prompts): Opus at medium.')
+
+    // A day later: not checked again. A week later: checked, but the same start is quiet for 14 days.
+    h.now += 24 * 60 * MIN
+    await d.start(surface)
+    expect(await bandText($, surface)).toBe('')
+    h.now += 7 * 24 * 60 * MIN
+    h.files[RUNS] = easyLog(h.now)
+    await d.start(surface)
+    expect(await bandText($, surface), 'snoozed').toBe('')
+    h.now += 8 * 24 * 60 * MIN
+    h.files[RUNS] = easyLog(h.now)
+    await d.start(surface)
+    expect(await bandText($, surface), 'the 14 days are over').toContain('Starting on Sonnet')
+  })
+
+  test(`Stop suggesting turns start suggestions off in /config (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    h.files[RUNS] = easyLog(h.now)
+    const d = drive($, h)
+    await d.start(surface)
+    const ui = await mount($, surface)
+    await ui.press({ key: 'tip-stop' })
+    await ui.unmount()
+    expect(last(h.configSet)).toBe('off')
+    expect(last(h.toasts) ?? '').toContain('no more starting-model suggestions')
+    expect((await d.command('')).text ?? '').toContain('Start suggestions: off.')
+  })
+
+  test(`no start suggestion when Start suggestions is off, or with too few prompts (${surface})`, { timeoutMs: 30000, options: { startTips: 'off' } }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    h.files[RUNS] = easyLog(h.now)
+    const d = drive($, h)
+    await d.start(surface)
+    expect(await bandText($, surface)).toBe('')
+    expect(String((await d.command('report')).text), 'the report still compares').toContain('Starting point (last 30 days')
+  })
+
+  test(`waits for 50 rated prompts before suggesting a start (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    h.files[RUNS] = easyLog(h.now).split('\n').slice(0, 30).join('\n')
+    const d = drive($, h)
+    await d.start(surface)
+    expect(await bandText($, surface)).toBe('')
+    expect(String((await d.command('report')).text)).toContain('Starting point: needs 50 rated prompts on Opus at medium to compare starts (has 30).')
+  })
+
   test(`the Band setting: when it acts, always, off, and the ⋯ and × buttons (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES } })
     const d = drive($, h)
@@ -1270,6 +1348,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(first?.session).toBe('sess-1')
     expect(first?.change).toBe('none')
     expect(first?.overhead, '1000 in and 100 out on Haiku').toBe(0.00015)
+    expect((first as { normal?: string; context?: number })?.normal, 'the session level, for the starting-point check').toBe('medium')
+    expect(typeof (first as { context?: number })?.context).toBe('number')
     expect(first?.before).toEqual({ five_hour: 11 })
     expect(first?.after).toEqual({ five_hour: 12 })
 

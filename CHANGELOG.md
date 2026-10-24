@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Start suggestions.** Once a week at session start, rightsize estimates what the last 30 days of rated prompts would have cost from Sonnet and Opus at medium and high, replaying each prompt through its own planner with your rules, thresholds and calibration. The band suggests switching with `/model` when another start is at least 15% cheaper (25% while it has under 20 measured main-chat runs) and sends no more than 1 prompt in 10 to a stronger model, or when over 15% of prompts on the current start needed a stronger model or a mid-turn raise. It waits for 50 rated prompts in 30 days and 20 on the current start. **Not now** quiets the same suggestion for 14 days; **Stop suggesting**, or **Start suggestions** in `/config`, turns it off. `/rightsize report` always shows the comparison. rightsize never changes the model itself.
+- Run log lines carry `normal` (the session's own level, before rightsize's change) and `context` (the conversation's size when the prompt was rated), which the starting-point check replays from. Older lines use the run's level and the median size.
+- The README recommends starting on Sonnet 5.5 or Opus 5.5 at medium.
 - **Subscription wording leads with usage.** On a subscription, `/rightsize report` puts the share of the 5-hour window kept first, then the share of usage saved, with dollars marked API-equivalent; a line at the top says dollar amounts are API-equivalent. Before runs show the window rate, the share of usage leads. A hand-off's result says "API-equivalent" instead of "At API prices".
 - **Idle warning on a subscription.** The idle question now comes up on a subscription too. It gives the cost as a share of the 5-hour window (from the last 30 days of runs) with API-equivalent dollars beside it, or API-equivalent dollars alone until runs show the rate. The **Idle warning** bar is compared in API-equivalent dollars.
 

@@ -57,6 +57,9 @@ export type RunLine = {
   fixed?: { tokens: number; mcp: number; memory: number; agents: number; skills: number; cost: number; servers?: Record<string, number> }
   before?: Windows
   after?: Windows
+  /** The session's own level, before rightsize's change, and the conversation's size: from 0.7. */
+  normal?: string
+  context?: number
 }
 
 type Tie = { by?: string; over?: string }
@@ -324,7 +327,7 @@ export function fixedLines(lines: readonly RunLine[]) {
 export function buildReport(
   lines: readonly RunLine[],
   switches: readonly SwitchLine[],
-  opts: { now: number; session: string; subscription: boolean },
+  opts: { now: number; session: string; subscription: boolean; start?: readonly string[] },
 ) {
   const since = (days: number) => (l: { at: string }) => opts.now - Date.parse(l.at) <= days * DAY
   const month = lines.filter(since(30))
@@ -337,6 +340,7 @@ export function buildReport(
     ...period('Last 30 days', month, opts.subscription, true),
     '',
   ]
+  if (opts.start?.length) out.push(...opts.start, '')
   const fixed = fixedLines(month)
   if (fixed.length) out.push(...fixed, '')
   const wrong = wentWrong(month, switches.filter(since(30)))

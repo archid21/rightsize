@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- **Estimates follow the work each model does at each effort.** The same task takes different output tokens and tool calls depending on the model and its level: Opus at low effort takes far fewer steps than at medium, Haiku writes more than Sonnet, Fable more than Opus. A table of work per model and level (Sonnet as the baseline, so its estimates do not change) now scales the rated output tokens and steps for the main chat and for subagents. The values come from Anthropic's cost and intelligence guide and Artificial Analysis, with guesses interpolated; calibration corrects them.
+- **Calibration starts over once.** It is stored under a new key (`calibration-v2`) because the old ratios were learned against the old estimates and would count the change twice. The old key is ignored, not read or deleted.
+
 ## 0.5.0 (2026-10-23)
 
 - **Claude's moved subagents are measured and learned from.** Each one's own requests are priced, and when it answers (often after the turn that started it, for a background one) rightsize logs a `subagent` line with its real cost and its raw estimates on its model and on the parent's, and teaches `<type>:subagent`, `:<model>` and `:<model>:<level>` calibration from it. The next sizing uses those numbers. A stopped subagent is logged and teaches nothing; a resumed one counts again from zero.

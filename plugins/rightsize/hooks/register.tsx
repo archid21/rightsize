@@ -52,6 +52,7 @@ import {
   tierRank,
   usageCost,
   type Usage,
+  CAL_STORE,
 } from './cost'
 import { PRICING_URL, applyPrices, diffPrices, isDue, parsePricingPage } from './prices'
 import { parseRating, ratingPrompt, ratingSystem } from './rate'
@@ -404,9 +405,9 @@ async function mergeCal($: EngineInterface) {
   if (!batch.length) return
   unsaved = []
   try {
-    let stored = parseCalibration(await $.store.get('calibration'))
+    let stored = parseCalibration(await $.store.get(CAL_STORE))
     for (const s of batch) stored = learn(stored, s.key, s.sample)
-    await $.store.set('calibration', stored)
+    await $.store.set(CAL_STORE, stored)
     // Samples learned while this save ran stay pending, on top of the merged copy.
     cal = unsaved.reduce((c, s) => learn(c, s.key, s.sample), stored)
   } catch {
@@ -1123,7 +1124,7 @@ export const register: Register = (on, options) => {
         void runCheck($, 'monthly', lastChecked)
       }
     }
-    cal = parseCalibration(await $.store.get('calibration').catch(() => undefined))
+    cal = parseCalibration(await $.store.get(CAL_STORE).catch(() => undefined))
     // Until this session's first response shows its rate limits, an earlier session's reading stands.
     const saved = (await $.store.get('billing').catch(() => undefined)) as { value?: unknown; by?: unknown } | undefined
     billingAsked = false

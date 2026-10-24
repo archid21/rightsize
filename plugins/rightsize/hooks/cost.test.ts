@@ -4,6 +4,8 @@ import {
   DEFAULT_PRICES,
   DEFAULT_RULES,
   SWITCH_KEY,
+  TIERS,
+  WORK,
   type Rating,
   type Situation,
   delegateCost,
@@ -24,6 +26,8 @@ import {
   paceOf,
   pacedRules,
   sizeSubagent,
+  subWork,
+  rawMainCost,
   tierOf,
 } from './cost'
 import { parseRating } from './rate'
@@ -358,4 +362,35 @@ test("a moved subagent's model learns from what such subagents really cost", asy
   expect(sizeSubagent(listing, dear, 'opus', 'low')?.tier).toBe('sonnet')
   const size = sizeSubagent(listing, opus, 'opus', 'low')
   expect(size !== undefined && size.parentRaw > size.raw * 10, 'the raw estimates for the saving').toBe(true)
+})
+
+test('Sonnet is the baseline: its work equals the old effort multipliers, so its estimates do not change', async () => {
+  expect(Object.fromEntries(Object.entries(WORK.sonnet).map(([l, w]) => [l, w.out]))).toEqual({ low: 1, medium: 1.6, high: 2.5, xhigh: 3.5, max: 5 })
+  expect(Object.values(WORK.sonnet).every(w => w.steps === 1), 'Sonnet steps are the rated steps').toBe(true)
+})
+
+test('work never falls as effort rises, for every model', async () => {
+  const levels = ['low', 'medium', 'high', 'xhigh', 'max'] as const
+  for (const t of TIERS) {
+    for (let i = 1; i < levels.length; i++) {
+      expect(WORK[t][levels[i]!].out >= WORK[t][levels[i - 1]!].out, `${t} out ${levels[i]}`).toBe(true)
+      expect(WORK[t][levels[i]!].steps >= WORK[t][levels[i - 1]!].steps, `${t} steps ${levels[i]}`).toBe(true)
+    }
+  }
+})
+
+test('a Haiku subagent writes 1.6x the output tokens of a Sonnet one on the same work', async () => {
+  // Only output costs money, and the fixed report is taken out by subtracting a run that writes nothing.
+  const only = { input: 0, cacheRead: 0, cacheWrite: 0, output: 1_000_000 }
+  const prices = { ...DEFAULT_PRICES, haiku: only, sonnet: only }
+  const s: Situation = { ...opus, prices }
+  const written = (sub: 'haiku' | 'sonnet') => subWork(rating({ write: 1000 }), s, sub, 'medium') - subWork(rating({ write: 0 }), s, sub, 'medium')
+  expect(near(written('haiku') / written('sonnet'), 1.6)).toBe(true)
+})
+
+test('Opus at low effort re-reads the cache less than at medium, because it takes fewer steps', async () => {
+  const prices = { ...DEFAULT_PRICES, opus: { input: 0, output: 0, cacheWrite: 0, cacheRead: 1_000_000 } }
+  const s: Situation = { ...opus, prices }
+  const r = rating({ steps: 10 })
+  expect(rawMainCost(r, s, 'low')).toBeLessThan(rawMainCost(r, s, 'medium'))
 })

@@ -196,8 +196,50 @@ export const ratioSample = (actual: number, estimated: number) =>
 
 // ---- Estimates -------------------------------------------------------------
 
-// Thinking is billed as output and grows with effort; calibration corrects the guess.
-export const EFFORT_OUT: Record<Level, number> = { low: 1, medium: 1.6, high: 2.5, xhigh: 3.5, max: 5 }
+/**
+ * The store key for calibration. It changed from 'calibration' when estimates began to
+ * differ by model and level: ratios learned against the old estimates would double-count,
+ * so the old key is ignored, never read, migrated or deleted.
+ */
+export const CAL_STORE = 'calibration-v2'
+
+// Work a model does on the same task, as multiples of Sonnet's: `out` scales output tokens
+// (thinking is billed as output and grows with effort) and `steps` scales tool calls, which
+// drive cache reads. Calibration corrects the guess. Sonnet is the baseline.
+// Sources: Anthropic's "optimizing-for-cost-and-intelligence" doc (Opus low at about 0.55x
+// Sonnet high's output and a third of its cache reads; Opus medium slightly above Sonnet
+// high; Fable about 1.3x Opus medium at medium and 2x at high), Artificial Analysis (Haiku
+// medium writes about 1.6x Sonnet medium's output), and interpolated for guessed cells.
+export const WORK: Record<Tier, Record<Level, { out: number; steps: number }>> = {
+  sonnet: {
+    low: { out: 1, steps: 1 },
+    medium: { out: 1.6, steps: 1 },
+    high: { out: 2.5, steps: 1 },
+    xhigh: { out: 3.5, steps: 1 },
+    max: { out: 5, steps: 1 },
+  },
+  opus: {
+    low: { out: 1.4, steps: 0.4 },
+    medium: { out: 2.6, steps: 1.05 },
+    high: { out: 4, steps: 1.2 },
+    xhigh: { out: 6, steps: 1.8 },
+    max: { out: 8, steps: 2.2 },
+  },
+  haiku: {
+    low: { out: 1.6, steps: 1.2 },
+    medium: { out: 2.56, steps: 1.2 },
+    high: { out: 4, steps: 1.2 },
+    xhigh: { out: 5.6, steps: 1.2 },
+    max: { out: 8, steps: 1.2 },
+  },
+  fable: {
+    low: { out: 2, steps: 1 },
+    medium: { out: 3.3, steps: 1.3 },
+    high: { out: 5, steps: 1.6 },
+    xhigh: { out: 6.5, steps: 1.9 },
+    max: { out: 8, steps: 2.2 },
+  },
+}
 const PROMPT = 200
 const BRIEF = 1500
 const REPORT = 1500
@@ -220,12 +262,13 @@ export type Situation = {
 
 /** The main chat doing the work at `level`, before calibration. */
 export function rawMainCost(r: Rating, s: Situation, level: Level) {
-  const steps = Math.max(1, Math.round(r.steps))
+  const w = WORK[s.tier][level]
+  const steps = Math.max(1, r.steps * w.steps)
   // Each step re-reads the conversation from cache; what the work reads is written once.
   return dollars(s.prices[s.tier], {
     cacheRead: steps * s.context + ((steps - 1) * r.read) / 2,
     cacheWrite: r.read + PROMPT,
-    output: r.write * EFFORT_OUT[level],
+    output: r.write * w.out,
   })
 }
 
@@ -244,11 +287,12 @@ const reworkFactor = (main: Tier, sub: Tier) => (tierRank(sub) >= tierRank(main)
 
 /** A subagent's own requests on `sub`, before calibration: it starts with no cache, so its base and the brief are written fresh. */
 export function subWork(r: Rating, s: Situation, sub: Tier, subLevel: Level) {
-  const steps = Math.max(1, Math.round(r.steps))
+  const w = WORK[sub][subLevel]
+  const steps = Math.max(1, r.steps * w.steps)
   return dollars(s.prices[sub], {
     cacheWrite: SUB_BASE + BRIEF + r.read,
     cacheRead: steps * (SUB_BASE + BRIEF) + ((steps - 1) * r.read) / 2,
-    output: r.write * EFFORT_OUT[subLevel] + REPORT,
+    output: r.write * w.out + REPORT,
   })
 }
 
@@ -258,7 +302,7 @@ export function rawDelegateCost(r: Rating, s: Situation, sub: Tier, subLevel: Le
   const main = dollars(s.prices[s.tier], {
     cacheRead: 3 * s.context,
     cacheWrite: REPORT + Math.min(CHECK_CAP, r.read * 0.2) + PROMPT,
-    output: (BRIEF + FINAL) * EFFORT_OUT.medium,
+    output: (BRIEF + FINAL) * WORK[s.tier].medium.out,
   })
   return (main + subWork(r, s, sub, subLevel)) * reworkFactor(s.tier, sub)
 }

@@ -1,4 +1,5 @@
 import { type TestBody, expect, test } from 'claude-code/testing'
+import { CAL_STORE } from './cost'
 
 // Typed loosely: the AskUserQuestion matcher's full type is too deep for tsc.
 type AskInput = { questions: { question: string; header?: string; options?: { label: string }[] }[] }
@@ -236,7 +237,7 @@ const LOWER = '{"level":"low","model":"same","size":"small","type":"lookup","rea
 
 for (const surface of ['desktop', 'terminal'] as const) {
   test(`asks Q1 once, lowers on its own after, steps up when the turn gets long, and undoes (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { calibration: FREE_SWITCHES } })
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES } })
     const d = drive($, h)
     await d.start(surface)
     await d.step('t0')
@@ -279,7 +280,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(lines.every(l => l.kept), 'the fake engine keeps the cache').toBe(true)
 
     // Calibration: t1 stepped back up and teaches nothing; t2 is stored.
-    const cal = h.store.calibration as Record<string, { n: number }>
+    const cal = h.store[CAL_STORE] as Record<string, { n: number }>
     expect(cal['lookup:main']?.n, 'one measured lookup turn').toBe(1)
   })
 
@@ -348,7 +349,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.complete('t1')
     expect(h.sent.filter(s => s.turnId === 't1' && !s.agentId).every(s => s.effort === 'medium'), 'main chat effort untouched').toBe(true)
     expect(await bandText($, surface), 'the band carries the result').toMatch(/^rightsize: Sent to Fable: \$[\d.]+ vs about \$[\d.]+ on Opus \(estimated\)/)
-    const cal = h.store.calibration as Record<string, { n: number }>
+    const cal = h.store[CAL_STORE] as Record<string, { n: number }>
     expect(cal['debug:delegate']?.n).toBe(1)
   })
 
@@ -464,7 +465,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(sent.filter(s => !s.agentId).every(s => s.effort === 'medium'), 'the main chat stays at medium').toBe(true)
 
     // It learns for the task type, for Haiku, and for Haiku at high.
-    const cal = h.store.calibration as Record<string, { n: number }>
+    const cal = h.store[CAL_STORE] as Record<string, { n: number }>
     expect(['feature:delegate', 'feature:delegate:haiku', 'feature:delegate:haiku:high'].map(k => cal[k]?.n)).toEqual([1, 1, 1])
     const runs = (h.files['/home/test/.claude/mods-logs/rightsize-runs.jsonl'] ?? '').trim().split('\n')
     const line = JSON.parse(last(runs) ?? '{}') as { route?: string; subLevel?: string; fit?: unknown; read?: number; write?: number; steps?: number }
@@ -548,7 +549,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect([sub[0]?.from, sub[0]?.tier, sub[0]?.level, sub[0]?.type, sub[0]?.aborted]).toEqual(['opus', 'haiku', 'low', 'search', false])
     expect(Math.abs(Number(sub[0]?.actual) - TWO_HAIKU_STEPS) < 1e-6).toBe(true)
     expect(Number(sub[0]?.parentEstimate) > Number(sub[0]?.estimate) * 10, 'the same work on Opus').toBe(true)
-    const cal = h.store.calibration as Record<string, { n: number }>
+    const cal = h.store[CAL_STORE] as Record<string, { n: number }>
     expect(['search:subagent', 'search:subagent:haiku', 'search:subagent:haiku:low'].map(k => cal[k]?.n)).toEqual([1, 1, 1])
 
     // Resumed later and stopped: logged, nothing taught.
@@ -557,7 +558,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const again = (h.files['/home/test/.claude/mods-logs/rightsize-runs.jsonl'] ?? '').trim().split('\n').map(l => JSON.parse(l) as Record<string, unknown>)
     expect(again.filter(l => l.kind === 'subagent').map(l => l.aborted)).toEqual([false, true])
     expect(Math.abs(Number(last(again)?.actual) - TWO_HAIKU_STEPS / 2) < 1e-6, 'only what it spent since it answered').toBe(true)
-    expect((h.store.calibration as Record<string, { n: number }>)['search:subagent']?.n).toBe(1)
+    expect((h.store[CAL_STORE] as Record<string, { n: number }>)['search:subagent']?.n).toBe(1)
     h.now = Date.now()
     expect((await d.command('report')).text ?? '').toContain('2 subagents Claude started ran on a cheaper model.')
   })
@@ -614,13 +615,13 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.ratings, 'no rating call either').toBe(before)
   })
 
-  // Hands off to Haiku at 77% of staying: over the 70% default, under the 85% a hot pace allows.
-  const NEAR = '{"fit":{"haiku":"medium","sonnet":"medium","opus":"medium","fable":"medium"},"size":"small","type":"search","read":25000,"write":1000,"steps":10,"reason":"list call sites"}'
+  // Hands off to Haiku at 78% of staying: over the 70% default, under the 85% a hot pace allows.
+  const NEAR = '{"fit":{"haiku":"medium","sonnet":"medium","opus":"medium","fable":"medium"},"size":"small","type":"search","read":25000,"write":1000,"steps":20,"reason":"list call sites"}'
   const HOUR = 3600_000
   const at = (h: { now: number }, ms: number) => new Date(h.now + ms).toISOString()
 
   test(`budget pacing: a window running hot hands off what the default threshold keeps (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { calibration: FREE_SWITCHES } })
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES } })
     const d = drive($, h)
     // 80% used with 3 of 5 hours gone; the 7-day window is too new to say anything.
     h.rateLimits = [
@@ -643,7 +644,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   test(`budget pacing off in /config: the same window changes nothing (${surface})`, { timeoutMs: 30000, options: { pacing: 'off' } }, async ($, on) => {
-    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { calibration: FREE_SWITCHES } })
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES } })
     const d = drive($, h)
     h.rateLimits = [{ kind: 'five_hour', percentUsed: 80, resetsAt: at(h, 2 * HOUR) }]
     await d.start(surface)
@@ -719,7 +720,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const runs = (h.files['/home/test/.claude/mods-logs/rightsize-runs.jsonl'] ?? '').trim().split('\n')
     const line = JSON.parse(last(runs) ?? '{}') as { escalations?: { step: number; from: string; to: string }[] }
     expect(line.escalations?.map(x => [x.step, x.from, x.to])).toEqual([[2, 'medium', 'high'], [4, 'high', 'xhigh']])
-    expect(Object.keys(h.store.calibration ?? {}).filter(k => k.startsWith('lookup:')), 'a turn at two levels teaches nothing').toEqual([])
+    expect(Object.keys(h.store[CAL_STORE] ?? {}).filter(k => k.startsWith('lookup:')), 'a turn at two levels teaches nothing').toEqual([])
     h.now = Date.now()
     expect((await d.command('report')).text ?? '').toContain('1 turn raised effort mid-turn because Claude looked stuck: the same tool call failed twice (1), several tool calls failed (1).')
 
@@ -903,7 +904,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t0')
     await d.complete('t0')
     const keys = ['lookup:main', 'lookup:main:fable', 'lookup:main:fable:high']
-    const learned = () => keys.map(k => (h.store.calibration as Record<string, { n: number }> | undefined)?.[k]?.n)
+    const learned = () => keys.map(k => (h.store[CAL_STORE] as Record<string, { n: number }> | undefined)?.[k]?.n)
 
     // An ordinary turn teaches the type, the model, and the model at its level.
     h.rating = '{"level":"high","model":"same","type":"lookup","read":2000,"write":300,"steps":1}'
@@ -944,7 +945,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   test(`the band shows a change, and its buttons change the rule and undo it (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { calibration: FREE_SWITCHES } })
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES } })
     const d = drive($, h)
     await d.start(surface)
     await d.step('t0')
@@ -973,7 +974,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   test(`the Band setting: when it acts, always, off, and the ⋯ and × buttons (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { calibration: FREE_SWITCHES } })
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES } })
     const d = drive($, h)
     await d.start(surface)
     await d.step('t0')
@@ -1015,19 +1016,19 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   test(`adds its calibration to what another session saved, and skips turns that stepped up (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { calibration: FREE_SWITCHES } })
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES } })
     const d = drive($, h)
     await d.start(surface)
     await d.step('t0')
     await d.complete('t0')
 
     // Another session saves its runs after this one loaded the calibration.
-    h.store.calibration = { ...FREE_SWITCHES, 'debug:main': { n: 3, ratio: 2 } }
+    h.store[CAL_STORE] = { ...FREE_SWITCHES, 'debug:main': { n: 3, ratio: 2 } }
     h.rating = NO_CHANGE
     await d.submit(LOOKUP)
     await d.step('t1')
     await d.complete('t1')
-    let cal = h.store.calibration as Record<string, { n: number }>
+    let cal = h.store[CAL_STORE] as Record<string, { n: number }>
     expect(cal['debug:main']?.n, "the other session's runs are kept").toBe(3)
     expect(cal['lookup:main']?.n, "this session's run is added").toBe(1)
     expect(cal['cache:effort-switch']?.n, 'the switch record is kept').toBe(20)
@@ -1039,8 +1040,23 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t2', 0)
     await d.step('t2', 5)
     await d.complete('t2')
-    cal = h.store.calibration as Record<string, { n: number }>
+    cal = h.store[CAL_STORE] as Record<string, { n: number }>
     expect(cal['lookup:main']?.n, 'the stepped-up turn is not counted').toBe(1)
+  })
+
+  test(`learns calibration into calibration-v2 and ignores the old calibration key (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { calibration: { 'lookup:main': { n: 40, ratio: 9 } }, [CAL_STORE]: FREE_SWITCHES } })
+    const d = drive($, h)
+    await d.start(surface)
+    h.rating = NO_CHANGE
+    await d.submit(LOOKUP)
+    await d.step('t1')
+    await d.complete('t1')
+    expect(CAL_STORE).toBe('calibration-v2')
+    const cal = h.store['calibration-v2'] as Record<string, { n: number; ratio: number }>
+    expect(cal['lookup:main']?.n, 'learned from zero, not from the old key').toBe(1)
+    expect(cal['cache:effort-switch']?.n, 'read back from the new key').toBe(20)
+    expect(h.store.calibration, 'the old key is left as it was').toEqual({ 'lookup:main': { n: 40, ratio: 9 } })
   })
 
   test(`uses the hand-off and lowering thresholds set in /config (${surface})`, { timeoutMs: 30000, options: { handOff: '50%', lowering: '80%' } }, async ($, on) => {
@@ -1213,7 +1229,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   test(`logs every rated turn with its change, overhead and windows, and /rightsize report adds them up (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { calibration: FREE_SWITCHES } })
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES } })
     const d = drive($, h)
     const runs = () =>
       (h.files['/home/test/.claude/mods-logs/rightsize-runs.jsonl'] ?? '')

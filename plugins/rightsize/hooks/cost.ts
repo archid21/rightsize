@@ -196,8 +196,50 @@ export const ratioSample = (actual: number, estimated: number) =>
 
 // ---- Estimates -------------------------------------------------------------
 
-// Thinking is billed as output and grows with effort; calibration corrects the guess.
-export const EFFORT_OUT: Record<Level, number> = { low: 1, medium: 1.6, high: 2.5, xhigh: 3.5, max: 5 }
+/**
+ * The store key for calibration. It changed from 'calibration' when estimates began to
+ * differ by model and level: ratios learned against the old estimates would double-count,
+ * so the old key is ignored, never read, migrated or deleted.
+ */
+export const CAL_STORE = 'calibration-v2'
+
+// Work a model does on the same task, as multiples of Sonnet's: `out` scales output tokens
+// (thinking is billed as output and grows with effort) and `steps` scales tool calls, which
+// drive cache reads. Calibration corrects the guess. Sonnet is the baseline.
+// Sources: Anthropic's "optimizing-for-cost-and-intelligence" doc (Opus low at about 0.55x
+// Sonnet high's output and a third of its cache reads; Opus medium slightly above Sonnet
+// high; Fable about 1.3x Opus medium at medium and 2x at high), Artificial Analysis (Haiku
+// medium writes about 1.6x Sonnet medium's output), and interpolated for guessed cells.
+export const WORK: Record<Tier, Record<Level, { out: number; steps: number }>> = {
+  sonnet: {
+    low: { out: 1, steps: 1 },
+    medium: { out: 1.6, steps: 1 },
+    high: { out: 2.5, steps: 1 },
+    xhigh: { out: 3.5, steps: 1 },
+    max: { out: 5, steps: 1 },
+  },
+  opus: {
+    low: { out: 1.4, steps: 0.4 },
+    medium: { out: 2.6, steps: 1.05 },
+    high: { out: 4, steps: 1.2 },
+    xhigh: { out: 6, steps: 1.8 },
+    max: { out: 8, steps: 2.2 },
+  },
+  haiku: {
+    low: { out: 1.6, steps: 1.2 },
+    medium: { out: 2.56, steps: 1.2 },
+    high: { out: 4, steps: 1.2 },
+    xhigh: { out: 5.6, steps: 1.2 },
+    max: { out: 8, steps: 1.2 },
+  },
+  fable: {
+    low: { out: 2, steps: 1 },
+    medium: { out: 3.3, steps: 1.3 },
+    high: { out: 5, steps: 1.6 },
+    xhigh: { out: 6.5, steps: 1.9 },
+    max: { out: 8, steps: 2.2 },
+  },
+}
 const PROMPT = 200
 const BRIEF = 1500
 const REPORT = 1500
@@ -216,16 +258,19 @@ export type Situation = {
   cal: Calibration
   /** The hand-off and lowering shares; DEFAULT_RULES when absent. */
   rules?: Rules
+  /** Close calls seen so far, persisted: every fifth takes the route the guide did not pick. */
+  ties?: number
 }
 
 /** The main chat doing the work at `level`, before calibration. */
 export function rawMainCost(r: Rating, s: Situation, level: Level) {
-  const steps = Math.max(1, Math.round(r.steps))
+  const w = WORK[s.tier][level]
+  const steps = Math.max(1, r.steps * w.steps)
   // Each step re-reads the conversation from cache; what the work reads is written once.
   return dollars(s.prices[s.tier], {
     cacheRead: steps * s.context + ((steps - 1) * r.read) / 2,
     cacheWrite: r.read + PROMPT,
-    output: r.write * EFFORT_OUT[level],
+    output: r.write * w.out,
   })
 }
 
@@ -244,11 +289,12 @@ const reworkFactor = (main: Tier, sub: Tier) => (tierRank(sub) >= tierRank(main)
 
 /** A subagent's own requests on `sub`, before calibration: it starts with no cache, so its base and the brief are written fresh. */
 export function subWork(r: Rating, s: Situation, sub: Tier, subLevel: Level) {
-  const steps = Math.max(1, Math.round(r.steps))
+  const w = WORK[sub][subLevel]
+  const steps = Math.max(1, r.steps * w.steps)
   return dollars(s.prices[sub], {
     cacheWrite: SUB_BASE + BRIEF + r.read,
     cacheRead: steps * (SUB_BASE + BRIEF) + ((steps - 1) * r.read) / 2,
-    output: r.write * EFFORT_OUT[subLevel] + REPORT,
+    output: r.write * w.out + REPORT,
   })
 }
 
@@ -258,7 +304,7 @@ export function rawDelegateCost(r: Rating, s: Situation, sub: Tier, subLevel: Le
   const main = dollars(s.prices[s.tier], {
     cacheRead: 3 * s.context,
     cacheWrite: REPORT + Math.min(CHECK_CAP, r.read * 0.2) + PROMPT,
-    output: (BRIEF + FINAL) * EFFORT_OUT.medium,
+    output: (BRIEF + FINAL) * WORK[s.tier].medium.out,
   })
   return (main + subWork(r, s, sub, subLevel)) * reworkFactor(s.tier, sub)
 }
@@ -266,6 +312,64 @@ export function rawDelegateCost(r: Rating, s: Situation, sub: Tier, subLevel: Le
 export function delegateCost(r: Rating, s: Situation, sub: Tier, subLevel: Level) {
   return rawDelegateCost(r, s, sub, subLevel) * routeFactor(s.cal, delegateKeys(r.type, sub, subLevel))
 }
+
+// ---- Close calls -----------------------------------------------------------
+
+// A cold-start prior from benchmark research: measured cost takes over after CAL_FULL runs.
+export const PREFERRED: Record<TaskType, Tier> = {
+  lookup: 'haiku',
+  search: 'haiku',
+  'bulk-edit': 'haiku',
+  extract: 'haiku',
+  summarize: 'haiku',
+  writing: 'sonnet',
+  review: 'sonnet',
+  other: 'sonnet',
+  feature: 'sonnet',
+  debug: 'sonnet',
+  refactor: 'sonnet',
+  design: 'opus',
+}
+
+/** How close two routes' costs must be, as a share of the cheaper one, before any run is measured. */
+export const TIE_BAND = 0.25
+/** The band with `n` measured runs: it shrinks to nothing at CAL_FULL. */
+export const tieBand = (n: number) => TIE_BAND * (1 - Math.min(n, CAL_FULL) / CAL_FULL)
+
+/** One in this many close calls takes the route the guide did not pick, so both get measured. */
+const EXPLORE_EVERY = 5
+
+/** How a close call was decided: `over` is the route it beat, or the guide's pick when exploring. */
+export type Tie = { by: 'guide' | 'stronger' | 'explore'; over: Tier }
+
+/**
+ * Chooses among candidate routes that already passed every other rule, sorted by cost.
+ * The cheapest wins unless another is close to it (see tieBand, over the smaller run count
+ * of the pair): then the one on the task type's preferred model, else the stronger model.
+ * Every fifth close call takes the best close route the guide did not pick.
+ * It never widens the candidates: it only chooses among them.
+ */
+function choose<T extends { tier: Tier; cost: number; n: number }>(type: TaskType, ties: number, sorted: readonly T[]): { pick: T; tie?: Tie } | undefined {
+  const [cheapest] = sorted
+  if (!cheapest) return undefined
+  // A closed band (both measured CAL_FULL runs) means no close calls, even at an equal cost.
+  const close = sorted.slice(1).filter(c => {
+    const band = tieBand(Math.min(cheapest.n, c.n))
+    return band > 0 && c.cost <= cheapest.cost * (1 + band)
+  })
+  if (!close.length) return { pick: cheapest }
+  const group = [cheapest, ...close]
+  const preferred = group.find(c => c.tier === PREFERRED[type])
+  const guide = preferred ?? group.reduce((a, b) => (tierRank(b.tier) > tierRank(a.tier) ? b : a))
+  if (ties % EXPLORE_EVERY === EXPLORE_EVERY - 1) {
+    const other = group.find(c => c !== guide)
+    if (other) return { pick: other, tie: { by: 'explore', over: guide.tier } }
+  }
+  const beaten = group.find(c => c !== guide)
+  return { pick: guide, tie: { by: preferred ? 'guide' : 'stronger', over: (beaten ?? guide).tier } }
+}
+
+const runsOn = (cal: Calibration, keys: readonly string[]) => cal[keys[keys.length - 1] ?? '']?.n ?? 0
 
 // ---- Plans -----------------------------------------------------------------
 
@@ -282,6 +386,8 @@ export type Plan =
       mainCost: number
       /** The level the session's model would need; absent when it would struggle. */
       instead?: Level
+      /** Set when two routes were close in cost and the task-type guide broke the tie. */
+      tie?: Tie
     }
 
 /** Hand work down only when the subagent route costs under this share of staying. */
@@ -403,20 +509,32 @@ export function plan(r: Rating, s: Situation, floor: Level): Plan {
     const need = r.fit[t]
     if (t === s.tier || !need) return []
     const level = clampFloor(need, floor)
-    return [{ tier: t, level, cost: delegateCost(r, s, t, level) }]
+    return [{ tier: t, level, cost: delegateCost(r, s, t, level), n: runsOn(s.cal, delegateKeys(r.type, t, level)) }]
   }).sort((a, b) => a.cost - b.cost)
+  const ties = s.ties ?? 0
   const own = r.fit[s.tier]
   if (!own) {
-    const up = routes.find(x => tierRank(x.tier) > tierRank(s.tier))
-    if (up) return { kind: 'delegate', dir: 'up', tier: up.tier, level: up.level, delegateCost: up.cost, mainCost: stay }
+    const up = choose(r.type, ties, routes.filter(x => tierRank(x.tier) > tierRank(s.tier)))
+    if (up) return { kind: 'delegate', dir: 'up', tier: up.pick.tier, level: up.pick.level, delegateCost: up.pick.cost, mainCost: stay, ...(up.tie ? { tie: up.tie } : {}) }
     return effortPlan(r, s, floor)
   }
   const level = clampFloor(own, floor)
   const atNeed = mainCost(r, s, level, level === s.level ? 0 : 2)
   const alt = levelRank(level) > levelRank(s.level) ? atNeed : Math.min(stay, atNeed)
-  const down = routes.find(x => tierRank(x.tier) < tierRank(s.tier))
-  if (down && down.cost < (s.rules ?? DEFAULT_RULES).handOff * alt) {
-    return { kind: 'delegate', dir: 'down', tier: down.tier, level: down.level, delegateCost: down.cost, mainCost: alt, instead: level }
+  // Only routes under the hand-off share are candidates; a close call is chosen among them.
+  const bar = (s.rules ?? DEFAULT_RULES).handOff * alt
+  const down = choose(r.type, ties, routes.filter(x => tierRank(x.tier) < tierRank(s.tier) && x.cost < bar))
+  if (down) {
+    return {
+      kind: 'delegate',
+      dir: 'down',
+      tier: down.pick.tier,
+      level: down.pick.level,
+      delegateCost: down.pick.cost,
+      mainCost: alt,
+      instead: level,
+      ...(down.tie ? { tie: down.tie } : {}),
+    }
   }
   return effortPlan(r, s, floor)
 }
@@ -436,6 +554,8 @@ export type SubagentSize = {
   /** Before calibration and rework: what a run teaches against, and the parent's for the saving. */
   raw: number
   parentRaw: number
+  /** Set when two weaker models were close in cost and the task-type guide broke the tie. */
+  tie?: Tie
 }
 
 export function sizeSubagent(r: Rating, s: Situation, parent: Tier, floor: Level): SubagentSize | undefined {
@@ -443,16 +563,23 @@ export function sizeSubagent(r: Rating, s: Situation, parent: Tier, floor: Level
   if (!own) return undefined
   const priced = (t: Tier, level: Level) => {
     const raw = subWork(r, s, t, level)
-    return { raw, cost: raw * routeFactor(s.cal, subagentKeys(r.type, t, level)) * reworkFactor(parent, t) }
+    const keys = subagentKeys(r.type, t, level)
+    return { raw, cost: raw * routeFactor(s.cal, keys) * reworkFactor(parent, t), n: runsOn(s.cal, keys) }
   }
   const p = priced(parent, clampFloor(own, floor))
-  const best = TIERS.flatMap(t => {
+  const bar = (s.rules ?? DEFAULT_RULES).handOff * p.cost
+  const weaker = TIERS.flatMap(t => {
     const need = r.fit[t]
     if (tierRank(t) >= tierRank(parent) || !need) return []
     const level = clampFloor(need, floor)
     return [{ tier: t, level, ...priced(t, level), parentCost: p.cost, parentRaw: p.raw }]
-  }).sort((a, b) => a.cost - b.cost)[0]
-  return best && best.cost < (s.rules ?? DEFAULT_RULES).handOff * p.cost ? best : undefined
+  })
+    .filter(x => x.cost < bar)
+    .sort((a, b) => a.cost - b.cost)
+  const chosen = choose(r.type, s.ties ?? 0, weaker)
+  if (!chosen) return undefined
+  const { n: _n, ...best } = chosen.pick
+  return { ...best, ...(chosen.tie ? { tie: chosen.tie } : {}) }
 }
 
 // ---- Wording ---------------------------------------------------------------

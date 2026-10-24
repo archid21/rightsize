@@ -3,7 +3,12 @@ import {
   CAL_FULL,
   DEFAULT_PRICES,
   DEFAULT_RULES,
+  PREFERRED,
   SWITCH_KEY,
+  TASK_TYPES,
+  TIE_BAND,
+  TIERS,
+  WORK,
   type Rating,
   type Situation,
   delegateCost,
@@ -24,7 +29,11 @@ import {
   paceOf,
   pacedRules,
   sizeSubagent,
+  subWork,
+  rawMainCost,
   tierOf,
+  tieBand,
+  type Calibration,
 } from './cost'
 import { parseRating } from './rate'
 import { report } from './register'
@@ -358,4 +367,198 @@ test("a moved subagent's model learns from what such subagents really cost", asy
   expect(sizeSubagent(listing, dear, 'opus', 'low')?.tier).toBe('sonnet')
   const size = sizeSubagent(listing, opus, 'opus', 'low')
   expect(size !== undefined && size.parentRaw > size.raw * 10, 'the raw estimates for the saving').toBe(true)
+})
+
+test('Sonnet is the baseline: its work equals the old effort multipliers, so its estimates do not change', async () => {
+  expect(Object.fromEntries(Object.entries(WORK.sonnet).map(([l, w]) => [l, w.out]))).toEqual({ low: 1, medium: 1.6, high: 2.5, xhigh: 3.5, max: 5 })
+  expect(Object.values(WORK.sonnet).every(w => w.steps === 1), 'Sonnet steps are the rated steps').toBe(true)
+})
+
+test('work never falls as effort rises, for every model', async () => {
+  const levels = ['low', 'medium', 'high', 'xhigh', 'max'] as const
+  for (const t of TIERS) {
+    for (let i = 1; i < levels.length; i++) {
+      expect(WORK[t][levels[i]!].out >= WORK[t][levels[i - 1]!].out, `${t} out ${levels[i]}`).toBe(true)
+      expect(WORK[t][levels[i]!].steps >= WORK[t][levels[i - 1]!].steps, `${t} steps ${levels[i]}`).toBe(true)
+    }
+  }
+})
+
+test('a Haiku subagent writes 1.6x the output tokens of a Sonnet one on the same work', async () => {
+  // Only output costs money, and the fixed report is taken out by subtracting a run that writes nothing.
+  const only = { input: 0, cacheRead: 0, cacheWrite: 0, output: 1_000_000 }
+  const prices = { ...DEFAULT_PRICES, haiku: only, sonnet: only }
+  const s: Situation = { ...opus, prices }
+  const written = (sub: 'haiku' | 'sonnet') => subWork(rating({ write: 1000 }), s, sub, 'medium') - subWork(rating({ write: 0 }), s, sub, 'medium')
+  expect(near(written('haiku') / written('sonnet'), 1.6)).toBe(true)
+})
+
+test('Opus at low effort re-reads the cache less than at medium, because it takes fewer steps', async () => {
+  const prices = { ...DEFAULT_PRICES, opus: { input: 0, output: 0, cacheWrite: 0, cacheRead: 1_000_000 } }
+  const s: Situation = { ...opus, prices }
+  const r = rating({ steps: 10 })
+  expect(rawMainCost(r, s, 'low')).toBeLessThan(rawMainCost(r, s, 'medium'))
+})
+
+// ---- Close calls -----------------------------------------------------------
+
+// Pins one route's calibrated estimate to `target` with `n` runs behind its specific key. Below
+// CAL_FULL runs the ratio only counts n/CAL_FULL of the way, so the stored ratio is stretched to land on `target`.
+const pinned = (cal: Calibration, keys: readonly string[], raw: number, target: number, n: number): Calibration => {
+  const last = keys[keys.length - 1] ?? ''
+  return { ...cal, [last]: { n, ratio: 1 + (target / raw - 1) * (CAL_FULL / Math.min(n, CAL_FULL)) } }
+}
+
+// A Fable session handing a feature down: Sonnet and Opus both fit, so they are the routes to choose between.
+const tieRating = rating({ type: 'feature', level: 'medium', fit: { sonnet: 'medium', opus: 'medium', fable: 'medium' }, read: 150_000, write: 3000, steps: 30 })
+const tieSession: Situation = { ...fable, level: 'medium' }
+const sonnetRaw = delegateCost(tieRating, tieSession, 'sonnet', 'medium')
+const opusRaw = delegateCost(tieRating, tieSession, 'opus', 'medium')
+// Opus's estimate pinned to `x` times Sonnet's (Sonnet unmeasured, so the band is the full 25%).
+const opusAt = (x: number, n = CAL_FULL): Situation => ({
+  ...tieSession,
+  cal: pinned({}, delegateKeys('feature', 'opus', 'medium'), opusRaw, sonnetRaw * x, n),
+})
+
+test('the band starts at 25% and shrinks to nothing as runs are measured', async () => {
+  expect(TIE_BAND).toBe(0.25)
+  expect(tieBand(0)).toBe(0.25)
+  expect(tieBand(10)).toBe(0.125)
+  expect(tieBand(CAL_FULL)).toBe(0)
+  expect(tieBand(CAL_FULL + 30), 'stays at zero').toBe(0)
+})
+
+test('the task-type guide names a model for every task type', async () => {
+  for (const t of TASK_TYPES) expect(TIERS.includes(PREFERRED[t]), t).toBe(true)
+  expect(PREFERRED.lookup).toBe('haiku')
+  expect(PREFERRED.feature).toBe('sonnet')
+  expect(PREFERRED.design).toBe('opus')
+})
+
+test('a close call on a hand-down goes to the guide\'s model, not the slightly cheaper one', async () => {
+  const s = opusAt(0.9)
+  expect(delegateCost(tieRating, s, 'opus', 'medium'), 'Opus is the cheaper route').toBeLessThan(delegateCost(tieRating, s, 'sonnet', 'medium'))
+  const p = plan(tieRating, s, 'low')
+  expect(p.kind === 'delegate' && p.dir, 'still a hand-down').toBe('down')
+  expect(p.kind === 'delegate' && p.tier, 'feature: Sonnet').toBe('sonnet')
+  expect(p.kind === 'delegate' && p.tie).toEqual({ by: 'guide', over: 'opus' })
+  expect(p.kind === 'delegate' && p.delegateCost, 'the cost shown is the route chosen').toBe(delegateCost(tieRating, s, 'sonnet', 'medium'))
+})
+
+test('outside the band the cheapest route wins, and there is no tie', async () => {
+  const p = plan(tieRating, opusAt(0.7), 'low')
+  expect(p.kind === 'delegate' && p.tier).toBe('opus')
+  expect(p.kind === 'delegate' && p.tie).toBeUndefined()
+  expect('tie' in p, 'the key is absent, not undefined').toBe(false)
+})
+
+test('the band shrinks with runs: a gap that is close at 10 runs is not at 20', async () => {
+  // Sonnet 11% dearer than Opus: inside 12.5% at 10 runs on each, outside 0% at 20.
+  const tieAt = (n: number) => {
+    const cal = pinned(pinned({}, delegateKeys('feature', 'opus', 'medium'), opusRaw, sonnetRaw * 0.9, n), delegateKeys('feature', 'sonnet', 'medium'), sonnetRaw, sonnetRaw, n)
+    const p = plan(tieRating, { ...tieSession, cal }, 'low')
+    return p.kind === 'delegate' ? p.tie : undefined
+  }
+  expect(tieAt(10)?.by, '1/0.9 = 11% apart').toBe('guide')
+  expect(tieAt(20)).toBeUndefined()
+})
+
+test('both routes measured 20 or more runs: the cheapest wins, with no tie', async () => {
+  const cal = pinned(pinned({}, delegateKeys('feature', 'opus', 'medium'), opusRaw, sonnetRaw * 0.95, CAL_FULL), delegateKeys('feature', 'sonnet', 'medium'), sonnetRaw, sonnetRaw, CAL_FULL)
+  const p = plan(tieRating, { ...tieSession, cal }, 'low')
+  expect(p.kind === 'delegate' && p.tier).toBe('opus')
+  expect(p.kind === 'delegate' && p.tie).toBeUndefined()
+  // An equal cost with the band closed is not a close call either.
+  const even = pinned(pinned({}, delegateKeys('feature', 'opus', 'medium'), opusRaw, sonnetRaw, CAL_FULL), delegateKeys('feature', 'sonnet', 'medium'), sonnetRaw, sonnetRaw, CAL_FULL)
+  const level = plan(tieRating, { ...tieSession, cal: even }, 'low')
+  expect(level.kind === 'delegate' && level.tie, 'equal cost, both measured').toBeUndefined()
+  // One route measured, the other not: the pair counts the smaller, so the band is open.
+  const one = plan(tieRating, opusAt(0.95), 'low')
+  expect(one.kind === 'delegate' && one.tie?.by).toBe('guide')
+})
+
+test('every fifth close call takes the route the guide did not pick', async () => {
+  const s = opusAt(0.9)
+  for (const ties of [0, 1, 2, 3]) {
+    const p = plan(tieRating, { ...s, ties }, 'low')
+    expect(p.kind === 'delegate' && p.tier, `tie ${ties + 1}: the guide's pick`).toBe('sonnet')
+  }
+  const p = plan(tieRating, { ...s, ties: 4 }, 'low')
+  expect(p.kind === 'delegate' && p.tier).toBe('opus')
+  expect(p.kind === 'delegate' && p.tie).toEqual({ by: 'explore', over: 'sonnet' })
+  const tierAt = (ties: number) => {
+    const q = plan(tieRating, { ...s, ties }, 'low')
+    return q.kind === 'delegate' ? q.tier : undefined
+  }
+  expect(tierAt(5), 'then the guide again').toBe('sonnet')
+  expect(tierAt(9), 'and the tenth call explores').toBe('opus')
+  // Outside the band there is no close call to explore.
+  const far = plan(tieRating, { ...opusAt(0.7), ties: 4 }, 'low')
+  expect(far.kind === 'delegate' && far.tie).toBeUndefined()
+})
+
+test('when the guide\'s model is not among the close routes, the stronger one wins', async () => {
+  // A lookup guides to Haiku, which does not fit here: Sonnet and Opus are close, Sonnet cheaper.
+  const r = { ...tieRating, type: 'lookup' as const }
+  const sonnet = delegateCost(r, tieSession, 'sonnet', 'medium')
+  const opus = delegateCost(r, tieSession, 'opus', 'medium')
+  const s = { ...tieSession, cal: pinned({}, delegateKeys('lookup', 'opus', 'medium'), opus, sonnet * 1.1, CAL_FULL) }
+  const p = plan(r, s, 'low')
+  expect(p.kind === 'delegate' && p.tier).toBe('opus')
+  expect(p.kind === 'delegate' && p.tie).toEqual({ by: 'stronger', over: 'sonnet' })
+  const e = plan(r, { ...s, ties: 4 }, 'low')
+  expect(e.kind === 'delegate' && e.tier, 'exploring takes the other close route').toBe('sonnet')
+  expect(e.kind === 'delegate' && e.tie).toEqual({ by: 'explore', over: 'opus' })
+})
+
+test('a close route that misses the hand-off share is not a candidate, and the tie never overrides it', async () => {
+  const s = opusAt(0.9)
+  const p = plan(tieRating, s, 'low')
+  expect(p.kind === 'delegate' && p.tie?.by).toBe('guide')
+  // Squeeze the share so only the cheaper Opus route (not Sonnet, 11% dearer) is under it.
+  const opusCost = delegateCost(tieRating, s, 'opus', 'medium')
+  const sonnetCost = delegateCost(tieRating, s, 'sonnet', 'medium')
+  const alt = p.kind === 'delegate' ? p.mainCost : 0
+  const handOff = ((opusCost + sonnetCost) / 2) / alt
+  const q = plan(tieRating, { ...s, rules: { ...DEFAULT_RULES, handOff } }, 'low')
+  expect(q.kind === 'delegate' && q.tier, 'the only route under the share').toBe('opus')
+  expect(q.kind === 'delegate' && q.tie).toBeUndefined()
+  // Nothing under the share: no hand-off, close or not.
+  expect(plan(tieRating, { ...s, rules: { ...DEFAULT_RULES, handOff: 0.01 } }, 'low').kind).not.toBe('delegate')
+})
+
+test('a close call among stronger models goes to the guide\'s model too, when the session\'s would struggle', async () => {
+  // A design on Sonnet that Sonnet cannot do: Opus and Fable fit; Fable is a touch cheaper.
+  const r = rating({ type: 'design', level: 'high', fit: { sonnet: null, opus: 'high', fable: 'medium' }, read: 40_000, write: 2000, steps: 12 })
+  const s: Situation = { tier: 'sonnet', level: 'medium', context: 60_000, prices: DEFAULT_PRICES, cal: {} }
+  const opus = delegateCost(r, s, 'opus', 'high')
+  const fableRaw = delegateCost(r, s, 'fable', 'medium')
+  const tied = { ...s, cal: pinned({}, delegateKeys('design', 'fable', 'medium'), fableRaw, opus * 0.9, CAL_FULL) }
+  const p = plan(r, tied, 'low')
+  expect(p.kind === 'delegate' && p.dir).toBe('up')
+  expect(p.kind === 'delegate' && p.tier, 'design: Opus').toBe('opus')
+  expect(p.kind === 'delegate' && p.tie).toEqual({ by: 'guide', over: 'fable' })
+  const far = plan(r, { ...s, cal: pinned({}, delegateKeys('design', 'fable', 'medium'), fableRaw, opus * 0.5, CAL_FULL) }, 'low')
+  expect(far.kind === 'delegate' && far.tier, 'outside the band: the cheapest').toBe('fable')
+})
+
+test("sizing Claude's own subagent breaks a close call the same way", async () => {
+  const r = rating({ type: 'feature', fit: { sonnet: 'medium', opus: 'medium', fable: 'medium' }, read: 40_000, write: 2000, steps: 12 })
+  const s = { ...tieSession, tier: 'fable' as const }
+  const sonnet = subWork(r, s, 'sonnet', 'medium') * 1.3
+  const opus = subWork(r, s, 'opus', 'medium') * 1.3
+  const at = (x: number, extra: Partial<Situation> = {}) => ({ ...s, ...extra, cal: pinned({}, ['feature:subagent', 'feature:subagent:opus', 'feature:subagent:opus:medium'], opus / 1.3, (sonnet * x) / 1.3, CAL_FULL) })
+  const close = sizeSubagent(r, at(0.9), 'fable', 'low')
+  expect(close?.tier, 'feature: Sonnet').toBe('sonnet')
+  expect(close?.tie).toEqual({ by: 'guide', over: 'opus' })
+  const explore = sizeSubagent(r, at(0.9, { ties: 4 }), 'fable', 'low')
+  expect(explore?.tier).toBe('opus')
+  expect(explore?.tie).toEqual({ by: 'explore', over: 'sonnet' })
+  const far = sizeSubagent(r, at(0.7), 'fable', 'low')
+  expect(far?.tier, 'outside the band: the cheapest').toBe('opus')
+  expect(far?.tie).toBeUndefined()
+  expect('n' in (close ?? {}), 'no internal fields leak').toBe(false)
+  // The hand-off share still decides first: a close route above it is not a candidate.
+  const strict = sizeSubagent(r, at(0.9, { rules: { ...DEFAULT_RULES, handOff: 0.01 } }), 'fable', 'low')
+  expect(strict).toBeUndefined()
 })

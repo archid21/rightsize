@@ -2,7 +2,7 @@
 
 By [Archi Dubey](https://github.com/archid21), MIT license. Full guide: https://github.com/archid21/rightsize
 
-Before a prompt is sent, rightsize asks Haiku (at low effort) which effort each model would need for it, or whether a model would struggle, and how big the work is. A cost model then prices each model at its own level and picks the cheapest route that fits, which can change the model and the effort together. The mod follows the answers you give the first time each case comes up in a session.
+Before a prompt is sent, rightsize asks Haiku (at low effort) which effort each model would need for it, or whether a model would struggle, and how big the work is. A cost model then prices each model at its own level, counting the work that model does at that level, and picks the cheapest route that fits, which can change the model and the effort together. The mod follows the answers you give the first time each case comes up in a session.
 
 ## The four questions
 
@@ -27,14 +27,20 @@ After the first answer, it asks "Use these choices in every session?".
 
   On the way down, if the cheaper model still fails after 2 reworks, the main chat finishes the task itself.
 - **Handing work down needs a clear saving.** A subagent is used only when the estimate is under 70% of the cost of staying at the level the work needs, counting the brief, the report and the check. The subagent runs at the level its model needs: rightsize sets it. Lowering effort needs the lower level to cost under 90% of staying. Both are defaults you can change in `/config`.
-- **Calibration.** After each rated turn, the mod reads the real cost from Claude Code's cost ledger (the `/cost` total), leaving out the Haiku rating call, and moves its estimates toward it. Where there is no ledger, it prices the API's token counts from `prices.json`. Each task type and route is tracked separately, and after 20 runs the measured average replaces the guess. A lowered turn that stepped back up is left out, and sessions running at the same time add to one shared record rather than overwriting each other.
+- **Close calls go to the model suited to the task.** When two cheaper models that fit are close in estimated cost, the mod picks by task type:
+  - Haiku for lookups, searches, bulk edits, extraction and summaries.
+  - Sonnet for writing, reviews, features, debugging, refactors and other work.
+  - Opus for design.
+
+  "Close" starts at 25% and shrinks to nothing by 20 measured runs. One close call in five takes the other model, so both get measured. It never overrides the hand-off threshold.
+- **Calibration.** After each rated turn, the mod reads the real cost from Claude Code's cost ledger (the `/cost` total), leaving out the Haiku rating call, and moves its estimates toward it. Where there is no ledger, it prices the API's token counts from `prices.json`. Each task type and route is tracked separately, and after 20 runs the measured average replaces the guess. A lowered turn that stepped back up is left out, and sessions running at the same time add to one shared record rather than overwriting each other. When the work-per-model estimates came in, calibration started over once: earlier learning is ignored, not deleted.
 
 A one-row band above the prompt (CLI and desktop app) shows what the mod did, with buttons: Undo or Clear, a quicker rule for this case (Q1–Q4), ⋯ to choose when the band shows, and × to close it. After a hand-off it shows the result, for example: `Sent to Haiku: $0.04 vs about $0.31 on Fable (estimated), saved about 87%.` With the band off, that result is a line in the transcript.
 
 ## Commands and settings
 
 - `/rightsize` shows the state, the answers and the calibration.
-- `/rightsize report` shows what the mod did this session, in the last 7 days and in the last 30 days: prompts rated and changed, the estimated saving after the cost of its rating calls, the share of your 5-hour window kept (on a subscription), and what went wrong. Savings are estimates.
+- `/rightsize report` shows what the mod did this session, in the last 7 days and in the last 30 days: prompts rated and changed, the estimated saving after the cost of its rating calls, the share of your 5-hour window kept (on a subscription), close calls decided by the task-type guide, and what went wrong. Savings are estimates.
 - `/rightsize settings` asks the questions again.
 - `/rightsize undo` puts the last auto-lowered prompt back in the box to run at the normal level.
 - `/rightsize clear` drops a session-wide switch.

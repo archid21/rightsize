@@ -209,7 +209,16 @@ The band shows in the CLI and the desktop app. VS Code and the mobile app keep t
   - **Cost measurement**: rightsize goes back to its starting estimates (the calibration, the close-call and spot-check counts, the start-suggestion checks) and relearns from your next prompts. The run log before that moment stops teaching it anything: miss rates, the starting-point comparison and the idle-warning rate. The log itself and the history in `/rightsize report` are kept, and the report says when measurement restarted.
   - **Both**: both, after one confirmation.
 - `/rightsize reset <setting>`: reset one setting, named by its key (`handOff`) or its title (`hand-off threshold`, in any case), with the same confirmation. A name it doesn't know gets a list of the keys.
-- `/config` → rightsize. Every row is a picker, and each applies the moment you change it:
+- **Changing settings.** Where you change them decides when they take effect:
+  - **In a terminal session:** type `/config` and scroll to the rightsize rows. A change applies at once in that session.
+  - **In the desktop app:** its Code tab has no `/config` menu. Change settings from a terminal, then **quit the app (⌘Q) and open it again**; a new session alone keeps the old values. From a terminal, either run `claude` and use `/config`, or set values in one command, for example:
+
+    ```bash
+    echo '{"handOff":"60%","useFable":"off"}' | claude plugin configure rightsize@archid21 --values-stdin
+    ```
+
+    `claude plugin configure rightsize@archid21` lists every setting and its value. The keys are the names `/rightsize reset` lists.
+- `/config` → rightsize. Every row is a picker, and in a terminal session each applies the moment you change it:
   - **Lowest effort**: low (default), medium or high. How far rightsize lowers.
   - **Highest effort**: high, xhigh or max (default). rightsize never raises above it: not for a prompt, not mid-turn when Claude looks stuck (those never reach max anyway), and not for the level a helper runs at. A level you are already on above it is left alone.
   - **Lowering**, **Raising**, **Stronger model**, **Cheaper model**: your answer to each of the four questions, set ahead of time. Lowering and Raising: ask me, lower or raise automatically, never lower or raise. Stronger model and Cheaper model: ask first, always send, stay and change effort only, or ask each time. The default is not set: the question is asked the first time it comes up. A rule set here is used as it is and its question is never asked. Set a row back to not set to be asked again.

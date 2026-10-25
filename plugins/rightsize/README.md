@@ -57,7 +57,8 @@ Once a week (or a month) at session start, the mod estimates what the last 30 da
 - `/rightsize undo` puts the last auto-lowered prompt back in the box to run at the normal level.
 - `/rightsize clear` drops a session-wide switch.
 - `/mods` turns the mod on or off.
-- `/config`, then rightsize. Every row is a picker, and each applies as soon as you change it:
+- Changing settings: in a terminal session, `/config` applies a change at once. The desktop app has no `/config` menu: change settings from a terminal (`/config` inside `claude`, or `echo '{"handOff":"60%"}' | claude plugin configure rightsize@archid21 --values-stdin`), then quit the app (⌘Q) and reopen it.
+- `/config`, then rightsize. Every row is a picker, and in a terminal session each applies as soon as you change it:
   - **Lowest effort** (low, medium or high) sets how far it will lower. **Highest effort** (high, xhigh or max) sets how far it will raise: never above it, not mid-turn either, and not for a subagent's level.
   - **Lowering**, **Raising**, **Stronger model** and **Cheaper model** hold your answers to the four questions (the default is not set: ask the first time). A rule set here is used as it is and its question is never asked. **Remember choices** (ask, every session or this session) decides whether answers to the questions are kept.
   - **Reports** (api or subscription) sets whether reports show dollars or a share of usage. On a subscription, dollar amounts are marked API-equivalent: what the same tokens would cost at API prices. The mod reads this off each response's rate limits (a subscription shows five-hour and seven-day windows) and asks once only when they show nothing. A value you set here is final: the rate limits never change it, and `/rightsize` says when they disagree.

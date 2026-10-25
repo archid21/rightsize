@@ -955,13 +955,13 @@ function startRun(r: Rating, s: Situation, d: Decision, p: Plan, base: Level, ov
 
 async function showStatus($: EngineInterface) {
   const run = active ?? pending
-  if (run?.delegate) return $.ui.status(`Rightsize: handing this to a ${TIER_NAME[run.delegate.tier]} subagent`)
+  if (run?.delegate) return $.ui.status(`Handing this to a ${TIER_NAME[run.delegate.tier]} subagent`)
   if (run?.raisedTo) return $.ui.status(`Effort: ${run.raisedTo} (raised mid-turn)`)
   if (run?.steppedUp) return $.ui.status(`Effort: back to ${run.normal} (the task got harder)`)
   if (run?.level) return $.ui.status(run.auto ? `Effort: ${run.level} (auto) · /rightsize undo` : `Effort: ${run.level} (this prompt)`)
   if (!run && lastAuto) return $.ui.status(`Last prompt ran at ${lastAuto.level} (auto) · /rightsize undo`)
   const session = await sessionEffort($)
-  $.ui.status(session ? `Effort: ${session} (this session, by rightsize)` : undefined)
+  $.ui.status(session ? `Effort: ${session} (this session)` : undefined)
 }
 
 // ---- Band ------------------------------------------------------------------
@@ -1356,11 +1356,12 @@ async function summary($: EngineInterface) {
   }
   const n = changed.length
   return [
-    `Rightsize is ${off ? 'off (turn it on with /mods)' : 'on'}.`,
+    // Claude Code shows the output under "rightsize:", so the line leaves the name out.
+    off ? 'Off. Turn it on with /mods.' : 'On.',
     '',
     n
-      ? `You changed ${n} setting${n === 1 ? '' : 's'}. The other ${KEYS.length - n} are defaults (see them in /config).`
-      : `All ${KEYS.length} settings are at their defaults (see them in /config).`,
+      ? `You changed ${n} setting${n === 1 ? '' : 's'}. The other ${KEYS.length - n} are defaults (list them with claude plugin configure rightsize@archid21).`
+      : `All ${KEYS.length} settings are at their defaults (list them with claude plugin configure rightsize@archid21).`,
     ...changed,
     '',
     'Now',
@@ -1452,15 +1453,18 @@ async function resetBilling($: EngineInterface) {
 // Each row goes back to its default through `$.config.set`. A stored value cannot be unset, so the rows reset
 // are listed in the store, and count as defaults, not yours, while what is stored is the default.
 async function resetSettings($: EngineInterface, keys: readonly SettingKey[], all: boolean) {
-  const blocked: string[] = []
+  const blocked: SettingKey[] = []
   let listed = resetFields
   for (const key of keys) {
     const dflt = SETTINGS[key].default
     const changes = cfg[key] !== dflt
     if (changes) {
-      const r = await $.config.set({ key: `rightsize.${key}`, value: dflt }).catch(() => ({ deny: 'it could not be written' }))
+      const r = await $.config.set({ key: `rightsize.${key}`, value: dflt }).catch((err: unknown) => ({ deny: err instanceof Error ? err.message : String(err) }))
       if (r.deny !== undefined) {
-        blocked.push(SETTINGS[key].title)
+        await log($, `reset ${key}: Claude Code refused to write it: ${r.deny}`)
+        blocked.push(key)
+        // Listed now, so the row counts as a default once it is set to the default some other way.
+        listed = mark(listed, key, true)
         continue
       }
     }
@@ -1478,8 +1482,13 @@ async function resetSettings($: EngineInterface, keys: readonly SettingKey[], al
     await $.store.set('choices', null).catch(() => undefined)
   }
   await keepReset($, listed)
-  const what = all ? 'Every setting is back to its default, and the saved answers are forgotten.' : `${SETTINGS[keys[0] ?? 'floor'].title} is back to its default, ${SETTINGS[keys[0] ?? 'floor'].default}.`
-  return blocked.length ? `${what} Not reset, because something else owns them: ${blocked.join(', ')}.` : what
+  if (!blocked.length) return all ? 'Every setting is back to its default, and the saved answers are forgotten.' : `${SETTINGS[keys[0] ?? 'floor'].title} is back to its default, ${SETTINGS[keys[0] ?? 'floor'].default}.`
+  // Claude Code would not write these here (the desktop app has no /config menu): say how to reset them from a terminal.
+  const names = blocked.map(k => SETTINGS[k].title).join(', ')
+  const json = JSON.stringify(Object.fromEntries(blocked.map(k => [k, SETTINGS[k].default])))
+  const fix = `To reset ${blocked.length === 1 ? 'it' : 'them'}, run this in a terminal, then restart Claude Code: echo '${json}' | claude plugin configure rightsize@archid21 --values-stdin`
+  const done = all && blocked.length < keys.length ? 'The other settings are back to their defaults, and the saved answers are forgotten. ' : ''
+  return `${done}${names} could not be changed from here. ${fix}`
 }
 
 // Cost measurement starts over: the calibration, the close-call and spot-check counts and the start checks go,
@@ -1908,7 +1917,7 @@ export const register: Register = (on, options) => {
     if (brainDumpWillCatch(text, await readSwitches($))) return next(e)
 
     await knowBilling($, true)
-    $.ui.status('Rightsize: rating the prompt...')
+    $.ui.status('Rating the prompt...')
     let out = e
     let run: Run | null = null
     try {

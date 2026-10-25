@@ -52,6 +52,10 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
     backup: '',
     files: {} as Record<string, string>,
     toasts: [] as string[],
+    /** Status bar texts, in order; undefined clears it. */
+    statuses: [] as (string | undefined)[],
+    /** Rows whose writes Claude Code refuses, as the desktop app does with no /config menu. */
+    refuse: [] as string[],
     configSet: [] as unknown[],
     /** Every config.set that reached the writer, with who made it. */
     sets: [] as { key: string; value: unknown; origin?: { kind: string } }[],
@@ -142,13 +146,17 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
     const field = key.startsWith('rightsize.') ? key.slice('rightsize.'.length) : ''
     const known = KEYS.find(k => k === field)
     if (known && !inOptions(known, value)) return { deny: `${String(value)} is not one of ${known}'s options` } as never
+    if (known && h.refuse.includes(known)) return { deny: 'only its dialog changes it' } as never
     h.configSet.push(value)
     h.sets.push({ key, value, ...(origin ? { origin } : {}) })
     if (known) h.stored[known] = value as string
     return { value } as never
   })
   on('process.run', async () => ({ value: { exitCode: 0, stdout: '', stderr: '' } }) as never)
-  on('ui.status', async () => ({ value: undefined }) as never)
+  on('ui.status', async ($, e) => {
+    h.statuses.push((e as { text?: string }).text)
+    return { value: undefined } as never
+  })
   on('ui.log', async ($, e) => {
     h.logs.push((e as { text: string }).text)
     return { value: undefined } as never
@@ -3173,6 +3181,21 @@ for (const surface of ['desktop', 'terminal'] as const) {
     })
   }
 
+  test(`/rightsize reset when Claude Code refuses the write: says so, gives the terminal command, logs the reason (${surface})`, { timeoutMs: 30000, options: SOME_SET }, async ($, on) => {
+    const h = engine(on, { ...OPUS, stored: SOME_SET })
+    h.refuse = ['handOff']
+    const d = drive($, h)
+    await d.start(surface)
+    h.answers = { Confirm: 'Yes' }
+    const out = (await d.command('reset handOff')).text ?? ''
+    expect(out).toBe(`Hand-off threshold could not be changed from here. To reset it, run this in a terminal, then restart Claude Code: echo '{"handOff":"70%"}' | claude plugin configure rightsize@archid21 --values-stdin`)
+    expect(out).not.toContain('back to its default')
+    expect(h.stored.handOff, 'unchanged').toBe('50%')
+    expect(await settingsText(d)).toContain('Hand-off threshold: 50%')
+    expect(h.files['/home/test/.claude/mods-logs/rightsize.log'] ?? '').toContain('reset handOff: Claude Code refused to write it: only its dialog changes it')
+    expect(h.store.resetFields, 'listed, so the default counts as a default once set from a terminal').toEqual(['handOff'])
+  })
+
   test(`/rightsize reset on one setting declined: nothing changes (${surface})`, { timeoutMs: 30000, options: SOME_SET }, async ($, on) => {
     const h = engine(on, { ...OPUS, stored: SOME_SET })
     const d = drive($, h)
@@ -3366,6 +3389,28 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const text = await settingsText(d)
     expect(text.endsWith('Commands: /rightsize help')).toBe(true)
     expect(text).not.toContain('undo re-runs')
+  })
+
+  test(`the status bar never repeats the name Claude Code already shows (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { ...OPUS })
+    const d = drive($, h)
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+    h.rating = NO_CHANGE
+    await d.submit(LOOKUP)
+    expect(h.statuses).toContain('Rating the prompt...')
+    expect(h.statuses.filter(t => t?.toLowerCase().startsWith('rightsize')), 'no status starts with the name').toEqual([])
+  })
+
+  test(`/rightsize starts with "On." (Claude Code already shows the name) and points to claude plugin configure (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { ...OPUS })
+    const d = drive($, h)
+    await d.start(surface)
+    const text = await settingsText(d)
+    expect(text.startsWith('On.\n')).toBe(true)
+    expect(text).not.toContain('Rightsize is')
+    expect(text).toContain('(list them with claude plugin configure rightsize@archid21)')
   })
 
   test(`/rightsize share prints the framed message, sends nothing and asks nothing (${surface})`, { timeoutMs: 30000 }, async ($, on) => {

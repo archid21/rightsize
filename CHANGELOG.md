@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `/rightsize reset` no longer says a setting is "back to its default" when Claude Code refused to change it (as the desktop app does). It says the setting could not be changed from there, gives the `claude plugin configure` command to run in a terminal, and logs Claude Code's reason in `rightsize.log`.
+- The status bar no longer repeats the name Claude Code already shows: "Rating the prompt..." and "Handing this to a Sonnet subagent".
+- `/rightsize` starts with "On." (or "Off. Turn it on with /mods."): Claude Code already shows the output under "rightsize:", so the name isn't repeated. Its hint now points to `claude plugin configure rightsize@archid21`, since the desktop app has no `/config` menu.
+- The README explains where to change settings: `/config` in a terminal session applies at once; the desktop app has no `/config` menu, so change them from a terminal (`/config` or `claude plugin configure`) and restart the app.
 - **`/rightsize` is shorter.** It lists only the settings you changed, says how many others are at their defaults, and groups the rest under Now (session switch, Reports, measured runs, cache-switch results). The long command sentence is gone: `/rightsize help` lists every command and what it does, and an unknown command (`/rightsize foo`) now says so and shows that list instead of the summary. `/rightsize settings` ends with the same summary.
 
 ## 0.7.0 (2026-10-24)

@@ -243,6 +243,8 @@ These are in `~/.claude/mods-logs/`:
 
 rightsize keeps its logs on your machine. It sends nothing to its author unless you say yes.
 
+**What the rating sees.** To rate each prompt, rightsize asks Claude Haiku through Claude Code. The rating call carries your prompt (up to its first 6,000 characters) and the end of Claude's last reply (up to 1,500 characters), and goes to Anthropic, just as your prompts do when you use Claude Code. When Claude starts its own helper, rightsize rates the helper's brief the same way. Every 50th rating is also sent to Sonnet as a check (**Rater check** in `/config`). None of this goes to rightsize's author.
+
 **Sharing is opt-in.** After 20 rated prompts, rightsize asks once: "Help improve rightsize? Share anonymous numbers with its author." If you say no, or close the question, nothing is ever sent. You can change your answer any time with **Share anonymous feedback** in `/config`.
 
 **What is sent when you say yes,** at most once an hour, only for what is logged after you said yes:

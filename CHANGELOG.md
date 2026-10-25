@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- **Ready for Anthropic's plugin directory.** Each `/config` row is written with its own fixed key, so the directory can check every settings write (rightsize still writes only its own `rightsize.*` rows). A parameter that shared its name with `on` is renamed. No behavior changes.
+- The plugin README has an Install line and a **What it touches** section: each hook and what it does, the only programs it runs (`mkdir` and `chmod`, for its log folder), the files it writes, what it reads, and the two hosts it contacts.
+- The plugin has an icon: the exact-fit frame with a dollar sign.
+
 ## 0.7.3 (2026-10-25)
 
 - **A hand-off's subagent can't push, publish, release, deploy or send.** rightsize blocks those commands in the subagent it started and tells it to leave them to the main chat. Before, only the hand-off note asked it to stop. The commands it knows now include `git -C <dir> push`, `git -c <key>=<value> push`, `vercel ... --prod`, `bun publish` and the deploy commands of Netlify, Firebase, Fly and Wrangler.

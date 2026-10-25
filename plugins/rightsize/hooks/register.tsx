@@ -611,6 +611,39 @@ async function pick<V>($: EngineInterface, q: Question<V>): Promise<V | undefine
 
 const RULE_IDS = Object.keys(RULE_KEYS) as (keyof Choices)[]
 
+// The directory reads a settings write only with its key as fixed text, so each row has its own call.
+// The return type makes a new row without a case here fail the type check.
+function writeSetting($: EngineInterface, key: SettingKey, value: string): ReturnType<EngineInterface['config']['set']> {
+  switch (key) {
+    case 'floor': return $.config.set({ key: 'rightsize.floor', value })
+    case 'ceiling': return $.config.set({ key: 'rightsize.ceiling', value })
+    case 'lowerRule': return $.config.set({ key: 'rightsize.lowerRule', value })
+    case 'raiseRule': return $.config.set({ key: 'rightsize.raiseRule', value })
+    case 'upRule': return $.config.set({ key: 'rightsize.upRule', value })
+    case 'downRule': return $.config.set({ key: 'rightsize.downRule', value })
+    case 'remember': return $.config.set({ key: 'rightsize.remember', value })
+    case 'handOff': return $.config.set({ key: 'rightsize.handOff', value })
+    case 'lowering': return $.config.set({ key: 'rightsize.lowering', value })
+    case 'useHaiku': return $.config.set({ key: 'rightsize.useHaiku', value })
+    case 'useFable': return $.config.set({ key: 'rightsize.useFable', value })
+    case 'subagents': return $.config.set({ key: 'rightsize.subagents', value })
+    case 'workflows': return $.config.set({ key: 'rightsize.workflows', value })
+    case 'explore': return $.config.set({ key: 'rightsize.explore', value })
+    case 'missPause': return $.config.set({ key: 'rightsize.missPause', value })
+    case 'pacing': return $.config.set({ key: 'rightsize.pacing', value })
+    case 'escalation': return $.config.set({ key: 'rightsize.escalation', value })
+    case 'stuck': return $.config.set({ key: 'rightsize.stuck', value })
+    case 'minWords': return $.config.set({ key: 'rightsize.minWords', value })
+    case 'raterCheck': return $.config.set({ key: 'rightsize.raterCheck', value })
+    case 'startTips': return $.config.set({ key: 'rightsize.startTips', value })
+    case 'idleWarning': return $.config.set({ key: 'rightsize.idleWarning', value })
+    case 'billing': return $.config.set({ key: 'rightsize.billing', value })
+    case 'band': return $.config.set({ key: 'rightsize.band', value })
+    case 'share': return $.config.set({ key: 'rightsize.share', value })
+    case 'priceCheck': return $.config.set({ key: 'rightsize.priceCheck', value })
+  }
+}
+
 /**
  * Writes a setting to its /config row, as the person's: an answer to a question they were asked,
  * or a button they pressed. The row then shows what rightsize follows, and next session counts it as theirs.
@@ -623,7 +656,7 @@ async function putConfig($: EngineInterface, key: SettingKey, value: string) {
   yours = mark(yours, key, !unset)
   if (!unset) await forgetReset($, key)
   applyOption(key)
-  await $.config.set({ key: `rightsize.${key}`, value }).catch(() => undefined)
+  await writeSetting($, key, value).catch(() => undefined)
 }
 
 // The four rule rows follow the rules: a rule not answered shows as "not set".
@@ -1476,7 +1509,7 @@ async function resetSettings($: EngineInterface, keys: readonly SettingKey[], al
     const dflt = SETTINGS[key].default
     const changes = cfg[key] !== dflt
     if (changes) {
-      const r = await $.config.set({ key: `rightsize.${key}`, value: dflt }).catch((err: unknown) => ({ deny: err instanceof Error ? err.message : String(err) }))
+      const r = await writeSetting($, key, dflt).catch((err: unknown) => ({ deny: err instanceof Error ? err.message : String(err) }))
       if (r.deny !== undefined) {
         await log($, `reset ${key}: Claude Code refused to write it: ${r.deny}`)
         blocked.push(key)
@@ -1557,9 +1590,9 @@ const qShare: Question<boolean> = {
   ],
 }
 
-async function setShare($: EngineInterface, on: boolean) {
-  sharing = on
-  if (!on) {
+async function setShare($: EngineInterface, enabled: boolean) {
+  sharing = enabled
+  if (!enabled) {
     // A new yes later starts a new install id.
     await $.store.set('shareInstall', null).catch(() => undefined)
     return

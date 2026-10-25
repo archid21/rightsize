@@ -4,6 +4,16 @@ By [Archi Dubey](https://github.com/archid21), MIT license. Full guide: https://
 
 Before a prompt is sent, rightsize asks Haiku (at low effort) which effort each model would need for it, or whether a model would struggle, and how big the work is. A cost model then prices each model at its own level, counting the work that model does at that level, and picks the cheapest route that fits, which can change the model and the effort together. The mod follows the answers you give the first time each case comes up in a session. Your setting wins: a value you set in `/config`, or answered when asked, is never changed or bypassed by the mod's own behaviour.
 
+## Install
+
+Needs Claude Code 2.1.287 or newer (2.1.286 in the desktop app). Inside a session:
+
+```
+/plugin install rightsize --marketplace archid21/rightsize
+```
+
+Then start a new session and type `/rightsize` to check that it works.
+
 ## The four questions
 
 Each question is asked once, the first time its case comes up:
@@ -89,6 +99,25 @@ Once a week (or a month) at session start, the mod estimates what the last 30 da
 - `/mods` pauses it; `/config` turns off single features.
 - `claude plugin disable rightsize@archid21` stops it loading and keeps its settings and learning; `claude plugin enable rightsize@archid21` brings it back.
 - `claude plugin uninstall rightsize@archid21` removes it and the settings saved in `/config`. Its stored data and logs stay on disk: `rm ~/.claude/plugins/store/rightsize_*.json ~/.claude/mods-logs/rightsize*` deletes them. If sharing was on, copy your install ID from `/rightsize` first and email rightsize@aivalue.blog to have shared data deleted.
+
+## What it touches
+
+rightsize is a mod: it runs inside Claude Code and hooks some of its events. This is everything it does outside the chat.
+
+- **Hooks.**
+  - `prompt.submit`: rates the prompt with Haiku, may change the effort level, and adds the hidden hand-off note. Your text is not changed.
+  - `turn.step`: watches each step to see when Claude is stuck and raises effort under your Raising rule.
+  - `agent.spawn`: may move a general-purpose subagent that names no model to a cheaper model (see **Claude's subagents**).
+  - `tool.call`: asks before the first workflow starts, and denies steps only you can approve (push, publish, release, deploy, send) inside a hand-off subagent. It never approves a call and never changes a permission decision anywhere else.
+  - `config.set`: watches its own `rightsize.*` rows in `/config`, to know which values you set. The write goes through as you made it.
+  - `command.run` (`/rightsize`), `session.start`, `turn.complete` and `ui.render` (the band above the prompt) are for its own command, start-up, measuring and display.
+- **Settings it writes.** Only its own `rightsize.*` rows in `/config`, when you answer one of its questions or run `/rightsize reset`. It never writes the permission mode or any other setting, and it sets no environment variables.
+- **Programs it runs.** Only `mkdir` and `chmod`, with fixed arguments, to create `~/.claude/mods-logs` and make its log files readable by you alone (folder 700, files 600). It downloads and runs nothing.
+- **Files it writes.** The logs listed under [Logs](#logs), its own store in Claude Code's plugin store, and `prices.json` (keeping `prices.json.bak`) in its own folder. Nothing in your project.
+- **What it reads.** Your prompt, the session's usage and rate limits, your `model` and `effortLevel` settings, its own `/config` rows, and two environment variables (`HOME` and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`), to rate and price each turn. It reads no credentials: model calls go through Claude Code with your existing sign-in.
+- **Network.** It contacts two places, plus the Haiku and Sonnet calls Claude Code makes for it:
+  - `platform.claude.com`, Anthropic's pricing page, every 30 days (**Price check**, can be turned off).
+  - `feedback.aivalue.blog`, only when **Share anonymous feedback** is on (off by default). What it sends is listed under that setting. No prompt, code, path or conversation text is ever sent.
 
 ## Limits
 

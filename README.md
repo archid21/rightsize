@@ -8,6 +8,8 @@ Created by [Archi Dubey](https://github.com/archid21). MIT license.
 
 rightsize is a work in progress. It changes how Claude Code spends your tokens, and its choices are estimates. Savings are not guaranteed: some turns can cost more, not less, and a cheaper model can sometimes do weaker work. Use it at your own risk, and check `/rightsize report` to see what it really did for you.
 
+**Give it a few turns to learn.** rightsize starts with general estimates. It needs some turns of your real work before it knows how your prompts, your codebase, and your models behave. Don't expect the first few recommendations to save money, and some may cost a little more. As it compares each estimate with what you actually spent, its calls get better. Judge it after a few sessions, not a few prompts.
+
 Feedback and feature requests are welcome. If you find a bug, a wrong call, or a saving that didn't show up, or you have an idea for a feature, [open an issue](https://github.com/archid21/rightsize/issues). For anything you'd rather not post in public, email [rightsize@aivalue.blog](mailto:rightsize@aivalue.blog). What you report shapes what gets built next.
 
 ## What it does

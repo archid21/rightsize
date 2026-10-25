@@ -1,7 +1,7 @@
 {
   "name": "rightsize",
   "version": "0.7.0",
-  "description": "Right-sizes each Claude Code prompt: rates the effort, model and cost it needs, then lowers or raises effort, or hands the work to a stronger or cheaper subagent, the way you chose the first time each case came up. It scores Haiku's ratings against what happened, with a Sonnet spot-check and your 👍 and 👎, and stops trusting them where they keep missing. A setting you make always wins: rightsize's automatic behaviour never changes or bypasses it",
+  "description": "Stop paying Opus prices for Haiku work. rightsize matches each Claude Code prompt to the right model and effort, so your budget and usage limits go further. It learns from how you work, and you can configure every part of it. You stay in charge: it asks before it acts, shows each change it makes, and `/rightsize report` shows whether it's paying off.",
   "types": "./types/index.d.ts",
   "author": {
     "name": "Archi Dubey",

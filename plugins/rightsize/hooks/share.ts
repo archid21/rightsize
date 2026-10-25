@@ -13,9 +13,9 @@ export const SHARE_EVERY_MS = 60 * 60_000
 /** Rated prompts before the one-time question, so the person has seen what rightsize does. */
 export const SHARE_ASK_AFTER = 20
 
-/** A random install id: 32 hex characters, not derived from anything on the machine. */
-export function newInstall(random: () => number = Math.random) {
-  return Array.from({ length: 32 }, () => Math.floor(random() * 16).toString(16)).join('')
+/** A random install id: 32 hex characters from a secure random source, not derived from anything on the machine. */
+export function newInstall(fill: (bytes: Uint8Array) => Uint8Array = b => crypto.getRandomValues(b)) {
+  return Array.from(fill(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join('')
 }
 
 /** FNV-1a, 64 bits, as 16 hex characters: links a 👍/👎 to its run without sending the run id. */

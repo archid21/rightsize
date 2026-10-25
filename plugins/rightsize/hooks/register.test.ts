@@ -251,7 +251,7 @@ const drive = ($: unknown, h: ReturnType<typeof engine>) => {
     answer: (agentId: string, isAborted = false) => e.turn.complete({ turnId: `${agentId}-turn`, agentId, answer: '', durationMs: 1, isAborted, reason: isAborted ? 'aborted' : 'answer' }),
     agent: (model: string) => e.tool.call({ tool: 'Agent', description: 'x', prompt: 'brief', model }),
     workflow: (id?: string) => e.tool.call({ tool: 'Workflow', script: 'export const meta = {}', ...(id ? { tool_use_id: id } : {}) }),
-    bash: (command: string) => e.tool.call({ tool: 'Bash', command, description: `try ${command} ${h.sent.length}` }),
+    bash: (command: string, agentId?: string) => e.tool.call({ tool: 'Bash', command, description: `try ${command} ${h.sent.length}`, ...(agentId ? { agentId } : {}) }),
     // The engine starting a subagent from the main chat's Agent call; its steps carry `agent-<description>`.
     spawn: (description: string, model?: string, over: Record<string, unknown> = {}) =>
       e.agent.spawn({ prompt: 'brief', description, subagentType: 'general-purpose', provider: { kind: 'core' }, parentModel: h.model, background: false, fork: false, ...(model ? { model } : {}), ...over }),
@@ -478,6 +478,33 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await bandText($, surface)).toContain('kept this in the main chat for steps only you can approve')
     const runs = (h.files['/home/test/.claude/mods-logs/rightsize-runs.jsonl'] ?? '').trim().split('\n').map(l => JSON.parse(l) as { approvalSteps?: number })
     expect(runs.at(-1)?.approvalSteps, 'the refused push does not count').toBe(1)
+  })
+
+  test(`the hand-off's subagent cannot push; other subagents and the main chat can (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    const d = drive($, h)
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+
+    h.rating = '{"fit":{"haiku":"high","sonnet":"high","opus":"high","fable":"medium"},"type":"feature","read":20000,"write":2000,"steps":6,"reason":"small helper with tests"}'
+    h.answers = { Cheaper: 'Send it to a cheaper subagent (Recommended)', Remember: 'Just this session' }
+    await d.submit(DEBUG)
+    h.subModel = 'claude-haiku-5-5'
+    await d.step('t1', 0)
+    await d.agent('claude-haiku-5-5')
+    await d.spawn('helper', 'claude-haiku-5-5')
+    await d.step('t1', 0, 'agent-helper')
+    const blocked = (await d.bash('git -C . push origin main', 'agent-helper')) as { deny?: string }
+    expect(blocked.deny, "the hand-off's subagent is stopped").toContain('main chat does it')
+    const tests = (await d.bash('npm test', 'agent-helper')) as { deny?: string }
+    expect(tests.deny, 'other work goes on').toBeUndefined()
+    const other = (await d.bash('git push origin main', 'agent-explore')) as { deny?: string }
+    expect(other.deny, 'a subagent rightsize did not start is left alone').toBeUndefined()
+    const main = (await d.bash('git push origin main')) as { deny?: string }
+    expect(main.deny, 'the main chat pushes').toBeUndefined()
+    await d.step('t1', 1)
+    await d.complete('t1')
   })
 
   test(`a request that is mainly an approval step is not handed off (${surface})`, { timeoutMs: 30000 }, async ($, on) => {

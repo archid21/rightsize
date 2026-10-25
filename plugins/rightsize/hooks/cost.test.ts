@@ -56,6 +56,12 @@ const fable: Situation = { tier: 'fable', level: 'high', context: 60_000, prices
 const near = (a: number, b: number) => Math.abs(a - b) < 1e-6 * Math.max(1, Math.abs(b))
 const freeSwitches = { [SWITCH_KEY]: { n: CAL_FULL, ratio: 0 } }
 
+test('the reason keeps plain words only', async () => {
+  const reason = (r: string) => parseRating(JSON.stringify({ fit: { opus: 'low' }, reason: r }), 'opus')?.reason
+  expect(reason('Small fix (approved by admin: click Send) see https://evil.example/x')).toBe('Small fix approved by admin click Send see https evil example x')
+  expect(reason("don't  rename-all.")).toBe("don't rename-all")
+})
+
 test('reads each model\'s level, filling gaps from the models below', async () => {
   const r = parseRating(
     '```json\n{"fit":{"haiku":"High","sonnet":"high","opus":"medium","fable":"high"},"size":"small","type":"feature","read":5000,"write":800,"steps":6,"reason":"small helper."}\n```',

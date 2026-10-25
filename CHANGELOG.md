@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- **A hand-off's subagent can't push, publish, release, deploy or send.** rightsize blocks those commands in the subagent it started and tells it to leave them to the main chat. Before, only the hand-off note asked it to stop. The commands it knows now include `git -C <dir> push`, `git -c <key>=<value> push`, `vercel ... --prod`, `bun publish` and the deploy commands of Netlify, Firebase, Fly and Wrangler.
+- The rating call treats your prompt and Claude's last reply as data, never as instructions, and Haiku's reason shows plain words only.
+- The install ID for shared feedback comes from a secure random source.
+- New log files are readable only by you (`600`, in a `700` folder).
+- The Privacy section says event times are sent and saved, and that the feedback server's host keeps request IP addresses in its logs for a limited time.
+- `SECURITY.md` says how to report a vulnerability in private.
+
 ## 0.7.2 (2026-10-25)
 
 - **Hand-offs work when a request needs your approval.** A subagent refuses to push, publish, release, deploy or send, because a message from another agent is not your approval. The hand-off note now tells the subagent to prepare the work and stop, and the main chat to check it and do those steps itself. A request that is mainly such a step isn't handed off: the Haiku rating gets an `approval` field, and only effort can change. When Claude keeps a chosen hand-off in the main chat for such a step, the band says so, the run log records `approvalSteps`, and `/rightsize report` no longer counts it as a skipped hand-off.

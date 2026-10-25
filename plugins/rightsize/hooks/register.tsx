@@ -408,10 +408,15 @@ async function append($: EngineInterface, name: string, line: string, max: numbe
     const dir = `${home}/.claude/mods-logs`
     const path = `${dir}/${name}`
     const old = await readText($, path)
-    if (!old) await $.process.run(['mkdir', '-p', dir])
+    // New folder 700, new file 600; chmod only when the file is new.
+    if (!old) await $.process.run(['mkdir', '-m', '700', '-p', dir])
     let text = `${old}${line}\n`
     if (text.length > max) text = text.slice(text.indexOf('\n', text.length - max) + 1)
     await $.fs.write(path, text)
+    if (!old) {
+      await $.process.run(['chmod', '700', dir])
+      await $.process.run(['chmod', '600', path])
+    }
   } catch {
     // Logging must never hold up a prompt.
   }
@@ -1303,6 +1308,9 @@ async function holdIdle($: EngineInterface): Promise<boolean> {
   return a === true
 }
 
+const APPROVAL_DENY =
+  'rightsize: a hand-off subagent cannot push, publish, release, deploy or send, because a message from the main chat is not the person\'s approval. Stop before this step and report what is ready; the main chat does it.'
+
 // A subagent's step whose id no spawn has answered yet: the engine started it before
 // next(e) settled. Match it to the spawn by what $.agent.list() shows of it.
 async function claim($: EngineInterface, id: string) {
@@ -2083,6 +2091,15 @@ export const register: Register = (on, options) => {
           askingWorkflow = null
         })
         await askingWorkflow
+      }
+    }
+    // The hand-off's subagent never does a step only the person can approve: a message
+    // from the main chat is not their approval. The note asks it to stop; this makes sure.
+    if (e.agentId !== undefined && active?.delegate && isApprovalStep(String(e.tool), e as Record<string, unknown>)) {
+      await claim($, e.agentId)
+      if (active.subAgents.includes(e.agentId)) {
+        await log($, `blocked ${String(e.tool)} in the hand-off's subagent: only the main chat does steps the person approves`)
+        return { deny: APPROVAL_DENY }
       }
     }
     const result = await next(e)

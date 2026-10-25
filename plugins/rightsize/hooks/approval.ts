@@ -3,10 +3,13 @@
 // person's consent, so the main chat does them itself. Pure functions, no engine calls.
 
 const COMMANDS = [
-  /\bgit\s+push\b/,
-  /\bgh\s+(release\s+(create|edit|upload)|pr\s+(create|merge)|repo\s+create)\b/,
-  /\b(npm|pnpm|yarn)\s+publish\b/,
-  /\bvercel\s+(deploy|--prod|promote)\b/,
+  // Options may come before the subcommand: git -C dir push, git -c k=v push.
+  /\bgit\s+(?:-[Cc]\s+\S+\s+|--?[\w-]+(?:=\S+)?\s+)*push\b/,
+  /\bgh\s+(release\s+(create|edit|upload|delete)|pr\s+(create|merge)|repo\s+(create|delete|edit))\b/,
+  /\b(npm|pnpm|yarn|bun)\s+publish\b/,
+  /\bvercel\s+(deploy|promote)\b/,
+  /\bvercel\b.*\s--prod\b/,
+  /\b(netlify|firebase|fly|flyctl|wrangler)\s+(deploy|publish)\b/,
   /\bclaude\s+plugin\s+(publish|tag\b.*--push)\b/,
   /\b(cargo|twine|gem|docker)\s+(publish|upload|push)\b/,
 ]

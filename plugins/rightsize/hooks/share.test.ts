@@ -8,6 +8,7 @@ const at = (m: number) => new Date(Date.parse('2026-10-24T18:00:00.000Z') + m * 
 test('an install id is 32 random hex characters', async () => {
   expect(newInstall()).toMatch(/^[a-f0-9]{32}$/)
   expect(newInstall()).not.toBe(newInstall())
+  expect(newInstall(b => b.fill(0xab)), 'bytes become hex').toBe('ab'.repeat(16))
 })
 
 test('a run id is hashed per install, so a 👍/👎 still finds its run', async () => {

@@ -44,7 +44,8 @@ export const START_QUALITY_UP = 0.15
 export const START_CONTEXT = 50_000
 const DAY = 24 * 60 * 60 * 1000
 export const START_WINDOW_DAYS = 30
-export const START_CHECK_DAYS = 7
+/** Days between start checks, by the Start suggestions setting. */
+export const START_CHECK_DAYS = { weekly: 7, monthly: 30 } as const
 export const START_SNOOZE_DAYS = 14
 
 export const startKey = (s: Start) => `${s.tier}:${s.level}`
@@ -72,6 +73,11 @@ export type StartContext = {
   rules: Rules
   floor: Level
   choices: Choices
+  /** Highest effort, and the models rightsize sends no work to (Use Haiku, Use Fable): the replay follows the same limits as live. */
+  ceiling?: Level
+  without?: readonly Tier[]
+  /** Run log lines before this time (ms) are not looked at: Cost measurement was restarted then. */
+  from?: number
   /** How often the rater's judgement was wrong (misses.ts); read off the log's lines when absent. */
   misses?: Rates
 }
@@ -91,7 +97,7 @@ export type Replay = {
 function once(l: Rated, fit: Fit, start: Start, context: number, c: StartContext) {
   const r = { level: needOn(fit, start.tier), fit, type: l.type, read: l.read, write: l.write, steps: l.steps, reason: '' }
   // ties 1: no exploring, so the replay picks what the guide would.
-  const s = { tier: start.tier, level: start.level, context, prices: c.prices, cal: c.cal, rules: c.rules, ties: 1 }
+  const s = { tier: start.tier, level: start.level, context, prices: c.prices, cal: c.cal, rules: c.rules, ties: 1, ...(c.ceiling ? { ceiling: c.ceiling } : {}), ...(c.without ? { without: c.without } : {}) }
   let p = plan(r, s, c.floor)
   if (p.kind === 'delegate' && c.choices[p.dir] === 'stay') p = effortPlan(r, s, c.floor)
   if (p.kind === 'delegate') return { cost: p.delegateCost, up: p.dir === 'up' ? 1 : 0 }
@@ -131,7 +137,7 @@ export type StartAdvice =
 
 /** The start to suggest from the last 30 days of the run log. */
 export function adviseStart(lines: readonly RunLine[], c: StartContext, now: number): StartAdvice {
-  const windowed = lines.filter(l => now - Date.parse(l.at) <= START_WINDOW_DAYS * DAY)
+  const windowed = lines.filter(l => now - Date.parse(l.at) <= START_WINDOW_DAYS * DAY && Date.parse(l.at) >= (c.from ?? 0))
   const recent = windowed.filter(isRated)
   const current = [...recent].reverse().map(startOf).find(s => s !== undefined)
   if (recent.length < START_MIN_PROMPTS || !current) return { kind: 'wait', prompts: recent.length, need: START_MIN_PROMPTS, ...(current ? { current } : {}) }

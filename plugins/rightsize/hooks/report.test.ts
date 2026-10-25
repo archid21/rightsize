@@ -159,3 +159,44 @@ test("says how often Haiku's judgement was wrong, and which hand-downs are pause
   expect(wentWrong(lines, []).some(w => w.startsWith("Haiku's judgement was wrong on 3 of 6")), 'in the report').toBe(true)
   expect(buildReport(lines, [], { now: NOW, session: 's1', subscription: false })).toContain("- Hand-downs of search work to Haiku")
 })
+
+test('the report names a pause only at the line Pause after misses sets, and not at all when it is off', async () => {
+  const handDown = (rework: boolean) => run({ type: 'search', route: 'delegate:haiku', change: 'delegate-down', agentCalls: rework ? 2 : 1 })
+  // Wrong on 2 of 5 search hand-downs to Haiku: 40%.
+  const lines = [handDown(true), handDown(true), handDown(false), handDown(false), handDown(false)]
+  const paused = (pause?: number | null) => haikuLines(lines, pause).some(l => l.includes('are paused'))
+  expect(paused(), 'the default line, 30%').toBe(true)
+  expect(paused(0.4), 'at the line').toBe(true)
+  expect(paused(0.5), 'under a looser line').toBe(false)
+  expect(paused(0.2)).toBe(true)
+  expect(paused(null), 'off: nothing is paused').toBe(false)
+  expect(haikuLines(lines, null)[0], 'the miss rate is still said').toContain("Haiku's judgement was wrong on 2 of 5")
+  const report = (pause?: number | null) => buildReport(lines, [], { now: NOW, session: 's1', subscription: false, ...(pause === undefined ? {} : { pause }) })
+  expect(report()).toContain('are paused')
+  expect(report(null)).not.toContain('are paused')
+  expect(report(0.5)).not.toContain('are paused')
+})
+
+test("a workflow's moved agents are counted but save nothing", async () => {
+  const sub = (x: Partial<RunLine>): RunLine => ({ at: ago(0), kind: 'subagent', type: 'search', from: 'opus', tier: 'haiku', level: 'low', estimate: 0.01, parentEstimate: 0.1, actual: 0.01, aborted: false, ...x })
+  const own = totals([sub({})])
+  expect([own.subagents, Number(own.saved.toFixed(5))], "Claude's own subagent: the same work on the parent's model, less what it cost").toEqual([1, 0.09])
+  const inWorkflow = totals([sub({ afterWorkflow: true })])
+  expect([inWorkflow.subagents, inWorkflow.saved], 'a workflow agent: counted, no saving').toEqual([1, 0])
+})
+
+test('the report says when cost measurement restarted, and counts a pause only from then on', async () => {
+  const handDown = (rework: boolean, days: number) => run({ at: ago(days), type: 'search', route: 'delegate:haiku', change: 'delegate-down', agentCalls: rework ? 2 : 1 })
+  // Wrong on 3 of 6 hand-downs, all before the restart (a day ago).
+  const lines = [handDown(true, 3), handDown(true, 3), handDown(true, 3), handDown(false, 3), handDown(false, 3), handDown(false, 3)]
+  const from = NOW - 24 * 60 * 60 * 1000
+  expect(haikuLines(lines)[0], 'the history counts all of it').toContain('wrong on 3 of 6')
+  expect(haikuLines(lines).some(l => l.includes('are paused')), 'nothing was restarted: paused').toBe(true)
+  expect(haikuLines(lines, 0.3, from)[0], 'still counted').toContain('wrong on 3 of 6')
+  expect(haikuLines(lines, 0.3, from).some(l => l.includes('are paused')), 'but rightsize ignores it now: nothing paused').toBe(false)
+  const report = buildReport(lines, [], { now: NOW, session: 's1', subscription: false, measureFrom: new Date(from).toISOString() })
+  expect(report).toContain('Cost measurement restarted on 2026-10-22.')
+  expect(report).not.toContain('are paused')
+  expect(report, 'periods still read every line').toContain('Last 30 days: 6 prompts rated')
+  expect(buildReport(lines, [], { now: NOW, session: 's1', subscription: false })).not.toContain('Cost measurement restarted')
+})

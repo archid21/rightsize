@@ -29,7 +29,9 @@ import {
   parseIdleWarning,
   paceOf,
   pacedRules,
+  paceNote,
   sizeSubagent,
+  subagentKeys,
   subWork,
   rawMainCost,
   tierOf,
@@ -287,10 +289,10 @@ test('the main chat learns per model and level: expensive high runs leave the lo
 
 test('reports a hand-off in dollars or as a share of usage', async () => {
   const run = { tier: 'fable' as const, stay: 0.31, delegate: { tier: 'haiku' as const, level: 'low' as const, dir: 'down' as const } }
-  expect(report(run, 0.04, 'api')).toBe('rightsize: Sent to Haiku: $0.04 vs about $0.31 on Fable (estimated), saved about 87%.')
-  expect(report(run, 0.04, 'subscription')).toContain('used about 13% of the usage staying on Fable would')
+  expect(report(run, 0.04, 'api')).toBe('rightsize: Sent to Haiku: $0.04 vs about $0.31 staying on Fable (estimated), saved about 87%.')
+  expect(report(run, 0.04, 'subscription')).toContain('used about 13% of the usage vs staying on Fable')
   const up = { tier: 'opus' as const, stay: 0.3, delegate: { tier: 'fable' as const, level: 'high' as const, dir: 'up' as const } }
-  expect(report(up, 0.81, 'api')).toBe('rightsize: Sent to Fable: $0.81 vs about $0.30 on Opus (estimated), cost about 2.7x staying.')
+  expect(report(up, 0.81, 'api')).toBe('rightsize: Sent to Fable: $0.81 vs about $0.30 staying on Opus (estimated), cost about 2.7x vs staying.')
   expect(money(0.001)).toBe('under $0.01')
   expect(share(1, 0)).toBe('an unknown share of')
 })
@@ -598,4 +600,128 @@ test('effort is not lowered on a model the rater is wrong about for this task ty
   if (p.kind === 'none') expect(p.why).toContain('paused')
   expect(effortPlan(r, { ...s, misses: { 'lookup:haiku': 0.9 } }, 'low').kind, 'another model: not affected').toBe('effort')
   expect(effortPlan(rating({ level: 'xhigh' }), { ...s, misses: { 'other:opus': 0.9 } }, 'low'), 'a raise is never paused').toEqual({ kind: 'effort', dir: 'raise', level: 'xhigh' })
+})
+
+// Settings that limit what rightsize does (Highest effort, Use Haiku and Use Fable, Pause after misses,
+// Explore close calls) ride on the Situation; each changes one decision and leaves the rest alone.
+
+test('Highest effort stops a raise at the ceiling, and never lowers what you are on', async () => {
+  const need = rating({ level: 'xhigh' })
+  expect(effortPlan(need, opus, 'low'), 'no ceiling: raises to what the work needs').toEqual({ kind: 'effort', dir: 'raise', level: 'xhigh' })
+  expect(effortPlan(need, { ...opus, ceiling: 'max' }, 'low')).toEqual({ kind: 'effort', dir: 'raise', level: 'xhigh' })
+  expect(effortPlan(need, { ...opus, ceiling: 'high' }, 'low'), 'capped at high').toEqual({ kind: 'effort', dir: 'raise', level: 'high' })
+  expect(effortPlan(need, { ...opus, ceiling: 'xhigh' }, 'low'), 'the ceiling itself is allowed').toEqual({ kind: 'effort', dir: 'raise', level: 'xhigh' })
+  // On high already, with a ceiling of high: nothing to raise to.
+  expect(effortPlan(need, { ...opus, level: 'high', ceiling: 'high' }, 'low').kind).toBe('none')
+  // A level in use above the ceiling is left alone: the ceiling stops raises, it does not lower.
+  const onMax = { ...opus, level: 'max' as const, ceiling: 'high' as const }
+  expect(effortPlan(rating({ level: 'max' }), onMax, 'low').kind, 'needs max, on max: stays').toBe('none')
+  // Lowering is not a raise: the ceiling does not touch it, whatever level is in use.
+  const lowering = effortPlan(rating({ level: 'low', write: 1500 }), { ...opus, cal: freeSwitches, ceiling: 'high' }, 'low')
+  expect(lowering).toMatchObject({ kind: 'effort', dir: 'lower', level: 'low' })
+  expect(effortPlan(rating({ level: 'low', write: 1500 }), { ...onMax, cal: freeSwitches }, 'low'), 'on max, over the ceiling: lowers as usual').toMatchObject({ kind: 'effort', dir: 'lower', level: 'low' })
+})
+
+test('Highest effort caps the level a hand-off subagent and Claude\'s own subagents run at', async () => {
+  // Haiku needs max for this: a hand-down from Fable still pays, and the level is the ceiling at most.
+  const r = rating({ level: 'max', fit: { haiku: 'max', sonnet: null, opus: null, fable: 'low' }, type: 'search', read: 150_000, write: 3000, steps: 30 })
+  const open = plan(r, fable, 'low')
+  expect(open.kind === 'delegate' && [open.tier, open.level], 'no ceiling').toEqual(['haiku', 'max'])
+  const capped = plan(r, { ...fable, ceiling: 'xhigh' }, 'low')
+  expect(capped.kind === 'delegate' && [capped.tier, capped.level], 'the same hand-down, at xhigh').toEqual(['haiku', 'xhigh'])
+  expect(capped.kind === 'delegate' && capped.delegateCost, 'priced at the level it runs at').toBe(delegateCost(r, fable, 'haiku', 'xhigh'))
+  const listing = rating({ type: 'search', fit: { haiku: 'max', sonnet: 'max', opus: 'low', fable: 'low' }, read: 8000, write: 500, steps: 5 })
+  expect(sizeSubagent(listing, opus, 'opus', 'low')?.level, 'no ceiling').toBe('max')
+  expect(sizeSubagent(listing, { ...opus, ceiling: 'high' }, 'opus', 'low')?.level, 'capped').toBe('high')
+})
+
+test('Use Haiku and Use Fable off: no hand-off or resized subagent goes to that model', async () => {
+  const r = rating({ level: 'low', fit: { haiku: 'low', sonnet: 'low', fable: 'low' }, type: 'search', read: 150_000, write: 3000, steps: 30 })
+  expect(plan(r, fable, 'low').kind === 'delegate' && (plan(r, fable, 'low') as { tier: string }).tier, 'Haiku is the cheapest fit').toBe('haiku')
+  const noHaiku = plan(r, { ...fable, without: ['haiku'] }, 'low')
+  expect(noHaiku.kind === 'delegate' && noHaiku.tier, 'the next cheapest fit').toBe('sonnet')
+  expect(plan(r, { ...fable, without: ['haiku', 'sonnet'] }, 'low').kind, 'nothing cheaper may be used').not.toBe('delegate')
+  // Going up: Fable is excluded, so the stronger model is Opus.
+  const hard = rating({ level: 'high', fit: { sonnet: null, opus: 'high', fable: 'medium' }, type: 'debug', read: 30_000, write: 4000, steps: 12 })
+  const s = { ...opus, tier: 'sonnet' as const, level: 'high' as const }
+  const up = plan(hard, { ...s, without: ['opus'] }, 'low')
+  expect(up.kind === 'delegate' && [up.dir, up.tier], 'Opus excluded in this check: Fable').toEqual(['up', 'fable'])
+  const noFable = plan(hard, { ...s, without: ['fable'] }, 'low')
+  expect(noFable.kind === 'delegate' && [noFable.dir, noFable.tier]).toEqual(['up', 'opus'])
+  const none = plan(hard, { ...s, without: ['opus', 'fable'] }, 'low')
+  expect(none.kind, 'no stronger model allowed: no hand-up').not.toBe('delegate')
+  // Claude's own subagents.
+  const listing = rating({ type: 'search', fit: { haiku: 'low', sonnet: 'low', opus: 'low', fable: 'low' }, read: 8000, write: 500, steps: 5 })
+  expect(sizeSubagent(listing, opus, 'opus', 'low')?.tier).toBe('haiku')
+  expect(sizeSubagent(listing, { ...opus, without: ['haiku'] }, 'opus', 'low')?.tier, 'Sonnet instead').toBe('sonnet')
+  expect(sizeSubagent(listing, { ...opus, without: ['haiku', 'sonnet'] }, 'opus', 'low'), 'none left').toBeUndefined()
+  // An empty list changes nothing.
+  expect(plan(r, { ...fable, without: [] }, 'low')).toEqual(plan(r, fable, 'low'))
+})
+
+test('Pause after misses: the share sets the line, and off never pauses', async () => {
+  const r = rating({ level: 'low', fit: { haiku: 'low', sonnet: 'low', fable: 'low' }, type: 'search', read: 150_000, write: 3000, steps: 30 })
+  const wrong = { 'search:haiku': 0.25 }
+  const tier = (s: Situation) => {
+    const p = plan(r, s, 'low')
+    return p.kind === 'delegate' ? p.tier : p.kind
+  }
+  expect(tier({ ...fable, misses: wrong }), 'the default line is 30%').toBe('haiku')
+  expect(tier({ ...fable, misses: wrong, missBlock: 0.2 }), 'a stricter line pauses it').toBe('sonnet')
+  expect(tier({ ...fable, misses: wrong, missBlock: 0.25 }), 'at the line').toBe('sonnet')
+  expect(tier({ ...fable, misses: { 'search:haiku': 0.9 }, missBlock: 0.5 })).toBe('sonnet')
+  expect(tier({ ...fable, misses: { 'search:haiku': 0.9 }, missBlock: null }), 'off: even 90% wrong does not pause').toBe('haiku')
+  expect(tier({ ...fable, misses: { 'search:haiku': 0.45 }, missBlock: 0.5 }), 'under a looser line').toBe('haiku')
+  const lower = rating({ level: 'low', type: 'lookup', write: 1500 })
+  const s = { ...opus, cal: freeSwitches, misses: { 'lookup:opus': 0.4 } }
+  expect(effortPlan(lower, s, 'low').kind, 'default line: paused').toBe('none')
+  expect(effortPlan(lower, { ...s, missBlock: 0.5 }, 'low').kind, 'a looser line').toBe('effort')
+  expect(effortPlan(lower, { ...s, missBlock: null }, 'low').kind, 'off').toBe('effort')
+  expect(effortPlan(lower, { ...s, missBlock: 0.2 }, 'low').kind, 'a stricter line').toBe('none')
+})
+
+test('Explore close calls off: a close call always takes the guide\'s pick', async () => {
+  const s = opusAt(0.9)
+  const exploring = plan(tieRating, { ...s, ties: 4 }, 'low')
+  expect(exploring.kind === 'delegate' && exploring.tie).toEqual({ by: 'explore', over: 'sonnet' })
+  for (const ties of [0, 4, 9]) {
+    const p = plan(tieRating, { ...s, ties, explore: false }, 'low')
+    expect(p.kind === 'delegate' && [p.tier, p.tie], `close call ${ties + 1}`).toEqual(['sonnet', { by: 'guide', over: 'opus' }])
+  }
+  expect(plan(tieRating, { ...s, ties: 4, explore: true }, 'low'), 'on is the same as absent').toEqual(exploring)
+  // Claude's own subagents follow the same switch.
+  const sub: Situation = { ...fable, tier: 'fable' }
+  const raw = (t: 'sonnet' | 'opus') => subWork(tieRating, sub, t, 'medium')
+  const cal = pinned({}, subagentKeys('feature', 'opus', 'medium'), raw('opus'), raw('sonnet') * 0.9, CAL_FULL)
+  expect(sizeSubagent(tieRating, { ...sub, cal, ties: 4 }, 'fable', 'low')?.tie?.by).toBe('explore')
+  expect(sizeSubagent(tieRating, { ...sub, cal, ties: 4, explore: false }, 'fable', 'low')?.tie?.by).toBe('guide')
+})
+
+test('pacing moves only a threshold left at its default', async () => {
+  const at = (mode: 'hot' | 'cool' | 'max', set: { handOff?: boolean; lower?: boolean }) => {
+    const r = pacedRules(DEFAULT_RULES, { mode }, set)
+    return [Math.round(r.handOff * 100), Math.round(r.lower * 100)]
+  }
+  // Each row: nothing set, the hand-off threshold set, the lowering threshold set, both set.
+  expect([at('hot', {}), at('hot', { handOff: true }), at('hot', { lower: true }), at('hot', { handOff: true, lower: true })]).toEqual([[85, 97], [70, 97], [85, 90], [70, 90]])
+  expect([at('cool', {}), at('cool', { handOff: true }), at('cool', { lower: true }), at('cool', { handOff: true, lower: true })]).toEqual([[50, 80], [70, 80], [50, 90], [70, 90]])
+  expect([at('max', {}), at('max', { handOff: true }), at('max', { lower: true }), at('max', { handOff: true, lower: true })]).toEqual([[95, 100], [70, 100], [95, 90], [70, 90]])
+  // A threshold you set below what the pace would move it to stays where you put it, at any pace.
+  const mine = { handOff: 0.5, lower: 0.7 }
+  for (const mode of ['normal', 'hot', 'cool', 'max'] as const) expect(pacedRules(mine, { mode }, { handOff: true, lower: true }), mode).toEqual(mine)
+  // No set given: as before.
+  expect(pacedRules(DEFAULT_RULES, { mode: 'hot' })).toEqual(pacedRules(DEFAULT_RULES, { mode: 'hot' }, {}))
+})
+
+test('the pace note says what pacing did: nothing to say when it moved nothing, except that a window is nearly used up', async () => {
+  const hot = { mode: 'hot' as const, window: 'five_hour' as const, pace: 1.5 }
+  const cool = { mode: 'cool' as const, window: 'seven_day' as const, pace: 0.3 }
+  const max = { mode: 'max' as const, window: 'five_hour' as const, used: 93 }
+  expect(paceNote(hot)).toBe('The 5-hour window is on pace to run out before it resets, so rightsize saves harder.')
+  expect(paceNote(cool)).toBe('Much of the 7-day window will go unused, so rightsize puts quality first.')
+  expect(paceNote(max)).toBe('93% of the 5-hour window is used, so rightsize saves all it can.')
+  expect(paceNote(hot, false), 'nothing moved').toBe('')
+  expect(paceNote(cool, false), 'nothing moved').toBe('')
+  expect(paceNote(max, false), 'only reported').toBe('93% of the 5-hour window is used.')
+  expect(paceNote({ mode: 'normal' }, true)).toBe('')
 })

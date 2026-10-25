@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import { DEFAULT_PRICES, DEFAULT_RULES, money } from './cost'
 import type { RunLine } from './report'
-import { START_MIN_PROMPTS, adviseStart, replay, startLines, startOf, startTip } from './start'
+import { START_CHECK_DAYS, START_MIN_PROMPTS, adviseStart, replay, startLines, startOf, startTip } from './start'
 
 const NOW = Date.parse('2026-10-23T18:00:00.000Z')
 const at = (i: number) => new Date(NOW - (100 - i) * 60_000).toISOString()
@@ -105,4 +105,38 @@ test("the advice reads the rater's record off the log: a Sonnet start is no long
   expect(a.kind === 'switch' ? a.to.tier : 'opus', 'Sonnet wrong on every check: too many hand-ups').not.toBe('sonnet')
   expect(a.kind === 'switch' ? a.replays[0]?.prompts : 60, 'check lines are not prompts').toBe(60)
   expect(adviseStart([...lines, ...checks], { ...C, misses: {} }, NOW), 'a given record replaces the log\'s').toMatchObject({ kind: 'switch', to: { tier: 'sonnet' } })
+})
+
+test('suggestions come every 7 days, or every 30 on monthly', async () => {
+  expect(START_CHECK_DAYS).toEqual({ weekly: 7, monthly: 30 })
+})
+
+test('the replay follows Use Haiku, Use Fable and Highest effort: the limits rightsize works under live', async () => {
+  // Haiku can do the work at low: a Sonnet start hands it down to Haiku unless Haiku is out.
+  const cheap: Fit = { haiku: 'low', sonnet: 'low', opus: 'low', fable: 'low' }
+  const lines = many(20, cheap, { type: 'search', read: 150_000, write: 3000, steps: 30 })
+  const start = { tier: 'opus' as const, level: 'medium' as const }
+  const open = replay(lines, start, C)
+  const noHaiku = replay(lines, start, { ...C, without: ['haiku'] })
+  expect(noHaiku.cost, 'Sonnet instead of Haiku costs more').toBeGreaterThan(open.cost)
+  expect(replay(lines, start, { ...C, without: [] }).cost, 'an empty list changes nothing').toBe(open.cost)
+  // The work needs xhigh on Opus at medium: raised, or capped by the ceiling.
+  const deep: Fit = { haiku: null, sonnet: null, opus: 'xhigh', fable: 'xhigh' }
+  const rich = many(20, deep, { read: 8000, write: 2000, steps: 8 })
+  const free = { ...C, cal: { 'cache:effort-switch': { n: 20, ratio: 0 } } }
+  const raised = replay(rich, start, free)
+  const capped = replay(rich, start, { ...free, ceiling: 'high' })
+  expect(capped.cost, 'a lower ceiling costs less: it raises less').toBeLessThan(raised.cost)
+})
+
+test('the advice ignores prompts from before Cost measurement restarted', async () => {
+  const lines = many(60, easy)
+  expect(adviseStart(lines, C, NOW).kind, 'all of them count').toBe('switch')
+  const from = NOW - 30 * 60_000
+  // The lines are a minute apart, the newest 41 minutes before NOW: all older than `from`.
+  const after = adviseStart(lines, { ...C, from }, NOW)
+  expect(after.kind).toBe('wait')
+  if (after.kind === 'wait') expect(after.prompts, 'only the lines since then').toBe(0)
+  expect(adviseStart(lines, { ...C, from: NOW + 1 }, NOW), 'nothing since').toMatchObject({ kind: 'wait', prompts: 0 })
+  expect(adviseStart(lines, { ...C, from: 0 }, NOW).kind, 'never restarted').toBe('switch')
 })

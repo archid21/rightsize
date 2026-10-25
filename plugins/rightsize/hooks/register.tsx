@@ -26,6 +26,7 @@ import {
   cacheTtlMs,
   contextOf,
   idleCost,
+  MISS_BLOCK,
   parseIdleWarning,
   delegateCost,
   delegateKeys,
@@ -59,8 +60,32 @@ import { PRICING_URL, applyPrices, diffPrices, isDue, parsePricingPage } from '.
 import { missMap, missRates } from './misses'
 import { SHARE_ASK_AFTER, SHARE_EVERY_MS, SHARE_URL, newInstall, nextBatch } from './share'
 import { START_CHECK_DAYS, START_SNOOZE_DAYS, adviseFromLog, startKey, startLines, startTip } from './start'
+import {
+  KEYS,
+  NOT_SET,
+  RULE_KEYS,
+  SETTINGS,
+  type SettingKey,
+  type Values,
+  afterSet,
+  defaults,
+  fieldsSet,
+  inOptions,
+  manifestGaps,
+  mark,
+  minWordsOf,
+  missPauseOf,
+  raterEvery,
+  resetKeys,
+  ruleLabel,
+  ruleValue,
+  rulesOf,
+  settingNamed,
+  stillReset,
+  valuesOf,
+} from './settings'
 import { parseRating, ratingPrompt, ratingSystem } from './rate'
-import { type Signals, type Struggle, callKey, noSignals, noteCall, oneUp, struggle } from './struggle'
+import { LIMITS, type Limits, type Signals, type Struggle, callKey, isSensitivity, noSignals, noteCall, oneUp, struggle } from './struggle'
 import { type Change, type RunLine, type SwitchLine, type Windows, buildReport, parseLines, windowRates } from './report'
 
 // Before a prompt is sent, a quick Haiku call rates the effort, the model and
@@ -79,11 +104,12 @@ import { type Change, type RunLine, type SwitchLine, type Windows, buildReport, 
 // level for the rest of the turn (tool.call, turn.step). Billing (API or subscription) is read off the rate limits each
 // response carries; the person is asked only when they say nothing. A band
 // above the prompt shows what it did, with buttons to undo it or change the rule.
+// Your setting wins: every row in /config is a setting (settings.ts), and a value the
+// person set, or answered, is never changed or bypassed by what rightsize does by itself.
 
 const NAME = 'rightsize'
 const CMD = 'rightsize'
 const RATER = 'haiku'
-const MIN_WORDS = 6
 const BRAIN_DUMP_WORDS = 120
 /** An auto-lowered turn steps back up from this step on. */
 const STEP_UP_AFTER = 5
@@ -91,8 +117,6 @@ const STEP_UP_AFTER = 5
 const DEFAULT_CONTEXT = 20_000
 /** About 30 days of heavy use, for /rightsize report. */
 const RUNS_LOG_MAX = 1_000_000
-/** Every this many rated prompts, Sonnet checks Haiku's rating. */
-const SPOT_CHECK_EVERY = 50
 const SPOT_CHECKER = 'sonnet'
 const MISS_WINDOW_DAYS = 30
 
@@ -102,7 +126,7 @@ type Route = NonNullable<Choices['up']>
 type Billing = 'api' | 'subscription'
 type Resized = { from: Tier; tier: Tier; level: Level; type: Rating['type']; tie?: Tie }
 /** A moved subagent: its estimates on the model it runs on and on its parent's, and what its own requests cost so far. */
-type Measured = Resized & { raw: number; parentRaw: number; spend: number }
+type Measured = Resized & { raw: number; parentRaw: number; spend: number; inWorkflow?: boolean }
 /** A spawn the engine is starting: its first step can come before its id does. */
 type Spawning = { description: string; type: string; run?: Run; size?: Omit<Measured, 'spend'>; id?: string }
 type SubagentMode = 'cheaper when it fits' | 'off'
@@ -161,6 +185,17 @@ const qBand: Question<BandMode> = {
     ['Only when it changes something (Recommended)', 'when it acts'],
     ['On every rated prompt', 'always'],
     ['Never (status line only)', 'off'],
+  ],
+}
+type WorkflowMode = 'pause rightsize' | 'follow my rules' | 'right-size every agent'
+const qWorkflow: Question<WorkflowMode> = {
+  header: 'Workflow',
+  question:
+    'Claude is starting a workflow. It may start many helper agents at once, often 10 or more, and each picks its own model. What should rightsize do during workflows? You can change this any time with Workflows in /config.',
+  options: [
+    ['Pause rightsize for workflows (recommended)', 'pause rightsize'],
+    ['Follow my rules for the main chat', 'follow my rules'],
+    ['Also right-size every workflow agent (one Haiku rating per agent; many may run on cheaper models at once)', 'right-size every agent'],
   ],
 }
 const qRemember: Question<boolean> = {
@@ -250,7 +285,9 @@ let billing: Billing = 'api'
  */
 let billingBy: 'detected' | 'answered' | 'saved' | null = null
 let billingAsked = false
-let priceCheck: 'monthly' | 'check now' | 'off' = 'monthly'
+/** What this session's rate limits showed, even when Reports is yours and they change nothing. */
+let detectedBilling: Billing | undefined
+let priceCheck: 'monthly' | 'off' = 'monthly'
 let bandMode: BandMode = 'when it acts'
 let rules: Rules = DEFAULT_RULES
 let checking: Promise<string> | null = null
@@ -264,22 +301,52 @@ let lastAuto: { text: string; level: Level; normal: Level } | null = null
 let skipOnce: string | null = null
 /**
  * A workflow ran in this session (ultracode, or asked for). Claude is then fanning
- * work out itself, so rightsize hands nothing off until the session ends. A workflow
- * runs on in the background, so its agents' cost lands in later turns too: from
- * here on no turn teaches calibration or claims a saving.
+ * work out itself. What rightsize does about it is the Workflows setting: by default it
+ * hands nothing off until the session ends. A workflow runs on in the background, so its
+ * agents' cost lands in later turns too: from here on no turn teaches calibration or
+ * claims a saving, whatever the setting says.
  */
 let workflowSeen = false
+/** Workflows: `ask` counts as `pause rightsize` until the person answers. */
+let workflows: 'ask' | 'pause rightsize' | 'follow my rules' | 'right-size every agent' = 'ask'
+/** Workflow calls already asked about, by tool_use_id: a call is asked about once, even if its hook runs again. */
+const askedWorkflows = new Set<string>()
+let askingWorkflow: Promise<void> | null = null
 let subagentMode: SubagentMode = 'cheaper when it fits'
 /** Budget pacing: move the thresholds by how fast the usage windows are being used. */
 let pacing = true
+/** Every row's value as /config holds it now: the value set, else the default. The variables above and below follow it. */
+let cfg: Values = defaults()
+/** The rows you set (see settings.ts): rightsize's own behaviour never changes or bypasses these. */
+let yours: ReadonlySet<SettingKey> = new Set()
+/** Rows reset to their default: Claude Code cannot unset a stored value, so they stay off `yours` while it is the default. */
+let resetFields: ReadonlySet<SettingKey> = new Set()
+/** When Cost measurement was restarted (ms; 0: never). The run log before it teaches rightsize nothing. */
+let measureFrom = 0
+/** The options Claude Code passed at load, to check plugin.json against the table. */
+let declared: Readonly<Record<string, unknown>> = {}
+/** The highest effort rightsize raises to. */
+let ceiling: Level = 'max'
+/** Models rightsize sends no work to (Use Haiku, Use Fable off). The rater still runs on Haiku. */
+let without: Tier[] = []
+/** The miss rate at which hand-downs and lowering pause; null: never. */
+let missBlock: number | null = MISS_BLOCK
+/** Prompts shorter than this many words are not rated. */
+let minWords = 6
+/** One close call in five takes the route the guide did not pick. */
+let explore = true
+/** What happens to the answers to the four questions: ask whether to keep them, keep them, or forget them at the end of the session. */
+let rememberMode: 'ask' | 'every session' | 'this session' = 'ask'
+/** How soon Claude counts as stuck. */
+let limits: Limits = LIMITS.normal
 /** The pace the prompt being rated was decided at. */
 let paceNow: Pace = NORMAL_PACE
 /** Raise effort mid-turn when the turn shows it is struggling. */
 let escalation = true
-/** Suggest a different starting model and level, at most once a week. */
-let startTips = true
-/** Ask Sonnet for a second opinion on every 50th rating, in the background. */
-let raterCheck = true
+/** Days between suggestions of a different starting model and level; null: off. */
+let startEvery: number | null = START_CHECK_DAYS.weekly
+/** Ask Sonnet for a second opinion on every this many ratings, in the background; null: off. */
+let spotEvery: number | null = 50
 /** Send anonymous numbers to the rightsize author: off until the person says yes. */
 let sharing = false
 /** When this process last sent, or tried to: at most one send an hour. */
@@ -354,7 +421,8 @@ async function refreshMisses($: EngineInterface) {
   try {
     const now = await $.clock.now()
     runLog = runLog.filter(l => now - Date.parse(l.at) <= MISS_WINDOW_DAYS * 24 * 60 * 60_000)
-    misses = missMap(missRates(runLog))
+    // Lines from before Cost measurement was restarted teach nothing.
+    misses = missMap(missRates(runLog.filter(l => Date.parse(l.at) >= measureFrom)))
   } catch {
     // The old rates stand.
   }
@@ -437,7 +505,10 @@ async function choices($: EngineInterface): Promise<Choices> {
   return v && typeof v === 'object' ? v : {}
 }
 
+// Whether the answers to the four questions are kept for later sessions: always or never
+// when Remember choices says so; otherwise once the person has said yes to the question.
 async function remembers($: EngineInterface) {
+  if (rememberMode !== 'ask') return rememberMode === 'every session'
   return (await $.store.get('remember').catch(() => undefined)) === true
 }
 
@@ -493,17 +564,29 @@ async function saveBilling($: EngineInterface, v: Billing, by: 'detected' | 'ans
   await $.store.set('billing', { value: v, by }).catch(() => undefined)
 }
 
-// Reads the billing off the last response's rate limits. When they say nothing
-// after a response, it keeps the person's earlier answer, or (`mayAsk`) asks once a session.
+/** Reports is yours: set in /config, or answered. Rate limits never change it. */
+const billingYours = () => yours.has('billing') || billingBy === 'answered'
+
+/** The person's answer to the billing question: it is Reports in /config too. */
+async function answerBilling($: EngineInterface, v: Billing) {
+  await saveBilling($, v, 'answered')
+  await putConfig($, 'billing', v)
+}
+
+// Reads the billing off the last response's rate limits, unless Reports is yours: then
+// they change nothing (/rightsize notes when they disagree). When they say nothing after
+// a response, it keeps the earlier reading, or (`mayAsk`) asks once a session.
 async function knowBilling($: EngineInterface, mayAsk: boolean) {
-  if (billingBy === 'detected') return
+  if (billingBy === 'detected' || (billingYours() && detectedBilling)) return
   const u = await usageNow($)
   const seen = billingOf(u?.rateLimits ?? [])
+  if (seen) detectedBilling = seen
+  if (billingYours()) return
   if (seen) return saveBilling($, seen, 'detected')
-  if (!mayAsk || billingAsked || billingBy === 'answered' || lastContext === 0) return
+  if (!mayAsk || billingAsked || lastContext === 0) return
   billingAsked = true
   const v = await pick($, qBilling)
-  if (v !== undefined) await saveBilling($, v, 'answered')
+  if (v !== undefined) await answerBilling($, v)
 }
 
 // ---- Questions -------------------------------------------------------------
@@ -518,10 +601,54 @@ async function pick<V>($: EngineInterface, q: Question<V>): Promise<V | undefine
   }
 }
 
-async function saveChoices($: EngineInterface, next: Choices) {
+const RULE_IDS = Object.keys(RULE_KEYS) as (keyof Choices)[]
+
+/**
+ * Writes a setting to its /config row, as the person's: an answer to a question they were asked,
+ * or a button they pressed. The row then shows what rightsize follows, and next session counts it as theirs.
+ * rightsize's own hooks do not see its own `$.config.set`, so the value is applied here.
+ */
+async function putConfig($: EngineInterface, key: SettingKey, value: string) {
+  const unset = value === NOT_SET
+  if (cfg[key] === value && yours.has(key) === !unset) return
+  cfg = { ...cfg, [key]: value }
+  yours = mark(yours, key, !unset)
+  if (!unset) await forgetReset($, key)
+  applyOption(key)
+  await $.config.set({ key: `rightsize.${key}`, value }).catch(() => undefined)
+}
+
+// The four rule rows follow the rules: a rule not answered shows as "not set".
+async function mirrorRules($: EngineInterface, c: Choices) {
+  for (const rule of RULE_IDS) await putConfig($, RULE_KEYS[rule], ruleLabel(rule, c[rule]))
+}
+
+// Keeps the answers for later sessions: in the store, and in the /config rows.
+async function keepChoices($: EngineInterface, next: Choices) {
+  await $.store.set('choices', next).catch(() => undefined)
+  await mirrorRules($, next)
+}
+
+// `explicit`: the person set these rules on purpose (a band button, /rightsize settings), so the
+// rows show them at once; an answer to a question is kept only the way Remember choices says.
+// A Workflow call the person has not been asked about yet: asked before it starts, once per call. The answer is
+// Workflows in /config, and the person's. Closed without an answer: paused for this workflow, asked at the next.
+async function askWorkflow($: EngineInterface, id: string | undefined) {
+  if (id !== undefined) {
+    if (askedWorkflows.has(id)) return
+    askedWorkflows.add(id)
+  }
+  const v = await pick($, qWorkflow)
+  await log($, `workflow question: ${v ?? 'dismissed'}`)
+  if (v !== undefined) await putConfig($, 'workflows', v)
+}
+
+async function saveChoices($: EngineInterface, next: Choices, explicit = false) {
   await $.state.set({ plugin: 'rightsize', key: 'choices' }, next)
+  if (rememberMode === 'this session') return
+  if (explicit) await mirrorRules($, next)
   if (await remembers($)) {
-    await $.store.set('choices', next).catch(() => undefined)
+    await keepChoices($, next)
     return
   }
   const asked = (await $.state.get({ plugin: 'rightsize', key: 'rememberAsked' }).catch(() => undefined))?.value
@@ -530,14 +657,30 @@ async function saveChoices($: EngineInterface, next: Choices) {
   const yes = await pick($, qRemember)
   if (yes === true) {
     await $.store.set('remember', true).catch(() => undefined)
-    await $.store.set('choices', next).catch(() => undefined)
+    await keepChoices($, next)
+    await putConfig($, 'remember', 'every session')
   } else if (yes === undefined) {
     // Dismissed: ask again after the next answer.
     await $.state.set({ plugin: 'rightsize', key: 'rememberAsked' }, false)
   }
 }
 
-// The saved answer for one situation, or the question, the first time it comes up.
+// A rule row changed in /config: the rule follows it at once. "not set" clears the rule, so its question comes back.
+async function followRuleRow($: EngineInterface, rule: keyof Choices, label: string) {
+  const value = ruleValue(rule, label)
+  const change = (c: Choices): Choices => {
+    const next: Record<string, string> = { ...c }
+    if (value === undefined) delete next[rule]
+    else next[rule] = value
+    return next as Choices
+  }
+  await $.state.set({ plugin: 'rightsize', key: 'choices' }, change(await choices($)))
+  // An earlier session's saved copy stays in step: left alone, it would bring a cleared rule back.
+  const saved = await $.store.get('choices').catch(() => undefined)
+  if (saved && typeof saved === 'object' && !Array.isArray(saved)) await $.store.set('choices', change(saved as Choices)).catch(() => undefined)
+}
+
+// The answer for one situation: a rule you set, or the saved answer, or the question, the first time it comes up.
 async function choice<K extends keyof Choices>($: EngineInterface, key: K, q: Question<NonNullable<Choices[K]>>) {
   const have = (await choices($))[key]
   if (have) return have
@@ -558,7 +701,7 @@ async function situation($: EngineInterface): Promise<Situation> {
     level = isLevel(set) ? set : DEFAULT_LEVEL[tier]
   }
   const context = (await $.state.get({ plugin: 'rightsize', key: 'context' }).catch(() => undefined))?.value
-  return { tier, level, context: typeof context === 'number' && context > 0 ? context : DEFAULT_CONTEXT, prices, cal, rules, ties: await tiesSeen($), misses }
+  return { tier, level, context: typeof context === 'number' && context > 0 ? context : DEFAULT_CONTEXT, prices, cal, rules, ties: await tiesSeen($), misses, missBlock, ceiling, without, explore }
 }
 
 // Close calls seen so far, kept in the store so the one-in-five exploration holds across sessions.
@@ -594,19 +737,19 @@ async function rate($: EngineInterface, text: string, s: Situation): Promise<{ r
 
 // ---- Rater check -------------------------------------------------------------
 
-// Every 50th rating, Sonnet rates the same prompt in the background. Where it says a
+// Every 50th rating (Rater check sets it), Sonnet rates the same prompt in the background. Where it says a
 // model would struggle that Haiku said does the work, Haiku missed (misses.ts). The
 // check never holds up the prompt, and its cost is logged as overhead.
 
 const SPOT_STORE = 'spotChecks'
 
-/** Counts one rating; true when it is the 50th, 100th and so on. Off: not counted. */
+/** Counts one rating; true when it is every Rater check'th one (50th, 100th and so on by default). Off: not counted. */
 async function dueCheck($: EngineInterface) {
-  if (!raterCheck) return false
+  if (spotEvery === null) return false
   const v = await $.store.get(SPOT_STORE).catch(() => undefined)
   const n = (typeof v === 'number' && Number.isInteger(v) && v > 0 ? v : 0) + 1
   await $.store.set(SPOT_STORE, n).catch(() => undefined)
-  return n % SPOT_CHECK_EVERY === 0
+  return n % spotEvery === 0
 }
 
 async function spotCheck($: EngineInterface, session: string, tier: Tier, level: Level, prompt: string, first: Rating) {
@@ -660,10 +803,12 @@ async function askRater($: EngineInterface, tier: Tier, level: Level, prompt: st
 
 // A general-purpose subagent the main chat starts with no model named runs on the
 // main chat's model. Other types may set their own model, which a spawn does not show,
-// so they are left as they are; so are forks, workflow agents, resumes and teammates.
+// so they are left as they are; so are forks, resumes and teammates, and workflow agents
+// unless Workflows says to right-size every agent.
 async function sizeSpawn($: EngineInterface, e: AgentSpawnInput, run: Run | null) {
   if (off || subagentMode === 'off') return undefined
-  if (e.parentAgentId !== undefined || e.fork || e.isTeammate || e.workflow || e.resume) return undefined
+  if (e.parentAgentId !== undefined || e.fork || e.isTeammate || e.resume) return undefined
+  if (e.workflow && workflows !== 'right-size every agent') return undefined
   if (e.subagentType !== 'general-purpose' || (e.model !== undefined && e.model !== 'inherit')) return undefined
   const s = await situation($)
   const parent = tierOf(e.parentModel) ?? s.tier
@@ -676,23 +821,23 @@ async function sizeSpawn($: EngineInterface, e: AgentSpawnInput, run: Run | null
   const fit = TIERS.map(t => `${t[0]}:${r.fit[t] ?? (r.fit[t] === null ? 'no' : '?')}`).join(' ')
   await log($, `subagent "${e.description}" on ${parent}: rated ${fit}, ${size ? `sent to ${size.tier}/${size.level}${size.tie ? `, tie ${size.tie.by} over ${size.tie.over}` : ''}` : 'kept'}`)
   return size
-    ? { from: parent, tier: size.tier, level: size.level, type: r.type, raw: size.raw, parentRaw: size.parentRaw, ...(size.tie ? { tie: size.tie } : {}) }
+    ? { from: parent, tier: size.tier, level: size.level, type: r.type, raw: size.raw, parentRaw: size.parentRaw, ...(size.tie ? { tie: size.tie } : {}), ...(e.workflow ? { inWorkflow: true } : {}) }
     : undefined
 }
 
 const costLine = (d: number, stay: number, cur: string) =>
   billing === 'api'
-    ? `About ${money(d)} that way vs ${money(stay)} on ${cur} (estimated).`
-    : `That uses ${share(d, stay)} the usage of staying on ${cur} (estimated).`
+    ? `About ${money(d)} that way vs ${money(stay)} staying on ${cur} (estimated).`
+    : `That uses ${share(d, stay)} the usage vs staying on ${cur} (estimated).`
 
 type Decision = { level?: Level; session?: Level; auto?: boolean; delegate?: Run['delegate'] }
 
 async function resolveEffort($: EngineInterface, p: Plan, r: Rating, s: Situation): Promise<Decision> {
   if (p.kind !== 'effort') return {}
+  // A window nearly used up skips a raise, unless Raising is yours: then it follows your rule.
+  if (p.dir === 'raise' && paceNow.mode === 'max' && (await choices($)).raise === undefined) return {}
   const c = p.dir === 'lower' ? await choice($, 'lower', qLower) : await choice($, 'raise', qRaise)
   if (c === 'auto') return { level: p.level, auto: p.dir === 'lower' }
-  // Usage that would go unused buys nothing: a raise needs no question then.
-  if (c === 'ask' && p.dir === 'raise' && paceNow.mode === 'cool') return { level: p.level }
   if (c !== 'ask') return {}
   const verb = p.dir === 'lower' ? 'Lower' : 'Raise'
   const why = r.reason ? ` (${r.reason})` : ''
@@ -873,7 +1018,7 @@ export function bandFor(run: Pick<Run, 'id' | 'tier' | 'normal' | 'auto' | 'dele
 }
 
 async function setRule($: EngineInterface, key: keyof Choices, value: string) {
-  await saveChoices($, { ...(await choices($)), [key]: value } as Choices)
+  await saveChoices($, { ...(await choices($)), [key]: value } as Choices, true)
   const label = RULES[key].find(r => r[0] === value)?.[1] ?? value
   $.ui.toast(`Rightsize: ${RULE_NAME[key]} is now "${label}".`)
 }
@@ -916,7 +1061,7 @@ async function chooseBandMode($: EngineInterface) {
   const v = await pick($, qBand)
   if (v === undefined) return
   await setBandMode($, v)
-  await $.config.set({ key: 'rightsize.band', value: v }).catch(() => undefined)
+  await putConfig($, 'band', v)
 }
 
 /** "Ran 2 of Claude's subagents on Haiku (low) instead of Opus." */
@@ -930,9 +1075,9 @@ export function resizedText(xs: readonly Resized[]) {
 export function report(run: Pick<Run, 'tier' | 'stay'> & { delegate: NonNullable<Run['delegate']> }, actual: number, mode: 'api' | 'subscription') {
   const to = TIER_NAME[run.delegate.tier]
   const cur = TIER_NAME[run.tier]
-  const vs = `${money(actual)} vs about ${money(run.stay)} on ${cur} (estimated)`
-  if (mode === 'subscription') return `rightsize: Sent to ${to}: used ${share(actual, run.stay)} the usage staying on ${cur} would. API-equivalent: ${vs}.`
-  const diff = actual <= run.stay ? `saved about ${Math.round((1 - actual / Math.max(run.stay, 1e-9)) * 100)}%` : `cost ${share(actual, run.stay)} staying`
+  const vs = `${money(actual)} vs about ${money(run.stay)} staying on ${cur} (estimated)`
+  if (mode === 'subscription') return `rightsize: Sent to ${to}: used ${share(actual, run.stay)} the usage vs staying on ${cur}. API-equivalent: ${vs}.`
+  const diff = actual <= run.stay ? `saved about ${Math.round((1 - actual / Math.max(run.stay, 1e-9)) * 100)}%` : `cost ${share(actual, run.stay)} vs staying`
   return `rightsize: Sent to ${to}: ${vs}, ${diff}.`
 }
 
@@ -1049,21 +1194,22 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
   await showStatus($)
 }
 
-// The turn is struggling: one level up for the rest of it, the way the person's
-// Raising rule says (asked mid-turn unless it is automatic). Each sign is weighed
-// once, raised or not, so a "Keep" is not asked again for the same sign.
+// The turn is struggling: one level up for the rest of it (never above Highest effort),
+// the way the person's Raising rule says (asked mid-turn unless it is automatic). Each sign
+// is weighed once, raised or not, so a "Keep" is not asked again for the same sign.
+// A window nearly used up skips the raise only while Raising is left at its default.
 async function escalate($: EngineInterface, run: Run, sign: Struggle, from: Level | undefined, step: number) {
   run.signals = { ...run.signals, fired: [...run.signals.fired, sign.kind] }
   const cur = run.raisedTo ?? from
-  const to = cur ? oneUp(cur) : undefined
+  const to = cur ? oneUp(cur, ceiling) : undefined
   if (!cur || !to) return
-  if (paceNow.mode === 'max') {
+  const rule = (await choices($)).raise
+  if (paceNow.mode === 'max' && rule === undefined) {
     await log($, `mid-turn raise to ${to} skipped (${sign.why}): the usage window is nearly used up`)
     return
   }
-  const rule = (await choices($)).raise
   if (rule === 'never') return
-  if (rule !== 'auto' && !(rule === 'ask' && paceNow.mode === 'cool')) {
+  if (rule !== 'auto') {
     const a = await pick($, {
       header: 'Stuck',
       question: `Claude looks stuck: ${sign.why}. Raise effort from ${cur} to ${to} for the rest of this turn?`,
@@ -1110,7 +1256,7 @@ const idleFor = (ms: number) => {
 async function windowPerDollar($: EngineInterface) {
   const now = await $.clock.now()
   const lines = parseLines<RunLine>(await readText($, `${home}/.claude/mods-logs/rightsize-runs.jsonl`))
-  return windowRates(lines.filter(l => now - Date.parse(l.at) <= 30 * 24 * 60 * 60_000), 'five_hour')?.perDollar
+  return windowRates(lines.filter(l => now - Date.parse(l.at) <= 30 * 24 * 60 * 60_000 && Date.parse(l.at) >= measureFrom), 'five_hour')?.perDollar
 }
 
 /** "$0.16" on the API; on a subscription, "0.8% of your 5-hour window ($0.16 API-equivalent)" once runs show the rate. */
@@ -1169,7 +1315,8 @@ async function finishSubagent($: EngineInterface, m: Measured, aborted: boolean)
   const spend = m.spend
   m.spend = 0
   if (spend <= 0) return
-  if (!aborted) {
+  // A workflow's agents say nothing about one route's estimate: they teach nothing, and the report counts no saving for them.
+  if (!aborted && !m.inWorkflow) {
     const sample = ratioSample(spend, m.raw)
     for (const key of subagentKeys(m.type, m.tier, m.level)) teach(key, sample)
     await saveCal($)
@@ -1177,6 +1324,7 @@ async function finishSubagent($: EngineInterface, m: Measured, aborted: boolean)
   const line: RunLine = {
     at: new Date().toISOString(),
     kind: 'subagent',
+    ...(m.inWorkflow ? { afterWorkflow: true } : {}),
     session: sessionId,
     type: m.type,
     from: m.from,
@@ -1192,20 +1340,150 @@ async function finishSubagent($: EngineInterface, m: Measured, aborted: boolean)
 
 async function summary($: EngineInterface) {
   const c = await choices($)
-  const said = (v: string | undefined) => v ?? 'not asked yet'
   const session = await sessionEffort($)
   // One run teaches its type:route key and, for a hand-off, finer keys too: count the first only.
   const runs = Object.entries(cal).filter(([k]) => k !== SWITCH_KEY && k.split(':').length === 2).reduce((n, [, e]) => n + e.n, 0)
   const sw = cal[SWITCH_KEY]
+  // Each setting with its value, and whose it is: yours when you set it in /config or answered it.
+  const row = (key: SettingKey, shown: string = cfg[key], by: string = yours.has(key) ? 'yours' : 'default') => `${SETTINGS[key].title}: ${shown} (${by})`
+  const rule = (r: keyof Choices) => row(RULE_KEYS[r], ruleLabel(r, c[r]), c[r] === undefined ? 'default' : 'yours')
+  const reports = row('billing', billing, billingYours() ? 'yours' : (billingBy ?? 'default'))
+  const sees = detectedBilling === 'subscription' ? 'a subscription' : 'API billing'
+  const install = sharing ? await $.store.get('shareInstall').catch(() => undefined) : undefined
   return [
-    `Rightsize is ${off ? 'off (turn it on with /mods)' : 'on'}. Lowest level: ${floor}. Band: ${bandMode}. Billing: ${billingBy ? `${billing} (${billingBy === 'answered' ? 'your answer' : billingBy})` : 'not known yet'}.`,
-    `Lowering: ${said(c.lower)}. Raising: ${said(c.raise)}. Stronger model: ${said(c.up)}. Cheaper model: ${said(c.down)}.${(await remembers($)) ? ' Saved for every session.' : ''}`,
+    `Rightsize is ${off ? 'off (turn it on with /mods)' : 'on'}. Each setting is yours when you set it in /config or answered its question, and rightsize never changes or bypasses what is yours; the rest are defaults.`,
+    `Effort: ${[row('floor'), row('ceiling'), row('escalation'), row('stuck')].join('. ')}.`,
+    `Rules: ${[rule('lower'), rule('raise'), rule('up'), rule('down'), row('remember')].join('. ')}.`,
+    `Models: ${[row('useHaiku'), row('useFable'), row('subagents'), row('workflows'), row('explore')].join('. ')}.`,
+    `Thresholds: ${[row('handOff'), row('lowering'), row('missPause'), row('pacing')].join('. ')}.${pacing && paceNow.mode !== 'normal' ? ` ${paceNote(paceNow)}` : ''}`,
+    `Prompts: ${[row('minWords'), row('raterCheck'), row('startTips'), row('idleWarning')].join('. ')}.`,
+    `Reporting: ${[reports, row('band'), row('priceCheck'), row('share')].join('. ')}.`,
+    ...(billingYours() && detectedBilling && detectedBilling !== billing ? [`Rate limits look like ${sees}; Reports is set to ${billing} by you.`] : []),
+    ...(typeof install === 'string' ? [`Sharing install ID: ${install} (quote it to rightsize@aivalue.blog to ask about or delete your shared data).`] : []),
     session ? `Session switch: ${session}.` : 'No session switch.',
     `Calibration: ${runs} measured run(s).${sw ? ` Effort switches that missed the cache: ${Math.round(sw.ratio * 100)}% of ${sw.n} (each one in ~/.claude/mods-logs/rightsize-switches.jsonl).` : ''}`,
-    `Thresholds: hand off under ${Math.round(rules.handOff * 100)}% of staying, lower under ${Math.round(rules.lower * 100)}%${rules.handOff === DEFAULT_RULES.handOff && rules.lower === DEFAULT_RULES.lower ? ' (the defaults)' : ''}. Budget pacing: ${pacing ? 'on' : 'off'}.${pacing && paceNow.mode !== 'normal' ? ` ${paceNote(paceNow)}` : ''}`,
-    `Prices: checked ${priceCheck === 'off' ? 'never (off)' : 'every 30 days'}; /rightsize prices checks now. Start suggestions: ${startTips ? `on (checked every ${START_CHECK_DAYS} days)` : 'off'}. Rater check: ${raterCheck ? `on (every ${SPOT_CHECK_EVERY}th rating)` : 'off'}. Sharing: ${sharing ? 'on (anonymous numbers to the rightsize author)' : 'off'}.`,
-    '/rightsize report shows what it saved and what went wrong; settings asks the questions again; undo re-runs the last auto-lowered prompt; clear drops the session switch.',
+    '/rightsize report shows what it saved and what went wrong; settings asks the questions again; undo re-runs the last auto-lowered prompt; clear drops the session switch; prices checks prices now; reset [setting] puts settings back to their defaults and/or restarts cost measurement.',
   ].join('\n')
+}
+
+// ---- Reset -------------------------------------------------------------------------
+
+// /rightsize reset: settings back to their defaults, and/or cost measurement started over. Both ask first.
+
+type ResetWhat = 'settings' | 'measurement' | 'both'
+const qReset: Question<ResetWhat | 'cancel'> = {
+  header: 'Reset',
+  question: 'What should I reset?',
+  options: [
+    ['Settings', 'settings'],
+    ['Cost measurement', 'measurement'],
+    ['Both', 'both'],
+    ['Cancel', 'cancel'],
+  ],
+}
+const qConfirm = (question: string): Question<boolean> => ({
+  header: 'Confirm',
+  question,
+  options: [
+    ['Yes', true],
+    ['No', false],
+  ],
+})
+const SETTINGS_GO = 'Every rightsize setting in /config goes back to its default, and your saved answers to the four questions are forgotten.'
+const MEASURE_GO = 'rightsize goes back to its starting estimates and relearns from your next prompts.'
+const UNDONE = "This can't be undone."
+
+function confirmText(what: ResetWhat | SettingKey) {
+  if (what === 'settings') return `Reset settings? ${SETTINGS_GO} ${UNDONE}`
+  if (what === 'measurement') return `Reset cost measurement? ${MEASURE_GO} ${UNDONE}`
+  if (what === 'both') return `Reset settings and cost measurement? ${SETTINGS_GO} ${MEASURE_GO} ${UNDONE}`
+  const rule = RULE_IDS.some(r => RULE_KEYS[r] === what) ? ' Its question is asked again the next time it comes up.' : ''
+  return `Reset ${SETTINGS[what].title}? It goes back to its default, ${SETTINGS[what].default}.${rule} ${UNDONE}`
+}
+
+/** Keeps the list of reset rows (see settings.ts stillReset) in memory and in the store. */
+async function keepReset($: EngineInterface, next: ReadonlySet<SettingKey>) {
+  resetFields = next
+  await $.store.set('resetFields', [...next]).catch(() => undefined)
+}
+
+/** The row is yours again (set after a reset): it leaves the list. */
+async function forgetReset($: EngineInterface, key: SettingKey) {
+  if (resetFields.has(key)) await keepReset($, mark(resetFields, key, false))
+}
+
+// Reports back to its default: the answer goes, and the next response's rate limits read the billing again.
+async function resetBilling($: EngineInterface) {
+  const saved = (await $.store.get('billing').catch(() => undefined)) as { by?: unknown } | undefined
+  if (saved?.by === 'answered') await $.store.set('billing', null).catch(() => undefined)
+  if (billingBy === 'answered') billingBy = null
+  billingAsked = false
+}
+
+// Each row goes back to its default through `$.config.set`. A stored value cannot be unset, so the rows reset
+// are listed in the store, and count as defaults, not yours, while what is stored is the default.
+async function resetSettings($: EngineInterface, keys: readonly SettingKey[], all: boolean) {
+  const blocked: string[] = []
+  let listed = resetFields
+  for (const key of keys) {
+    const dflt = SETTINGS[key].default
+    const changes = cfg[key] !== dflt
+    if (changes) {
+      const r = await $.config.set({ key: `rightsize.${key}`, value: dflt }).catch(() => ({ deny: 'it could not be written' }))
+      if (r.deny !== undefined) {
+        blocked.push(SETTINGS[key].title)
+        continue
+      }
+    }
+    if (changes || yours.has(key)) listed = mark(listed, key, true)
+    cfg = { ...cfg, [key]: dflt }
+    yours = mark(yours, key, false)
+    applyOption(key)
+    const rule = RULE_IDS.find(r => RULE_KEYS[r] === key)
+    if (rule) await followRuleRow($, rule, dflt)
+    else if (changes || key === 'remember') await followRow($, key, dflt)
+    if (key === 'billing') await resetBilling($)
+  }
+  if (all) {
+    await $.state.set({ plugin: 'rightsize', key: 'choices' }, {})
+    await $.store.set('choices', null).catch(() => undefined)
+  }
+  await keepReset($, listed)
+  const what = all ? 'Every setting is back to its default, and the saved answers are forgotten.' : `${SETTINGS[keys[0] ?? 'floor'].title} is back to its default, ${SETTINGS[keys[0] ?? 'floor'].default}.`
+  return blocked.length ? `${what} Not reset, because something else owns them: ${blocked.join(', ')}.` : what
+}
+
+// Cost measurement starts over: the calibration, the close-call and spot-check counts and the start checks go,
+// and the run log before now teaches rightsize nothing. The log itself, and the report's history, stay.
+async function resetMeasurement($: EngineInterface) {
+  await saving.catch(() => undefined)
+  cal = {}
+  unsaved = []
+  for (const key of [CAL_STORE, TIES_STORE, SPOT_STORE, 'startCheckedAt', 'startSnooze']) await $.store.set(key, null).catch(() => undefined)
+  measureFrom = await $.clock.now()
+  await $.store.set('measureFrom', new Date(measureFrom).toISOString()).catch(() => undefined)
+  await refreshMisses($)
+  return 'Cost measurement restarted: rightsize is back to its starting estimates and relearns from your next prompts. The run log and the report history are kept.'
+}
+
+async function runReset($: EngineInterface, name: string): Promise<string> {
+  let what: ResetWhat | SettingKey
+  name = name.trim()
+  if (name) {
+    const key = settingNamed(name)
+    if (!key) return `No setting called "${name}". Settings: ${KEYS.join(', ')}. /rightsize reset with no name resets all settings, the cost measurement, or both.`
+    what = key
+  } else {
+    const a = await pick($, qReset)
+    if (a === undefined || a === 'cancel') return 'Nothing was reset.'
+    what = a
+  }
+  if ((await pick($, qConfirm(confirmText(what)))) !== true) return 'Nothing was reset.'
+  const out: string[] = []
+  if (what === 'settings' || what === 'both') out.push(await resetSettings($, KEYS, true))
+  else if (what !== 'measurement') out.push(await resetSettings($, [what], false))
+  if (what === 'measurement' || what === 'both') out.push(await resetMeasurement($))
+  return out.join(' ')
 }
 
 // ---- Sharing -------------------------------------------------------------------
@@ -1245,7 +1523,7 @@ async function askShare($: EngineInterface) {
   await log($, `share question: ${yes === true ? 'yes' : yes === false ? 'no' : 'dismissed'}`)
   if (yes !== true) return
   await setShare($, true)
-  await $.config.set({ key: 'rightsize.share', value: 'on' }).catch(() => undefined)
+  await putConfig($, 'share', 'on')
   $.ui.toast('Rightsize: thanks. Anonymous numbers will be shared; Share anonymous feedback in /config turns it off.')
 }
 
@@ -1281,13 +1559,13 @@ async function sendShare($: EngineInterface) {
 
 const DAY_MS = 24 * 60 * 60_000
 
-const startContext = async ($: EngineInterface) => ({ prices, cal, rules, floor, choices: await choices($) })
+const startContext = async ($: EngineInterface) => ({ prices, cal, rules, floor, choices: await choices($), ceiling, without, from: measureFrom })
 
 async function checkStart($: EngineInterface) {
-  if (off || !startTips) return
+  if (off || startEvery === null) return
   const now = await $.clock.now()
   const last = await $.store.get('startCheckedAt').catch(() => undefined)
-  if (typeof last === 'number' && now - last < START_CHECK_DAYS * DAY_MS) return
+  if (typeof last === 'number' && now - last < startEvery * DAY_MS) return
   await $.store.set('startCheckedAt', now).catch(() => undefined)
   const a = adviseFromLog(await readText($, `${home}/.claude/mods-logs/rightsize-runs.jsonl`), await startContext($), now)
   await log($, `start check: ${a.kind}${a.kind === 'switch' ? ` ${startKey(a.current)} -> ${startKey(a.to)} (${a.why}, ${Math.round(a.saving * 100)}%)` : ''}`)
@@ -1306,67 +1584,153 @@ async function snoozeStart($: EngineInterface, key: string) {
 }
 
 async function stopStartTips($: EngineInterface) {
-  startTips = false
-  await $.config.set({ key: 'rightsize.startTips', value: 'off' }).catch(() => undefined)
+  await putConfig($, 'startTips', 'off')
   await setBand($, null)
   $.ui.toast('Rightsize: no more starting-model suggestions. Start suggestions in /config turns them back on.')
 }
 
 // ---- Hooks -----------------------------------------------------------------
 
+// Sets the module's variable for one row from `cfg`: at load, when /config changes it, and when rightsize writes it itself.
+function applyOption(key: SettingKey) {
+  const v = cfg[key]
+  switch (key) {
+    case 'floor':
+      if (isLevel(v)) floor = v
+      return
+    case 'ceiling':
+      if (isLevel(v)) ceiling = v
+      return
+    case 'lowerRule':
+    case 'raiseRule':
+    case 'upRule':
+    case 'downRule':
+      // The rules follow their rows through the session's choices (session start, followRuleRow).
+      return
+    case 'remember':
+      rememberMode = v === 'every session' || v === 'this session' ? v : 'ask'
+      return
+    case 'handOff':
+    case 'lowering':
+      rules = { handOff: parseShare(cfg.handOff, DEFAULT_RULES.handOff), lower: parseShare(cfg.lowering, DEFAULT_RULES.lower) }
+      return
+    case 'useHaiku':
+    case 'useFable':
+      without = [...(cfg.useHaiku === 'off' ? ['haiku' as const] : []), ...(cfg.useFable === 'off' ? ['fable' as const] : [])]
+      return
+    case 'subagents':
+      subagentMode = v === 'off' ? 'off' : 'cheaper when it fits'
+      return
+    case 'workflows':
+      workflows = v === 'pause rightsize' || v === 'follow my rules' || v === 'right-size every agent' ? v : 'ask'
+      return
+    case 'explore':
+      explore = v !== 'off'
+      return
+    case 'missPause':
+      missBlock = missPauseOf(v)
+      return
+    case 'pacing':
+      pacing = v !== 'off'
+      return
+    case 'escalation':
+      escalation = v !== 'off'
+      return
+    case 'stuck':
+      if (isSensitivity(v)) limits = LIMITS[v]
+      return
+    case 'minWords':
+      minWords = minWordsOf(v)
+      return
+    case 'raterCheck':
+      spotEvery = raterEvery(v)
+      return
+    case 'startTips':
+      startEvery = v === 'weekly' || v === 'monthly' ? START_CHECK_DAYS[v] : null
+      return
+    case 'idleWarning':
+      idleWarning = parseIdleWarning(v)
+      return
+    case 'billing':
+      billing = v === 'subscription' ? 'subscription' : 'api'
+      return
+    case 'band':
+      if (isBandMode(v)) bandMode = v
+      return
+    case 'share':
+      sharing = v === 'on'
+      return
+    case 'priceCheck':
+      if (v === 'monthly' || v === 'off') priceCheck = v
+      return
+    default: {
+      const unhandled: never = key
+      return unhandled
+    }
+  }
+}
+
+// What a row's change does besides setting its variable, once /config has written it.
+async function followRow($: EngineInterface, key: SettingKey, value: string) {
+  switch (key) {
+    case 'band':
+      await setBandMode($, bandMode)
+      return
+    case 'share':
+      await setShare($, value === 'on')
+      return
+    case 'billing':
+      // Reports set in /config by the person counts as the answer to the billing question.
+      if (isBilling(value) && yours.has('billing')) await saveBilling($, value, 'answered')
+      return
+    case 'lowerRule':
+      await followRuleRow($, 'lower', value)
+      return
+    case 'raiseRule':
+      await followRuleRow($, 'raise', value)
+      return
+    case 'upRule':
+      await followRuleRow($, 'up', value)
+      return
+    case 'downRule':
+      await followRuleRow($, 'down', value)
+      return
+    case 'remember': {
+      if (value === 'every session') {
+        const have = await choices($)
+        if (Object.keys(have).length) await keepChoices($, have)
+      } else if (value === 'ask') {
+        // Ask again: the question comes back after the next answer.
+        await $.store.set('remember', false).catch(() => undefined)
+        await $.state.set({ plugin: 'rightsize', key: 'rememberAsked' }, false)
+      }
+      return
+    }
+    default:
+      return
+  }
+}
+
 export const register: Register = (on, options) => {
-  const opts = (options ?? {}) as Record<string, unknown>
-  if (isLevel(opts.floor)) floor = opts.floor
-  if (opts.billing === 'subscription') billing = 'subscription'
-  if (opts.priceCheck === 'off' || opts.priceCheck === 'check now') priceCheck = opts.priceCheck
-  if (isBandMode(opts.band)) bandMode = opts.band
-  rules = { handOff: parseShare(opts.handOff, DEFAULT_RULES.handOff), lower: parseShare(opts.lowering, DEFAULT_RULES.lower) }
-  if (opts.subagents === 'off') subagentMode = 'off'
-  if (opts.pacing === 'off') pacing = false
-  if (opts.escalation === 'off') escalation = false
-  if (opts.startTips === 'off') startTips = false
-  if (opts.raterCheck === 'off') raterCheck = false
-  if (opts.share === 'on') sharing = true
-  idleWarning = parseIdleWarning(opts.idleWarning)
+  declared = (options ?? {}) as Record<string, unknown>
+  cfg = valuesOf(declared)
+  for (const key of KEYS) applyOption(key)
 
-  on('config.set', { key: 'rightsize.band' }, async ($, e, next) => {
-    const result = await next(e)
-    if (isBandMode(e.value)) await setBandMode($, e.value)
-    return result
-  })
-
-  on('config.set', { key: 'rightsize.startTips' }, async ($, e, next) => {
-    const result = await next(e)
-    startTips = e.value !== 'off'
-    return result
-  })
-
-  on('config.set', { key: 'rightsize.share' }, async ($, e, next) => {
-    const result = await next(e)
-    await setShare($, e.value === 'on')
-    return result
-  })
-
-  on('config.set', { key: 'rightsize.raterCheck' }, async ($, e, next) => {
-    const result = await next(e)
-    raterCheck = e.value !== 'off'
-    return result
-  })
-
-  // Reports set in /config counts as the answer to the billing question.
-  on('config.set', { key: 'rightsize.billing' }, async ($, e, next) => {
-    const result = await next(e)
-    if (isBilling(e.value)) await saveBilling($, e.value, 'answered')
-    return result
-  })
-
-  // "check now" in /config runs a check and leaves the row on its usual value.
-  on('config.set', { key: 'rightsize.priceCheck' }, async ($, e, next) => {
-    if (e.value !== 'check now') return next(e)
-    $.ui.toast('Checking prices against Anthropic’s pricing page...')
-    void runCheck($, 'manual').then(msg => $.ui.toast(msg))
-    return next({ ...e, value: e.previous === 'off' ? 'off' : 'monthly' })
-  })
+  // Every setting takes effect the moment /config changes it, not at the next start. A change
+  // by the person marks the row as theirs (settings.ts), so rightsize's own behaviour leaves it be.
+  for (const key of KEYS) {
+    on('config.set', { key: `rightsize.${key}` }, async ($, e, next) => {
+      if (e.key !== `rightsize.${key}`) return next(e)
+      const result = await next(e)
+      if (result.deny !== undefined || !inOptions(key, result.value)) return result
+      cfg = { ...cfg, [key]: result.value }
+      yours = afterSet(yours, e.key, result.value, e.origin)
+      if (yours.has(key)) await forgetReset($, key)
+      applyOption(key)
+      await followRow($, key, result.value)
+      return result
+    })
+  }
 
   on('session.start', async ($, e, next) => {
     const result = await next(e)
@@ -1378,21 +1742,28 @@ export const register: Register = (on, options) => {
     lastApplied = undefined
     lastContext = 0
     workflowSeen = false
+    askedWorkflows.clear()
     resizedRuns.clear()
     spawning.length = 0
     lastTurnAt = 0
     idleWarnedFor = 0
     await $.command.register({ name: CMD, description: 'Rightsize: status, report, settings, undo or clear' })
+    // Claude Code hands over every value with its default filled in; only settings.json tells which ones are yours.
+    const configs = await $.settings.read({ key: 'pluginConfigs' }).catch(() => undefined)
+    const resetBefore = resetKeys(await $.store.get('resetFields').catch(() => undefined))
+    yours = fieldsSet(configs, declared, resetBefore)
+    resetFields = new Set(stillReset(configs, declared, resetBefore))
+    if (resetFields.size !== resetBefore.length) await $.store.set('resetFields', [...resetFields]).catch(() => undefined)
+    const from = await $.store.get('measureFrom').catch(() => undefined)
+    measureFrom = typeof from === 'string' && Number.isFinite(Date.parse(from)) ? Date.parse(from) : 0
+    const gaps = manifestGaps(declared, yours)
+    if (gaps.length) await log($, `settings: plugin.json and the settings table disagree: ${gaps.join('; ')}`)
     await setBandMode($, bandMode)
     await setBand($, null)
     const priceFile = await readText($, `${$.plugin.root}/prices.json`)
     prices = parsePrices(priceFile)
     cacheTtl = cacheTtlMs(priceFile)
-    if (priceCheck === 'check now') {
-      // Set by hand in settings: check once, then back to monthly.
-      void runCheck($, 'manual').then(msg => $.ui.toast(msg))
-      void $.config.set({ key: 'rightsize.priceCheck', value: 'monthly' }).catch(() => undefined)
-    } else if (priceCheck === 'monthly') {
+    if (priceCheck === 'monthly') {
       const lastChecked = await $.store.get('pricesCheckedAt').catch(() => undefined)
       const now = await $.clock.now()
       if (isDue(lastChecked, now)) {
@@ -1407,14 +1778,24 @@ export const register: Register = (on, options) => {
     const saved = (await $.store.get('billing').catch(() => undefined)) as { value?: unknown; by?: unknown } | undefined
     billingAsked = false
     billingBy = null
+    detectedBilling = undefined
+    billing = cfg.billing === 'subscription' ? 'subscription' : 'api'
     if (isBilling(saved?.value)) {
       billing = saved.value
       billingBy = saved.by === 'answered' ? 'answered' : 'saved'
     }
-    if (await remembers($)) {
-      const saved = await $.store.get('choices').catch(() => undefined)
-      if (saved && typeof saved === 'object') await $.state.set({ plugin: 'rightsize', key: 'choices' }, { ...(saved as Choices), ...(await choices($)) })
+    // Reports set in /config is the person's answer: it stands over a saved reading and over the rate limits.
+    if (yours.has('billing')) {
+      billing = cfg.billing === 'subscription' ? 'subscription' : 'api'
+      billingBy = 'answered'
     }
+    // The rules: answers saved by an earlier session, then this session's, then any rule set in /config.
+    const kept = (await remembers($)) ? await $.store.get('choices').catch(() => undefined) : undefined
+    const given = await choices($)
+    const followed: Choices = { ...(kept && typeof kept === 'object' ? (kept as Choices) : {}), ...given, ...rulesOf(cfg) }
+    await $.state.set({ plugin: 'rightsize', key: 'choices' }, followed)
+    // Answers an earlier session saved show in /config too, so the rows say what rightsize follows.
+    if (kept && typeof kept === 'object') await mirrorRules($, followed)
     runLog = parseLines<RunLine>(await readText($, `${home}/.claude/mods-logs/rightsize-runs.jsonl`))
     ratedRuns.clear()
     await refreshMisses($)
@@ -1439,6 +1820,7 @@ export const register: Register = (on, options) => {
   on('command.run', { command: CMD }, async ($, e) => {
     const arg = e.args.trim().toLowerCase()
     if (arg === 'undo') return { text: await undo($) }
+    if (arg === 'reset' || arg.startsWith('reset ')) return { text: await runReset($, e.args.trim().slice('reset'.length)) }
     if (arg === 'prices') return { text: await runCheck($, 'manual') }
     if (arg === 'report') {
       const dir = `${home}/.claude/mods-logs`
@@ -1446,7 +1828,7 @@ export const register: Register = (on, options) => {
       const switches = parseLines<SwitchLine>(await readText($, `${dir}/rightsize-switches.jsonl`))
       const now = await $.clock.now()
       const start = startLines(adviseFromLog(await readText($, `${dir}/rightsize-runs.jsonl`), await startContext($), now), billing === 'subscription', money)
-      return { text: buildReport(runs, switches, { now, session: sessionId, subscription: billing === 'subscription', start }) }
+      return { text: buildReport(runs, switches, { now, session: sessionId, subscription: billing === 'subscription', start, pause: missBlock, ...(measureFrom ? { measureFrom: new Date(measureFrom).toISOString() } : {}) }) }
     }
     if (arg === 'clear') return { text: await clearSession($) }
     if (arg === 'settings') {
@@ -1455,8 +1837,10 @@ export const register: Register = (on, options) => {
       const up = TIERS.filter(t => tierRank(t) > tierRank(s.tier))
       const down = TIERS.filter(t => tierRank(t) < tierRank(s.tier))
       billingAsked = false
-      if (billingBy === 'answered') billingBy = 'saved'
-      await knowBilling($, true)
+      if (billingYours()) {
+        const v = await pick($, qBilling)
+        if (v !== undefined) await answerBilling($, v)
+      } else await knowBilling($, true)
       const next: Choices = {}
       next.lower = await pick($, qLower)
       next.raise = await pick($, qRaise)
@@ -1465,7 +1849,7 @@ export const register: Register = (on, options) => {
       for (const k of Object.keys(next) as (keyof Choices)[]) if (next[k] === undefined) delete next[k]
       await $.state.set({ plugin: 'rightsize', key: 'rememberAsked' }, false)
       await $.store.set('remember', false).catch(() => undefined)
-      await saveChoices($, next)
+      await saveChoices($, next, true)
       return { text: await summary($) }
     }
     return { text: await summary($) }
@@ -1485,7 +1869,7 @@ export const register: Register = (on, options) => {
       await $.prompt.fill({ text: e.text, mode: 'replace' }).catch(() => null)
       return { drop: 'rightsize held this prompt and put it back in the box. Run /clear or /compact, then send it.' }
     }
-    if (words(text) < MIN_WORDS) return next(e)
+    if (words(text) < minWords) return next(e)
     if (brainDumpWillCatch(text, await readSwitches($))) return next(e)
 
     await knowBilling($, true)
@@ -1495,15 +1879,23 @@ export const register: Register = (on, options) => {
     try {
       const base = await situation($)
       paceNow = pacing ? paceOf((await usageNow($))?.rateLimits ?? [], await $.clock.now()) : NORMAL_PACE
-      const s: Situation = { ...base, rules: pacedRules(base.rules ?? DEFAULT_RULES, paceNow) }
+      // Pacing moves only a threshold left at its default: one you set stays as you set it.
+      const set = { handOff: yours.has('handOff'), lower: yours.has('lowering') }
+      const movedRules = pacedRules(base.rules ?? DEFAULT_RULES, paceNow, set)
+      const s: Situation = { ...base, rules: movedRules }
       const { rating: r, overhead, prompt } = await rate($, text, s)
       if (r) {
-        // While Claude fans work out to workflows, a single hand-off would only cut across it.
+        // While Claude fans work out to workflows, a single hand-off would only cut across it. After one,
+        // Workflows says whether hand-offs go on (follow my rules, right-size every agent) or wait (the default).
         const planned = plan(r, s, floor)
-        const unfanned = workflowSeen && planned.kind === 'delegate' ? effortPlan(r, s, floor) : planned
-        // A window nearly used up: nothing that costs more than staying.
+        const unfanned = workflowSeen && planned.kind === 'delegate' && (workflows === 'ask' || workflows === 'pause rightsize') ? effortPlan(r, s, floor) : planned
+        // A window nearly used up: nothing that costs more than staying, unless the matching rule
+        // (Raising for more effort, Stronger model for a stronger one) is yours: then it follows your rule.
         const costlier = (unfanned.kind === 'effort' && unfanned.dir === 'raise') || (unfanned.kind === 'delegate' && unfanned.dir === 'up')
-        const p: Plan = paceNow.mode === 'max' && costlier ? { kind: 'none', why: 'the usage window is nearly used up' } : unfanned
+        const mine = await choices($)
+        const followsYou = unfanned.kind === 'effort' ? mine.raise !== undefined : mine.up !== undefined
+        const skipped = paceNow.mode === 'max' && costlier && !followsYou
+        const p: Plan = skipped ? { kind: 'none', why: 'the usage window is nearly used up' } : unfanned
         const d = await resolve($, p, r, s)
         if (d.session) await $.state.set({ plugin: 'rightsize', key: 'sessionEffort' }, d.session)
         if (d.delegate) out = { ...e, context: [...(e.context ?? []), delegateNote(d.delegate)] }
@@ -1513,7 +1905,8 @@ export const register: Register = (on, options) => {
           run.tie = planned.tie
           await countTie($)
         }
-        const note = paceNote(paceNow)
+        const was = base.rules ?? DEFAULT_RULES
+        const note = paceNote(paceNow, skipped || movedRules.handOff !== was.handOff || movedRules.lower !== was.lower)
         const band = p !== unfanned
           ? { text: `Kept ${s.level} on ${TIER_NAME[s.tier]} instead of ${unfanned.kind === 'delegate' ? `a ${TIER_NAME[unfanned.tier]} subagent` : `raising to ${unfanned.kind === 'effort' ? unfanned.level : ''}`}.`, acted: true }
           : bandFor(run, d, p)
@@ -1579,7 +1972,7 @@ export const register: Register = (on, options) => {
     }
     // A hand-off's main chat only briefs and checks: its struggle is the subagent's.
     if (run && !run.delegate && escalation && !off) {
-      const sign = struggle(run.signals, e.index, run.rating.steps)
+      const sign = struggle(run.signals, e.index, run.rating.steps, limits)
       if (sign) await escalate($, run, sign, level ?? own, e.index)
     }
     if (run?.raisedTo && (!level || levelRank(run.raisedTo) > levelRank(level))) level = run.raisedTo
@@ -1625,8 +2018,19 @@ export const register: Register = (on, options) => {
   })
 
   on('tool.call', async ($, e, next) => {
-    const result = await next(e)
     // Ultracode's fan-out runs through the Workflow tool, from the main chat or a subagent.
+    // Until Workflows is answered, the person is asked before the workflow starts.
+    if (String(e.tool) === 'Workflow' && !off) {
+      if (askingWorkflow) await askingWorkflow
+      if (workflows === 'ask') {
+        const id = (e as { tool_use_id?: unknown }).tool_use_id
+        askingWorkflow = askWorkflow($, typeof id === 'string' && id ? id : undefined).finally(() => {
+          askingWorkflow = null
+        })
+        await askingWorkflow
+      }
+    }
+    const result = await next(e)
     if (String(e.tool) === 'Workflow') {
       workflowSeen = true
       if (active) active.workflows += 1

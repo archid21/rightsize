@@ -136,7 +136,8 @@ export function totals(lines: readonly RunLine[]): Totals {
     // Its cost is already in its turn's; what it saved is not: the same work on the parent's model, scaled as a turn's is.
     if (l.kind === 'subagent') {
       t.subagents += 1
-      if (!l.aborted && num(l.estimate) > 0) t.saved += (num(l.actual) * num(l.parentEstimate)) / num(l.estimate) - num(l.actual)
+      // A workflow's agents say nothing about one route's estimate: no saving is counted for them.
+      if (!l.aborted && !l.afterWorkflow && num(l.estimate) > 0) t.saved += (num(l.actual) * num(l.parentEstimate)) / num(l.estimate) - num(l.actual)
       continue
     }
     if (!isRun(l)) continue
@@ -262,24 +263,29 @@ function offBy(lines: readonly RunLine[]) {
   return xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0
 }
 
-/** How often the rater was wrong where the log shows how it turned out, and the hand-downs paused for it. */
-export function haikuLines(lines: readonly RunLine[]) {
+/**
+ * How often the rater was wrong where the log shows how it turned out, and the hand-downs paused for it (from `pause`
+ * misses; null: Pause after misses is off). The count is all of the history; what is paused counts only the lines
+ * from `from` on, the way rightsize does since Cost measurement was restarted.
+ */
+export function haikuLines(lines: readonly RunLine[], pause: number | null = MISS_BLOCK, from = 0) {
   const rates = missRates(lines)
   const { n, misses } = missTotals(rates)
   if (!misses) return []
   const out = [`Haiku's judgement was wrong on ${misses} of ${n} checked prompts (${Math.round((misses / n) * 100)}%): rework, effort stepped back up, mid-turn raises, 👎, or the Sonnet check disagreed.`]
-  const worst = Object.entries(rates)
+  const live = from > 0 ? missRates(lines.filter(l => Date.parse(l.at) >= from)) : rates
+  const worst = Object.entries(live)
     .filter(([, e]) => e.n >= MISS_MIN)
     .map(([key, e]) => ({ key, n: e.n, rate: e.misses / e.n }))
     .sort((a, b) => b.rate - a.rate || b.n - a.n)[0]
   const [type, tier] = worst ? worst.key.split(':') : []
-  if (worst && worst.rate >= MISS_BLOCK && type && isTier(tier)) {
+  if (worst && pause !== null && worst.rate >= pause && type && isTier(tier)) {
     out.push(`Hand-downs of ${type} work to ${TIER_NAME[tier]} (and lowering effort on it) are paused: wrong on ${Math.round(worst.rate * 100)}% of ${worst.n}.`)
   }
   return out
 }
 
-export function wentWrong(lines: readonly RunLine[], switches: readonly SwitchLine[]) {
+export function wentWrong(lines: readonly RunLine[], switches: readonly SwitchLine[], pause: number | null = MISS_BLOCK, from = 0) {
   const runs = lines.filter(l => isRun(l) && !l.aborted)
   const out: string[] = []
   const steppedUp = runs.filter(l => l.steppedUp).length
@@ -299,7 +305,7 @@ export function wentWrong(lines: readonly RunLine[], switches: readonly SwitchLi
   }
   const rework = runs.filter(l => delegated(l) && num(l.agentCalls) > 1).length
   if (rework) out.push(`${plural(rework, 'hand-off')} needed rework (more than one subagent call).`)
-  out.push(...haikuLines(lines))
+  out.push(...haikuLines(lines, pause, from))
   const skipped = runs.filter(l => (l.change === 'delegate-up' || l.change === 'delegate-down') && !delegated(l)).length
   if (skipped) out.push(`Claude skipped ${plural(skipped, 'hand-off')} you chose and did the work itself.`)
   const missed = switches.filter(s => s.kept === false).length
@@ -358,13 +364,14 @@ export function fixedLines(lines: readonly RunLine[]) {
 export function buildReport(
   lines: readonly RunLine[],
   switches: readonly SwitchLine[],
-  opts: { now: number; session: string; subscription: boolean; start?: readonly string[] },
+  opts: { now: number; session: string; subscription: boolean; start?: readonly string[]; pause?: number | null; measureFrom?: string },
 ) {
   const since = (days: number) => (l: { at: string }) => opts.now - Date.parse(l.at) <= days * DAY
   const month = lines.filter(since(30))
   const out = [
     'Rightsize report. Savings are estimated: what staying at your own level and model would have cost, scaled by what each turn really cost.',
     ...(opts.subscription ? ['Dollar amounts are API-equivalent: what the same tokens would cost at API prices. Your subscription is not billed them.'] : []),
+    ...(opts.measureFrom ? [`Cost measurement restarted on ${opts.measureFrom.slice(0, 10)}.`] : []),
     '',
     ...period('This session', lines.filter(l => opts.session !== '' && l.session === opts.session), opts.subscription),
     ...period('Last 7 days', lines.filter(since(7)), opts.subscription, true),
@@ -374,7 +381,7 @@ export function buildReport(
   if (opts.start?.length) out.push(...opts.start, '')
   const fixed = fixedLines(month)
   if (fixed.length) out.push(...fixed, '')
-  const wrong = wentWrong(month, switches.filter(since(30)))
+  const wrong = wentWrong(month, switches.filter(since(30)), opts.pause, opts.measureFrom ? Date.parse(opts.measureFrom) : 0)
   out.push('What went wrong (last 30 days):', ...(wrong.length ? wrong.map(w => `- ${w}`) : ['- Nothing yet.']))
   return out.join('\n')
 }

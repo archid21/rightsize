@@ -5,7 +5,7 @@ import type { RunLine } from './report'
 // event is rebuilt from an allowlist of numbers and known labels: no prompt text,
 // file names, paths, MCP server names or session ids. Pure functions, no engine calls.
 
-export const SHARE_URL = 'https://rightsize-feedback.vercel.app/api/v1/events'
+export const SHARE_URL = 'https://feedback.aivalue.blog/api/v1/events'
 /** Events per request; the server takes at most 100. */
 export const SHARE_BATCH = 100
 /** At most one send an hour. */

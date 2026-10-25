@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.0 (2026-10-24)
 
 - The README has a **Turn it off or remove it** section: pause with `/mods`, `claude plugin disable` to keep settings and learning, and `claude plugin uninstall` plus the files it leaves behind (the store file and logs), with how to ask for shared data to be deleted.
 - **`/rightsize report` has sections.** Savings (this session, 7 days, 30 days; periods with the same numbers are said once, and the API-equivalent note is said once at the top), Starting point, Fixed overhead, Accuracy (Haiku's misses, paused hand-downs, estimate error) and Problems. Raising effort's extra cost is on its own line. The long reason list after Haiku's miss rate is gone (the README has it).

@@ -1,6 +1,6 @@
 {
   "name": "rightsize",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Right-sizes each Claude Code prompt: rates the effort, model and cost it needs, then lowers or raises effort, or hands the work to a stronger or cheaper subagent, the way you chose the first time each case came up. It scores Haiku's ratings against what happened, with a Sonnet spot-check and your 👍 and 👎, and stops trusting them where they keep missing. A setting you make always wins: rightsize's automatic behaviour never changes or bypasses it",
   "types": "./types/index.d.ts",
   "author": {

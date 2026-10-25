@@ -35,23 +35,23 @@ test('reports each period, the window kept for a subscriber, and says when it co
     run({ at: ago(20), session: 'old', change: 'lower', actual: 0.1, stay: 0.1, taken: 0.1, overhead: 0.05 }),
   ]
   const text = buildReport(lines, [], { now: NOW, session: 's1', subscription: true })
-  expect(text).toContain('This session: 2 prompts rated, 1 changed (1 lowered).')
+  expect(text).toContain('This session and last 7 days\n  Prompts: 2 rated, 1 changed (1 lowered).')
   // 2% of the window for $1 over 2 minutes: $0.49 saved is ~1% and about 1 minute. The window leads; dollars follow as API-equivalent.
   expect(text).toContain(
-    '  Kept ~1.0% of your 5-hour window, about 1 more minute at this pace.\n  Saved ~33% of the usage these turns would have taken, after rating calls (API-equivalent: ~$0.49 saved, $0.01 of rating calls).',
+    '  Kept ~1.0% of your 5-hour window, about 1 more minute at this pace.\n  Saved ~33% of the usage these turns would have taken, after rating calls (~$0.49 saved, $0.01 of rating calls).',
   )
   expect(text).toContain('Dollar amounts are API-equivalent')
   const api = buildReport(lines, [], { now: NOW, session: 's1', subscription: false })
   expect(api).toContain('Saved ~$0.49 (~33% of what these turns would have cost) after $0.01 of rating calls.')
   expect(api, 'no API-equivalent label on the API').not.toContain('API-equivalent')
-  expect(text, 'the old session is in 30 days only').toContain('Last 7 days: 2 prompts rated')
-  expect(text).toContain('Last 30 days: 3 prompts rated, 2 changed')
+  expect(text, 'the old session is in 30 days only').toContain('This session and last 7 days\n  Prompts: 2 rated')
+  expect(text).toContain('Last 30 days\n  Prompts: 3 rated, 2 changed')
   expect(buildReport(lines, [], { now: NOW, session: 's1', subscription: false }), 'no window line on the API').not.toContain('5-hour')
   const worse = buildReport([run({ change: 'none', overhead: 0.03 })], [], { now: NOW, session: 's1', subscription: false })
   expect(worse).toContain('Cost ~$0.03 more than it saved, counting $0.03 of rating calls.')
   const worseSub = buildReport([run({ change: 'none', overhead: 0.03 })], [], { now: NOW, session: 's1', subscription: true })
   expect(worseSub, 'no window measured yet: the share line alone').toContain(
-    'This session: 1 prompt rated, 0 changed.\n  Used more than it saved, counting rating calls (API-equivalent: ~$0.03 more, $0.03 of rating calls).',
+    'This session, last 7 days and last 30 days\n  Prompts: 1 rated, 0 changed.\n  Used more than it saved, counting rating calls (~$0.03 more, $0.03 of rating calls).',
   )
 })
 
@@ -107,9 +107,9 @@ test("Claude's subagents moved to a cheaper model: counted, and their saving add
   expect(Math.abs(t.saved - 0.38) < 1e-9).toBe(true)
   expect(t.spent, 'its cost is already in its turn').toBe(0.5)
   const text = buildReport([run({ actual: 0.5 }), sub({})], [], { now: NOW, session: 's1', subscription: false })
-  expect(text).toContain("This session: 1 prompt rated, 0 changed. 1 subagent Claude started ran on a cheaper model.")
+  expect(text).toContain('Prompts: 1 rated, 0 changed. 1 subagent Claude started ran on a cheaper model.')
   expect(text).toContain('Saved ~$0.38')
-  expect(buildReport([sub({})], [], { now: NOW, session: 's1', subscription: false }), 'a session with only a subagent line').toContain('This session: 0 prompts rated, 0 changed. 1 subagent Claude started ran on a cheaper model.')
+  expect(buildReport([sub({})], [], { now: NOW, session: 's1', subscription: false }), 'a session with only a subagent line').toContain('Prompts: 0 rated, 0 changed. 1 subagent Claude started ran on a cheaper model.')
 })
 
 test('close calls: how many the task-type guide decided and how many were explored, only when there were some', async () => {
@@ -144,7 +144,7 @@ test("check and feedback lines are not rated runs, but a check's cost counts as 
   const t = totals(lines)
   expect(t.rated).toBe(1)
   expect(Number(t.overhead.toFixed(5))).toBe(0.005)
-  expect(buildReport(lines, [], { now: NOW, session: 's1', subscription: false })).toContain('This session: 1 prompt rated, 0 changed.')
+  expect(buildReport(lines, [], { now: NOW, session: 's1', subscription: false })).toContain('Prompts: 1 rated, 0 changed.')
 })
 
 test("says how often Haiku's judgement was wrong, and which hand-downs are paused", async () => {
@@ -152,7 +152,7 @@ test("says how often Haiku's judgement was wrong, and which hand-downs are pause
   const handDown = (rework: boolean) => run({ type: 'search', route: 'delegate:haiku', change: 'delegate-down', agentCalls: rework ? 2 : 1 })
   const lines = [handDown(true), handDown(true), handDown(false), handDown(false), handDown(false), run({ type: 'lookup', change: 'lower', tier: 'opus', steppedUp: true })]
   const out = haikuLines(lines)
-  expect(out[0]).toBe("Haiku's judgement was wrong on 3 of 6 checked prompts (50%): rework, effort stepped back up, mid-turn raises, 👎, or the Sonnet check disagreed.")
+  expect(out[0]).toBe("Haiku's judgement was wrong on 3 of 6 checked prompts (50%).")
   expect(out[1], 'Haiku was wrong on 2 of 5 search hand-downs: 40%, over the 30% line').toBe('Hand-downs of search work to Haiku (and lowering effort on it) are paused: wrong on 40% of 5.')
   const calm = haikuLines([...lines.slice(2, 5), run({ type: 'lookup', change: 'lower', tier: 'opus', steppedUp: true })])
   expect(calm.length, 'under 5 outcomes on any one key: nothing paused').toBe(1)
@@ -197,7 +197,7 @@ test('the report says when cost measurement restarted, and counts a pause only f
   const report = buildReport(lines, [], { now: NOW, session: 's1', subscription: false, measureFrom: new Date(from).toISOString() })
   expect(report).toContain('Cost measurement restarted on 2026-10-22.')
   expect(report).not.toContain('are paused')
-  expect(report, 'periods still read every line').toContain('Last 30 days: 6 prompts rated')
+  expect(report, 'periods still read every line').toContain('This session, last 7 days and last 30 days\n  Prompts: 6 rated')
   expect(buildReport(lines, [], { now: NOW, session: 's1', subscription: false })).not.toContain('Cost measurement restarted')
 })
 

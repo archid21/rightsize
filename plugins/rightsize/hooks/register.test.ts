@@ -1498,10 +1498,10 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(last(runs())?.kind).toBe('overhead')
 
     const report = (await d.command('report')).text ?? ''
-    expect(report).toContain('This session: 2 prompts rated, 1 changed (1 lowered).')
-    expect(report).toContain('Last 7 days: 2 prompts rated')
+    expect(report).toContain('Prompts: 2 rated, 1 changed (1 lowered).')
+    expect(report).toContain('This session, last 7 days and last 30 days')
     expect(report).toContain('rating calls')
-    expect(report).toContain('What went wrong (last 30 days):')
+    expect(report).toContain('PROBLEMS (last 30 days)')
   })
 
   // Close calls. A Fable session at high effort, a feature that Sonnet, Opus and Fable all do at medium.
@@ -3269,7 +3269,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
       // The report still counts all of it, and says when measurement restarted.
       const report = (await d.command('report')).text ?? ''
       expect(report).toContain(`Cost measurement restarted on ${new Date(h.now).toISOString().slice(0, 10)}.`)
-      expect(report).toContain('Last 30 days: 66 prompts rated')
+      expect(report).toContain('Last 7 days and last 30 days\n  Prompts: 66 rated')
       expect(report, 'what went wrong reads the whole history').toContain("Haiku's judgement was wrong on 3 of 6 checked prompts (50%)")
       expect(report, 'but nothing is paused any more').not.toContain('are paused')
       // Settings stay unless Both.
@@ -3317,7 +3317,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     // The report's block waits for rated prompts from now on, though its history still counts the 60.
     const report = String((await d.command('report')).text)
     expect(report).toContain('Starting point: needs 50 rated prompts to compare starts (has 0).')
-    expect(report).toContain('Last 30 days: 60 prompts rated')
+    expect(report).toContain('Last 7 days and last 30 days\n  Prompts: 60 rated')
     // The next start does not suggest anything either: startCheckedAt is clear, so it checks, and finds nothing to go on.
     await d.start(surface)
     expect(await bandText($, surface)).toBe('')

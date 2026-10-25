@@ -1,4 +1,5 @@
-import { money } from './cost'
+import { MISS_BLOCK, TIER_NAME, isTier, money } from './cost'
+import { MISS_MIN, missRates, missTotals } from './misses'
 
 // /rightsize report: what the mod saved, what it cost to run, and what went
 // wrong, read from its run log. Pure functions, no engine calls.
@@ -14,8 +15,13 @@ export type Windows = Record<string, number>
 /** One line of rightsize-runs.jsonl. Lines from before 0.5 lack the newer fields. */
 export type RunLine = {
   at: string
-  /** 'overhead': a rating call that came to nothing (failed or unreadable). 'subagent': one of Claude's subagents moved to a cheaper model, when it answered. */
-  kind?: 'run' | 'overhead' | 'subagent'
+  /**
+   * 'overhead': a rating call that came to nothing (failed or unreadable). 'subagent': one of Claude's subagents moved to a cheaper model, when it answered.
+   * 'check': Sonnet's second opinion on a rating. 'feedback': a 👍 or 👎 on a run. Neither counts as a rated run.
+   */
+  kind?: 'run' | 'overhead' | 'subagent' | 'check' | 'feedback'
+  /** A run line's own id, which feedback lines name in `ref`. */
+  id?: string
   session?: string
   type?: string
   route?: string
@@ -57,6 +63,16 @@ export type RunLine = {
   fixed?: { tokens: number; mcp: number; memory: number; agents: number; skills: number; cost: number; servers?: Record<string, number> }
   before?: Windows
   after?: Windows
+  /** The session's own level, before rightsize's change, and the conversation's size: from 0.7. */
+  normal?: string
+  context?: number
+  /** Each model's lowest level for the work, or null where it would struggle: the rater's judgement. */
+  fit?: Record<string, string | null>
+  /** A check line: the second opinion, and who gave it. `fit` is then the first rater's. */
+  check?: { by: string; fit: Record<string, string | null> }
+  /** A feedback line: the run's `id` and the verdict. */
+  ref?: string
+  value?: 'up' | 'down'
 }
 
 type Tie = { by?: string; over?: string }
@@ -120,7 +136,8 @@ export function totals(lines: readonly RunLine[]): Totals {
     // Its cost is already in its turn's; what it saved is not: the same work on the parent's model, scaled as a turn's is.
     if (l.kind === 'subagent') {
       t.subagents += 1
-      if (!l.aborted && num(l.estimate) > 0) t.saved += (num(l.actual) * num(l.parentEstimate)) / num(l.estimate) - num(l.actual)
+      // A workflow's agents say nothing about one route's estimate: no saving is counted for them.
+      if (!l.aborted && !l.afterWorkflow && num(l.estimate) > 0) t.saved += (num(l.actual) * num(l.parentEstimate)) / num(l.estimate) - num(l.actual)
       continue
     }
     if (!isRun(l)) continue
@@ -164,23 +181,39 @@ function changedLine(t: Totals) {
   ].filter(Boolean)
   const declined = t.declined ? ` You kept your level on ${plural(t.declined, 'suggestion')}.` : ''
   const subs = t.subagents ? ` ${plural(t.subagents, 'subagent')} Claude started ran on a cheaper model.` : ''
-  return `${plural(t.rated, 'prompt')} rated, ${n} changed${parts.length ? ` (${parts.join(', ')})` : ''}.${declined}${subs}`
+  return `Prompts: ${t.rated} rated, ${n} changed${parts.length ? ` (${parts.join(', ')})` : ''}.${declined}${subs}`
 }
 
 function savedLine(t: Totals) {
   const net = t.saved - t.overhead
   const rating = `${money(t.overhead)} of rating calls`
-  const extra = t.extra > 0.005 ? ` Raising effort and stronger models: ${money(t.extra)} more, for harder work.` : ''
   if (net >= 0.005) {
     const pct = Math.round((net / (t.spent + t.overhead + net)) * 100)
-    return `Saved ~${money(net)} (~${pct}% of what these turns would have cost) after ${rating}.${extra}`
+    return `Saved ~${money(net)} (~${pct}% of what these turns would have cost) after ${rating}.`
   }
-  if (net <= -0.005) return `Cost ~${money(-net)} more than it saved, counting ${rating}.${extra}`
-  return `About even: savings and rating calls (${money(t.overhead)}) cancel out.${extra}`
+  if (net <= -0.005) return `Cost ~${money(-net)} more than it saved, counting ${rating}.`
+  return `About even: savings and rating calls (${money(t.overhead)}) cancel out.`
+}
+
+/** The saving as a share of usage; the report's header says the dollars are API-equivalent, since a subscription is not billed them. */
+function usageLine(t: Totals) {
+  const net = t.saved - t.overhead
+  const rating = `${money(t.overhead)} of rating calls`
+  if (net >= 0.005) {
+    const pct = Math.round((net / (t.spent + t.overhead + net)) * 100)
+    return `Saved ~${pct}% of the usage these turns would have taken, after rating calls (~${money(net)} saved, ${rating}).`
+  }
+  if (net <= -0.005) return `Used more than it saved, counting rating calls (~${money(-net)} more, ${rating}).`
+  return `About even: savings and rating calls cancel out (${rating}).`
+}
+
+/** Raising effort and stronger models spend more on purpose; said apart from the saving. */
+function extraLine(t: Totals) {
+  return t.extra > 0.005 ? `Raising effort and stronger models: ${money(t.extra)} more, for harder work.` : undefined
 }
 
 /** Percent of a window per dollar, and per minute of turn time, over runs whose window did not reset. */
-function windowRates(lines: readonly RunLine[], kind: string) {
+export function windowRates(lines: readonly RunLine[], kind: string) {
   let pct = 0
   let usd = 0
   let ms = 0
@@ -214,14 +247,19 @@ function windowLine(lines: readonly RunLine[], t: Totals) {
   return undefined
 }
 
-function period(title: string, lines: readonly RunLine[], subscription: boolean, withTies = false) {
+/** One period's rows, without its title; the report prints the title and indents the rows. */
+function period(lines: readonly RunLine[], subscription: boolean, withTies = false) {
   const t = totals(lines)
-  if (!t.rated && !t.overhead && !t.subagents) return [`${title}: nothing rated yet.`]
-  const out = [`${title}: ${changedLine(t)}`, `  ${savedLine(t)}`]
+  if (!t.rated && !t.overhead && !t.subagents) return ['Nothing rated yet.']
+  const out = [changedLine(t)]
+  // A subscriber reads the window first; dollars follow.
   const w = subscription ? windowLine(lines, t) : undefined
-  if (w) out.push(`  ${w}`)
+  if (w) out.push(w)
+  out.push(subscription ? usageLine(t) : savedLine(t))
+  const extra = extraLine(t)
+  if (extra) out.push(extra)
   const ties = withTies ? tieCounts(lines) : { guided: 0, explored: 0 }
-  if (ties.guided + ties.explored > 0) out.push(`  ${plural(ties.guided, 'close call')} decided by the task-type guide, ${ties.explored} explored.`)
+  if (ties.guided + ties.explored > 0) out.push(`${plural(ties.guided, 'close call')} decided by the task-type guide, ${ties.explored} explored.`)
   return out
 }
 
@@ -231,7 +269,46 @@ function offBy(lines: readonly RunLine[]) {
   return xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0
 }
 
-export function wentWrong(lines: readonly RunLine[], switches: readonly SwitchLine[]) {
+/**
+ * How often the rater was wrong where the log shows how it turned out, and the hand-downs paused for it (from `pause`
+ * misses; null: Pause after misses is off). The count is all of the history; what is paused counts only the lines
+ * from `from` on, the way rightsize does since Cost measurement was restarted.
+ */
+export function haikuLines(lines: readonly RunLine[], pause: number | null = MISS_BLOCK, from = 0) {
+  const rates = missRates(lines)
+  const { n, misses } = missTotals(rates)
+  if (!misses) return []
+  const out = [`Haiku's judgement was wrong on ${misses} of ${n} checked prompts (${Math.round((misses / n) * 100)}%).`]
+  const live = from > 0 ? missRates(lines.filter(l => Date.parse(l.at) >= from)) : rates
+  const worst = Object.entries(live)
+    .filter(([, e]) => e.n >= MISS_MIN)
+    .map(([key, e]) => ({ key, n: e.n, rate: e.misses / e.n }))
+    .sort((a, b) => b.rate - a.rate || b.n - a.n)[0]
+  const [type, tier] = worst ? worst.key.split(':') : []
+  if (worst && pause !== null && worst.rate >= pause && type && isTier(tier)) {
+    out.push(`Hand-downs of ${type} work to ${TIER_NAME[tier]} (and lowering effort on it) are paused: wrong on ${Math.round(worst.rate * 100)}% of ${worst.n}.`)
+  }
+  return out
+}
+
+/** How far off the estimates were, early against late; nothing until there are enough measured runs. */
+function calibrationLine(runs: readonly RunLine[]) {
+  const measured = runs.filter(l => num(l.actual) > 0 && num(l.taken) > 0)
+  if (measured.length < 6) return undefined
+  const n = Math.min(10, Math.floor(measured.length / 2))
+  const first = offBy(measured.slice(0, n))
+  const lastN = offBy(measured.slice(-n))
+  return `Estimates were off by ${first.toFixed(1)}x on average in the first ${n} runs, ${lastN.toFixed(1)}x in the last ${n}${lastN < first ? ': calibration is closing the gap' : ''}.`
+}
+
+/** How good the ratings and estimates were: Haiku's misses, what is paused for them, and the estimate error. */
+export function accuracyLines(lines: readonly RunLine[], pause: number | null = MISS_BLOCK, from = 0) {
+  const calibration = calibrationLine(lines.filter(l => isRun(l) && !l.aborted))
+  return [...haikuLines(lines, pause, from), ...(calibration ? [calibration] : [])]
+}
+
+/** Turns that cost more or went off course. */
+export function problemLines(lines: readonly RunLine[], switches: readonly SwitchLine[]) {
   const runs = lines.filter(l => isRun(l) && !l.aborted)
   const out: string[] = []
   const steppedUp = runs.filter(l => l.steppedUp).length
@@ -267,14 +344,12 @@ export function wentWrong(lines: readonly RunLine[], switches: readonly SwitchLi
   }
   const aborted = lines.filter(l => isRun(l) && l.aborted).length
   if (aborted) out.push(`${plural(aborted, 'turn')} you stopped: their rating cost counts, no saving does.`)
-  const measured = runs.filter(l => num(l.actual) > 0 && num(l.taken) > 0)
-  if (measured.length >= 6) {
-    const n = Math.min(10, Math.floor(measured.length / 2))
-    const first = offBy(measured.slice(0, n))
-    const lastN = offBy(measured.slice(-n))
-    out.push(`Estimates were off by ${first.toFixed(1)}x on average in the first ${n} runs, ${lastN.toFixed(1)}x in the last ${n}${lastN < first ? ': calibration is closing the gap' : ''}.`)
-  }
   return out
+}
+
+/** Everything that went wrong or was off, problems first and then accuracy. */
+export function wentWrong(lines: readonly RunLine[], switches: readonly SwitchLine[], pause: number | null = MISS_BLOCK, from = 0) {
+  return [...problemLines(lines, switches), ...accuracyLines(lines, pause, from)]
 }
 
 const k = (n: number) => (n >= 1000 ? `${Math.round(n / 1000)}K` : `${Math.round(n)}`)
@@ -309,21 +384,82 @@ export function fixedLines(lines: readonly RunLine[]) {
 export function buildReport(
   lines: readonly RunLine[],
   switches: readonly SwitchLine[],
-  opts: { now: number; session: string; subscription: boolean },
+  opts: { now: number; session: string; subscription: boolean; start?: readonly string[]; pause?: number | null; measureFrom?: string },
 ) {
   const since = (days: number) => (l: { at: string }) => opts.now - Date.parse(l.at) <= days * DAY
   const month = lines.filter(since(30))
+  const section = (title: string, ...body: readonly string[]) => ['', title, ...body]
+  const block = (title: string, rows: readonly string[]) => [title, ...rows.map(r => `  ${r}`)]
+
+  const periods = [
+    { title: 'This session', rows: period(lines.filter(l => opts.session !== '' && l.session === opts.session), opts.subscription) },
+    { title: 'Last 7 days', rows: period(lines.filter(since(7)), opts.subscription, true) },
+    { title: 'Last 30 days', rows: period(month, opts.subscription, true) },
+  ]
+  // Periods with the same rows (a new install, or a session that is all of the week) are said once.
+  const groups: { titles: string[]; rows: string[] }[] = []
+  for (const p of periods) {
+    const last = groups[groups.length - 1]
+    if (last && last.rows.join('\n') === p.rows.join('\n')) last.titles.push(p.title)
+    else groups.push({ titles: [p.title], rows: p.rows })
+  }
+  const heading = (titles: string[]) => {
+    const [first = '', ...rest] = titles
+    const later = rest.map(t => t.toLowerCase())
+    return later.length < 2 ? [first, ...later].join(' and ') : `${first}, ${later.slice(0, -1).join(', ')} and ${later[later.length - 1]}`
+  }
+
   const out = [
     'Rightsize report. Savings are estimated: what staying at your own level and model would have cost, scaled by what each turn really cost.',
-    '',
-    ...period('This session', lines.filter(l => opts.session !== '' && l.session === opts.session), opts.subscription),
-    ...period('Last 7 days', lines.filter(since(7)), opts.subscription, true),
-    ...period('Last 30 days', month, opts.subscription, true),
-    '',
+    ...(opts.subscription ? ['Dollar amounts are API-equivalent: what the same tokens would cost at API prices. Your subscription is not billed them.'] : []),
+    ...(opts.measureFrom ? [`Cost measurement restarted on ${opts.measureFrom.slice(0, 10)}.`] : []),
+    ...section('SAVINGS', ...groups.flatMap(g => block(heading(g.titles), g.rows))),
   ]
+  // The starting-point lines carry their own label.
+  if (opts.start?.length) out.push('', ...opts.start)
   const fixed = fixedLines(month)
-  if (fixed.length) out.push(...fixed, '')
-  const wrong = wentWrong(month, switches.filter(since(30)))
-  out.push('What went wrong (last 30 days):', ...(wrong.length ? wrong.map(w => `- ${w}`) : ['- Nothing yet.']))
+  if (fixed.length) out.push(...section('FIXED OVERHEAD', ...fixed))
+  const from = opts.measureFrom ? Date.parse(opts.measureFrom) : 0
+  const accuracy = accuracyLines(month, opts.pause, from)
+  if (accuracy.length) out.push(...section('ACCURACY (last 30 days)', ...accuracy.map(a => `- ${a}`)))
+  const problems = problemLines(month, switches.filter(since(30)))
+  out.push(...section('PROBLEMS (last 30 days)', ...(problems.length ? problems.map(w => `- ${w}`) : ['- Nothing yet.'])))
   return out.join('\n')
+}
+
+export const SHARE_MIN_RATED = 20
+export const SHARE_MIN_PCT = 5
+const SHARE_LINK = 'https://aivalue.blog/rightsize'
+
+/**
+ * /rightsize share: a message to paste anywhere, with the last 30 days' estimated saving once there is enough data.
+ * Prints only; unrelated to the anonymous-feedback setting. Same totals and percentage as the report.
+ */
+export function shareMessage(lines: readonly RunLine[], opts: { now: number; subscription: boolean; measureFrom?: string }) {
+  const from = opts.measureFrom ? Date.parse(opts.measureFrom) : 0
+  const month = lines.filter(l => opts.now - Date.parse(l.at) <= 30 * DAY && Date.parse(l.at) >= from)
+  const t = totals(month)
+  const net = t.saved - t.overhead
+  const pct = net > 0 ? Math.round((net / (t.spent + t.overhead + net)) * 100) : 0
+  const enough = t.rated >= SHARE_MIN_RATED
+  const head = 'Copy and paste this anywhere. rightsize sends nothing itself.'
+  if (enough && pct >= SHARE_MIN_PCT) {
+    const what = opts.subscription ? `saved about ${pct}% of my Claude Code usage` : `cut my Claude Code spend by about ${pct}%`
+    return [
+      head,
+      '',
+      `rightsize ${what} over the last 30 days, by its own estimate. It matches each prompt to the right model and effort level. Free and open source: ${SHARE_LINK}`,
+      '',
+      `The number is rightsize's estimate from your last 30 days (${t.rated} rated prompts); /rightsize report shows the details. Edit the message as you like.`,
+    ].join('\n')
+  }
+  return [
+    head,
+    '',
+    `I'm using rightsize, a free Claude Code mod that matches each prompt to the right model and effort level, and shows what it changed. Open source: ${SHARE_LINK}`,
+    '',
+    enough
+      ? "No saving is included: rightsize's estimate for your last 30 days is under 5%."
+      : `Once rightsize has ${SHARE_MIN_RATED} rated prompts and an estimated saving of ${SHARE_MIN_PCT}% or more in the last 30 days, this message includes it.`,
+  ].join('\n')
 }

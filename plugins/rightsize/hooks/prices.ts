@@ -91,7 +91,7 @@ export function applyPrices(fileText: string, page: PageRows, date: string): str
   }
   const next: FileJson = {
     ...json,
-    source: `Anthropic Claude API first-party prices, checked against ${PRICING_URL.replace(/^https:\/\//, '').replace(/\.md$/, '')} on ${date}. rightsize checks them every ${CHECK_DAYS} days; pick "check now" for Price check in /config to check sooner.`,
+    source: `Anthropic Claude API first-party prices, checked against ${PRICING_URL.replace(/^https:\/\//, '').replace(/\.md$/, '')} on ${date}. rightsize checks them every ${CHECK_DAYS} days; run /rightsize prices to check sooner.`,
     unit: json.unit ?? 'US dollars per 1 million tokens',
     cacheTtl: json.cacheTtl ?? '1h',
     models,

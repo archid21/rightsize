@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { type RunLine, buildReport, counterfactual, fixedLines, parseLines, tieCounts, totals, wentWrong } from './report'
+import { type RunLine, buildReport, counterfactual, fixedLines, haikuLines, parseLines, shareMessage, tieCounts, totals, wentWrong } from './report'
 
 const NOW = Date.parse('2026-10-23T18:00:00.000Z')
 const ago = (days: number) => new Date(NOW - days * 24 * 60 * 60 * 1000).toISOString()
@@ -35,15 +35,24 @@ test('reports each period, the window kept for a subscriber, and says when it co
     run({ at: ago(20), session: 'old', change: 'lower', actual: 0.1, stay: 0.1, taken: 0.1, overhead: 0.05 }),
   ]
   const text = buildReport(lines, [], { now: NOW, session: 's1', subscription: true })
-  expect(text).toContain('This session: 2 prompts rated, 1 changed (1 lowered).')
-  expect(text).toContain('Saved ~$0.49 (~33% of what these turns would have cost) after $0.01 of rating calls.')
-  // 2% of the window for $1 over 2 minutes: $0.49 saved is ~1% and about 1 minute.
-  expect(text).toContain('Kept ~1.0% of your 5-hour window, about 1 more minute at this pace.')
-  expect(text, 'the old session is in 30 days only').toContain('Last 7 days: 2 prompts rated')
-  expect(text).toContain('Last 30 days: 3 prompts rated, 2 changed')
+  expect(text).toContain('This session and last 7 days\n  Prompts: 2 rated, 1 changed (1 lowered).')
+  // 2% of the window for $1 over 2 minutes: $0.49 saved is ~1% and about 1 minute. The window leads; dollars follow as API-equivalent.
+  expect(text).toContain(
+    '  Kept ~1.0% of your 5-hour window, about 1 more minute at this pace.\n  Saved ~33% of the usage these turns would have taken, after rating calls (~$0.49 saved, $0.01 of rating calls).',
+  )
+  expect(text).toContain('Dollar amounts are API-equivalent')
+  const api = buildReport(lines, [], { now: NOW, session: 's1', subscription: false })
+  expect(api).toContain('Saved ~$0.49 (~33% of what these turns would have cost) after $0.01 of rating calls.')
+  expect(api, 'no API-equivalent label on the API').not.toContain('API-equivalent')
+  expect(text, 'the old session is in 30 days only').toContain('This session and last 7 days\n  Prompts: 2 rated')
+  expect(text).toContain('Last 30 days\n  Prompts: 3 rated, 2 changed')
   expect(buildReport(lines, [], { now: NOW, session: 's1', subscription: false }), 'no window line on the API').not.toContain('5-hour')
   const worse = buildReport([run({ change: 'none', overhead: 0.03 })], [], { now: NOW, session: 's1', subscription: false })
   expect(worse).toContain('Cost ~$0.03 more than it saved, counting $0.03 of rating calls.')
+  const worseSub = buildReport([run({ change: 'none', overhead: 0.03 })], [], { now: NOW, session: 's1', subscription: true })
+  expect(worseSub, 'no window measured yet: the share line alone').toContain(
+    'This session, last 7 days and last 30 days\n  Prompts: 1 rated, 0 changed.\n  Used more than it saved, counting rating calls (~$0.03 more, $0.03 of rating calls).',
+  )
 })
 
 test('lists what went wrong, and how far the estimates were off', async () => {
@@ -98,9 +107,9 @@ test("Claude's subagents moved to a cheaper model: counted, and their saving add
   expect(Math.abs(t.saved - 0.38) < 1e-9).toBe(true)
   expect(t.spent, 'its cost is already in its turn').toBe(0.5)
   const text = buildReport([run({ actual: 0.5 }), sub({})], [], { now: NOW, session: 's1', subscription: false })
-  expect(text).toContain("This session: 1 prompt rated, 0 changed. 1 subagent Claude started ran on a cheaper model.")
+  expect(text).toContain('Prompts: 1 rated, 0 changed. 1 subagent Claude started ran on a cheaper model.')
   expect(text).toContain('Saved ~$0.38')
-  expect(buildReport([sub({})], [], { now: NOW, session: 's1', subscription: false }), 'a session with only a subagent line').toContain('This session: 0 prompts rated, 0 changed. 1 subagent Claude started ran on a cheaper model.')
+  expect(buildReport([sub({})], [], { now: NOW, session: 's1', subscription: false }), 'a session with only a subagent line').toContain('Prompts: 0 rated, 0 changed. 1 subagent Claude started ran on a cheaper model.')
 })
 
 test('close calls: how many the task-type guide decided and how many were explored, only when there were some', async () => {
@@ -124,4 +133,124 @@ test('close calls: how many the task-type guide decided and how many were explor
   expect(none, 'nothing to say without ties').not.toContain('close call')
   expect(tieCounts([{ at: ago(0), kind: 'overhead', overhead: 0.1 }])).toEqual({ guided: 0, explored: 0 })
   expect(buildReport([run({ tie: { by: 'explore', over: 'opus' } })], [], { now: NOW, session: 's1', subscription: false })).toContain('0 close calls decided by the task-type guide, 1 explored.')
+})
+
+test("check and feedback lines are not rated runs, but a check's cost counts as overhead", async () => {
+  const lines: RunLine[] = [
+    run({ change: 'none', overhead: 0.001 }),
+    { at: ago(0), kind: 'check', type: 'debug', fit: { sonnet: 'low' }, check: { by: 'sonnet', fit: { sonnet: null } }, overhead: 0.004 },
+    { at: ago(0), kind: 'feedback', ref: 'a', value: 'down' },
+  ]
+  const t = totals(lines)
+  expect(t.rated).toBe(1)
+  expect(Number(t.overhead.toFixed(5))).toBe(0.005)
+  expect(buildReport(lines, [], { now: NOW, session: 's1', subscription: false })).toContain('Prompts: 1 rated, 0 changed.')
+})
+
+test("says how often Haiku's judgement was wrong, and which hand-downs are paused", async () => {
+  expect(haikuLines([run({}), run({ change: 'lower', steppedUp: false })]), 'no misses: nothing to say').toEqual([])
+  const handDown = (rework: boolean) => run({ type: 'search', route: 'delegate:haiku', change: 'delegate-down', agentCalls: rework ? 2 : 1 })
+  const lines = [handDown(true), handDown(true), handDown(false), handDown(false), handDown(false), run({ type: 'lookup', change: 'lower', tier: 'opus', steppedUp: true })]
+  const out = haikuLines(lines)
+  expect(out[0]).toBe("Haiku's judgement was wrong on 3 of 6 checked prompts (50%).")
+  expect(out[1], 'Haiku was wrong on 2 of 5 search hand-downs: 40%, over the 30% line').toBe('Hand-downs of search work to Haiku (and lowering effort on it) are paused: wrong on 40% of 5.')
+  const calm = haikuLines([...lines.slice(2, 5), run({ type: 'lookup', change: 'lower', tier: 'opus', steppedUp: true })])
+  expect(calm.length, 'under 5 outcomes on any one key: nothing paused').toBe(1)
+  expect(wentWrong(lines, []).some(w => w.startsWith("Haiku's judgement was wrong on 3 of 6")), 'in the report').toBe(true)
+  expect(buildReport(lines, [], { now: NOW, session: 's1', subscription: false })).toContain("- Hand-downs of search work to Haiku")
+})
+
+test('the report names a pause only at the line Pause after misses sets, and not at all when it is off', async () => {
+  const handDown = (rework: boolean) => run({ type: 'search', route: 'delegate:haiku', change: 'delegate-down', agentCalls: rework ? 2 : 1 })
+  // Wrong on 2 of 5 search hand-downs to Haiku: 40%.
+  const lines = [handDown(true), handDown(true), handDown(false), handDown(false), handDown(false)]
+  const paused = (pause?: number | null) => haikuLines(lines, pause).some(l => l.includes('are paused'))
+  expect(paused(), 'the default line, 30%').toBe(true)
+  expect(paused(0.4), 'at the line').toBe(true)
+  expect(paused(0.5), 'under a looser line').toBe(false)
+  expect(paused(0.2)).toBe(true)
+  expect(paused(null), 'off: nothing is paused').toBe(false)
+  expect(haikuLines(lines, null)[0], 'the miss rate is still said').toContain("Haiku's judgement was wrong on 2 of 5")
+  const report = (pause?: number | null) => buildReport(lines, [], { now: NOW, session: 's1', subscription: false, ...(pause === undefined ? {} : { pause }) })
+  expect(report()).toContain('are paused')
+  expect(report(null)).not.toContain('are paused')
+  expect(report(0.5)).not.toContain('are paused')
+})
+
+test("a workflow's moved agents are counted but save nothing", async () => {
+  const sub = (x: Partial<RunLine>): RunLine => ({ at: ago(0), kind: 'subagent', type: 'search', from: 'opus', tier: 'haiku', level: 'low', estimate: 0.01, parentEstimate: 0.1, actual: 0.01, aborted: false, ...x })
+  const own = totals([sub({})])
+  expect([own.subagents, Number(own.saved.toFixed(5))], "Claude's own subagent: the same work on the parent's model, less what it cost").toEqual([1, 0.09])
+  const inWorkflow = totals([sub({ afterWorkflow: true })])
+  expect([inWorkflow.subagents, inWorkflow.saved], 'a workflow agent: counted, no saving').toEqual([1, 0])
+})
+
+test('the report says when cost measurement restarted, and counts a pause only from then on', async () => {
+  const handDown = (rework: boolean, days: number) => run({ at: ago(days), type: 'search', route: 'delegate:haiku', change: 'delegate-down', agentCalls: rework ? 2 : 1 })
+  // Wrong on 3 of 6 hand-downs, all before the restart (a day ago).
+  const lines = [handDown(true, 3), handDown(true, 3), handDown(true, 3), handDown(false, 3), handDown(false, 3), handDown(false, 3)]
+  const from = NOW - 24 * 60 * 60 * 1000
+  expect(haikuLines(lines)[0], 'the history counts all of it').toContain('wrong on 3 of 6')
+  expect(haikuLines(lines).some(l => l.includes('are paused')), 'nothing was restarted: paused').toBe(true)
+  expect(haikuLines(lines, 0.3, from)[0], 'still counted').toContain('wrong on 3 of 6')
+  expect(haikuLines(lines, 0.3, from).some(l => l.includes('are paused')), 'but rightsize ignores it now: nothing paused').toBe(false)
+  const report = buildReport(lines, [], { now: NOW, session: 's1', subscription: false, measureFrom: new Date(from).toISOString() })
+  expect(report).toContain('Cost measurement restarted on 2026-10-22.')
+  expect(report).not.toContain('are paused')
+  expect(report, 'periods still read every line').toContain('This session, last 7 days and last 30 days\n  Prompts: 6 rated')
+  expect(buildReport(lines, [], { now: NOW, session: 's1', subscription: false })).not.toContain('Cost measurement restarted')
+})
+
+const saver = (x: Partial<RunLine> = {}) => run({ change: 'lower', offered: 'lower', actual: 0.05, stay: 0.1, taken: 0.05, ...x })
+const many = (n: number, x: Partial<RunLine> = {}) => Array.from({ length: n }, () => saver(x))
+
+test('share: shows the estimated saving with API wording', async () => {
+  // Staying costs 2x: net saving 50% of what the turns would have cost.
+  const text = shareMessage(many(20), { now: NOW, subscription: false })
+  const [head, , msg, , note] = text.split('\n')
+  expect(head).toBe('Copy and paste this anywhere. rightsize sends nothing itself.')
+  expect(msg).toBe('rightsize cut my Claude Code spend by about 50% over the last 30 days, by its own estimate. It matches each prompt to the right model and effort level. Free and open source: https://aivalue.blog/rightsize')
+  expect(note).toBe("The number is rightsize's estimate from your last 30 days (20 rated prompts); /rightsize report shows the details. Edit the message as you like.")
+})
+
+test('share: subscription wording', async () => {
+  const text = shareMessage(many(25), { now: NOW, subscription: true })
+  expect(text).toContain('rightsize saved about 50% of my Claude Code usage over the last 30 days, by its own estimate.')
+  expect(text).toContain('(25 rated prompts)')
+})
+
+test('share: under 20 rated prompts gives no number', async () => {
+  const text = shareMessage(many(19), { now: NOW, subscription: false })
+  expect(text).not.toContain('by its own estimate')
+  expect(text).not.toContain('rated prompts)')
+  expect(text).toContain("I'm using rightsize, a free Claude Code mod that matches each prompt to the right model and effort level, and shows what it changed. Open source: https://aivalue.blog/rightsize")
+  expect(text).toContain('Once rightsize has 20 rated prompts and an estimated saving of 5% or more in the last 30 days, this message includes it.')
+})
+
+test('share: a saving under 5% gives no number and says so', async () => {
+  // Saves 0.004 of 0.1 per prompt: about 4%.
+  const text = shareMessage(many(20, { actual: 0.1, stay: 0.104, taken: 0.1 }), { now: NOW, subscription: false })
+  expect(text).not.toContain('by its own estimate')
+  expect(text).toContain("No saving is included: rightsize's estimate for your last 30 days is under 5%.")
+  const none = shareMessage(many(20, { change: 'none', offered: 'none' }), { now: NOW, subscription: false })
+  expect(none).toContain('under 5%')
+})
+
+test('share: lines older than 30 days or before measureFrom do not count', async () => {
+  const old = many(20, { at: ago(40) })
+  expect(shareMessage(old, { now: NOW, subscription: false })).toContain('Once rightsize has 20 rated prompts')
+  const lines = [...many(15, { at: ago(10) }), ...many(5, { at: ago(1) })]
+  expect(shareMessage(lines, { now: NOW, subscription: false })).toContain('about 50%')
+  expect(shareMessage(lines, { now: NOW, subscription: false, measureFrom: ago(5) })).toContain('Once rightsize has 20 rated prompts')
+})
+
+test('share: always writes rightsize in lowercase, with the link, and no exclamation marks', async () => {
+  for (const lines of [many(20), many(3)]) {
+    for (const subscription of [false, true]) {
+      const text = shareMessage(lines, { now: NOW, subscription })
+      expect(text).not.toMatch(/Rightsize|RIGHTSIZE/)
+      expect(text).toContain('https://aivalue.blog/rightsize')
+      expect(text).not.toContain('!')
+    }
+  }
 })

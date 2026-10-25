@@ -14,7 +14,7 @@ export type RightsizeTaskType =
   | 'writing'
   | 'other'
 
-/** The person's answers to Q1-Q4; a missing key is asked the first time it comes up. */
+/** The person's answers to Q1-Q4, or the rules they set in /config (Lowering, Raising, Stronger model, Cheaper model); a missing key is asked the first time it comes up. */
 export type RightsizeChoices = {
   lower?: 'auto' | 'ask' | 'never'
   raise?: 'auto' | 'ask' | 'never'
@@ -37,6 +37,10 @@ export type RightsizeBand = {
   canUndo?: boolean
   /** A session switch can be dropped. */
   canClear?: boolean
+  /** A suggested starting model and level (`sonnet:high`): the band offers Not now and Stop suggesting. */
+  tip?: string
+  /** The id of the run this band is about: the band offers 👍 and 👎, which tune rightsize on this machine only. */
+  rate?: string
 }
 
 declare module 'claude-code' {

@@ -260,6 +260,23 @@ export type Situation = {
   rules?: Rules
   /** Close calls seen so far, persisted: every fifth takes the route the guide did not pick. */
   ties?: number
+  /** How often the rater's judgement was wrong, by `${type}:${tier}` (see misses.ts): at the pause share or more, that model gets no hand-down and no lowering. */
+  misses?: Record<string, number>
+  /** The share of misses at which that pause starts (Pause after misses); null: never pause. MISS_BLOCK when absent. */
+  missBlock?: number | null
+  /** The highest effort rightsize raises to (Highest effort); max when absent. A ceiling under the level in use stops raises; it never lowers. */
+  ceiling?: Level
+  /** Models rightsize sends no work to: hand-offs and Claude's subagents never go to them (Use Haiku, Use Fable). */
+  without?: readonly Tier[]
+  /** False: a close call always takes the guide's pick (Explore close calls). True when absent. */
+  explore?: boolean
+}
+
+/** The share of wrong judgements at which rightsize stops trusting the rater for a task type and model: the default of Pause after misses. */
+export const MISS_BLOCK = 0.3
+const blocked = (s: Situation, type: TaskType, tier: Tier) => {
+  const line = s.missBlock === undefined ? MISS_BLOCK : s.missBlock
+  return line !== null && (s.misses?.[`${type}:${tier}`] ?? 0) >= line
 }
 
 /** The main chat doing the work at `level`, before calibration. */
@@ -346,10 +363,10 @@ export type Tie = { by: 'guide' | 'stronger' | 'explore'; over: Tier }
  * Chooses among candidate routes that already passed every other rule, sorted by cost.
  * The cheapest wins unless another is close to it (see tieBand, over the smaller run count
  * of the pair): then the one on the task type's preferred model, else the stronger model.
- * Every fifth close call takes the best close route the guide did not pick.
+ * Every fifth close call takes the best close route the guide did not pick, unless exploring is off.
  * It never widens the candidates: it only chooses among them.
  */
-function choose<T extends { tier: Tier; cost: number; n: number }>(type: TaskType, ties: number, sorted: readonly T[]): { pick: T; tie?: Tie } | undefined {
+function choose<T extends { tier: Tier; cost: number; n: number }>(type: TaskType, ties: number, sorted: readonly T[], explore = true): { pick: T; tie?: Tie } | undefined {
   const [cheapest] = sorted
   if (!cheapest) return undefined
   // A closed band (both measured CAL_FULL runs) means no close calls, even at an equal cost.
@@ -361,7 +378,7 @@ function choose<T extends { tier: Tier; cost: number; n: number }>(type: TaskTyp
   const group = [cheapest, ...close]
   const preferred = group.find(c => c.tier === PREFERRED[type])
   const guide = preferred ?? group.reduce((a, b) => (tierRank(b.tier) > tierRank(a.tier) ? b : a))
-  if (ties % EXPLORE_EVERY === EXPLORE_EVERY - 1) {
+  if (explore && ties % EXPLORE_EVERY === EXPLORE_EVERY - 1) {
     const other = group.find(c => c !== guide)
     if (other) return { pick: other, tie: { by: 'explore', over: guide.tier } }
   }
@@ -465,32 +482,50 @@ export function paceOf(limits: readonly Limit[], now: number): Pace {
   return worst
 }
 
-/** The thresholds at this pace: looser when running hot, stricter when running cool. */
-export function pacedRules(rules: Rules, p: Pace): Rules {
-  if (p.mode === 'max') return { handOff: Math.max(rules.handOff, 0.95), lower: 1 }
-  if (p.mode === 'hot') return { handOff: Math.min(0.95, rules.handOff + 0.15), lower: Math.min(0.99, rules.lower + 0.07) }
-  if (p.mode === 'cool') return { handOff: Math.max(0.3, rules.handOff - 0.2), lower: Math.max(0.5, rules.lower - 0.1) }
+/**
+ * The thresholds at this pace: looser when running hot, stricter when running cool.
+ * A threshold you set (`set`) stays as you set it: pacing moves only one left at its default.
+ */
+export function pacedRules(rules: Rules, p: Pace, set: { handOff?: boolean; lower?: boolean } = {}): Rules {
+  const moved = (to: Rules): Rules => ({ handOff: set.handOff ? rules.handOff : to.handOff, lower: set.lower ? rules.lower : to.lower })
+  if (p.mode === 'max') return moved({ handOff: Math.max(rules.handOff, 0.95), lower: 1 })
+  if (p.mode === 'hot') return moved({ handOff: Math.min(0.95, rules.handOff + 0.15), lower: Math.min(0.99, rules.lower + 0.07) })
+  if (p.mode === 'cool') return moved({ handOff: Math.max(0.3, rules.handOff - 0.2), lower: Math.max(0.5, rules.lower - 0.1) })
   return rules
 }
 
 const WINDOW_NAME = { five_hour: '5-hour', seven_day: '7-day' } as const
 
-/** Why the thresholds moved, for the band; empty at a normal pace. */
-export function paceNote(p: Pace) {
+/**
+ * Why a decision moved, for the band; empty at a normal pace. `acts` is false when pacing changed
+ * nothing because every setting it could move was yours: a window nearly used up is then only reported.
+ */
+export function paceNote(p: Pace, acts = true) {
   if (p.mode === 'normal' || !p.window) return ''
   const w = WINDOW_NAME[p.window]
-  if (p.mode === 'max') return `${Math.round(p.used ?? 0)}% of the ${w} window is used, so rightsize saves all it can.`
+  if (p.mode === 'max') return `${Math.round(p.used ?? 0)}% of the ${w} window is used${acts ? ', so rightsize saves all it can' : ''}.`
+  if (!acts) return ''
   if (p.mode === 'hot') return `The ${w} window is on pace to run out before it resets, so rightsize saves harder.`
   return `Much of the ${w} window will go unused, so rightsize puts quality first.`
 }
 
 const clampFloor = (l: Level, floor: Level) => (levelRank(l) < levelRank(floor) ? floor : l)
+const clampCeiling = (l: Level, ceiling: Level) => (levelRank(l) > levelRank(ceiling) ? ceiling : l)
+const ceilingOf = (s: Situation): Level => s.ceiling ?? 'max'
+
+/** A level on the session's model: a raise stops at the ceiling, and never falls below the level in use. */
+const capRaise = (target: Level, s: Situation) => {
+  if (levelRank(target) <= levelRank(s.level)) return target
+  const capped = clampCeiling(target, ceilingOf(s))
+  return levelRank(capped) > levelRank(s.level) ? capped : s.level
+}
 
 // The effort-only plan: lower or raise on the main model, or nothing.
 export function effortPlan(r: Rating, s: Situation, floor: Level): Plan {
-  const target = clampFloor(r.level, floor)
+  const target = capRaise(clampFloor(r.level, floor), s)
   if (target === s.level) return { kind: 'none', why: 'the level in use fits' }
   if (levelRank(target) > levelRank(s.level)) return { kind: 'effort', dir: 'raise', level: target }
+  if (blocked(s, r.type, s.tier)) return { kind: 'none', why: `lowering ${r.type} work on ${TIER_NAME[s.tier]} is paused: the rating was wrong too often` }
   // A per-prompt lower switches twice: down for this turn, back for the next.
   const now = mainCost(r, s, s.level, 0)
   const lowered = mainCost(r, s, target, 2)
@@ -507,23 +542,25 @@ export function plan(r: Rating, s: Situation, floor: Level): Plan {
   const stay = mainCost(r, s, s.level, 0)
   const routes = TIERS.flatMap(t => {
     const need = r.fit[t]
-    if (t === s.tier || !need) return []
-    const level = clampFloor(need, floor)
+    if (t === s.tier || !need || s.without?.includes(t)) return []
+    // A hand-down to a model the rater has been wrong about for this kind of work waits until its record mends.
+    if (tierRank(t) < tierRank(s.tier) && blocked(s, r.type, t)) return []
+    const level = clampCeiling(clampFloor(need, floor), ceilingOf(s))
     return [{ tier: t, level, cost: delegateCost(r, s, t, level), n: runsOn(s.cal, delegateKeys(r.type, t, level)) }]
   }).sort((a, b) => a.cost - b.cost)
   const ties = s.ties ?? 0
   const own = r.fit[s.tier]
   if (!own) {
-    const up = choose(r.type, ties, routes.filter(x => tierRank(x.tier) > tierRank(s.tier)))
+    const up = choose(r.type, ties, routes.filter(x => tierRank(x.tier) > tierRank(s.tier)), s.explore !== false)
     if (up) return { kind: 'delegate', dir: 'up', tier: up.pick.tier, level: up.pick.level, delegateCost: up.pick.cost, mainCost: stay, ...(up.tie ? { tie: up.tie } : {}) }
     return effortPlan(r, s, floor)
   }
-  const level = clampFloor(own, floor)
+  const level = capRaise(clampFloor(own, floor), s)
   const atNeed = mainCost(r, s, level, level === s.level ? 0 : 2)
   const alt = levelRank(level) > levelRank(s.level) ? atNeed : Math.min(stay, atNeed)
   // Only routes under the hand-off share are candidates; a close call is chosen among them.
   const bar = (s.rules ?? DEFAULT_RULES).handOff * alt
-  const down = choose(r.type, ties, routes.filter(x => tierRank(x.tier) < tierRank(s.tier) && x.cost < bar))
+  const down = choose(r.type, ties, routes.filter(x => tierRank(x.tier) < tierRank(s.tier) && x.cost < bar), s.explore !== false)
   if (down) {
     return {
       kind: 'delegate',
@@ -566,17 +603,17 @@ export function sizeSubagent(r: Rating, s: Situation, parent: Tier, floor: Level
     const keys = subagentKeys(r.type, t, level)
     return { raw, cost: raw * routeFactor(s.cal, keys) * reworkFactor(parent, t), n: runsOn(s.cal, keys) }
   }
-  const p = priced(parent, clampFloor(own, floor))
+  const p = priced(parent, clampCeiling(clampFloor(own, floor), ceilingOf(s)))
   const bar = (s.rules ?? DEFAULT_RULES).handOff * p.cost
   const weaker = TIERS.flatMap(t => {
     const need = r.fit[t]
-    if (tierRank(t) >= tierRank(parent) || !need) return []
-    const level = clampFloor(need, floor)
+    if (tierRank(t) >= tierRank(parent) || !need || s.without?.includes(t)) return []
+    const level = clampCeiling(clampFloor(need, floor), ceilingOf(s))
     return [{ tier: t, level, ...priced(t, level), parentCost: p.cost, parentRaw: p.raw }]
   })
     .filter(x => x.cost < bar)
     .sort((a, b) => a.cost - b.cost)
-  const chosen = choose(r.type, s.ties ?? 0, weaker)
+  const chosen = choose(r.type, s.ties ?? 0, weaker, s.explore !== false)
   if (!chosen) return undefined
   const { n: _n, ...best } = chosen.pick
   return { ...best, ...(chosen.tie ? { tie: chosen.tie } : {}) }

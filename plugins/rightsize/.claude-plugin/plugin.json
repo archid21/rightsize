@@ -1,7 +1,7 @@
 {
   "name": "rightsize",
   "version": "0.6.0",
-  "description": "Right-sizes each Claude Code prompt: rates the effort, model and cost it needs, then lowers or raises effort, or hands the work to a stronger or cheaper subagent, the way you chose the first time each case came up",
+  "description": "Right-sizes each Claude Code prompt: rates the effort, model and cost it needs, then lowers or raises effort, or hands the work to a stronger or cheaper subagent, the way you chose the first time each case came up. It scores Haiku's ratings against what happened, with a Sonnet spot-check and your 👍 and 👎, and stops trusting them where they keep missing. A setting you make always wins: rightsize's automatic behaviour never changes or bypasses it",
   "types": "./types/index.d.ts",
   "author": {
     "name": "Archi Dubey",
@@ -19,14 +19,76 @@
         "high"
       ]
     },
-    "billing": {
+    "ceiling": {
       "type": "string",
-      "title": "Reports",
-      "description": "api: subagent reports show dollars. subscription: they show the share of usage, with API prices beside it. Read off each response's rate limits when they show it; setting it here counts as your answer when they don't.",
-      "default": "api",
+      "title": "Highest effort",
+      "description": "The highest effort level rightsize will raise to. It never goes above this: not when a prompt needs more, not mid-turn when Claude looks stuck (those also never reach max), and not for the subagent it hands work to, which runs at most at this level. A level you are already on above it is left alone: this stops raises, it never lowers.",
+      "default": "max",
       "options": [
-        "api",
-        "subscription"
+        "high",
+        "xhigh",
+        "max"
+      ]
+    },
+    "lowerRule": {
+      "type": "string",
+      "title": "Lowering",
+      "description": "What to do when a prompt needs less effort. ask me: ask each time. lower automatically: lower without asking. never lower: never. not set: ask the first time it comes up (the default). A rule set here is used as it is and its question is never asked. The band's buttons and /rightsize settings set it too; set it back to not set to be asked again.",
+      "default": "not set",
+      "options": [
+        "ask me",
+        "lower automatically",
+        "never lower",
+        "not set"
+      ]
+    },
+    "raiseRule": {
+      "type": "string",
+      "title": "Raising",
+      "description": "What to do when a prompt needs more effort on the same model. ask me: ask each time. raise automatically: raise without asking. never raise: never. not set: ask the first time it comes up (the default). This rule also decides raises mid-turn when Claude looks stuck. A rule set here is used as it is and its question is never asked, even when a usage window is nearly used up.",
+      "default": "not set",
+      "options": [
+        "ask me",
+        "raise automatically",
+        "never raise",
+        "not set"
+      ]
+    },
+    "upRule": {
+      "type": "string",
+      "title": "Stronger model",
+      "description": "What to do when a stronger model than yours would do better. ask first: ask before sending the work to a subagent on it. always send: send it without asking. stay, raise effort only: stay on your model and raise effort. ask each time: ask what to do each time. not set: ask the first time it comes up (the default). A rule set here is used as it is and its question is never asked, even when a usage window is nearly used up.",
+      "default": "not set",
+      "options": [
+        "ask first",
+        "always send",
+        "stay, raise effort only",
+        "ask each time",
+        "not set"
+      ]
+    },
+    "downRule": {
+      "type": "string",
+      "title": "Cheaper model",
+      "description": "What to do when a task could run on a cheaper model than yours. ask first: ask before sending it to a subagent on that model. always send: send it without asking. stay, lower effort only: stay on your model and lower effort. ask each time: ask what to do each time. not set: ask the first time it comes up (the default). A rule set here is used as it is and its question is never asked.",
+      "default": "not set",
+      "options": [
+        "ask first",
+        "always send",
+        "stay, lower effort only",
+        "ask each time",
+        "not set"
+      ]
+    },
+    "remember": {
+      "type": "string",
+      "title": "Remember choices",
+      "description": "What happens to your answers to the four questions above. ask: after your first answer, ask whether to use your choices in every session (the default). every session: keep every answer for later sessions, without asking. this session: never keep an answer and never ask; answers last until the session ends. A rule set in its row above is always kept.",
+      "default": "ask",
+      "options": [
+        "ask",
+        "every session",
+        "this session"
       ]
     },
     "handOff": {
@@ -54,6 +116,26 @@
         "95%"
       ]
     },
+    "useHaiku": {
+      "type": "string",
+      "title": "Use Haiku",
+      "description": "on: rightsize may hand work to Haiku, and move Claude's own subagents to it. off: it never does, and the starting-point comparison leaves Haiku out. Haiku still rates your prompts (it is the rater, not a worker), so this does not stop the rating calls.",
+      "default": "on",
+      "options": [
+        "on",
+        "off"
+      ]
+    },
+    "useFable": {
+      "type": "string",
+      "title": "Use Fable",
+      "description": "on: rightsize may hand work to Fable when the work needs a stronger model. off: it never does, and the starting-point comparison leaves Fable out. If you work on Fable yourself, nothing changes.",
+      "default": "on",
+      "options": [
+        "on",
+        "off"
+      ]
+    },
     "subagents": {
       "type": "string",
       "title": "Claude's subagents",
@@ -64,10 +146,45 @@
         "off"
       ]
     },
+    "workflows": {
+      "type": "string",
+      "title": "Workflows",
+      "description": "What rightsize does once Claude starts a workflow (ultracode, or asked for): many helper agents at once, often 10 or more, each picking its own model. ask: ask before the first workflow starts (the default); until you answer, rightsize pauses for it. pause rightsize: hand nothing off for the rest of the session, and leave the workflow's agents alone. follow my rules: hand-offs follow your Stronger model and Cheaper model rules as usual; the workflow's agents are left alone. right-size every agent: as follow my rules, and each workflow agent that names no model is rated by Haiku (one rating call each) and runs on the cheapest model that fits, under Claude's subagents, Use Haiku, Use Fable and Pause after misses. Claude's subagents set to off keeps the agents alone in every case. Whichever you pick, measurement stays paused after a workflow: calibration learns nothing and no saving is claimed.",
+      "default": "ask",
+      "options": [
+        "ask",
+        "pause rightsize",
+        "follow my rules",
+        "right-size every agent"
+      ]
+    },
+    "explore": {
+      "type": "string",
+      "title": "Explore close calls",
+      "description": "on: when two models that fit cost about the same, rightsize picks by task type, and one close call in five takes the other model so both get measured. off: a close call always takes the task-type pick, so the other model may never be measured.",
+      "default": "on",
+      "options": [
+        "on",
+        "off"
+      ]
+    },
+    "missPause": {
+      "type": "string",
+      "title": "Pause after misses",
+      "description": "Haiku's rating is scored against what happens: rework on hand-offs, lowered turns that stepped back up, mid-turn raises, your 👍 and 👎, and Sonnet's checks. When its miss rate for a kind of work on a model reaches this share, rightsize stops handing that work down to that model and stops lowering effort on it, until the rate falls back under it. off: never pause.",
+      "default": "30%",
+      "options": [
+        "off",
+        "20%",
+        "30%",
+        "40%",
+        "50%"
+      ]
+    },
     "pacing": {
       "type": "string",
       "title": "Budget pacing",
-      "description": "on: on a subscription, move the thresholds by how fast the 5-hour and 7-day windows are being used. Running out early: hand off and lower more readily. Much left near a reset: hand off only for big savings, and raise without asking. Over 90% used: save all it can and skip raises. off: always use the thresholds above.",
+      "description": "on: on a subscription, move the thresholds by how fast the 5-hour and 7-day windows are being used. Running out early: hand off and lower more readily. Much left near a reset: hand off only for big savings. Over 90% used: save all it can, which skips raises and stronger models while Raising and Stronger model are not set. A threshold or rule you set stays as you set it: pacing moves only what is left at its default. off: always use the thresholds above.",
       "default": "on",
       "options": [
         "on",
@@ -77,17 +194,63 @@
     "escalation": {
       "type": "string",
       "title": "Raise when stuck",
-      "description": "on: when a turn shows Claude is stuck (the same tool call failing twice, 3 tool calls failing, the same call running 3 times, or 3x the rated steps), raise effort one level for the rest of the turn, at most twice and never to max. It follows your Raising rule: automatic raises without asking, otherwise it asks. off: never raise mid-turn.",
+      "description": "on: when a turn shows Claude is stuck (see Stuck sensitivity), raise effort one level for the rest of the turn, at most twice, never above Highest effort and never to max. It follows your Raising rule: automatic raises without asking, otherwise it asks. off: never raise mid-turn.",
       "default": "on",
       "options": [
         "on",
         "off"
       ]
     },
+    "stuck": {
+      "type": "string",
+      "title": "Stuck sensitivity",
+      "description": "How soon Claude counts as stuck. normal: the same tool call failing twice, 3 tool calls failing, the same call running 3 times, or a turn passing 3x the rated steps (at least 15). relaxed: the same call failing 3 times, 4 calls failing, a call running 4 times, or 4x the steps (at least 20). sensitive: the same call failing twice, 2 calls failing, a call running twice, or 2x the steps (at least 10).",
+      "default": "normal",
+      "options": [
+        "relaxed",
+        "normal",
+        "sensitive"
+      ]
+    },
+    "minWords": {
+      "type": "string",
+      "title": "Rate prompts from",
+      "description": "Prompts shorter than this many words are sent as they are, without a rating. A lower number rates more prompts, at one Haiku call each.",
+      "default": "6 words",
+      "options": [
+        "3 words",
+        "6 words",
+        "10 words",
+        "20 words"
+      ]
+    },
+    "raterCheck": {
+      "type": "string",
+      "title": "Rater check",
+      "description": "every 25, every 50 or every 100: on every that many rated prompts, ask Sonnet in the background to rate the same prompt, and log where it says a model would struggle that Haiku said does the work. These checks and the other outcomes give a miss rate per task type and model (see Pause after misses). Each check costs one Sonnet call and never delays the prompt. off: no checks (the other outcomes still count).",
+      "default": "every 50",
+      "options": [
+        "every 25",
+        "every 50",
+        "every 100",
+        "off"
+      ]
+    },
+    "startTips": {
+      "type": "string",
+      "title": "Start suggestions",
+      "description": "weekly or monthly: every 7 or 30 days, estimate what the last 30 days of rated prompts would have cost from Sonnet and Opus at medium and high, rightsize's changes counted. Prompts Haiku's rating has often got wrong for a model count against that model's start. When another start is at least 15% cheaper (25% while it has few measured runs) without sending over 1 prompt in 10 to a stronger model, or when over 15% of prompts needed a stronger model or more effort, the band suggests switching with /model. rightsize never changes your model itself. off: no suggestions; /rightsize report still shows the comparison.",
+      "default": "weekly",
+      "options": [
+        "weekly",
+        "monthly",
+        "off"
+      ]
+    },
     "idleWarning": {
       "type": "string",
       "title": "Idle warning",
-      "description": "On API billing, when a session under 200K tokens sat idle past the cache's life (1 hour, or 5 minutes when prices.json says 5m), ask before the next prompt writes the whole conversation to the cache again, when that costs over this much more than a warm cache. You can send it or hold it to /clear or /compact first. Subscriptions are left to Claude Code's own warning.",
+      "description": "When a session under 200K tokens sat idle past the cache's life (1 hour, or 5 minutes when prices.json says 5m), ask before the next prompt writes the whole conversation to the cache again, when that costs over this much more than a warm cache. You can send it or hold it to /clear or /compact first. On a subscription the bar is in API-equivalent dollars, and the question gives the cost as a share of the 5-hour window once runs show the rate.",
       "default": "over $0.10",
       "options": [
         "over $0.10",
@@ -96,10 +259,20 @@
         "off"
       ]
     },
+    "billing": {
+      "type": "string",
+      "title": "Reports",
+      "description": "api: subagent reports show dollars. subscription: they show the share of usage and of the 5-hour window, with API-equivalent dollars beside it. rightsize reads this off each response's rate limits when they show it. A value set here is your answer: the rate limits never change it, and /rightsize says when they disagree.",
+      "default": "api",
+      "options": [
+        "api",
+        "subscription"
+      ]
+    },
     "band": {
       "type": "string",
       "title": "Band",
-      "description": "The row above the prompt that shows what rightsize did, with buttons to undo it or change the rule. when it acts: only when it changes something. always: on every rated prompt, no change included. off: status line only.",
+      "description": "The row above the prompt that shows what rightsize did, with buttons to undo it, mark a hand-off or lowering 👍 or 👎 (kept on this machine) or change the rule. when it acts: only when it changes something. always: on every rated prompt, no change included. off: status line only.",
       "default": "when it acts",
       "options": [
         "when it acts",
@@ -107,14 +280,23 @@
         "off"
       ]
     },
+    "share": {
+      "type": "string",
+      "title": "Share anonymous feedback",
+      "description": "on: send anonymous numbers to the rightsize author, at most once an hour, to tune its defaults: task types, models, effort levels, rated levels, token guesses, estimated and real costs, what went wrong, Sonnet checks, and your 👍 and 👎, with a random install id. Never prompts, code, file names, paths, tool or server names, or session ids. Only what is logged after you turn it on is sent. off (default): nothing is sent; turning it off and on again starts a new install id.",
+      "default": "off",
+      "options": [
+        "off",
+        "on"
+      ]
+    },
     "priceCheck": {
       "type": "string",
       "title": "Price check",
-      "description": "monthly: compare prices.json with Anthropic's pricing page every 30 days and update it. check now: check once right away, then back to monthly. off: never check.",
+      "description": "monthly: compare prices.json with Anthropic's pricing page every 30 days and update it. off: never check. /rightsize prices checks right away, whatever this says.",
       "default": "monthly",
       "options": [
         "monthly",
-        "check now",
         "off"
       ]
     }

@@ -9,9 +9,10 @@ You need Claude Code 2.1.287 or newer (`claude --version`). From the repository 
 ```
 claude plugin validate plugins/rightsize
 claude plugin test plugins/rightsize
+node scripts/check-settings.mjs
 ```
 
-Both must pass. Add a test for any behaviour you change: `hooks/*.test.ts`, using `claude-code/testing`.
+All three must pass. Add a test for any behaviour you change: `hooks/*.test.ts`, using `claude-code/testing`.
 
 ## Try it in a session
 
@@ -23,6 +24,7 @@ claude --plugin-dir plugins/rightsize
 
 - `hooks/register.tsx`: the hooks, the four questions, the band above the prompt and the reports.
 - `hooks/cost.ts`: the cost model, plans and calibration. These are pure functions, tested in `cost.test.ts`.
+- `hooks/settings.ts`: the `/config` rows (title, options, default) and which of them are yours. A new row goes in `plugin.json`, in this table, in `applyOption` in `register.tsx`, in the README's `/config` lists, and gets a scenario in `register.test.ts`. `scripts/check-settings.mjs` fails until all of those agree.
 - `hooks/rate.ts`: the Haiku rating prompt and its parser.
 - `hooks/prices.ts`: the pricing-page parser and the monthly check.
 - `prices.json`: the price table, in US dollars per 1M tokens.

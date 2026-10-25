@@ -611,36 +611,36 @@ async function pick<V>($: EngineInterface, q: Question<V>): Promise<V | undefine
 
 const RULE_IDS = Object.keys(RULE_KEYS) as (keyof Choices)[]
 
-// The directory reads a settings write only with its key as fixed text, so each row has its own call.
+// The directory reads a settings write only as { key: 'fixed text', value: ... }, so each row has its own call.
 // The return type makes a new row without a case here fail the type check.
 function writeSetting($: EngineInterface, key: SettingKey, value: string): Promise<ConfigSetResult> {
   switch (key) {
-    case 'floor': return $.config.set({ key: 'rightsize.floor', value })
-    case 'ceiling': return $.config.set({ key: 'rightsize.ceiling', value })
-    case 'lowerRule': return $.config.set({ key: 'rightsize.lowerRule', value })
-    case 'raiseRule': return $.config.set({ key: 'rightsize.raiseRule', value })
-    case 'upRule': return $.config.set({ key: 'rightsize.upRule', value })
-    case 'downRule': return $.config.set({ key: 'rightsize.downRule', value })
-    case 'remember': return $.config.set({ key: 'rightsize.remember', value })
-    case 'handOff': return $.config.set({ key: 'rightsize.handOff', value })
-    case 'lowering': return $.config.set({ key: 'rightsize.lowering', value })
-    case 'useHaiku': return $.config.set({ key: 'rightsize.useHaiku', value })
-    case 'useFable': return $.config.set({ key: 'rightsize.useFable', value })
-    case 'subagents': return $.config.set({ key: 'rightsize.subagents', value })
-    case 'workflows': return $.config.set({ key: 'rightsize.workflows', value })
-    case 'explore': return $.config.set({ key: 'rightsize.explore', value })
-    case 'missPause': return $.config.set({ key: 'rightsize.missPause', value })
-    case 'pacing': return $.config.set({ key: 'rightsize.pacing', value })
-    case 'escalation': return $.config.set({ key: 'rightsize.escalation', value })
-    case 'stuck': return $.config.set({ key: 'rightsize.stuck', value })
-    case 'minWords': return $.config.set({ key: 'rightsize.minWords', value })
-    case 'raterCheck': return $.config.set({ key: 'rightsize.raterCheck', value })
-    case 'startTips': return $.config.set({ key: 'rightsize.startTips', value })
-    case 'idleWarning': return $.config.set({ key: 'rightsize.idleWarning', value })
-    case 'billing': return $.config.set({ key: 'rightsize.billing', value })
-    case 'band': return $.config.set({ key: 'rightsize.band', value })
-    case 'share': return $.config.set({ key: 'rightsize.share', value })
-    case 'priceCheck': return $.config.set({ key: 'rightsize.priceCheck', value })
+    case 'floor': return $.config.set({ key: 'rightsize.floor', value: value })
+    case 'ceiling': return $.config.set({ key: 'rightsize.ceiling', value: value })
+    case 'lowerRule': return $.config.set({ key: 'rightsize.lowerRule', value: value })
+    case 'raiseRule': return $.config.set({ key: 'rightsize.raiseRule', value: value })
+    case 'upRule': return $.config.set({ key: 'rightsize.upRule', value: value })
+    case 'downRule': return $.config.set({ key: 'rightsize.downRule', value: value })
+    case 'remember': return $.config.set({ key: 'rightsize.remember', value: value })
+    case 'handOff': return $.config.set({ key: 'rightsize.handOff', value: value })
+    case 'lowering': return $.config.set({ key: 'rightsize.lowering', value: value })
+    case 'useHaiku': return $.config.set({ key: 'rightsize.useHaiku', value: value })
+    case 'useFable': return $.config.set({ key: 'rightsize.useFable', value: value })
+    case 'subagents': return $.config.set({ key: 'rightsize.subagents', value: value })
+    case 'workflows': return $.config.set({ key: 'rightsize.workflows', value: value })
+    case 'explore': return $.config.set({ key: 'rightsize.explore', value: value })
+    case 'missPause': return $.config.set({ key: 'rightsize.missPause', value: value })
+    case 'pacing': return $.config.set({ key: 'rightsize.pacing', value: value })
+    case 'escalation': return $.config.set({ key: 'rightsize.escalation', value: value })
+    case 'stuck': return $.config.set({ key: 'rightsize.stuck', value: value })
+    case 'minWords': return $.config.set({ key: 'rightsize.minWords', value: value })
+    case 'raterCheck': return $.config.set({ key: 'rightsize.raterCheck', value: value })
+    case 'startTips': return $.config.set({ key: 'rightsize.startTips', value: value })
+    case 'idleWarning': return $.config.set({ key: 'rightsize.idleWarning', value: value })
+    case 'billing': return $.config.set({ key: 'rightsize.billing', value: value })
+    case 'band': return $.config.set({ key: 'rightsize.band', value: value })
+    case 'share': return $.config.set({ key: 'rightsize.share', value: value })
+    case 'priceCheck': return $.config.set({ key: 'rightsize.priceCheck', value: value })
   }
 }
 

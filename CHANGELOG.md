@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.1 (2026-10-25)
 
 - The plugin description says what rightsize does for you, not how it works.
 - `/rightsize reset` no longer says a setting is "back to its default" when Claude Code refused to change it (as the desktop app does). It says the setting could not be changed from there, gives the `claude plugin configure` command to run in a terminal, and logs Claude Code's reason in `rightsize.log`.

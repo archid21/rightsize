@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.4 (2026-10-25)
 
 - **Ready for Anthropic's plugin directory.** Each `/config` row is written with its own fixed key, so the directory can check every settings write (rightsize still writes only its own `rightsize.*` rows). A parameter that shared its name with `on` is renamed. No behavior changes.
 - The plugin README has an Install line and a **What it touches** section: each hook and what it does, the only programs it runs (`mkdir` and `chmod`, for its log folder), the files it writes, what it reads, and the two hosts it contacts.

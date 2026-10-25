@@ -4,6 +4,10 @@
 
 Created by [Archi Dubey](https://github.com/archid21). MIT license.
 
+![rightsize in Claude Code: it asks once, then hands a refactor of Express's lib/ folder to a Sonnet subagent and reports the cost](docs/images/rightsize-demo.gif)
+
+*One demo run in the [Express](https://github.com/expressjs/express) repository. rightsize's choice depends on the task, your model and your settings, so yours may differ.*
+
 ## Before you use it
 
 rightsize is a work in progress. It changes how Claude Code spends your tokens, and its choices are estimates. Savings are not guaranteed: some turns can cost more, not less, and a cheaper model can sometimes do weaker work. Use it at your own risk, and check `/rightsize report` to see what it really did for you.
@@ -28,6 +32,8 @@ Not every prompt needs your strongest model thinking its hardest. "Rename this v
 - The main chat writes the helper a clear brief, checks the result, and asks for fixes if needed. If the helper still can't get it right, the main chat does the work itself.
 - When Claude starts its own helpers, rightsize moves them to a cheaper model too, if that model can do the job.
 
+![The band above the prompt says rightsize is sending the task to a Sonnet subagent at medium effort, at about 26% of the usage of staying on Opus](docs/images/2-hands-off.png)
+
 ### It looks after your budget
 
 - On a subscription, it watches your 5-hour and weekly limits. If you are using them up too fast, it saves harder. If you will have plenty left over, it lets Claude work harder.
@@ -40,12 +46,16 @@ Not every prompt needs your strongest model thinking its hardest. "Rename this v
 - `/rightsize report` opens with one sentence on how much it saved in the last 30 days, then a table of what it changed and saved this session, in the last 7 days and in the last 30 days. Below that it lists which turns it did not count as savings and why.
 - The report also shows the fixed context that comes with every message (tools, instructions, plugins), largest part first, and the next steps to cut it.
 
+![After the hand-off, rightsize reports that Sonnet used about 7% of the usage of staying on Opus, with buttons to rate the result or change the rule](docs/images/3-result.png)
+
 ### You stay in charge
 
 - The first time each kind of change comes up, rightsize asks you what to do: do it automatically, ask each time, or never. You can also set your answer ahead of time in `/config`.
 - A small bar above the prompt tells you what it changed, with buttons to undo it or change your rule.
 - Every limit and feature can be changed or turned off in `/config`.
 - **Your setting wins.** A value you set yourself is never changed or bypassed by rightsize's automatic behavior. Its automatic adjustments only act on settings you left at their default.
+
+![rightsize asks what to do when a task could run on a cheaper model than Opus, with "Send it to a cheaper subagent" selected](docs/images/1-asks-first.png)
 
 ## Install
 

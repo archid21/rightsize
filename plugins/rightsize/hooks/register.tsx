@@ -1,4 +1,4 @@
-import type { AgentSpawnInput, EngineInterface, PromptSubmitInput, Register } from 'claude-code'
+import type { AgentSpawnInput, ConfigSetResult, EngineInterface, PromptSubmitInput, Register } from 'claude-code'
 import type {
   RightsizeBand as Band,
   RightsizeBandMode as BandMode,
@@ -613,7 +613,7 @@ const RULE_IDS = Object.keys(RULE_KEYS) as (keyof Choices)[]
 
 // The directory reads a settings write only with its key as fixed text, so each row has its own call.
 // The return type makes a new row without a case here fail the type check.
-function writeSetting($: EngineInterface, key: SettingKey, value: string): ReturnType<EngineInterface['config']['set']> {
+function writeSetting($: EngineInterface, key: SettingKey, value: string): Promise<ConfigSetResult> {
   switch (key) {
     case 'floor': return $.config.set({ key: 'rightsize.floor', value })
     case 'ceiling': return $.config.set({ key: 'rightsize.ceiling', value })

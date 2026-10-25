@@ -80,6 +80,12 @@ Once a week (or a month) at session start, the mod estimates what the last 30 da
   - If the fetch fails, or the page no longer shows all four models, nothing changes and the check runs again at the next session start.
   - To check sooner, run `/rightsize prices`.
 
+## Turn it off or remove it
+
+- `/mods` pauses it; `/config` turns off single features.
+- `claude plugin disable rightsize@archid21` stops it loading and keeps its settings and learning; `claude plugin enable rightsize@archid21` brings it back.
+- `claude plugin uninstall rightsize@archid21` removes it and the settings saved in `/config`. Its stored data and logs stay on disk: `rm ~/.claude/plugins/store/rightsize_*.json ~/.claude/mods-logs/rightsize*` deletes them. If sharing was on, copy your install ID from `/rightsize` first and email rightsize@aivalue.blog to have shared data deleted.
+
 ## Limits
 
 - The app's effort picker does not move. The status line shows the level in use.

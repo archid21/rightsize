@@ -232,6 +232,41 @@ The band shows in the CLI and the desktop app. VS Code and the mobile app keep t
   - **Share anonymous feedback**: off (default) or on. See [Privacy](#privacy).
   - **Price check**: monthly (default) or off. `/rightsize prices` checks right away either way. A stored "check now" from an older version is not an option any more, and counts as unset (monthly).
 
+## Turn it off or remove it
+
+**Pause it.** Type `/mods` and switch rightsize off. Claude Code then works as if rightsize weren't there, and nothing is lost. Switch it back on the same way. To turn off only one feature, such as hand-offs or the band, use its row in `/config`.
+
+**Disable it, keeping your settings and what it has learned:**
+
+```bash
+claude plugin disable rightsize@archid21
+```
+
+New sessions start without it. `claude plugin enable rightsize@archid21` turns it back on where it left off.
+
+**Uninstall it:**
+
+1. If you turned on **Share anonymous feedback**, type `/rightsize` and copy your install ID first. Uninstalling stops all sending, but data already shared stays on the server until you ask for it to be deleted: email rightsize@aivalue.blog with that ID.
+2. Remove the plugin. This also clears the settings you saved in `/config`:
+
+   ```bash
+   claude plugin uninstall rightsize@archid21
+   ```
+
+3. Optional: remove the marketplace entry too:
+
+   ```bash
+   claude plugin marketplace remove archid21
+   ```
+
+4. Optional: delete what rightsize left on your disk. Uninstalling keeps its stored data (your answers, calibration and counters) and its logs:
+
+   ```bash
+   rm ~/.claude/plugins/store/rightsize_*.json ~/.claude/mods-logs/rightsize*
+   ```
+
+   Skip this step if you might come back: reinstalling picks up the stored data where it left off.
+
 ## Logs
 
 These are in `~/.claude/mods-logs/`:

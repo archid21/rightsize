@@ -113,7 +113,7 @@ After your first answer, rightsize asks whether to use your choices in every ses
 
 ## How it decides
 
-- **Your setting wins.** A value you set in `/config`, or answered when rightsize asked, is never changed or bypassed by rightsize's own behavior. That covers the thresholds, the four rules, **Reports**, and every other row. Budget pacing moves only the thresholds you left at their default. A window nearly used up skips raises and stronger models only while their rule has no answer. Rate limits never change **Reports** once you set it; `/rightsize` says when they disagree. A value counts as yours once you set it, even if you set it to the number that is the default. `/rightsize` lists every setting with **(yours)** or **(default)**.
+- **Your setting wins.** A value you set in `/config`, or answered when rightsize asked, is never changed or bypassed by rightsize's own behavior. That covers the thresholds, the four rules, **Reports**, and every other row. Budget pacing moves only the thresholds you left at their default. A window nearly used up skips raises and stronger models only while their rule has no answer. Rate limits never change **Reports** once you set it; `/rightsize` says when they disagree. A value counts as yours once you set it, even if you set it to the number that is the default. `/rightsize` lists the settings you changed; the rest are defaults, shown in `/config`.
 - **Effort changes can cost a cache rewrite.** Anthropic's docs say that changing effort at the top level of a request resets the conversation's prompt cache. A per-message change (beta) keeps it. rightsize counts that cost, and it measures what Claude Code really does: every effort switch is logged with whether the cache survived. Lowering effort happens only when it pays.
 - **Changing the model always means a subagent.** The main chat keeps its model and its cache. A hidden note beside your prompt (your text is unchanged) asks it to:
   1. write a brief with a "Done means" list
@@ -186,7 +186,8 @@ The band shows in the CLI and the desktop app. VS Code and the mobile app keep t
 
 ## Commands and settings
 
-- `/rightsize`: every setting with its value and **(yours)** or **(default)**, the session switch, the calibration and the cache-switch results.
+- `/rightsize`: the settings you changed (the rest are defaults, shown in `/config`), the session switch, the measured runs and the cache-switch results.
+- `/rightsize help`: every command and what it does. An unknown command shows the same list.
 - `/rightsize report`: what rightsize did for you this session, in the last 7 days and in the last 30 days.
   - How many prompts it rated and changed, how often you kept your level, and how many of Claude's subagents ran on a cheaper model.
   - The estimated saving after the cost of its own Haiku rating calls. Extra spending from raising effort or using stronger models is shown on its own line.

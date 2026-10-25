@@ -532,7 +532,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(line.subLevel).toBe('high')
     expect(line.fit).toEqual({ haiku: 'high', sonnet: 'high', opus: 'high', fable: 'medium' })
     expect([line.read, line.write, line.steps], "the rater's token guesses").toEqual([20000, 2000, 6])
-    expect((await d.command('')).text ?? '', 'the run count counts the run once').toContain('Calibration: 1 measured run(s).')
+    expect((await d.command('')).text ?? '', 'the run count counts the run once').toContain('Measured runs: 1')
   })
 
   test(`runs a subagent Claude starts on its own on the cheapest model that fits, at that model's level (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -699,7 +699,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.complete('t1')
     const runs = (h.files['/home/test/.claude/mods-logs/rightsize-runs.jsonl'] ?? '').trim().split('\n')
     expect((JSON.parse(last(runs) ?? '{}') as { pace?: unknown }).pace).toEqual({ mode: 'hot', window: 'five_hour', pace: 1.33, used: 80 })
-    expect((await d.command('')).text ?? '').toContain('Budget pacing: on (default). The 5-hour window')
+    expect((await d.command('')).text ?? '').toContain('The 5-hour window')
   })
 
   test(`budget pacing off in /config: the same window changes nothing (${surface})`, { timeoutMs: 30000, options: { pacing: 'off' } }, async ($, on) => {
@@ -713,7 +713,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.submit(SEARCH)
     expect(last(h.submitted)?.context ?? []).toEqual([])
     expect(h.asked.length).toBe(0)
-    expect((await d.command('')).text ?? '').toContain('Budget pacing: off (yours).')
+    expect((await d.command('')).text ?? '').toContain('Budget pacing: off')
   })
 
   test(`budget pacing: a window nearly used up skips a raise and says why (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -1036,7 +1036,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     // A rule button changes the answer to Q1 in one press.
     await ui.press({ key: 'rule-ask' })
     expect(last(h.toasts)).toBe('Rightsize: Lowering is now "Ask me each time".')
-    expect((await d.command('')).text ?? '').toContain('Lowering: ask me (yours).')
+    expect((await d.command('')).text ?? '').toContain('Lowering: ask me')
     expect(h.stored.lowerRule, 'the button sets the /config row too').toBe('ask me')
     expect(h.sets.filter(x => x.key === 'rightsize.lowerRule').length, 'once').toBe(1)
     expect((await ui.findAll({ type: 'Button' })).map(b => b.key), 'the new rule is not offered again').toEqual(['undo', 'good', 'bad', 'rule-auto', 'rule-never', 'mode', 'close'])
@@ -1116,7 +1116,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.asked.filter(a => a.header === 'Share').length).toBe(1)
     expect(last(h.configSet)).toBe('on')
     expect(String(h.store.shareInstall)).toMatch(/^[a-f0-9]{32}$/)
-    expect((await d.command('')).text ?? '').toContain('Share anonymous feedback: on (yours)')
+    expect((await d.command('')).text ?? '').toContain('Share anonymous feedback: on')
     expect((await d.command('')).text ?? '').toContain(`Sharing install ID: ${String(h.store.shareInstall)}`)
 
     await d.submit(LOOKUP)
@@ -1168,7 +1168,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await ui.unmount()
     expect(last(h.configSet)).toBe('off')
     expect(last(h.toasts) ?? '').toContain('no more starting-model suggestions')
-    expect((await d.command('')).text ?? '').toContain('Start suggestions: off (yours)')
+    expect((await d.command('')).text ?? '').toContain('Start suggestions: off')
   })
 
   test(`no start suggestion when Start suggestions is off, or with too few prompts (${surface})`, { timeoutMs: 30000, options: { startTips: 'off' } }, async ($, on) => {
@@ -1279,14 +1279,14 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', stored: { handOff: '50%', lowering: '80%' } })
     const d = drive($, h)
     await d.start(surface)
-    expect((await d.command('')).text ?? '').toContain('Thresholds: Hand-off threshold: 50% (yours). Lowering threshold: 80% (yours).')
+    expect((await d.command('')).text ?? '').toContain('Hand-off threshold: 50%\n  Lowering threshold: 80%')
   })
 
   test(`says the thresholds are the defaults when none are set (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
     const d = drive($, h)
     await d.start(surface)
-    expect((await d.command('')).text ?? '').toContain('Thresholds: Hand-off threshold: 70% (default). Lowering threshold: 90% (default).')
+    expect((await d.command('')).text ?? '').not.toContain('Hand-off threshold:')
   })
 
   test(`skips short prompts, slash commands, other senders, and when off in /mods (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -1298,7 +1298,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await ($ as unknown as Engine).prompt.submit({ text: DEBUG, origin: { kind: 'task-notification' }, wait: false })
     expect(h.ratings).toBe(0)
     const status = await d.command('')
-    expect(status.text ?? '').toContain('Lowering: not set (default)')
+    expect(status.text ?? '').not.toContain('Lowering:')
   })
 
   test(`checks prices every 30 days, and on /rightsize prices (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -1419,7 +1419,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.complete('t3')
     expect(h.store.billing, 'still your answer').toEqual({ value: 'api', by: 'answered' })
     const status = (await d.command('')).text ?? ''
-    expect(status).toContain('Reports: api (yours)')
+    expect(status).toContain('Reports: api')
     expect(status).toContain('Rate limits look like a subscription; Reports is set to api by you.')
     expect(h.stored.billing, 'the answer is the Reports row too').toBe('api')
   })
@@ -1683,13 +1683,13 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.submit(LOOKUP)
     expect(h.completions.filter(m => m === 'sonnet')).toEqual([])
     expect(h.store.spotChecks).toBe(49)
-    expect((await d.command('')).text ?? '').toContain('Rater check: off (yours)')
+    expect((await d.command('')).text ?? '').toContain('Rater check: off')
     // Turned on again in /config: the next rating is the 50th.
     await d.config('raterCheck', 'every 50')
     await d.submit(LOOKUP)
     await flush()
     expect(h.completions.filter(m => m === 'sonnet')).toEqual(['sonnet'])
-    expect((await d.command('')).text ?? '').toContain('Rater check: every 50 (yours)')
+    expect((await d.command('')).text ?? '').toContain('Rater check: every 50')
   })
 
   test(`Rater check turned off in /config stops the second opinions (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -1871,6 +1871,9 @@ for (const surface of ['desktop', 'terminal'] as const) {
   const LOG = '/home/test/.claude/mods-logs/rightsize.log'
   const disagree = (h: ReturnType<typeof engine>) => (h.files[LOG] ?? '').includes('plugin.json and the settings table disagree')
   const settingsText = async (d: ReturnType<typeof drive>) => (await d.command('')).text ?? ''
+  // A row in the "you changed" list: indented, with no (default) or (detected) mark after it.
+  const listed = (t: string, title: string) => new RegExp(`^  ${title}: [^(\\n]+$`, 'm').test(t)
+  const changedCount = (t: string) => Number(/You changed (\d+) setting/.exec(t)?.[1] ?? 0)
   const OPUS = { model: 'claude-opus-5-5', effort: 'medium' }
   const FABLE = { model: 'claude-fable-5-1', effort: 'high' }
   const noteOf = (h: ReturnType<typeof engine>) => last(h.submitted)?.context?.join('\n') ?? ''
@@ -2198,7 +2201,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
       expect(result.deny, 'the row takes the value').toBeUndefined()
       expect(await c.see(s)).toEqual(c.set)
       // It is yours now, and /rightsize says so.
-      expect(await settingsText(s.d)).toContain(`${title}: ${c.value} (yours)`)
+      expect(await settingsText(s.d)).toContain(`${title}: ${c.value}`)
     })
 
     test(`${title} (${c.key}): given at load it takes effect (${surface})`, { timeoutMs: 30000, options: { [c.key]: c.value } }, async ($, on) => {
@@ -2206,7 +2209,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
       c.setup?.(h)
       const s = await scene($, h, c)
       expect(await c.see(s)).toEqual(c.set)
-      expect(await settingsText(s.d)).toContain(`${title}: ${c.value} (yours)`)
+      expect(await settingsText(s.d)).toContain(`${title}: ${c.value}`)
     })
   }
 
@@ -2219,7 +2222,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
       const h = engine(on, { ...OPUS })
       const d = drive($, h)
       await d.start(surface)
-      expect(await settingsText(d)).toContain(`${row.title}: ${row.default} (default)`)
+      expect(listed(await settingsText(d), row.title)).toBe(false)
       expect(disagree(h), 'plugin.json declares this row with this default').toBe(false)
     })
     for (const option of row.options.filter(o => o !== row.default)) {
@@ -2229,7 +2232,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
         await d.start(surface)
         // "check now" is an action, not a state: it checks once and the row goes back to monthly.
         const shown = key === 'priceCheck' && option === 'check now' ? 'monthly' : option
-        expect(await settingsText(d)).toContain(`${row.title}: ${shown} (yours)`)
+        expect(await settingsText(d)).toContain(`${row.title}: ${shown}`)
         expect(disagree(h)).toBe(false)
       })
     }
@@ -2240,8 +2243,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const d = drive($, h)
     await d.start(surface)
     const text = await settingsText(d)
-    for (const key of KEYS) expect(text, key).toContain(`${SETTINGS[key].title}: ${SETTINGS[key].default} (default)`)
-    expect(text).not.toContain('(yours)')
+    for (const key of KEYS) expect(listed(text, SETTINGS[key].title), key).toBe(false)
+    expect(text).toContain('are at their defaults')
     expect(disagree(h)).toBe(false)
   })
 
@@ -2250,12 +2253,12 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const d = drive($, h)
     await d.start(surface)
     const text = await settingsText(d)
-    expect(text).toContain('Highest effort: max (default)')
-    expect(text, 'a stored on, from before it became a list: the old on is the default').toContain('Rater check: every 50 (default)')
-    expect(text).toContain('Start suggestions: weekly (default)')
-    expect(text).toContain('Pause after misses: 30% (default)')
-    expect(text).toContain('Rate prompts from: 6 words (default)')
-    expect(text).not.toContain('(yours)')
+    expect(text).not.toContain('Highest effort:')
+    expect(text, 'a stored on, from before it became a list: the old on is the default').not.toContain('Rater check:')
+    expect(text).not.toContain('Start suggestions:')
+    expect(text).not.toContain('Pause after misses:')
+    expect(text).not.toContain('Rate prompts from:')
+    expect(text).toContain('are at their defaults')
   })
 
   const SOME = { floor: 'medium', ceiling: 'xhigh', lowerRule: 'never lower', billing: 'api', explore: 'on', minWords: '10 words' }
@@ -2267,12 +2270,11 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const text = await settingsText(d)
     for (const key of KEYS) {
       const row = SETTINGS[key]
-      const mine = key in set
-      const shown = mine ? (set as Record<string, string>)[key] : row.default
-      expect(text, key).toContain(`${row.title}: ${shown} (${mine ? 'yours' : 'default'})`)
+      expect(listed(text, row.title), key).toBe(key in set)
+      if (key in set) expect(text, key).toContain(`${row.title}: ${(set as Record<string, string>)[key]}\n`)
     }
-    expect((text.match(/\(yours\)/g) ?? []).length).toBe(6)
-    expect((text.match(/\((?:yours|default|detected|saved)\)/g) ?? []).length, 'one mark per setting').toBe(KEYS.length)
+    expect(changedCount(text)).toBe(6)
+    expect(text).toContain(`The other ${KEYS.length - 6} are defaults`)
   })
 
   test(`on a subscription the hand-off question and its result say what the usage is compared with: "vs staying on" (${surface})`, { timeoutMs: 30000, options: { billing: 'subscription' } }, async ($, on) => {
@@ -2302,8 +2304,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.stored.lowerRule, 'the saved answer, now a row').toBe('lower automatically')
     expect(h.stored.raiseRule, 'the row you set is left alone').toBe('never raise')
     const text = await settingsText(d)
-    expect(text).toContain('Lowering: lower automatically (yours)')
-    expect(text).toContain('Raising: never raise (yours)')
+    expect(text).toContain('Lowering: lower automatically')
+    expect(text).toContain('Raising: never raise')
   })
 
   // Where plugin.json files the options: `rightsize`, or `rightsize@<marketplace>`.
@@ -2313,7 +2315,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
       const d = drive($, h)
       await d.start(surface)
       const text = await settingsText(d)
-      expect(text).toContain('Lowest effort: high (yours)')
+      expect(text).toContain('Lowest effort: high')
       expect(text, 'another plugin\'s entry is not ours').not.toContain('Highest effort: max (yours)')
     })
   }
@@ -2324,8 +2326,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const d = drive($, h)
     await d.start(surface)
     const text = await settingsText(d)
-    expect(text).toContain('Highest effort: high (yours)')
-    expect(text, 'at its default: nothing says it was set').toContain('Lowest effort: low (default)')
+    expect(text).toContain('Highest effort: high')
+    expect(text, 'at its default: nothing says it was set').not.toContain('Lowest effort:')
   })
 
   test(`another plugin's change to a row, and a change to another row of the menu, do not make a row yours (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -2333,13 +2335,13 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const d = drive($, h)
     await d.start(surface)
     await d.config('pacing', 'off', 'plugin')
-    expect(await settingsText(d), 'applied, but not yours').toContain('Budget pacing: off (default)')
+    expect(await settingsText(d), 'applied, but not yours').not.toContain('Budget pacing:')
     await ($ as unknown as { config: { set: (x: unknown) => Promise<unknown> } }).config.set({ key: 'theme', value: 'dark', origin: { kind: 'composer' } })
-    expect(await settingsText(d), 'another row of the menu changes nothing here').not.toContain('(yours)')
+    expect(await settingsText(d), 'another row of the menu changes nothing here').toContain('are at their defaults')
     await d.config('pacing', 'on')
-    expect(await settingsText(d), 'the person sets it back: now it is theirs').toContain('Budget pacing: on (yours)')
+    expect(await settingsText(d), 'the person sets it back: now it is theirs').toContain('Budget pacing: on')
     await d.config('escalation', 'off', 'bridge')
-    expect(await settingsText(d), "a /config key=value from the person's phone").toContain('Raise when stuck: off (yours)')
+    expect(await settingsText(d), "a /config key=value from the person's phone").toContain('Raise when stuck: off')
   })
 
   test(`a row changed in /config never reaches another row (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -2349,11 +2351,11 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.config('floor', 'high')
     await d.config('handOff', '50%')
     const text = await settingsText(d)
-    expect(text).toContain('Lowest effort: high (yours)')
-    expect(text).toContain('Hand-off threshold: 50% (yours)')
-    expect(text).toContain('Lowering threshold: 90% (default)')
-    expect(text).toContain('Highest effort: max (default)')
-    expect((text.match(/\(yours\)/g) ?? []).length).toBe(2)
+    expect(text).toContain('Lowest effort: high')
+    expect(text).toContain('Hand-off threshold: 50%')
+    expect(text).not.toContain('Lowering threshold:')
+    expect(text).not.toContain('Highest effort:')
+    expect(changedCount(text)).toBe(2)
   })
 
   // ---- Your setting wins ----------------------------------------------------------------------------
@@ -2374,7 +2376,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.store.billing, 'a reading was never saved over it').toBeUndefined()
     expect(h.asked.find(a => a.header === 'Subagent')?.question ?? '', 'dollars, as you set').toMatch(REPORTS_DOLLARS)
     const text = await settingsText(d)
-    expect(text).toContain('Reports: api (yours)')
+    expect(text).toContain('Reports: api')
     expect(text).toContain('Rate limits look like a subscription; Reports is set to api by you.')
   })
 
@@ -2385,7 +2387,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t0')
     await d.complete('t0')
     const text = await settingsText(d)
-    expect(text).toContain('Reports: subscription (yours)')
+    expect(text).toContain('Reports: subscription')
     expect(text).toContain('Rate limits look like API billing; Reports is set to subscription by you.')
     expect(h.store.billing).toBeUndefined()
   })
@@ -2419,7 +2421,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t2')
     await d.complete('t2')
     expect(h.store.billing).toEqual({ value: 'api', by: 'answered' })
-    expect(await settingsText(d)).toContain('Reports: api (yours)')
+    expect(await settingsText(d)).toContain('Reports: api')
   })
 
   test(`Reports changed by another plugin is not yours: the rate limits still win (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -2441,7 +2443,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t0')
     await d.complete('t0')
     expect(h.store.billing).toEqual({ value: 'api', by: 'answered' })
-    expect(await settingsText(d)).toContain('Reports: api (yours)')
+    expect(await settingsText(d)).toContain('Reports: api')
   })
 
   test(`Reports asked again in /rightsize settings replaces a value you set, and writes the row (${surface})`, { timeoutMs: 30000, options: { billing: 'api' } }, async ($, on) => {
@@ -2453,7 +2455,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.command('settings')
     expect(h.asked.some(a => a.header === 'Billing'), 'asked, though the rate limits could answer').toBe(true)
     expect(h.stored.billing).toBe('subscription')
-    expect(await settingsText(d)).toContain('Reports: subscription (yours)')
+    expect(await settingsText(d)).toContain('Reports: subscription')
   })
 
   // A hot window, with a rating that hands off to Haiku at 78% of staying: over the default threshold (70%), under
@@ -2707,9 +2709,9 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const h = engine(on, { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES, remember: true, choices: { lower: 'auto', raise: 'auto' } } })
     const d = drive($, h)
     await d.start(surface)
-    expect(await settingsText(d), 'the saved answer is yours').toContain('Lowering: lower automatically (yours)')
+    expect(await settingsText(d), 'the saved answer is yours').toContain('Lowering: lower automatically')
     await d.config('lowerRule', 'not set')
-    expect(await settingsText(d)).toContain('Lowering: not set (default)')
+    expect(await settingsText(d)).not.toContain('Lowering:')
     expect(h.store.choices, 'the saved copy keeps only the other rule').toEqual({ raise: 'auto' })
     h.rating = LOWER
     h.answers = { Lowering: 'Never lower' }
@@ -2717,7 +2719,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.asked.map(a => a.header), 'asked again').toEqual(['Lowering'])
     // A new session keeps the other rule.
     await d.start(surface)
-    expect(await settingsText(d)).toContain('Raising: raise automatically (yours)')
+    expect(await settingsText(d)).toContain('Raising: raise automatically')
   })
 
   const KEEP_ROWS: { name: string; mode?: string; remember: string; asked: string[]; kept: boolean; remembered?: boolean }[] = [
@@ -2739,7 +2741,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
       expect(h.stored.lowerRule, 'the Lowering row').toBe(row.kept ? 'lower automatically' : undefined)
       expect(h.store.remember).toBe(row.remembered ? true : undefined)
       if (row.remembered) expect(h.stored.remember, 'the Remember choices row').toBe('every session')
-      expect(await settingsText(d), 'the answer is yours either way').toContain('Lowering: lower automatically (yours)')
+      expect(await settingsText(d), 'the answer is yours either way').toContain('Lowering: lower automatically')
     })
   }
 
@@ -2775,9 +2777,9 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.answers = { Lowering: 'Ask me each time', Raising: 'Never raise', Stronger: 'Send it to a subagent automatically', Cheaper: 'Ask before sending it', ...YES_REMEMBER }
     const text = (await d.command('settings')).text ?? ''
     expect(h.stored).toMatchObject({ lowerRule: 'ask me', raiseRule: 'never raise', upRule: 'always send', downRule: 'ask first' })
-    expect(text).toContain('Lowering: ask me (yours)')
-    expect(text).toContain('Raising: never raise (yours)')
-    expect(text).toContain('Cheaper model: ask first (yours)')
+    expect(text).toContain('Lowering: ask me')
+    expect(text).toContain('Raising: never raise')
+    expect(text).toContain('Cheaper model: ask first')
   })
 
   // ---- Price check: monthly or off ----------------------------------------------------------------
@@ -2790,7 +2792,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.start(surface)
     await flush()
     const text = await settingsText(d)
-    expect(text, 'monthly, and not yours').toContain('Price check: monthly (default)')
+    expect(text, 'monthly, and not yours').not.toContain('Price check:')
     expect(h.fetches, 'it used to check once at the start').toBe(0)
     expect(h.configSet, 'and to write the row back').toEqual([])
     // /rightsize prices is how to check now.
@@ -2852,7 +2854,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
       await d.start(surface)
       await startWorkflow(h, d, label)
       expect(h.stored.workflows).toBe(value)
-      expect(await settingsText(d)).toContain(`Workflows: ${value} (yours)`)
+      expect(await settingsText(d)).toContain(`Workflows: ${value}`)
       await d.workflow()
       expect(h.events.filter(x => x === 'ask:Workflow').length, 'once').toBe(1)
       expect(h.events.filter(x => x === 'workflow').length).toBe(2)
@@ -2869,7 +2871,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.start(surface)
     await startWorkflow(h, d)
     expect(h.stored.workflows, 'nothing saved').toBeUndefined()
-    expect(await settingsText(d)).toContain('Workflows: ask (default)')
+    expect(await settingsText(d)).not.toContain('Workflows:')
     // Paused: the hand-off waits, though the rule says always send.
     h.rating = NEEDS_FABLE
     await d.submit(DEBUG)
@@ -3090,8 +3092,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
       const { d, out, before } = await resetSettingsRun($, h, choice)
       expect(out).toContain('Every setting is back to its default, and the saved answers are forgotten.')
       const text = await settingsText(d)
-      expect(text).not.toContain('(yours)')
-      for (const key of KEYS) expect(text, key).toContain(`${SETTINGS[key].title}: ${SETTINGS[key].default} (default)`)
+      expect(text).toContain('are at their defaults')
+      for (const key of KEYS) expect(listed(text, SETTINGS[key].title), key).toBe(false)
       // The defaults were written, through the config API (plugin origin), where the value was not already the default.
       for (const key of ROWS_RESET) expect(h.stored[key], `${key} stored as its default`).toBe(SETTINGS[key as SettingKey].default)
       // Raising was the saved answer, shown in its row at the start: the reset writes it back to not set.
@@ -3108,10 +3110,10 @@ for (const surface of ['desktop', 'terminal'] as const) {
       // A new session still shows defaults: the stored values equal them.
       await d.start(surface)
       const again = await settingsText(d)
-      expect(again.match(/\(yours\)/g) ?? [], 'only the answer given just now').toHaveLength(1)
-      expect(again).toContain('Raising: never raise (yours)')
+      expect(changedCount(again), 'only the answer given just now').toBe(1)
+      expect(again).toContain('Raising: never raise')
       // Reports is read off the rate limits once a prompt went through, and saved: not yours either.
-      for (const key of ROWS_RESET.filter(k => k !== 'billing')) expect(again, key).toContain(`${SETTINGS[key as SettingKey].title}: ${SETTINGS[key as SettingKey].default} (default)`)
+      for (const key of ROWS_RESET.filter(k => k !== 'billing')) expect(listed(again, SETTINGS[key as SettingKey].title), key).toBe(false)
       expect(again).toContain('Reports: api (saved)')
     })
   }
@@ -3119,22 +3121,22 @@ for (const surface of ['desktop', 'terminal'] as const) {
   test(`a row reset then set again in /config is yours again, whatever its value, and leaves the list (${surface})`, { timeoutMs: 30000, options: SOME_SET }, async ($, on) => {
     const h = engine(on, { ...OPUS, stored: SOME_SET })
     const { d } = await resetSettingsRun($, h, 'Settings')
-    expect(await settingsText(d)).toContain('Lowest effort: low (default)')
+    expect(await settingsText(d)).not.toContain('Lowest effort:')
     await d.config('floor', 'high')
-    expect(await settingsText(d)).toContain('Lowest effort: high (yours)')
+    expect(await settingsText(d)).toContain('Lowest effort: high')
     expect(h.store.resetFields).not.toContain('floor')
     expect(h.store.resetFields, 'the others stay on it').toContain('handOff')
     // Set to the default value itself: yours too.
     await d.config('handOff', '70%', 'bridge')
-    expect(await settingsText(d)).toContain('Hand-off threshold: 70% (yours)')
+    expect(await settingsText(d)).toContain('Hand-off threshold: 70%')
     expect(h.store.resetFields).not.toContain('handOff')
     // A new session keeps all of that: floor and handOff are yours, the rest default.
     await d.start(surface)
     const text = await settingsText(d)
-    expect(text).toContain('Lowest effort: high (yours)')
-    expect(text).toContain('Hand-off threshold: 70% (yours)')
-    expect(text).toContain('Band: when it acts (default)')
-    expect((text.match(/\(yours\)/g) ?? []).length).toBe(2)
+    expect(text).toContain('Lowest effort: high')
+    expect(text).toContain('Hand-off threshold: 70%')
+    expect(text).not.toContain('Band:')
+    expect(changedCount(text)).toBe(2)
   })
 
   test(`a reset row changed by hand in settings.json is yours at the next start (${surface})`, { timeoutMs: 30000, options: SOME_SET }, async ($, on) => {
@@ -3143,8 +3145,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.stored.floor = 'high'
     await d.start(surface)
     const text = await settingsText(d)
-    expect(text).toMatch(/Lowest effort: \w+ \(yours\)/)
-    expect(text).toContain('Hand-off threshold: 70% (default)')
+    expect(text).toMatch(/Lowest effort: \w+\n/)
+    expect(text).not.toContain('Hand-off threshold:')
     expect(h.store.resetFields, 'floor left the list').not.toContain('floor')
   })
 
@@ -3160,14 +3162,14 @@ for (const surface of ['desktop', 'terminal'] as const) {
       expect(h.asked[0]?.question).toBe("Reset Hand-off threshold? It goes back to its default, 70%. This can't be undone.")
       expect(out.text).toBe('Hand-off threshold is back to its default, 70%.')
       const text = await settingsText(d)
-      expect(text).toContain('Hand-off threshold: 70% (default)')
-      expect(text, 'the others are as they were').toContain('Lowest effort: medium (yours)')
-      expect(text).toContain('Budget pacing: off (yours)')
+      expect(text).not.toContain('Hand-off threshold:')
+      expect(text, 'the others are as they were').toContain('Lowest effort: medium')
+      expect(text).toContain('Budget pacing: off')
       expect(h.stored.handOff).toBe('70%')
       expect(h.store.resetFields).toEqual(['handOff'])
       expect(h.store.choices, 'the saved answers stay').toEqual({ raise: 'auto' })
       // The other six rows, and the saved answer for Raising: seven.
-      expect((text.match(/\(yours\)/g) ?? []).length).toBe(7)
+      expect(changedCount(text)).toBe(7)
     })
   }
 
@@ -3177,7 +3179,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.start(surface)
     h.answers = { Confirm: 'No' }
     expect((await d.command('reset handOff')).text).toBe('Nothing was reset.')
-    expect(await settingsText(d)).toContain('Hand-off threshold: 50% (yours)')
+    expect(await settingsText(d)).toContain('Hand-off threshold: 50%')
     expect(h.stored.handOff).toBe('50%')
   })
 
@@ -3190,8 +3192,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.asked[0]?.question).toBe("Reset Lowering? It goes back to its default, not set. Its question is asked again the next time it comes up. This can't be undone.")
     expect(out.text).toContain('Lowering is back to its default, not set.')
     const text = await settingsText(d)
-    expect(text).toContain('Lowering: not set (default)')
-    expect(text).toContain('Raising: never raise (yours)')
+    expect(text).not.toContain('Lowering:')
+    expect(text).toContain('Raising: never raise')
     h.rating = LOWER
     h.answers = { Lowering: 'Never lower' }
     await d.submit(LOOKUP)
@@ -3209,7 +3211,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.answers = { Confirm: 'Yes' }
     await d.command('reset billing')
     expect(h.store.billing, 'your answer is gone').toBeNull()
-    expect(await settingsText(d)).toContain('Reports: api (default)')
+    expect(await settingsText(d)).not.toMatch(/Reports: \w+\n/)
     // The next response's rate limits read the billing again.
     await d.step('t1')
     await d.complete('t1')
@@ -3237,7 +3239,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.start(surface)
     h.answers = { Confirm: 'Yes' }
     await d.command('reset share')
-    expect(await settingsText(d)).toContain('Share anonymous feedback: off (default)')
+    expect(await settingsText(d)).not.toContain('Share anonymous feedback:')
     expect(h.store.shareInstall).toBeNull()
   })
 
@@ -3258,13 +3260,13 @@ for (const surface of ['desktop', 'terminal'] as const) {
       const log = h.files[RUNS] ?? ''
       const d = drive($, h)
       await d.start(surface)
-      expect(await settingsText(d), 'the calibration was loaded').toContain('Calibration: 5 measured run(s).')
+      expect(await settingsText(d), 'the calibration was loaded').toContain('Measured runs: 5')
       h.answers = { Reset: choice, Confirm: 'Yes' }
       const out = (await d.command('reset')).text ?? ''
       expect(out).toContain('Cost measurement restarted: rightsize is back to its starting estimates and relearns from your next prompts.')
       for (const key of [CAL_STORE, 'ties', 'spotChecks', 'startCheckedAt', 'startSnooze']) expect(h.store[key], key).toBeNull()
       expect(h.store.measureFrom).toBe(new Date(h.now).toISOString())
-      expect(await settingsText(d), 'in memory too').toContain('Calibration: 0 measured run(s).')
+      expect(await settingsText(d), 'in memory too').toContain('Measured runs: 0')
       expect(h.files[RUNS], 'the run log is kept, line for line').toBe(log)
       // The report still counts all of it, and says when measurement restarted.
       const report = (await d.command('report')).text ?? ''
@@ -3273,7 +3275,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
       expect(report, 'what went wrong reads the whole history').toContain("Haiku's judgement was wrong on 3 of 6 checked prompts (50%)")
       expect(report, 'but nothing is paused any more').not.toContain('are paused')
       // Settings stay unless Both.
-      expect(await settingsText(d)).toContain(choice === 'Both' ? 'Lowering: not set (default)' : 'Lowering: lower automatically (yours)')
+      expect(await settingsText(d)).toContain(choice === 'Both' ? `All ${KEYS.length} settings are at their defaults` : 'Lowering: lower automatically')
     })
   }
 
@@ -3333,14 +3335,37 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(out).toContain('Cost measurement restarted')
     expect(h.store[CAL_STORE]).toBeNull()
     expect(h.store.choices).toBeNull()
-    expect(await settingsText(d)).not.toContain('(yours)')
+    expect(await settingsText(d)).toContain('are at their defaults')
   })
 
-  test(`the /rightsize help line names reset (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+
+  test(`/rightsize help lists every command and what it does (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { ...OPUS })
     const d = drive($, h)
     await d.start(surface)
-    expect(await settingsText(d)).toContain('reset [setting] puts settings back to their defaults and/or restarts cost measurement.')
+    const text = (await d.command('help')).text ?? ''
+    for (const c of ['', 'settings', 'report', 'undo', 'clear', 'prices', 'share', 'reset', 'help']) expect(text, c).toMatch(new RegExp(`^  /rightsize${c ? ` ${c}` : ''} +\\S`, 'm'))
+    expect(text).toContain('reset <setting> resets one')
+    expect(text).toContain('message you can paste to tell others')
+    expect(h.asked, 'no question').toEqual([])
+  })
+
+  test(`an unknown /rightsize command says so and lists the commands (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { ...OPUS })
+    const d = drive($, h)
+    await d.start(surface)
+    const text = (await d.command('foo')).text ?? ''
+    expect(text.startsWith('Unknown command "foo".')).toBe(true)
+    expect(text).toContain('rightsize commands')
+  })
+
+  test(`/rightsize ends with a pointer to help, and no long command list (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { ...OPUS })
+    const d = drive($, h)
+    await d.start(surface)
+    const text = await settingsText(d)
+    expect(text.endsWith('Commands: /rightsize help')).toBe(true)
+    expect(text).not.toContain('undo re-runs')
   })
 
   test(`/rightsize share prints the framed message, sends nothing and asks nothing (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -3358,10 +3383,4 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.asked, 'no question').toEqual([])
   })
 
-  test(`the /rightsize help line names share (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { ...OPUS })
-    const d = drive($, h)
-    await d.start(surface)
-    expect(await settingsText(d)).toContain('share prints a message you can paste to tell others about rightsize')
-  })
 }

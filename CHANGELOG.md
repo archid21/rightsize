@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **`/rightsize` is shorter.** It lists only the settings you changed, says how many others are at their defaults, and groups the rest under Now (session switch, Reports, measured runs, cache-switch results). The long command sentence is gone: `/rightsize help` lists every command and what it does, and an unknown command (`/rightsize foo`) now says so and shows that list instead of the summary. `/rightsize settings` ends with the same summary.
+
 ## 0.7.0 (2026-10-24)
 
 - The README has a **Turn it off or remove it** section: pause with `/mods`, `claude plugin disable` to keep settings and learning, and `claude plugin uninstall` plus the files it leaves behind (the store file and logs), with how to ask for shared data to be deleted.

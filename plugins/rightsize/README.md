@@ -17,7 +17,7 @@ After the first answer, it asks "Use these choices in every session?". Each ques
 
 ## How it decides
 
-- **Your setting wins.** Automatic adjustments act only on settings left at their default. Budget pacing moves a threshold only when you did not set it; a window nearly used up skips a raise or a stronger model only while its rule has no answer; rate limits never change **Reports** once you set it; "Ask" always asks. `/rightsize` lists every setting with (yours) or (default).
+- **Your setting wins.** Automatic adjustments act only on settings left at their default. Budget pacing moves a threshold only when you did not set it; a window nearly used up skips a raise or a stronger model only while its rule has no answer; rate limits never change **Reports** once you set it; "Ask" always asks. `/rightsize` lists the settings you changed; the rest are defaults, shown in `/config`.
 - **Effort changes can cost a cache rewrite.** Anthropic's docs say that changing effort mid-conversation invalidates the conversation's prompt cache, unless the engine uses the per-message-effort beta. The mod counts that cost. In a long chat, lowering effort for one small prompt usually costs more than it saves, so the mod leaves it alone. It also measures whether switches really miss the cache. If they don't, lowering starts to pay and happens more often.
 - **Auto-lowered turns step back up** to the normal level after 5 steps, or after a tool error.
 - **A subagent is used only when the model changes.** The main chat keeps its model and cache. A hidden note beside your prompt asks the main chat to:
@@ -48,7 +48,8 @@ Once a week (or a month) at session start, the mod estimates what the last 30 da
 
 ## Commands and settings
 
-- `/rightsize` shows every setting with its value and (yours) or (default), the session switch and the calibration.
+- `/rightsize` shows the settings you changed (the rest are defaults, shown in `/config`), the session switch and the measured runs.
+- `/rightsize help` lists every command and what it does. An unknown command shows the same list.
 - `/rightsize report` shows what the mod did this session, in the last 7 days and in the last 30 days: prompts rated and changed, the estimated saving after the cost of its rating calls (on a subscription: the share of your 5-hour window kept first, then the share of usage saved, with dollars marked API-equivalent), close calls decided by the task-type guide, a starting-point comparison, how often Haiku's judgement was wrong (with any hand-downs paused for it), how far its estimates were off, and the problems it hit. The report is in sections: Savings, Starting point, Fixed overhead, Accuracy and Problems. Savings are estimates.
 - `/rightsize share` prints a message you can paste anywhere to tell others about rightsize, with your estimated saving for the last 30 days once there are 20 rated prompts and the saving is 5% or more. It sends nothing and is unrelated to the Share anonymous feedback setting.
 - `/rightsize settings` asks the questions again, and sets their rows in `/config` from your answers.

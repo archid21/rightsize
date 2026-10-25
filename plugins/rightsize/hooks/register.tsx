@@ -1344,26 +1344,55 @@ async function summary($: EngineInterface) {
   // One run teaches its type:route key and, for a hand-off, finer keys too: count the first only.
   const runs = Object.entries(cal).filter(([k]) => k !== SWITCH_KEY && k.split(':').length === 2).reduce((n, [, e]) => n + e.n, 0)
   const sw = cal[SWITCH_KEY]
-  // Each setting with its value, and whose it is: yours when you set it in /config or answered it.
-  const row = (key: SettingKey, shown: string = cfg[key], by: string = yours.has(key) ? 'yours' : 'default') => `${SETTINGS[key].title}: ${shown} (${by})`
-  const rule = (r: keyof Choices) => row(RULE_KEYS[r], ruleLabel(r, c[r]), c[r] === undefined ? 'default' : 'yours')
-  const reports = row('billing', billing, billingYours() ? 'yours' : (billingBy ?? 'default'))
   const sees = detectedBilling === 'subscription' ? 'a subscription' : 'API billing'
   const install = sharing ? await $.store.get('shareInstall').catch(() => undefined) : undefined
+  // Only the settings you set in /config or answered: the rest are defaults, and /config shows them.
+  const changed: string[] = []
+  for (const key of KEYS) {
+    const rule = RULE_IDS.find(r => RULE_KEYS[r] === key)
+    if (rule) {
+      if (c[rule] !== undefined) changed.push(`  ${SETTINGS[key].title}: ${ruleLabel(rule, c[rule])}`)
+    } else if (key === 'billing' ? billingYours() : yours.has(key)) changed.push(`  ${SETTINGS[key].title}: ${cfg[key]}`)
+  }
+  const n = changed.length
   return [
-    `Rightsize is ${off ? 'off (turn it on with /mods)' : 'on'}. Each setting is yours when you set it in /config or answered its question, and rightsize never changes or bypasses what is yours; the rest are defaults.`,
-    `Effort: ${[row('floor'), row('ceiling'), row('escalation'), row('stuck')].join('. ')}.`,
-    `Rules: ${[rule('lower'), rule('raise'), rule('up'), rule('down'), row('remember')].join('. ')}.`,
-    `Models: ${[row('useHaiku'), row('useFable'), row('subagents'), row('workflows'), row('explore')].join('. ')}.`,
-    `Thresholds: ${[row('handOff'), row('lowering'), row('missPause'), row('pacing')].join('. ')}.${pacing && paceNow.mode !== 'normal' ? ` ${paceNote(paceNow)}` : ''}`,
-    `Prompts: ${[row('minWords'), row('raterCheck'), row('startTips'), row('idleWarning')].join('. ')}.`,
-    `Reporting: ${[reports, row('band'), row('priceCheck'), row('share')].join('. ')}.`,
-    ...(billingYours() && detectedBilling && detectedBilling !== billing ? [`Rate limits look like ${sees}; Reports is set to ${billing} by you.`] : []),
-    ...(typeof install === 'string' ? [`Sharing install ID: ${install} (quote it to rightsize@aivalue.blog to ask about or delete your shared data).`] : []),
-    session ? `Session switch: ${session}.` : 'No session switch.',
-    `Calibration: ${runs} measured run(s).${sw ? ` Effort switches that missed the cache: ${Math.round(sw.ratio * 100)}% of ${sw.n} (each one in ~/.claude/mods-logs/rightsize-switches.jsonl).` : ''}`,
-    '/rightsize report shows what it saved and what went wrong; settings asks the questions again; undo re-runs the last auto-lowered prompt; clear drops the session switch; prices checks prices now; share prints a message you can paste to tell others about rightsize; reset [setting] puts settings back to their defaults and/or restarts cost measurement.',
+    `Rightsize is ${off ? 'off (turn it on with /mods)' : 'on'}.`,
+    '',
+    n
+      ? `You changed ${n} setting${n === 1 ? '' : 's'}. The other ${KEYS.length - n} are defaults (see them in /config).`
+      : `All ${KEYS.length} settings are at their defaults (see them in /config).`,
+    ...changed,
+    '',
+    'Now',
+    `  Session switch: ${session ?? 'none'}`,
+    ...(billingYours() ? [] : [`  Reports: ${billing} (${billingBy ?? 'default'})`]),
+    ...(billingYours() && detectedBilling && detectedBilling !== billing ? [`  Rate limits look like ${sees}; Reports is set to ${billing} by you.`] : []),
+    ...(pacing && paceNow.mode !== 'normal' ? [`  ${paceNote(paceNow)}`] : []),
+    `  Measured runs: ${runs}`,
+    ...(sw ? [`  Effort switches that missed the cache: ${Math.round(sw.ratio * 100)}% of ${sw.n} (each one in ~/.claude/mods-logs/rightsize-switches.jsonl)`] : []),
+    ...(typeof install === 'string' ? [`  Sharing install ID: ${install} (quote it to rightsize@aivalue.blog to ask about or delete your shared data)`] : []),
+    '',
+    'Commands: /rightsize help',
   ].join('\n')
+}
+
+// ---- Help --------------------------------------------------------------------------
+
+const COMMANDS: readonly (readonly [string, string])[] = [
+  ['', 'show your changed settings and current state'],
+  ['settings', 'answer the questions again'],
+  ['report', 'what it saved and what went wrong'],
+  ['undo', 're-run the last auto-lowered prompt'],
+  ['clear', 'drop the session switch'],
+  ['prices', 'check prices now'],
+  ['share', 'message you can paste to tell others'],
+  ['reset', 'settings back to defaults, or restart cost measurement (reset <setting> resets one)'],
+  ['help', 'this list'],
+]
+
+function helpText() {
+  const width = Math.max(...COMMANDS.map(([c]) => `/${CMD} ${c}`.trim().length))
+  return ['rightsize commands', '', ...COMMANDS.map(([c, what]) => `  ${`/${CMD} ${c}`.trim().padEnd(width)}  ${what}`), '', 'All settings are in /config.'].join('\n')
 }
 
 // ---- Reset -------------------------------------------------------------------------
@@ -1835,6 +1864,8 @@ export const register: Register = (on, options) => {
       return { text: shareMessage(runs, { now: await $.clock.now(), subscription: billing === 'subscription', ...(measureFrom ? { measureFrom: new Date(measureFrom).toISOString() } : {}) }) }
     }
     if (arg === 'clear') return { text: await clearSession($) }
+    if (arg === 'help') return { text: helpText() }
+    if (arg !== '' && arg !== 'settings') return { text: `Unknown command "${arg}".\n\n${helpText()}` }
     if (arg === 'settings') {
       const s = await situation($)
       const cur = TIER_NAME[s.tier]

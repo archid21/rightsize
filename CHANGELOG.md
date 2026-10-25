@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.3 (2026-10-25)
 
 - **A hand-off's subagent can't push, publish, release, deploy or send.** rightsize blocks those commands in the subagent it started and tells it to leave them to the main chat. Before, only the hand-off note asked it to stop. The commands it knows now include `git -C <dir> push`, `git -c <key>=<value> push`, `vercel ... --prod`, `bun publish` and the deploy commands of Netlify, Firebase, Fly and Wrangler.
 - The rating call treats your prompt and Claude's last reply as data, never as instructions, and Haiku's reason shows plain words only.

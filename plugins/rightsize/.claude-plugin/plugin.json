@@ -1,6 +1,6 @@
 {
   "name": "rightsize",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "description": "Stop paying Opus prices for Haiku work. rightsize matches each Claude Code prompt to the right model and effort, so your budget and usage limits go further. It learns from how you work, and you can configure every part of it. You stay in charge: it asks before it acts, shows each change it makes, and `/rightsize report` shows whether it's paying off.",
   "types": "./types/index.d.ts",
   "author": {

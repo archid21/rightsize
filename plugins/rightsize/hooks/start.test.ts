@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import { DEFAULT_PRICES, DEFAULT_RULES, money } from './cost'
 import type { RunLine } from './report'
-import { START_CHECK_DAYS, START_MIN_PROMPTS, adviseStart, replay, startLines, startOf, startTip } from './start'
+import { START_CHECK_DAYS, START_MIN_PROMPTS, adviseStart, replay, startBlock, startOf, startTip } from './start'
 
 const NOW = Date.parse('2026-10-23T18:00:00.000Z')
 const at = (i: number) => new Date(NOW - (100 - i) * 60_000).toISOString()
@@ -67,12 +67,15 @@ test('reads the start off a line: normal first, else the level it ran at', async
 
 test('the report block: each start per 100 prompts, or a share of yours on a subscription', async () => {
   const a = adviseStart(many(60, easy), C, NOW)
-  const api = startLines(a, false, money)
-  expect(api[0]).toBe('Starting point (last 30 days, 60 rated prompts): Opus at medium.')
-  expect(api[1]).toMatch(/Opus at medium \(yours\) ~\$[\d.]+ per 100 prompts/)
-  expect(api[2]).toMatch(/^ {2}Suggestion: Starting on Sonnet/)
-  expect(startLines(a, true, money)[1]).toContain('Opus at medium (yours) 100% of yours')
-  expect(startLines(adviseStart([], C, NOW), false, money)).toEqual(['Starting point: needs 50 rated prompts to compare starts (has 0).'])
+  const api = startBlock(a, false, money)
+  expect(api.head).toBe('Opus at medium, 60 rated prompts in 30 days')
+  const yours = api.rows.find(r => r[0] === 'Opus at medium (yours)')
+  expect(yours?.[1]).toMatch(/^~\$[\d.]+ per 100 prompts$/)
+  expect(api.rows.length, 'every start').toBe(4)
+  expect(api.tip, 'the suggestion goes to NEXT STEPS').toMatch(/^Starting on Sonnet/)
+  expect(api.note).toContain('suggested under NEXT STEPS')
+  expect(startBlock(a, true, money).rows.find(r => r[0] === 'Opus at medium (yours)')?.[1]).toBe('100% of yours')
+  expect(startBlock(adviseStart([], C, NOW), false, money)).toEqual({ head: 'Needs 50 rated prompts to compare (has 0).', rows: [] })
 })
 
 test('a miss rate on the start model raises its cost and hand-ups in proportion', async () => {

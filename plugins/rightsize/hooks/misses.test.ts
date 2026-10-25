@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import { MISS_BLOCK } from './cost'
-import { MISS_MIN, missMap, missRate, missRates, missTotals, outcomes } from './misses'
+import { MISS_MIN, checkTotals, missMap, missRate, missRates, missTotals, outcomes } from './misses'
 import type { RunLine } from './report'
 
 const at = new Date(Date.parse('2026-10-23T18:00:00.000Z')).toISOString()
@@ -59,6 +59,19 @@ test('a check line is a miss for each model Haiku said fits and the checker says
   })
   expect(rates([check({ haiku: 'low' }, {})]), 'the checker said nothing of a model: skipped').toEqual({})
   expect(rates([{ at, kind: 'check', type: 'debug' }]), 'a check line with no fits').toEqual({})
+})
+
+test('check totals: a check agreed when Sonnet struggles with none of the models Haiku named a level for', async () => {
+  const check = (first: RunLine['fit'], second: NonNullable<RunLine['check']>['fit']): RunLine => ({ at, kind: 'check', type: 'debug', fit: first, check: { by: 'sonnet', fit: second } })
+  const lines = [
+    check({ sonnet: 'low', opus: 'low' }, { sonnet: 'low', opus: 'medium' }),
+    check({ sonnet: 'low', opus: 'low' }, { sonnet: null, opus: 'low' }),
+    check({ haiku: null }, { haiku: 'low' }),
+    check({ haiku: 'low' }, {}),
+    run({}),
+  ]
+  expect(checkTotals(lines), 'one agreed, one disagreed; the other two compared no model').toEqual({ n: 2, agreed: 1 })
+  expect(checkTotals([]), 'no checks').toEqual({ n: 0, agreed: 0 })
 })
 
 test('a check line or feedback line is never a rated run', async () => {

@@ -22,6 +22,8 @@ const DEBUG = 'find and fix the race in token refresh across the auth services p
 const SEARCH = 'find every call site of the old logger across the whole repo and list them'
 const NO_CHANGE = '{"level":"medium","model":"same","size":"small","type":"lookup","read":2000,"write":300,"steps":1}'
 const FREE_SWITCHES = { 'cache:effort-switch': { n: 20, ratio: 0 } }
+// A report table row's cells (session, 7 days, 30 days), by its label.
+const cellsOf = (text: string, label: string) => text.split('\n').find(l => l.startsWith(`  ${label}`))?.slice(2 + label.length).trim().split(/ {2,}/)
 
 const h$ = ($: { ui: { resolve: (e: never) => { Box: unknown } } }, e: unknown) => h($.ui.resolve(e as never).Box as never, {}) as never
 
@@ -90,8 +92,14 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
     agents: [] as { id: string; description: string; type: string; status: string; parentId?: string }[],
     /** What /context would break the window into; undefined: no breakdown. */
     breakdown: undefined as Record<string, unknown> | undefined,
+    /** Where the session draws: the surface it started on. */
+    surfaces: [] as string[],
   }
-  on('session.start', async ($, e) => ({ cwd: e.cwd }) as never)
+  on('session.start', async ($, e) => {
+    h.surfaces = e.surface ? [e.surface] : []
+    return { cwd: e.cwd } as never
+  })
+  on('session.surfaces', async () => ({ value: h.surfaces }) as never)
   on('command.register', async () => ({ value: undefined }) as never)
   on('clock.every', async () => ({ value: undefined }) as never)
   // The merged settings, as the engine holds them: a read of one key is this object, projected.
@@ -661,7 +669,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(Math.abs(Number(last(again)?.actual) - TWO_HAIKU_STEPS / 2) < 1e-6, 'only what it spent since it answered').toBe(true)
     expect((h.store[CAL_STORE] as Record<string, { n: number }>)['search:subagent']?.n).toBe(1)
     h.now = Date.now()
-    expect((await d.command('report')).text ?? '').toContain('2 subagents Claude started ran on a cheaper model.')
+    expect(cellsOf((await d.command('report')).text ?? '', 'Subagents on cheaper model')?.at(-1)).toBe('2')
   })
 
   test(`a moved subagent's first step, before its spawn settles, already runs at its level (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -823,7 +831,9 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(line.escalations?.map(x => [x.step, x.from, x.to])).toEqual([[2, 'medium', 'high'], [4, 'high', 'xhigh']])
     expect(Object.keys(h.store[CAL_STORE] ?? {}).filter(k => k.startsWith('lookup:')), 'a turn at two levels teaches nothing').toEqual([])
     h.now = Date.now()
-    expect((await d.command('report')).text ?? '').toContain('1 turn raised effort mid-turn because Claude looked stuck: the same tool call failed twice (1), several tool calls failed (1).')
+    const stuck = (await d.command('report')).text ?? ''
+    expect(stuck).toMatch(/1 turn +raised mid-turn because Claude looked stuck/)
+    expect(stuck).toContain('the same tool call failed twice (1), several tool calls failed (1)')
 
     // The next turn starts at the person's level again.
     await d.submit(LOOKUP)
@@ -915,7 +925,10 @@ for (const surface of ['desktop', 'terminal'] as const) {
     // Deferred MCP tools are not in the context: 20K MCP, 6K memory, 1K agents, 3K skills and commands.
     expect(line.fixed).toEqual({ tokens: 30000, mcp: 20000, memory: 6000, agents: 1000, skills: 3000, servers: { linear: 12000, github: 8000 }, cost: 0.012 })
     h.now = Date.now()
-    expect((await d.command('report')).text ?? '').toContain('Fixed context (last 30 days): ~30K tokens rode along on every request: MCP tools ~20K (linear 12K, github 8K), CLAUDE.md and memory ~6K, skills and commands ~3K, agent descriptions ~1K.')
+    const fixed = (await d.command('report')).text ?? ''
+    expect(fixed).toContain('FIXED CONTEXT  ~30K tokens sent with every request')
+    // Largest first, the last part closing the tree.
+    expect(fixed).toMatch(/├─ MCP tools +20K +linear 12K, github 8K\n +├─ Memory +6K\n +├─ Skills +3K\n +└─ Agents +1K\n/)
   })
 
   const MIN = 60_000
@@ -1048,7 +1061,9 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const lines = (h.files['/home/test/.claude/mods-logs/rightsize-runs.jsonl'] ?? '').trim().split('\n').map(l => JSON.parse(l) as { workflows?: number; afterWorkflow?: boolean })
     expect(lines.map(l => [l.workflows ?? 0, l.afterWorkflow ?? false])).toEqual([[0, false], [1, true], [0, true]])
     h.now = Date.now()
-    expect((await d.command('report')).text ?? '').toContain('2 turns ran during or after a workflow (1 workflow, ultracode or asked for)')
+    const flows = (await d.command('report')).text ?? ''
+    expect(flows).toMatch(/2 turns +ran during or after a workflow/)
+    expect(flows).toContain('1 workflow, from ultracode or asked for')
 
     // A new session hands off again.
     await d.start(surface)
@@ -1122,7 +1137,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await ui.press({ key: 'tip-later' })
     await ui.unmount()
     expect(await bandText($, surface)).toBe('')
-    expect(String((await d.command('report')).text)).toContain('Starting point (last 30 days, 60 rated prompts): Opus at medium.')
+    expect(String((await d.command('report')).text)).toContain('STARTING POINT  Opus at medium, 60 rated prompts in 30 days')
 
     // A day later: not checked again. A week later: checked, but the same start is quiet for 14 days.
     h.now += 24 * 60 * MIN
@@ -1219,7 +1234,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const d = drive($, h)
     await d.start(surface)
     expect(await bandText($, surface)).toBe('')
-    expect(String((await d.command('report')).text), 'the report still compares').toContain('Starting point (last 30 days')
+    expect(String((await d.command('report')).text), 'the report still compares').toContain('rated prompts in 30 days')
   })
 
   test(`waits for 50 rated prompts before suggesting a start (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -1228,7 +1243,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const d = drive($, h)
     await d.start(surface)
     expect(await bandText($, surface)).toBe('')
-    expect(String((await d.command('report')).text)).toContain('Starting point: needs 50 rated prompts on Opus at medium to compare starts (has 30).')
+    expect(String((await d.command('report')).text)).toContain('STARTING POINT  Needs 50 rated prompts on Opus at medium to compare (has 30).')
   })
 
   test(`the Band setting: when it acts, always, off, and the ⋯ and × buttons (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -1540,10 +1555,11 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(last(runs())?.kind).toBe('overhead')
 
     const report = (await d.command('report')).text ?? ''
-    expect(report).toContain('Prompts: 2 rated, 1 changed (1 lowered).')
-    expect(report).toContain('This session, last 7 days and last 30 days')
-    expect(report).toContain('rating calls')
-    expect(report).toContain('PROBLEMS (last 30 days)')
+    expect(cellsOf(report, 'Prompts rated')).toEqual(['2', '2', '2'])
+    expect(cellsOf(report, 'Kept / lowered / raised')).toEqual(['1/1/0', '1/1/0', '1/1/0'])
+    expect(report).toContain('Total saved is after the cost of rating prompts with Haiku')
+    expect(report.includes('```'), 'fenced only in the desktop app').toBe(surface === 'desktop')
+    expect(report).toContain('NOT COUNTED AS SAVINGS')
   })
 
   // Close calls. A Fable session at high effort, a feature that Sonnet, Opus and Fable all do at medium.
@@ -1689,8 +1705,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.submit(LOOKUP)
     expect(h.completions.filter(m => m === 'sonnet').length).toBe(1)
     const report = (await d.command('report')).text ?? ''
-    expect(report).toContain("Haiku's judgement was wrong on 1 of 2 checked prompts (50%)")
-    expect(report, 'a check line is not a prompt').not.toContain('prompts rated')
+    expect(report).toMatch(/Haiku's judgement +wrong on 1 of 2 checked prompts \(50%\)/)
+    expect(report, 'a check line is not a prompt').toContain('Nothing rated yet.')
   })
 
   test(`a check that lands during a turn is left out of that turn's cost (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -1807,7 +1823,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     // Nothing leaves the machine: no fetch beyond the price check, and the line is only in the run log.
     expect(h.fetches).toBeLessThanOrEqual(1)
     // One hit (no rework) and one 👎, both Haiku's.
-    expect((await d.command('report')).text ?? '').toContain("Haiku's judgement was wrong on 1 of 2 checked prompts (50%)")
+    expect((await d.command('report')).text ?? '').toMatch(/Haiku's judgement +wrong on 1 of 2 checked prompts \(50%\)/)
   })
 
   test(`👍 and 👎 on an automatic lowering write a feedback line for that run, and 👍 counts as a hit (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -1882,8 +1898,9 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await bandText($, surface)).toBe('')
     // The report says what the record is and what it paused.
     const report = (await d.command('report')).text ?? ''
-    expect(report).toContain("Haiku's judgement was wrong on 3 of 6 checked prompts (50%)")
-    expect(report).toContain('Hand-downs of lookup work to Opus (and lowering effort on it) are paused: wrong on 50% of 6.')
+    expect(report).toMatch(/Haiku's judgement +wrong on 3 of 6 checked prompts \(50%\)/)
+    expect(report).toMatch(/Hand-downs paused +lookup work to Opus, wrong on 50% of 6/)
+    expect(report).toContain('Hand-downs of lookup work to Opus, and lowering effort on it, resume when')
   })
 
   test(`with a clean record the same lowering goes ahead (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -2710,8 +2727,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
       await d.step('t1')
       expect(last(h.sent)?.effort).toBe(row.effort)
       const report = (await d.command('report')).text ?? ''
-      expect(report.includes('are paused')).toBe(row.paused)
-      expect(report).toContain(`Haiku's judgement was wrong on ${row.steppedUp} of 6 checked prompts`)
+      expect(report.includes('Hand-downs paused')).toBe(row.paused)
+      expect(report).toMatch(new RegExp(`Haiku's judgement +wrong on ${row.steppedUp} of 6 checked prompts`))
     })
   }
 
@@ -3045,7 +3062,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
         const sub = lines.filter(l => l.kind === 'subagent')
         expect(sub.map(l => l.afterWorkflow), 'the agent is logged, and marked').toEqual([true])
         h.now = Date.now()
-        expect((await d.command('report')).text ?? '').toContain('1 subagent Claude started ran on a cheaper model.')
+        expect(cellsOf((await d.command('report')).text ?? '', 'Subagents on cheaper model')?.at(-1)).toBe('1')
       }
     })
   }
@@ -3328,9 +3345,9 @@ for (const surface of ['desktop', 'terminal'] as const) {
       // The report still counts all of it, and says when measurement restarted.
       const report = (await d.command('report')).text ?? ''
       expect(report).toContain(`Cost measurement restarted on ${new Date(h.now).toISOString().slice(0, 10)}.`)
-      expect(report).toContain('Last 7 days and last 30 days\n  Prompts: 66 rated')
-      expect(report, 'what went wrong reads the whole history').toContain("Haiku's judgement was wrong on 3 of 6 checked prompts (50%)")
-      expect(report, 'but nothing is paused any more').not.toContain('are paused')
+      expect(cellsOf(report, 'Prompts rated')?.slice(1)).toEqual(['66', '66'])
+      expect(report, 'what went wrong reads the whole history').toMatch(/Haiku's judgement +wrong on 3 of 6 checked prompts \(50%\)/)
+      expect(report, 'but nothing is paused any more').not.toContain('Hand-downs paused')
       // Settings stay unless Both.
       expect(await settingsText(d)).toContain(choice === 'Both' ? `All ${KEYS.length} settings are at their defaults` : 'Lowering: lower automatically')
     })
@@ -3370,13 +3387,13 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const d = drive($, h)
     await d.start(surface)
     expect(await bandText($, surface), 'before: a cheaper start is suggested').toContain('Starting on Sonnet')
-    expect(String((await d.command('report')).text)).toContain('Starting point (last 30 days, 60 rated prompts): Opus at medium.')
+    expect(String((await d.command('report')).text)).toContain('STARTING POINT  Opus at medium, 60 rated prompts in 30 days')
     h.answers = { Reset: 'Cost measurement', Confirm: 'Yes' }
     await d.command('reset')
     // The report's block waits for rated prompts from now on, though its history still counts the 60.
     const report = String((await d.command('report')).text)
-    expect(report).toContain('Starting point: needs 50 rated prompts to compare starts (has 0).')
-    expect(report).toContain('Last 7 days and last 30 days\n  Prompts: 60 rated')
+    expect(report).toContain('STARTING POINT  Needs 50 rated prompts to compare (has 0).')
+    expect(cellsOf(report, 'Prompts rated')?.slice(1)).toEqual(['60', '60'])
     // The next start does not suggest anything either: startCheckedAt is clear, so it checks, and finds nothing to go on.
     await d.start(surface)
     expect(await bandText($, surface)).toBe('')

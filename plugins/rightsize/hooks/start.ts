@@ -191,21 +191,24 @@ export function startTip(a: Extract<StartAdvice, { kind: 'switch' }>, subscripti
   return `Starting on ${to} would have ${less} than ${startName(a.current)} on your last ${n} rated prompts${up}. Switch with /model.`
 }
 
+/** The report's STARTING POINT section: a heading, one row per start (name, value), a note, and the suggestion that goes to NEXT STEPS. */
+export type StartBlock = { head: string; rows: string[][]; note?: string; tip?: string }
+
 /** The report's block: each start's replayed cost, and the advice. */
-export function startLines(a: StartAdvice, subscription: boolean, money: (d: number) => string): string[] {
+export function startBlock(a: StartAdvice, subscription: boolean, money: (d: number) => string): StartBlock {
   if (a.kind === 'wait') {
     const on = a.current ? ` on ${startName(a.current)}` : ''
-    return [`Starting point: needs ${a.need} rated prompts${on} to compare starts (has ${a.prompts}).`]
+    return { head: `Needs ${a.need} rated prompts${on} to compare (has ${a.prompts}).`, rows: [] }
   }
   const mine = a.replays.find(r => same(r.start, a.current))
   const n = mine?.prompts ?? 0
-  const each = a.replays.map(r => {
+  const rows = a.replays.map(r => {
     const value = subscription ? `${Math.round((r.cost / Math.max(mine?.cost ?? 1, 1e-9)) * 100)}% of yours` : `~${money((r.cost / Math.max(n, 1)) * 100)} per 100 prompts`
     const up = r.up ? `, ${pct(r.up / r.prompts)} to a stronger model` : ''
     const yours = same(r.start, a.current) ? ' (yours)' : ''
-    return `${startName(r.start)}${yours} ${value}${up}`
+    return [`${startName(r.start)}${yours}`, `${value}${up}`]
   })
-  const out = [`Starting point (last ${START_WINDOW_DAYS} days, ${n} rated prompts): ${startName(a.current)}.`, `  Estimated from your log: ${each.join('; ')}.`]
-  out.push(a.kind === 'switch' ? `  Suggestion: ${startTip(a, subscription)}` : '  Your start fits: no other start is clearly cheaper without sending more work to a stronger model.')
-  return out
+  const head = `${startName(a.current)}, ${n} rated prompts in ${START_WINDOW_DAYS} days`
+  if (a.kind === 'switch') return { head, rows, note: 'Estimated from your log. A different start is suggested under NEXT STEPS.', tip: startTip(a, subscription) }
+  return { head, rows, note: 'Estimated from your log. Your start fits: no other start is clearly cheaper without sending more work to a stronger model.' }
 }

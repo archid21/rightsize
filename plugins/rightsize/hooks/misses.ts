@@ -42,6 +42,32 @@ function ofRun(l: RunLine): Outcome | undefined {
   return undefined
 }
 
+// A Sonnet check: for each model Haiku named a level for, a miss where Sonnet says it would struggle.
+function ofCheck(l: RunLine): Outcome[] {
+  if (!isTaskType(l.type) || !l.fit || !l.check?.fit) return []
+  const out: Outcome[] = []
+  for (const tier of TIERS) {
+    const [first, second] = [l.fit[tier], l.check.fit[tier]]
+    if (!isLevel(first) || second === undefined) continue
+    out.push({ type: l.type, tier, miss: second === null })
+  }
+  return out
+}
+
+/** Sonnet's spot-checks that compared at least one model, and how many of them agreed with Haiku on every model. */
+export function checkTotals(lines: readonly RunLine[]) {
+  let n = 0
+  let agreed = 0
+  for (const l of lines) {
+    if (l.kind !== 'check') continue
+    const o = ofCheck(l)
+    if (!o.length) continue
+    n += 1
+    if (!o.some(x => x.miss)) agreed += 1
+  }
+  return { n, agreed }
+}
+
 /** Every outcome in the log, in order. */
 export function outcomes(lines: readonly RunLine[]): Outcome[] {
   const out: Outcome[] = []
@@ -56,12 +82,8 @@ export function outcomes(lines: readonly RunLine[]): Outcome[] {
     } else if (kind === 'feedback') {
       // A person who changed their mind is counted once, on the last verdict.
       if (l.ref && (l.value === 'up' || l.value === 'down')) verdicts.set(l.ref, l.value)
-    } else if (kind === 'check' && isTaskType(l.type) && l.fit && l.check?.fit) {
-      for (const tier of TIERS) {
-        const [first, second] = [l.fit[tier], l.check.fit[tier]]
-        if (!isLevel(first) || second === undefined) continue
-        out.push({ type: l.type, tier, miss: second === null })
-      }
+    } else if (kind === 'check') {
+      out.push(...ofCheck(l))
     }
   }
   for (const [ref, value] of verdicts) {

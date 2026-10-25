@@ -37,8 +37,8 @@ Not every prompt needs your strongest model thinking its hardest. "Rename this v
 ### It learns and shows its work
 
 - After each prompt, it compares what it expected to spend with what you really spent, and it adjusts its guesses next time.
-- `/rightsize report` shows what it changed, about how much it saved, and what went wrong, for this session, the last 7 days, and the last 30 days.
-- The report also shows the fixed overhead that comes with every message (tools, instructions, plugins) and how to cut it.
+- `/rightsize report` opens with one sentence on how much it saved in the last 30 days, then a table of what it changed and saved this session, in the last 7 days and in the last 30 days. Below that it lists which turns it did not count as savings and why.
+- The report also shows the fixed context that comes with every message (tools, instructions, plugins), largest part first, and the next steps to cut it.
 
 ### You stay in charge
 
@@ -190,17 +190,16 @@ The band shows in the CLI and the desktop app. VS Code and the mobile app keep t
 
 - `/rightsize`: the settings you changed (the rest are defaults, shown in `/config`), the session switch, the measured runs and the cache-switch results.
 - `/rightsize help`: every command and what it does. An unknown command shows the same list.
-- `/rightsize report`: what rightsize did for you this session, in the last 7 days and in the last 30 days.
-  - How many prompts it rated and changed, how often you kept your level, and how many of Claude's subagents ran on a cheaper model.
-  - The estimated saving after the cost of its own Haiku rating calls. Extra spending from raising effort or using stronger models is shown on its own line.
-  - On a subscription, the share of your 5-hour (and 7-day) window that saving kept, and about how many more minutes that is at the current pace. This comes first, and dollar amounts are marked API-equivalent.
-  - Fixed context: the tokens every request carried that rightsize can't trim (MCP tools by server, CLAUDE.md and memory, skills and commands, agent descriptions), what re-reading them cost, and how to cut it.
-  - Close calls, in the last 7 and 30 days: how many the task-type guide decided, and how many took the other model to measure it.
-  - Starting point: what your last 30 days of rated prompts would have cost from Sonnet and Opus at medium and high, and whether another start would suit you better (see [Choosing a starting model](#choosing-a-starting-model)).
-  - Accuracy: how often Haiku's judgement was wrong, counted from rework, lowered turns that stepped back up, mid-turn raises, 👎, and Sonnet checks that disagreed. When a task type's rate reaches the **Pause after misses** line, the report says which hand-downs and lowerings are paused. It also says how far its estimates were off, early against late.
-  - Problems: lowered turns that stepped back up, turns raised mid-turn because Claude looked stuck, hand-offs that cost more or needed rework, hand-offs Claude skipped (not counting those kept in the main chat for steps only you can approve), effort switches that missed the cache, turns you stopped, and turns that ran during or after a workflow.
+- `/rightsize report`: what rightsize did for you. In the terminal it is plain text; the desktop app renders it as Markdown, so the tables and the tree go in code blocks there to keep their columns lined up. Each section is below, in the order it appears. A section with nothing to show is left out.
+  - Headline: one sentence for the last 30 days. On a subscription it leads with the share of your 5-hour window that the saving kept, and about how many minutes that is at the current pace. On the API it leads with the dollars saved.
+  - Table: columns for this session, the last 7 days and the last 30 days. Savings come first: Total saved (after the cost of the Haiku rating calls), the share of your 5-hour and 7-day windows saved (subscription), the share of cost saved, and Extra spent on harder prompts (what raising effort or using a stronger model cost, for better answers; it isn't taken off Total saved). Then what rightsize did: prompts rated, how many were kept, lowered or raised, how many were sent to a cheaper or stronger model, suggestions you declined, Claude's subagents that ran on a cheaper model, and close calls (how many the task-type guide decided, and how many took the other model to measure it; 7 and 30 days only).
+  - Starting point: what your last 30 days of rated prompts would have cost from Sonnet and Opus at medium and high. A suggestion to switch goes under Next steps (see [Choosing a starting model](#choosing-a-starting-model)).
+  - Fixed context: the tokens every request carried that rightsize can't trim, with a note that it adds to your cost in every session and cutting it saves more, what re-reading them cost at least and its share of what those turns cost, then a tree with the largest part first (MCP tools with the biggest servers named, skills and commands, agent descriptions, CLAUDE.md and memory).
+  - Accuracy: how often Haiku's judgement was wrong, counted from rework, lowered turns that stepped back up, mid-turn raises, 👎, and Sonnet checks that disagreed; how many Sonnet spot-checks agreed with Haiku; the hand-downs paused for a task type once its rate reaches the **Pause after misses** line; and how far the estimates were off, early against late.
+  - Not counted as savings: a count and a plain reason for each kind of turn that gets no saving or went off course. Lowered turns that stepped back up, turns raised mid-turn because Claude looked stuck, hand-offs that cost more than staying or needed rework, hand-offs Claude skipped (not counting those kept in the main chat for steps only you can approve), effort switches that missed the cache, turns you stopped, and turns that ran during or after a workflow.
+  - Next steps: what to do about the sections above: cut fixed context (`/mcp`, `/plugin`), a better starting model, and when a hand-down will resume after a pause.
+  - Footer: the saving is an estimate (the actual cost against staying at your own model and effort), what the Haiku rating calls cost in 30 days (Total saved is after them), what Extra spent means when it shows, and on a subscription, that dollar amounts are what the same use would cost on the API and that you only pay for your subscription. The report also says when cost measurement was restarted.
 
-  A saving is an estimate: what staying at your own level and model would have cost, scaled by what the turn really cost. Turns that stepped back up get no saving.
 - `/rightsize share`: prints a message you can paste anywhere (LinkedIn, Slack, a DM) to tell others about rightsize. It includes your estimated saving for the last 30 days once there are at least 20 rated prompts and the saving is 5% or more. It sends nothing, writes nothing and asks nothing, and it is unrelated to the **Share anonymous feedback** setting.
 - `/rightsize settings`: ask the four questions again, and set their rows in `/config` from your answers.
 - `/rightsize undo`: put the last auto-lowered prompt back in the box, to run at the normal level.

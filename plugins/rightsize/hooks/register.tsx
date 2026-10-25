@@ -59,7 +59,7 @@ import {
 import { PRICING_URL, applyPrices, diffPrices, isDue, parsePricingPage } from './prices'
 import { missMap, missRates } from './misses'
 import { SHARE_ASK_AFTER, SHARE_EVERY_MS, SHARE_URL, newInstall, nextBatch } from './share'
-import { START_CHECK_DAYS, START_SNOOZE_DAYS, adviseFromLog, startKey, startLines, startTip } from './start'
+import { START_CHECK_DAYS, START_SNOOZE_DAYS, adviseFromLog, startBlock, startKey, startTip } from './start'
 import {
   KEYS,
   NOT_SET,
@@ -1874,8 +1874,10 @@ export const register: Register = (on, options) => {
       const runs = parseLines<RunLine>(await readText($, `${dir}/rightsize-runs.jsonl`))
       const switches = parseLines<SwitchLine>(await readText($, `${dir}/rightsize-switches.jsonl`))
       const now = await $.clock.now()
-      const start = startLines(adviseFromLog(await readText($, `${dir}/rightsize-runs.jsonl`), await startContext($), now), billing === 'subscription', money)
-      return { text: buildReport(runs, switches, { now, session: sessionId, subscription: billing === 'subscription', start, pause: missBlock, ...(measureFrom ? { measureFrom: new Date(measureFrom).toISOString() } : {}) }) }
+      const start = startBlock(adviseFromLog(await readText($, `${dir}/rightsize-runs.jsonl`), await startContext($), now), billing === 'subscription', money)
+      // The desktop app (any surface but the terminal) renders the report as Markdown.
+      const markdown = (await $.session.surfaces()).some(x => x !== 'terminal')
+      return { text: buildReport(runs, switches, { now, session: sessionId, subscription: billing === 'subscription', start, pause: missBlock, markdown, ...(measureFrom ? { measureFrom: new Date(measureFrom).toISOString() } : {}) }) }
     }
     if (arg === 'share') {
       const runs = parseLines<RunLine>(await readText($, `${home}/.claude/mods-logs/rightsize-runs.jsonl`))

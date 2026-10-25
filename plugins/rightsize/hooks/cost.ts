@@ -129,6 +129,8 @@ export type Rating = {
   write: number
   /** Tool calls the work makes. */
   steps: number
+  /** Mainly a step only the person can approve (push, publish, deploy, send): never handed off. */
+  approval?: boolean
   reason: string
 }
 
@@ -539,6 +541,8 @@ export function effortPlan(r: Rating, s: Situation, floor: Level): Plan {
 // cheaper route, when it costs under the hand-off share of staying at the level
 // the work needs (a raise counted with its switch there and back); else an effort change.
 export function plan(r: Rating, s: Situation, floor: Level): Plan {
+  // A subagent cannot see the person's approval, so it would refuse the work.
+  if (r.approval) return effortPlan(r, s, floor)
   const stay = mainCost(r, s, s.level, 0)
   const routes = TIERS.flatMap(t => {
     const need = r.fit[t]

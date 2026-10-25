@@ -72,6 +72,8 @@ test('lists what went wrong, and how far the estimates were off', async () => {
   expect(out).toContain('1 turn you stopped: their rating cost counts, no saving does.')
   expect(out.some(l => l.endsWith('calibration is closing the gap.')), 'later runs closer').toBe(true)
   expect(buildReport([], [], { now: NOW, session: 's1', subscription: false })).toContain('- Nothing yet.')
+  const approved = wentWrong([run({ change: 'delegate-down', route: 'main', approvalSteps: 2 })], [])
+  expect(approved.some(l => l.includes('skipped')), 'kept in the main chat for steps only you can approve: not a skip').toBe(false)
 })
 
 test('turns during or after a workflow claim no saving and get their own line', async () => {

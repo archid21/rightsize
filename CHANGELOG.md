@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Hand-offs work when a request needs your approval.** A subagent refuses to push, publish, release, deploy or send, because a message from another agent is not your approval. The hand-off note now tells the subagent to prepare the work and stop, and the main chat to check it and do those steps itself. A request that is mainly such a step isn't handed off: the Haiku rating gets an `approval` field, and only effort can change. When Claude keeps a chosen hand-off in the main chat for such a step, the band says so, the run log records `approvalSteps`, and `/rightsize report` no longer counts it as a skipped hand-off.
+
 ## 0.7.1 (2026-10-25)
 
 - The plugin description says what rightsize does for you, not how it works.

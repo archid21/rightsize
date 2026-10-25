@@ -435,6 +435,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(note).toContain('model "haiku"')
     expect(note).toContain('finish the task yourself')
 
+    expect(note, 'the subagent stops before steps only the person can approve').toContain('only the person can approve')
+
     // Claude answered without the subagent: the report says so.
     await d.step('t1')
     await d.complete('t1')
@@ -449,6 +451,38 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t2', 1)
     await d.complete('t2')
     expect(await bandText($, surface)).toMatch(/^rightsize: Sent to Haiku: .* staying on Fable \(estimated\), saved about \d+%\.$/)
+  })
+
+  test(`a hand-off kept in the main chat for a push is not counted as skipped (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high' })
+    const d = drive($, h)
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+
+    h.rating = '{"level":"low","model":"haiku","size":"bulky","type":"search","read":150000,"write":3000,"steps":30,"reason":"repo-wide search"}'
+    h.answers = { Cheaper: 'Send it to a cheaper subagent (Recommended)', Remember: 'Just this session' }
+    await d.submit(SEARCH)
+    await d.step('t1')
+    await d.bash('denied git push')
+    await d.bash('git push origin main')
+    await d.complete('t1')
+    expect(await bandText($, surface)).toContain('kept this in the main chat for steps only you can approve')
+    const runs = (h.files['/home/test/.claude/mods-logs/rightsize-runs.jsonl'] ?? '').trim().split('\n').map(l => JSON.parse(l) as { approvalSteps?: number })
+    expect(runs.at(-1)?.approvalSteps, 'the refused push does not count').toBe(1)
+  })
+
+  test(`a request that is mainly an approval step is not handed off (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high' })
+    const d = drive($, h)
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+
+    h.rating = '{"fit":{"haiku":"low","sonnet":"low","opus":"low","fable":"low"},"type":"other","read":150000,"write":3000,"steps":30,"approval":true,"reason":"push and release"}'
+    await d.submit(SEARCH)
+    expect(h.asked.map(a => a.header).includes('Cheaper'), 'no hand-off question').toBe(false)
+    expect(last(h.submitted)?.context?.join('\n') ?? '', 'no hand-off note').not.toContain('subagent')
   })
 
   test(`counts a hand-off whose Agent call names the full model id (${surface})`, { timeoutMs: 30000 }, async ($, on) => {

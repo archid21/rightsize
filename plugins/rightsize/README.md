@@ -27,6 +27,8 @@ After the first answer, it asks "Use these choices in every session?". Each ques
   4. report how it went
 
   On the way down, if the cheaper model still fails after 2 reworks, the main chat finishes the task itself.
+
+  Steps only you can approve (push, publish, release, deploy, send) stay in the main chat: the subagent prepares the work and stops, since it can't see your approval. A request that is mainly such a step isn't handed off.
 - **Handing work down needs a clear saving.** A subagent is used only when the estimate is under 70% of the cost of staying at the level the work needs, counting the brief, the report and the check. The subagent runs at the level its model needs: rightsize sets it. Lowering effort needs the lower level to cost under 90% of staying. Both are defaults you can change in `/config`. **Highest effort** caps how high the mod raises effort, including the level a subagent runs at, and **Use Haiku** and **Use Fable** turn off the work sent to either model.
 - **Close calls go to the model suited to the task.** When two cheaper models that fit are close in estimated cost, the mod picks by task type:
   - Haiku for lookups, searches, bulk edits, extraction and summaries.

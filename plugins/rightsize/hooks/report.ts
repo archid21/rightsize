@@ -42,6 +42,8 @@ export type RunLine = {
   missCost?: number
   /** Subagent calls (Agent and SendMessage) on the main thread: more than one on a hand-off is rework. */
   agentCalls?: number
+  /** Main-chat steps only the person can approve (push, publish, deploy, send). */
+  approvalSteps?: number
   /** Workflow calls in the turn (ultracode's fan-out). */
   workflows?: number
   /** A workflow ran in the session by this turn's end: its agents' cost may be in this turn's. */
@@ -328,7 +330,8 @@ export function problemLines(lines: readonly RunLine[], switches: readonly Switc
   }
   const rework = runs.filter(l => delegated(l) && num(l.agentCalls) > 1).length
   if (rework) out.push(`${plural(rework, 'hand-off')} needed rework (more than one subagent call).`)
-  const skipped = runs.filter(l => (l.change === 'delegate-up' || l.change === 'delegate-down') && !delegated(l)).length
+  // A hand-off kept in the main chat for steps only you can approve is not a miss.
+  const skipped = runs.filter(l => (l.change === 'delegate-up' || l.change === 'delegate-down') && !delegated(l) && !num(l.approvalSteps)).length
   if (skipped) out.push(`Claude skipped ${plural(skipped, 'hand-off')} you chose and did the work itself.`)
   const missed = switches.filter(s => s.kept === false).length
   if (missed) {

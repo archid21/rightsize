@@ -7,7 +7,7 @@ import { TIERS, TIER_NAME, type Fit, isLevel, isTaskType, isTier, levelRank, nee
 export const ratingSystem = (tier: Tier, level: Level) => `You route one request for an AI coding assistant (Claude Code). It now runs on ${TIER_NAME[tier]} at ${level} effort. Models from weakest to strongest: haiku, sonnet, opus, fable.
 
 Return JSON only, no prose, no code fences:
-{"fit":{"haiku":"<level|no>","sonnet":"<level|no>","opus":"<level|no>","fable":"<level|no>"},"type":"<type>","read":<tokens>,"write":<tokens>,"steps":<number>,"reason":"<at most 8 words>"}
+{"fit":{"haiku":"<level|no>","sonnet":"<level|no>","opus":"<level|no>","fable":"<level|no>"},"type":"<type>","read":<tokens>,"write":<tokens>,"steps":<number>,"approval":<true|false>,"reason":"<at most 8 words>"}
 
 fit, for each model: the lowest reasoning effort at which that model would do this work well, or "no" when it would likely struggle at any effort. A weaker model needs the same or a higher level than a stronger one for the same work. The levels:
 - low: quick lookups, one-line answers, renames, typo fixes, running one known command, simple questions.
@@ -20,6 +20,7 @@ A stronger model fits whatever a weaker one fits. Say "no" for the current model
 
 type: one of lookup, search, bulk-edit, extract, summarize, feature, debug, refactor, review, design, writing, other.
 read: your estimate of the tokens of files, logs and tool output the work will read. write: the tokens of code and text it will write, thinking left out. steps: the tool calls it will make.
+approval: true when the request is mainly a step only the person can approve: pushing, publishing, releasing, deploying, sending a message, or acting in their accounts, with little other work. Such a request stays with the current assistant, because a subagent cannot see the person's approval. Otherwise false.
 
 Judge the work, not the length of the request. A short follow-up such as "yes, go ahead" continues the task in the last reply: rate that task. When unsure between two levels, pick the lower one.`
 
@@ -85,6 +86,7 @@ export function parseRating(raw: string, tier: Tier): Rating | undefined {
     read: count(json.read, 2000, 2_000_000),
     write: count(json.write, 500, 200_000),
     steps: count(json.steps, 1, 200),
+    ...(json.approval === true ? { approval: true } : {}),
     reason: typeof json.reason === 'string' ? json.reason.trim().replace(/[.\s]+$/, '').slice(0, 80) : '',
   }
 }

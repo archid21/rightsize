@@ -169,6 +169,14 @@ test('keeps a small task on the main model even when a cheaper one could do it',
   expect(p.kind, 'small: the brief and check outweigh the saving').toBe('none')
 })
 
+test('never hands off a request that is mainly an approval step', async () => {
+  const r = rating({ level: 'low', fit: { haiku: 'low', fable: 'low' }, type: 'search', read: 150_000, write: 3000, steps: 30 })
+  expect(plan(r, fable, 'low').kind, 'without the flag: handed down').toBe('delegate')
+  expect(plan({ ...r, approval: true }, fable, 'low').kind).not.toBe('delegate')
+  expect(parseRating('{"fit":{"opus":"low"},"type":"other","approval":true}', 'opus')?.approval).toBe(true)
+  expect(parseRating('{"fit":{"opus":"low"},"type":"other","approval":"yes"}', 'opus')?.approval, 'only a real true counts').toBeUndefined()
+})
+
 test('does not hand down when the hand-off costs more than it saves', async () => {
   // A bulky label on tiny work: the brief, report and check outweigh the savings.
   const r = rating({ level: 'high', fit: { sonnet: 'high', fable: 'high' }, read: 500, write: 200, steps: 1 })

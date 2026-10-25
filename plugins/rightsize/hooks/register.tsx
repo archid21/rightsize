@@ -85,6 +85,7 @@ import {
   valuesOf,
 } from './settings'
 import { parseRating, ratingPrompt, ratingSystem } from './rate'
+import { isApprovalStep } from './approval'
 import { LIMITS, type Limits, type Signals, type Struggle, callKey, isSensitivity, noSignals, noteCall, oneUp, struggle } from './struggle'
 import { type Change, type RunLine, type SwitchLine, type Windows, buildReport, parseLines, shareMessage, windowRates } from './report'
 
@@ -258,6 +259,8 @@ type Run = {
   /** The rating call's cost. */
   overhead: number
   agentCalls: number
+  /** Main-chat steps only the person can approve (push, publish, deploy, send). */
+  approvalSteps: number
   /** Rate-limit windows when the turn's first request went out. */
   before?: Windows
   /** How fast the tighter usage window was being used when the prompt was rated. */
@@ -890,6 +893,7 @@ export function delegateNote(d: NonNullable<Run['delegate']>) {
   return [
     `[rightsize] The person has chosen to hand this request to a ${name} subagent, because ${why}. Do it this way:`,
     `1. Start one subagent with the Agent tool, model "${d.tier}", effort "${d.level}". Give it a complete brief: the goal, the files, facts and decisions it needs from this conversation, and a "Done means" list of 3 to 6 items that can be checked.`,
+    '   If the request includes steps only the person can approve (pushing, publishing, releasing, deploying, sending messages, acting in their accounts), the subagent prepares everything (edits, tests, notes) and stops before those steps. It cannot see the person\'s approval, so it would refuse them. You do those steps yourself after step 2.',
     '2. When it reports back, check its result against every Done-means item yourself. Use real proof where you can (run the tests, read the changed files), not its summary.',
     '3. If an item fails, send that subagent a specific fix-up note (continue it with SendMessage where you can; otherwise start it again with the note and its last result). At most 2 rework rounds.',
     d.dir === 'down'
@@ -935,6 +939,7 @@ function startRun(r: Rating, s: Situation, d: Decision, p: Plan, base: Level, ov
     takenDelegate: d.delegate ? delegateCost(r, s, d.delegate.tier, d.delegate.level) : undefined,
     overhead,
     agentCalls: 0,
+    approvalSteps: 0,
     subAgents: [],
     resized: [],
     mainCost: 0,
@@ -1167,6 +1172,7 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
       overhead: round(run.overhead),
       missCost: round(run.missCost),
       agentCalls: run.agentCalls,
+      ...(run.approvalSteps ? { approvalSteps: run.approvalSteps } : {}),
       requests: run.requests,
       // Each request reads the fixed context from the cache, at least.
       ...(fixed ? { fixed: { ...fixed, cost: round((run.requests * fixed.tokens * prices[run.tier].cacheRead) / 1e6) } } : {}),
@@ -1179,8 +1185,11 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
     await appendRun($, line)
   }
   if (run.delegate && (!delegated || !aborted)) {
-    const text = !delegated
-      ? `rightsize: Claude did not hand this to a ${TIER_NAME[run.delegate.tier]} subagent; it ran on ${TIER_NAME[run.tier]} (${money(actual)}${billing === 'subscription' ? ' API-equivalent' : ''}).`
+    const cost = `${money(actual)}${billing === 'subscription' ? ' API-equivalent' : ''}`
+    const text = !delegated && run.approvalSteps
+      ? `rightsize: Claude kept this in the main chat for steps only you can approve (push, publish, deploy, send); it ran on ${TIER_NAME[run.tier]} (${cost}).`
+      : !delegated
+      ? `rightsize: Claude did not hand this to a ${TIER_NAME[run.delegate.tier]} subagent; it ran on ${TIER_NAME[run.tier]} (${cost}).`
       : report({ tier: run.tier, stay: run.stay, delegate: run.delegate }, actual, billing)
     // The band shows the result in place of a transcript line; with the band off, the line stays.
     if (bandMode === 'off') $.ui.log(text)
@@ -2085,6 +2094,7 @@ export const register: Register = (on, options) => {
       if (String(e.tool) === 'Agent' || String(e.tool) === 'SendMessage') active.agentCalls += 1
       const isError = (result as { isError?: boolean }).isError === true
       if (isError) active.errors += 1
+      if (!(result as { deny?: string }).deny && isApprovalStep(String(e.tool), e as Record<string, unknown>)) active.approvalSteps += 1
       // A refused call (a denied permission) says nothing about the work.
       if (!(result as { deny?: string }).deny) active.signals = noteCall(active.signals, callKey(String(e.tool), e as Record<string, unknown>), isError)
     }

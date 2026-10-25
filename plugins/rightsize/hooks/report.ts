@@ -385,3 +385,40 @@ export function buildReport(
   out.push('What went wrong (last 30 days):', ...(wrong.length ? wrong.map(w => `- ${w}`) : ['- Nothing yet.']))
   return out.join('\n')
 }
+
+export const SHARE_MIN_RATED = 20
+export const SHARE_MIN_PCT = 5
+const SHARE_LINK = 'https://aivalue.blog/rightsize'
+
+/**
+ * /rightsize share: a message to paste anywhere, with the last 30 days' estimated saving once there is enough data.
+ * Prints only; unrelated to the anonymous-feedback setting. Same totals and percentage as the report.
+ */
+export function shareMessage(lines: readonly RunLine[], opts: { now: number; subscription: boolean; measureFrom?: string }) {
+  const from = opts.measureFrom ? Date.parse(opts.measureFrom) : 0
+  const month = lines.filter(l => opts.now - Date.parse(l.at) <= 30 * DAY && Date.parse(l.at) >= from)
+  const t = totals(month)
+  const net = t.saved - t.overhead
+  const pct = net > 0 ? Math.round((net / (t.spent + t.overhead + net)) * 100) : 0
+  const enough = t.rated >= SHARE_MIN_RATED
+  const head = 'Copy and paste this anywhere. rightsize sends nothing itself.'
+  if (enough && pct >= SHARE_MIN_PCT) {
+    const what = opts.subscription ? `saved about ${pct}% of my Claude Code usage` : `cut my Claude Code spend by about ${pct}%`
+    return [
+      head,
+      '',
+      `rightsize ${what} over the last 30 days, by its own estimate. It matches each prompt to the right model and effort level. Free and open source: ${SHARE_LINK}`,
+      '',
+      `The number is rightsize's estimate from your last 30 days (${t.rated} rated prompts); /rightsize report shows the details. Edit the message as you like.`,
+    ].join('\n')
+  }
+  return [
+    head,
+    '',
+    `I'm using rightsize, a free Claude Code mod that matches each prompt to the right model and effort level, and shows what it changed. Open source: ${SHARE_LINK}`,
+    '',
+    enough
+      ? "No saving is included: rightsize's estimate for your last 30 days is under 5%."
+      : `Once rightsize has ${SHARE_MIN_RATED} rated prompts and an estimated saving of ${SHARE_MIN_PCT}% or more in the last 30 days, this message includes it.`,
+  ].join('\n')
+}

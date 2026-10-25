@@ -86,7 +86,7 @@ import {
 } from './settings'
 import { parseRating, ratingPrompt, ratingSystem } from './rate'
 import { LIMITS, type Limits, type Signals, type Struggle, callKey, isSensitivity, noSignals, noteCall, oneUp, struggle } from './struggle'
-import { type Change, type RunLine, type SwitchLine, type Windows, buildReport, parseLines, windowRates } from './report'
+import { type Change, type RunLine, type SwitchLine, type Windows, buildReport, parseLines, shareMessage, windowRates } from './report'
 
 // Before a prompt is sent, a quick Haiku call rates the effort, the model and
 // the work needs on each model, and the cost model prices each route that fits. The first time
@@ -1362,7 +1362,7 @@ async function summary($: EngineInterface) {
     ...(typeof install === 'string' ? [`Sharing install ID: ${install} (quote it to rightsize@aivalue.blog to ask about or delete your shared data).`] : []),
     session ? `Session switch: ${session}.` : 'No session switch.',
     `Calibration: ${runs} measured run(s).${sw ? ` Effort switches that missed the cache: ${Math.round(sw.ratio * 100)}% of ${sw.n} (each one in ~/.claude/mods-logs/rightsize-switches.jsonl).` : ''}`,
-    '/rightsize report shows what it saved and what went wrong; settings asks the questions again; undo re-runs the last auto-lowered prompt; clear drops the session switch; prices checks prices now; reset [setting] puts settings back to their defaults and/or restarts cost measurement.',
+    '/rightsize report shows what it saved and what went wrong; settings asks the questions again; undo re-runs the last auto-lowered prompt; clear drops the session switch; prices checks prices now; share prints a message you can paste to tell others about rightsize; reset [setting] puts settings back to their defaults and/or restarts cost measurement.',
   ].join('\n')
 }
 
@@ -1747,7 +1747,7 @@ export const register: Register = (on, options) => {
     spawning.length = 0
     lastTurnAt = 0
     idleWarnedFor = 0
-    await $.command.register({ name: CMD, description: 'Rightsize: status, report, settings, undo or clear' })
+    await $.command.register({ name: CMD, description: 'Rightsize: status, report, share, settings, undo or clear' })
     // Claude Code hands over every value with its default filled in; only settings.json tells which ones are yours.
     const configs = await $.settings.read({ key: 'pluginConfigs' }).catch(() => undefined)
     const resetBefore = resetKeys(await $.store.get('resetFields').catch(() => undefined))
@@ -1829,6 +1829,10 @@ export const register: Register = (on, options) => {
       const now = await $.clock.now()
       const start = startLines(adviseFromLog(await readText($, `${dir}/rightsize-runs.jsonl`), await startContext($), now), billing === 'subscription', money)
       return { text: buildReport(runs, switches, { now, session: sessionId, subscription: billing === 'subscription', start, pause: missBlock, ...(measureFrom ? { measureFrom: new Date(measureFrom).toISOString() } : {}) }) }
+    }
+    if (arg === 'share') {
+      const runs = parseLines<RunLine>(await readText($, `${home}/.claude/mods-logs/rightsize-runs.jsonl`))
+      return { text: shareMessage(runs, { now: await $.clock.now(), subscription: billing === 'subscription', ...(measureFrom ? { measureFrom: new Date(measureFrom).toISOString() } : {}) }) }
     }
     if (arg === 'clear') return { text: await clearSession($) }
     if (arg === 'settings') {

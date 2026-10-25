@@ -3342,4 +3342,26 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.start(surface)
     expect(await settingsText(d)).toContain('reset [setting] puts settings back to their defaults and/or restarts cost measurement.')
   })
+
+  test(`/rightsize share prints the framed message, sends nothing and asks nothing (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { ...OPUS })
+    const d = drive($, h)
+    await d.start(surface)
+    const posts = h.posts.length
+    const fetches = h.fetches
+    const text = (await d.command('share')).text ?? ''
+    expect(text.startsWith('Copy and paste this anywhere. rightsize sends nothing itself.\n\n')).toBe(true)
+    expect(text).toContain("I'm using rightsize, a free Claude Code mod")
+    expect(text).toContain('https://aivalue.blog/rightsize')
+    expect(h.posts.length, 'no POST').toBe(posts)
+    expect(h.fetches, 'no fetch').toBe(fetches)
+    expect(h.asked, 'no question').toEqual([])
+  })
+
+  test(`the /rightsize help line names share (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { ...OPUS })
+    const d = drive($, h)
+    await d.start(surface)
+    expect(await settingsText(d)).toContain('share prints a message you can paste to tell others about rightsize')
+  })
 }

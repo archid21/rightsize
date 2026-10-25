@@ -198,6 +198,7 @@ The band shows in the CLI and the desktop app. VS Code and the mobile app keep t
   - What went wrong: lowered turns that stepped back up, turns raised mid-turn because Claude looked stuck, hand-offs that cost more or needed rework, hand-offs Claude skipped, effort switches that missed the cache, turns you stopped, and how far its estimates are off.
 
   A saving is an estimate: what staying at your own level and model would have cost, scaled by what the turn really cost. Turns that stepped back up get no saving.
+- `/rightsize share`: prints a message you can paste anywhere (LinkedIn, Slack, a DM) to tell others about rightsize. It includes your estimated saving for the last 30 days once there are at least 20 rated prompts and the saving is 5% or more. It sends nothing, writes nothing and asks nothing, and it is unrelated to the **Share anonymous feedback** setting.
 - `/rightsize settings`: ask the four questions again, and set their rows in `/config` from your answers.
 - `/rightsize undo`: put the last auto-lowered prompt back in the box, to run at the normal level.
 - `/rightsize clear`: drop a session-wide effort switch.

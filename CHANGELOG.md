@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **`/rightsize share`** prints a message you can paste anywhere (LinkedIn, Slack, a DM). Once the last 30 days hold 20 rated prompts and an estimated saving of 5% or more (counted as `/rightsize report` counts it, after rating calls, and from the last Cost measurement reset), the message includes that number; otherwise it says what rightsize is and explains when the number will appear. It sends nothing, writes nothing and calls no model, and it is unrelated to the Share anonymous feedback setting.
 - **Your setting wins.** A value you set yourself, in `/config` or by answering a question, is never changed or bypassed by rightsize's automatic behavior; automatic adjustments only act on settings left at their default. A value counts as set even when it is the same as the default. rightsize reads which values are yours from settings.json at session start (under `rightsize` or `rightsize@<marketplace>`; a stored value outside a row's options counts as unset), and follows changes made in `/config` as they happen. Five places that used to override you now follow this rule:
   - **Reports.** Rate limits that show a subscription or a gateway no longer replace a Reports value you set or answered. `/rightsize` notes the mismatch (for example "Rate limits look like a subscription; Reports is set to api by you."). With Reports left at its default, detection works as before.
   - **Budget pacing** moves the hand-off and lowering thresholds only when you left them at their default. A threshold you set stays as you set it, at every pace.

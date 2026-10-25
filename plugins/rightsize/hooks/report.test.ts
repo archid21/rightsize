@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { type RunLine, buildReport, counterfactual, fixedLines, haikuLines, parseLines, tieCounts, totals, wentWrong } from './report'
+import { type RunLine, buildReport, counterfactual, fixedLines, haikuLines, parseLines, shareMessage, tieCounts, totals, wentWrong } from './report'
 
 const NOW = Date.parse('2026-10-23T18:00:00.000Z')
 const ago = (days: number) => new Date(NOW - days * 24 * 60 * 60 * 1000).toISOString()
@@ -199,4 +199,58 @@ test('the report says when cost measurement restarted, and counts a pause only f
   expect(report).not.toContain('are paused')
   expect(report, 'periods still read every line').toContain('Last 30 days: 6 prompts rated')
   expect(buildReport(lines, [], { now: NOW, session: 's1', subscription: false })).not.toContain('Cost measurement restarted')
+})
+
+const saver = (x: Partial<RunLine> = {}) => run({ change: 'lower', offered: 'lower', actual: 0.05, stay: 0.1, taken: 0.05, ...x })
+const many = (n: number, x: Partial<RunLine> = {}) => Array.from({ length: n }, () => saver(x))
+
+test('share: shows the estimated saving with API wording', async () => {
+  // Staying costs 2x: net saving 50% of what the turns would have cost.
+  const text = shareMessage(many(20), { now: NOW, subscription: false })
+  const [head, , msg, , note] = text.split('\n')
+  expect(head).toBe('Copy and paste this anywhere. rightsize sends nothing itself.')
+  expect(msg).toBe('rightsize cut my Claude Code spend by about 50% over the last 30 days, by its own estimate. It matches each prompt to the right model and effort level. Free and open source: https://aivalue.blog/rightsize')
+  expect(note).toBe("The number is rightsize's estimate from your last 30 days (20 rated prompts); /rightsize report shows the details. Edit the message as you like.")
+})
+
+test('share: subscription wording', async () => {
+  const text = shareMessage(many(25), { now: NOW, subscription: true })
+  expect(text).toContain('rightsize saved about 50% of my Claude Code usage over the last 30 days, by its own estimate.')
+  expect(text).toContain('(25 rated prompts)')
+})
+
+test('share: under 20 rated prompts gives no number', async () => {
+  const text = shareMessage(many(19), { now: NOW, subscription: false })
+  expect(text).not.toContain('by its own estimate')
+  expect(text).not.toContain('rated prompts)')
+  expect(text).toContain("I'm using rightsize, a free Claude Code mod that matches each prompt to the right model and effort level, and shows what it changed. Open source: https://aivalue.blog/rightsize")
+  expect(text).toContain('Once rightsize has 20 rated prompts and an estimated saving of 5% or more in the last 30 days, this message includes it.')
+})
+
+test('share: a saving under 5% gives no number and says so', async () => {
+  // Saves 0.004 of 0.1 per prompt: about 4%.
+  const text = shareMessage(many(20, { actual: 0.1, stay: 0.104, taken: 0.1 }), { now: NOW, subscription: false })
+  expect(text).not.toContain('by its own estimate')
+  expect(text).toContain("No saving is included: rightsize's estimate for your last 30 days is under 5%.")
+  const none = shareMessage(many(20, { change: 'none', offered: 'none' }), { now: NOW, subscription: false })
+  expect(none).toContain('under 5%')
+})
+
+test('share: lines older than 30 days or before measureFrom do not count', async () => {
+  const old = many(20, { at: ago(40) })
+  expect(shareMessage(old, { now: NOW, subscription: false })).toContain('Once rightsize has 20 rated prompts')
+  const lines = [...many(15, { at: ago(10) }), ...many(5, { at: ago(1) })]
+  expect(shareMessage(lines, { now: NOW, subscription: false })).toContain('about 50%')
+  expect(shareMessage(lines, { now: NOW, subscription: false, measureFrom: ago(5) })).toContain('Once rightsize has 20 rated prompts')
+})
+
+test('share: always writes rightsize in lowercase, with the link, and no exclamation marks', async () => {
+  for (const lines of [many(20), many(3)]) {
+    for (const subscription of [false, true]) {
+      const text = shareMessage(lines, { now: NOW, subscription })
+      expect(text).not.toMatch(/Rightsize|RIGHTSIZE/)
+      expect(text).toContain('https://aivalue.blog/rightsize')
+      expect(text).not.toContain('!')
+    }
+  }
 })

@@ -481,7 +481,7 @@ test('moves the thresholds by pace', async () => {
   }
   expect(at('normal')).toEqual([70, 90])
   expect(at('hot')).toEqual([85, 97])
-  expect(at('cool')).toEqual([50, 80])
+  expect(at('cool'), 'an underused window moves nothing').toEqual([70, 90])
   expect(at('max')).toEqual([95, 100])
 })
 
@@ -956,6 +956,17 @@ test('Explore close calls off: a close call always takes the guide\'s pick', asy
   expect(sizeSubagent(tieRating, { ...sub, cal, ties: 4, explore: false }, 'fable', 'low')?.tie?.by).toBe('guide')
 })
 
+test('a cool pace leaves the rules and the note as they were', async () => {
+  const cool = { mode: 'cool' as const, window: 'seven_day' as const, pace: 0.3 }
+  for (const rules of [DEFAULT_RULES, { handOff: 0.5, lower: 0.7 }, { handOff: 0.95, lower: 1 }]) {
+    for (const set of [{}, { handOff: true }, { lower: true }, { handOff: true, lower: true }]) {
+      expect(pacedRules(rules, cool, set)).toEqual(rules)
+    }
+  }
+  expect(paceNote(cool)).toBe('')
+  expect(paceNote(cool, false)).toBe('')
+})
+
 test('pacing moves only a threshold left at its default', async () => {
   const at = (mode: 'hot' | 'cool' | 'max', set: { handOff?: boolean; lower?: boolean }) => {
     const r = pacedRules(DEFAULT_RULES, { mode }, set)
@@ -963,7 +974,7 @@ test('pacing moves only a threshold left at its default', async () => {
   }
   // Each row: nothing set, the hand-off threshold set, the lowering threshold set, both set.
   expect([at('hot', {}), at('hot', { handOff: true }), at('hot', { lower: true }), at('hot', { handOff: true, lower: true })]).toEqual([[85, 97], [70, 97], [85, 90], [70, 90]])
-  expect([at('cool', {}), at('cool', { handOff: true }), at('cool', { lower: true }), at('cool', { handOff: true, lower: true })]).toEqual([[50, 80], [70, 80], [50, 90], [70, 90]])
+  expect([at('cool', {}), at('cool', { handOff: true }), at('cool', { lower: true }), at('cool', { handOff: true, lower: true })]).toEqual([[70, 90], [70, 90], [70, 90], [70, 90]])
   expect([at('max', {}), at('max', { handOff: true }), at('max', { lower: true }), at('max', { handOff: true, lower: true })]).toEqual([[95, 100], [70, 100], [95, 90], [70, 90]])
   // A threshold you set below what the pace would move it to stays where you put it, at any pace.
   const mine = { handOff: 0.5, lower: 0.7 }
@@ -977,10 +988,9 @@ test('the pace note says what pacing did: nothing to say when it moved nothing, 
   const cool = { mode: 'cool' as const, window: 'seven_day' as const, pace: 0.3 }
   const max = { mode: 'max' as const, window: 'five_hour' as const, used: 93 }
   expect(paceNote(hot)).toBe('The 5-hour window is on pace to run out before it resets, so rightsize saves harder.')
-  expect(paceNote(cool)).toBe('Much of the 7-day window will go unused, so rightsize puts quality first.')
+  expect(paceNote(cool), 'an underused window has nothing to say').toBe('')
   expect(paceNote(max)).toBe('93% of the 5-hour window is used, so rightsize saves all it can.')
   expect(paceNote(hot, false), 'nothing moved').toBe('')
-  expect(paceNote(cool, false), 'nothing moved').toBe('')
   expect(paceNote(max, false), 'only reported').toBe('93% of the 5-hour window is used.')
   expect(paceNote({ mode: 'normal' }, true)).toBe('')
 })

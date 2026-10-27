@@ -1067,6 +1067,21 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await bandText($, surface)).toBe('rightsize: Kept medium on Opus instead of raising to high. 93% of the 5-hour window is used, so rightsize saves all it can.')
   })
 
+  test(`budget pacing: with Reports set to the API, the band shows no window share (${surface})`, { timeoutMs: 30000, options: { billing: 'api' } }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', stored: { billing: 'api' } })
+    const d = drive($, h)
+    h.rateLimits = [{ kind: 'five_hour', percentUsed: 93, resetsAt: at(h, 4 * HOUR) }]
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+    h.rating = '{"fit":{"haiku":"no","sonnet":"no","opus":"high","fable":"medium"},"size":"small","type":"debug","read":8000,"write":800,"steps":6,"reason":"race"}'
+    h.answers = { Raising: 'Raise automatically (Recommended)', Remember: 'Just this session' }
+    await d.submit(DEBUG)
+    await d.step('t1')
+    expect(last(h.sent)?.effort, 'the decision still follows the window').toBe('medium')
+    expect(await bandText($, surface)).not.toMatch(/window|%/)
+  })
+
   test(`budget pacing: when much of a window will go unused, "Ask" still asks (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
     const d = drive($, h)
@@ -1349,13 +1364,13 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t1')
     await d.complete('t1')
 
-    // 5% of the window for $1 of turns: $0.16 is 0.8%.
+    // 5% of the window for $1 of one turn, give or take 1 point of rounding: $0.16 is 0.6–1.0%.
     const at = new Date(h.now).toISOString()
     h.files[LEGACY_RUNS] = `${JSON.stringify({ at, kind: 'run', actual: 1, before: { five_hour: 10 }, after: { five_hour: 15 } })}\n`
     h.now += 3 * 60 * MIN
     await d.submit('continue')
     expect(last(h.asked)?.question).toContain(
-      'about 0.8% of your 5-hour window ($0.16 API-equivalent) more on Opus than a warm cache. /clear costs nothing; /compact about 0.4% of your 5-hour window ($0.08 API-equivalent).',
+      '~0.6–1.0% of your 5-hour window ($0.16 API-equivalent) more on Opus than a warm cache. /clear costs nothing; /compact ~0.3–0.5% of your 5-hour window ($0.08 API-equivalent).',
     )
   })
 
@@ -3147,7 +3162,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   }
   // Lowering saves 94% of staying: over the default 90%, under the 97% a hot window allows.
   const SMALL = '{"level":"low","model":"same","size":"small","type":"lookup","read":2000,"write":50,"steps":1}'
-  // Hands off at 51% of staying: over the 50% a cool window allows, under the default 70%.
+  // Hands off at 51% of staying: under the default 70%, and over a 50% bar. An underused window never moves the bar to 50%.
   const BIG = '{"fit":{"haiku":"medium","sonnet":"medium","opus":"medium","fable":"medium"},"size":"small","type":"search","read":40000,"write":1000,"steps":25,"reason":"list call sites"}'
   const hot = (h: { now: number; rateLimits: unknown }) => void (h.rateLimits = hotWindows(h))
   const cool = (h: { now: number; rateLimits: unknown }) => void (h.rateLimits = [{ kind: 'seven_day', percentUsed: 30, resetsAt: at(h, 6 * HOUR) }])
@@ -3157,8 +3172,9 @@ for (const surface of ['desktop', 'terminal'] as const) {
     { name: 'hot, default threshold: moved to 85%, and 78% is under it', windows: hot, stored: {}, rating: NEAR, to: 'haiku' },
     { name: 'hot, set to 70% (its own default value): stays, and 78% is over it', windows: hot, stored: { handOff: '70%' }, rating: NEAR, to: undefined },
     { name: 'hot, set to 80%: stays, and 78% is under it', windows: hot, stored: { handOff: '80%' }, rating: NEAR, to: 'haiku' },
-    { name: 'cool, default threshold: moved to 50%, and 51% is over it', windows: cool, stored: {}, rating: BIG, to: undefined },
+    { name: 'cool, default threshold: not moved, and 51% is under 70%', windows: cool, stored: {}, rating: BIG, to: 'haiku' },
     { name: 'cool, set to 70%: stays, and 51% is under it', windows: cool, stored: { handOff: '70%' }, rating: BIG, to: 'haiku' },
+    { name: 'cool, set to 50%: stays, and 51% is over it', windows: cool, stored: { handOff: '50%' }, rating: BIG, to: undefined },
     { name: 'nearly used up, default threshold: moved to 95%', windows: nearlyUsed, stored: {}, rating: NEAR, to: 'haiku' },
     { name: 'nearly used up, set to 50%: stays, and 78% is over it', windows: nearlyUsed, stored: { handOff: '50%' }, rating: NEAR, to: undefined },
   ]
@@ -3186,6 +3202,28 @@ for (const surface of ['desktop', 'terminal'] as const) {
       await d.submit(LOOKUP)
       await d.step('t1')
       expect(last(h.sent)?.effort).toBe(row.effort)
+    })
+  }
+
+  // An underused window changes nothing: the same prompt gets the same plan and the same band at a cool pace as at an ordinary one.
+  for (const [name, windows] of [['an ordinary pace', () => undefined], ['much of a window unused', cool]] as const) {
+    test(`a hand-off to a cheaper model is planned the same with ${name} (${surface})`, { timeoutMs: 30000, options: { band: 'always' } }, async ($, on) => {
+      const h = engine(on, { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES }, stored: { band: 'always' } })
+      windows(h)
+      expect(await handedOffUnder(h, drive($, h), BIG)).toBe('haiku')
+      expect(await bandText($, surface), 'no pace note').not.toMatch(/window/)
+    })
+    test(`a lowering is planned the same with ${name} (${surface})`, { timeoutMs: 30000, options: { band: 'always' } }, async ($, on) => {
+      const h = engine(on, { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES }, stored: { band: 'always' } })
+      windows(h)
+      const d = drive($, h)
+      await d.start(surface)
+      h.rating = SMALL
+      h.answers = { Lowering: 'Lower automatically (Recommended)', ...YES_REMEMBER }
+      await d.submit(LOOKUP)
+      await d.step('t1')
+      expect(last(h.sent)?.effort, '94% is over the default 90% bar: not lowered, and not at 80% either').toBe('medium')
+      expect(await bandText($, surface), 'no pace note').not.toMatch(/window|unused/)
     })
   }
 

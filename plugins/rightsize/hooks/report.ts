@@ -239,11 +239,19 @@ export function tieCounts(lines: readonly RunLine[]) {
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
 
-/** Percent of a window per dollar, and per minute of turn time, over runs whose window did not reset. */
+/**
+ * Percent of a window per dollar, and per minute of turn time, over runs whose window did not reset.
+ *
+ * The window share is reported in whole percents, so each run's delta `after - before` has a rounding error, and the
+ * total is not as certain as one number looks. `low` and `high` per dollar bound it: each endpoint is a whole percent,
+ * and roughly 2 standard deviations of n independent roundings is about sqrt(n) points. `perDollar` is the point
+ * estimate (the midpoint of that range unless `low` was clamped at 0), for code that needs one number, such as pacing math.
+ */
 export function windowRates(lines: readonly RunLine[], kind: string) {
   let pct = 0
   let usd = 0
   let ms = 0
+  let n = 0
   for (const l of lines) {
     if (!isRun(l) || l.aborted) continue
     const b = l.before?.[kind]
@@ -252,9 +260,51 @@ export function windowRates(lines: readonly RunLine[], kind: string) {
     pct += a - b
     usd += num(l.actual)
     ms += num(l.durationMs)
+    n += 1
   }
   if (pct <= 0 || usd <= 0) return undefined
-  return { perDollar: pct / usd, perMinute: ms > 0 ? pct / (ms / 60000) : undefined }
+  const spread = Math.sqrt(n)
+  return {
+    perDollar: pct / usd,
+    low: Math.max(0, pct - spread) / usd,
+    high: (pct + spread) / usd,
+    perMinute: ms > 0 ? pct / (ms / 60000) : undefined,
+  }
+}
+
+/** A window share in percent points as a range, signed (a loss is negative), `lo <= hi`. */
+export type Share = { lo: number; hi: number }
+
+/** The share of a window that `usd` API-equivalent dollars stand for, from the rates' `low` and `high` per dollar. */
+export const shareOf = (usd: number, r: { low: number; high: number }): Share => (usd >= 0 ? { lo: usd * r.low, hi: usd * r.high } : { lo: usd * r.high, hi: usd * r.low })
+
+const tenth = (x: number) => x.toFixed(1)
+
+/**
+ * A share as people read it, one decimal and an en dash: "~0.8–1.6%". The sign is left out (callers say saved or more).
+ * When both ends round to the same text, the single value: "~1.0%". When the low end rounds to 0.0, "under 1.6%"
+ * (and "under 0.1%" when the high end does too).
+ */
+export function shareText(s: Share) {
+  const [lo, hi] = s.hi > 0 ? [s.lo, s.hi] : [-s.hi, -s.lo]
+  const a = tenth(Math.max(0, lo))
+  const b = tenth(hi)
+  if (a === '0.0') return b === '0.0' ? 'under 0.1%' : `under ${b}%`
+  return a === b ? `~${b}%` : `~${a}–${b}%`
+}
+
+/** Minutes the same way: "~8–16 min", "~12 min", "under 16 min". */
+function minutesText(s: Share) {
+  const a = Math.max(0, Math.round(s.lo))
+  const b = Math.round(s.hi)
+  if (a === 0) return `under ${b} min`
+  return a === b ? `~${b} min` : `~${a}–${b} min`
+}
+
+/** What `usd` API-equivalent dollars cost in the 5-hour window, written for a sentence: a range, with the dollars beside it. */
+export function windowCostText(usd: number, rates: { low: number; high: number } | undefined) {
+  if (rates === undefined) return `about ${money(usd)} API-equivalent`
+  return `${shareText(shareOf(usd, rates))} of your 5-hour window (${money(usd)} API-equivalent)`
 }
 
 /** The saving as a share of what the turns would have cost, after rating calls. */
@@ -263,8 +313,8 @@ const savedShare = (t: Totals) => {
   return Math.round((net / (t.spent + t.overhead + net)) * 100)
 }
 
-/** Window share kept (negative: used more than staying would have), as `windowRates` measures it; minutes only when kept. */
-type Kept = { five: number; week?: number; mins?: number }
+/** Window share kept (negative: used more than staying would have), as `windowRates` measures it, as ranges; minutes only when kept. */
+type Kept = { five: Share; week?: Share; mins?: Share }
 
 function windowKept(lines: readonly RunLine[], t: Totals): Kept | undefined {
   const net = t.saved - t.overhead
@@ -274,8 +324,11 @@ function windowKept(lines: readonly RunLine[], t: Totals): Kept | undefined {
   const savedPct = net * five.perDollar
   if (Math.abs(savedPct) < 0.05) return undefined
   const week = windowRates(lines, 'seven_day')
-  const mins = savedPct > 0 && five.perMinute ? Math.round(savedPct / five.perMinute) : 0
-  return { five: savedPct, ...(week ? { week: net * week.perDollar } : {}), ...(mins >= 1 ? { mins } : {}) }
+  const share = shareOf(net, five)
+  // The minutes the share stands for scale with it, so they carry its range.
+  const perMinute = five.perMinute
+  const mins = savedPct > 0 && perMinute && Math.round(savedPct / perMinute) >= 1 ? { lo: share.lo / perMinute, hi: share.hi / perMinute } : undefined
+  return { five: share, ...(week ? { week: shareOf(net, week) } : {}), ...(mins ? { mins } : {}) }
 }
 
 /** One period's numbers: `ties` only where the report counts close calls (7 and 30 days). */
@@ -296,9 +349,9 @@ function headline(s: Stats, subscription: boolean) {
   if (Math.abs(net) < 0.005) return `About even ${DAYS_30}: savings and rating calls cancel out.`
   if (subscription) {
     if (kept) {
-      return kept.five > 0
-        ? `Saved ~${kept.five.toFixed(1)}% of your 5-hour window${kept.mins ? ` (~${kept.mins} min)` : ''} ${DAYS_30}.`
-        : `Used ~${(-kept.five).toFixed(1)}% more of your 5-hour window than staying would have ${DAYS_30}.`
+      return kept.five.hi > 0
+        ? `Saved ${shareText(kept.five)} of your 5-hour window${kept.mins ? ` (${minutesText(kept.mins)})` : ''} ${DAYS_30}.`
+        : `Used ${shareText(kept.five)} more of your 5-hour window than staying would have ${DAYS_30}.`
     }
     return net > 0 ? `Saved ~${savedShare(t)}% of your usage ${DAYS_30}.` : `Used more than it saved ${DAYS_30} (~${money(-net)} more, API-equivalent).`
   }
@@ -306,7 +359,7 @@ function headline(s: Stats, subscription: boolean) {
 }
 
 /** A running total already on a band's text, in any of the forms `sessionTotal` writes: `setBand` strips it before it adds the current one. */
-export const SESSION_TOTAL = / · Session: (?:about even|~\$[\d.,]+ (?:saved|more)|~\d+\.\d% (?:of the 5-hour window saved|more of the 5-hour window))(?: \(API-equivalent\))?/g
+export const SESSION_TOTAL = / · Session: (?:about even|~\$[\d.,]+ (?:saved|more)|(?:~|under )\d+\.\d(?:–\d+\.\d)?% (?:of the 5-hour window saved|more of the 5-hour window))(?: \(API-equivalent\))?/g
 
 /** The session's running net, in the band's words. The same figure as the report's Session "Total saved": it comes from `stats`. */
 export function sessionTotal(lines: readonly RunLine[], session: string, subscription: boolean): string | undefined {
@@ -314,7 +367,7 @@ export function sessionTotal(lines: readonly RunLine[], session: string, subscri
   const { net, empty, kept } = stats(lines.filter(l => l.session === session), subscription)
   if (empty) return undefined
   if (Math.abs(net) < 0.005) return 'Session: about even'
-  if (kept) return kept.five > 0 ? `Session: ~${kept.five.toFixed(1)}% of the 5-hour window saved` : `Session: ~${(-kept.five).toFixed(1)}% more of the 5-hour window`
+  if (kept) return kept.five.hi > 0 ? `Session: ${shareText(kept.five)} of the 5-hour window saved` : `Session: ${shareText(kept.five)} more of the 5-hour window`
   const text = net > 0 ? `Session: ~${money(net)} saved` : `Session: ~${money(-net)} more`
   return subscription ? `${text} (API-equivalent)` : text
 }
@@ -352,7 +405,15 @@ function wrap(text: string, first: string, rest: string, width = 78) {
 /** A table row: shown when any period has something for it; a period with nothing rated shows a dash, except on `counts` rows. */
 type Row = { label: string; any: (s: Stats) => boolean; cell: (s: Stats) => string; counts?: true }
 
-const gain = (x: number) => `${x < 0 ? '-' : '~'}${Math.abs(x).toFixed(1)}%`
+/** A table cell: the range, with a minus sign in front when the window was used more than staying would have. */
+// A loss gets a minus on both ends, so "-1.7 to -5.0%" can't read as minus 1.7 to plus 5.0.
+const gain = (s: Share) => {
+  if (s.hi > 0) return shareText(s)
+  const t = shareText(s)
+  const m = /^~?(\d+\.\d)–(\d+\.\d)%$/.exec(t)
+  if (m) return `-${m[1]} to -${m[2]}%`
+  return t.startsWith('under ') ? `0 to -${t.slice('under '.length)}` : `-${t.replace('~', '')}`
+}
 const whole = () => true
 const measured = (s: Stats) => !s.empty
 
@@ -365,10 +426,11 @@ function tableRows(subscription: boolean): Row[] {
   ]
   // Savings first, then what rightsize did.
   return [
-    { label: 'Total saved', any: measured, cell: s => (s.net >= 0.005 ? `~${money(s.net)}` : s.net <= -0.005 ? `-${money(-s.net)}` : 'even') },
+    // On a subscription a dollar figure is what the same use would cost on the API, never money saved: the label says so.
+    { label: subscription ? 'Total saved (API-equivalent)' : 'Total saved', any: measured, cell: s => (s.net >= 0.005 ? `~${money(s.net)}` : s.net <= -0.005 ? `-${money(-s.net)}` : 'even') },
     ...(subscription ? windows : []),
     { label: 'Share of cost saved', any: measured, cell: s => (s.net >= 0.005 ? `~${savedShare(s.t)}%` : '–') },
-    { label: 'Extra spent on harder prompts', any: s => s.t.extra > 0.005, cell: s => money(s.t.extra) },
+    { label: subscription ? 'Extra on harder prompts (API-equivalent)' : 'Extra spent on harder prompts', any: s => s.t.extra > 0.005, cell: s => money(s.t.extra) },
     { label: 'Prompts rated', any: whole, cell: s => String(s.t.rated), counts: true },
     { label: 'Kept / lowered / raised', any: whole, cell: s => `${c(s).none}/${c(s).lower}/${c(s).raise}`, counts: true },
     { label: 'Sent to cheaper / stronger model', any: s => c(s)['delegate-down'] + c(s)['delegate-up'] > 0, cell: s => `${c(s)['delegate-down']}/${c(s)['delegate-up']}` },
@@ -440,7 +502,9 @@ export type Problem = { n: number; unit: [string, string]; reason: string; detai
 const TURN: [string, string] = ['turn', 'turns']
 
 /** Turns that cost more, went off course or were left out of the saving; most first. */
-export function problems(lines: readonly RunLine[], switches: readonly SwitchLine[]) {
+export function problems(lines: readonly RunLine[], switches: readonly SwitchLine[], subscription = false) {
+  // On a subscription these dollars are what the same use would cost on the API, and say so.
+  const usd = (d: number) => `${money(d)}${subscription ? ' API-equivalent' : ''}`
   const runs = lines.filter(l => isRun(l) && !l.aborted)
   const out: Problem[] = []
   const steppedUp = runs.filter(l => l.steppedUp).length
@@ -456,7 +520,7 @@ export function problems(lines: readonly RunLine[], switches: readonly SwitchLin
   if (dearer.length) {
     const a = dearer.reduce((s, l) => s + num(l.actual), 0)
     const st = dearer.reduce((s, l) => s + num(l.stay), 0)
-    out.push({ n: dearer.length, unit: TURN, reason: `hand-off cost more than staying (${money(a)} vs ~${money(st)})` })
+    out.push({ n: dearer.length, unit: TURN, reason: `hand-off cost more than staying (${money(a)} vs ~${money(st)}${subscription ? ', API-equivalent' : ''})` })
   }
   const rework = runs.filter(l => delegated(l) && num(l.agentCalls) > 1).length
   if (rework) out.push({ n: rework, unit: TURN, reason: 'hand-off needed rework (more than one subagent call)' })
@@ -466,7 +530,7 @@ export function problems(lines: readonly RunLine[], switches: readonly SwitchLin
   const missed = switches.filter(s => s.kept === false).length
   if (missed) {
     const cost = runs.reduce((s, l) => s + num(l.missCost), 0)
-    out.push({ n: missed, unit: ['switch', 'switches'], reason: `missed the cache, of ${plural(switches.length, 'effort switch', 'effort switches')}${cost >= 0.005 ? ` (~${money(cost)})` : ''}` })
+    out.push({ n: missed, unit: ['switch', 'switches'], reason: `missed the cache, of ${plural(switches.length, 'effort switch', 'effort switches')}${cost >= 0.005 ? ` (~${usd(cost)})` : ''}` })
   }
   const fanned = runs.filter(l => l.afterWorkflow)
   if (fanned.length) {
@@ -474,7 +538,7 @@ export function problems(lines: readonly RunLine[], switches: readonly SwitchLin
     out.push({
       n: fanned.length,
       unit: TURN,
-      reason: `ran during or after a workflow (${money(fanned.reduce((s, l) => s + num(l.actual), 0))})`,
+      reason: `ran during or after a workflow (${usd(fanned.reduce((s, l) => s + num(l.actual), 0))})`,
       detail: [`${plural(flows, 'workflow')}, from ultracode or asked for`, 'hand-offs paused in those sessions; nothing learned from them'],
     })
   }
@@ -559,7 +623,7 @@ export function timeRows(lines: readonly RunLine[]) {
 }
 
 /** The context every request carried, by part (largest first), request-weighted, what re-reading it cost, and how to cut it. */
-export function fixedBlock(lines: readonly RunLine[]) {
+export function fixedBlock(lines: readonly RunLine[], subscription = false) {
   const runs = lines.filter(l => isRun(l) && l.fixed && num(l.requests) > 0)
   const requests = runs.reduce((n, l) => n + num(l.requests), 0)
   const cost = runs.reduce((n, l) => n + num(l.fixed?.cost), 0)
@@ -592,7 +656,10 @@ export function fixedBlock(lines: readonly RunLine[]) {
   const pct = spent > 0 ? `, ~${Math.round((cost / spent) * 100)}% of what those turns cost` : ''
   return {
     head: `~${k(avg('tokens'))} tokens sent with every request`,
-    notes: ['Fixed context adds to your cost in every session. Cutting it saves more.', `At least ~${money(cost)} over ${plural(requests, 'request')}${pct}.`],
+    notes: [
+      `Fixed context adds to your ${subscription ? 'usage' : 'cost'} in every session. Cutting it saves more.`,
+      `At least ~${money(cost)}${subscription ? ' API-equivalent' : ''} over ${plural(requests, 'request')}${pct}.`,
+    ],
     tree,
     ...(how ? { fix: `rightsize can't trim fixed context. To cut it: ${how}.` } : {}),
   }
@@ -623,11 +690,11 @@ export function buildReport(
 
   const start = opts.start
   if (start) out.push('', `STARTING POINT  ${start.head}`, ...indent(grid(start.rows)), ...(start.note ? (md ? ['', start.note] : wrap(start.note, '  ', '  ')) : []))
-  const fixed = fixedBlock(month)
-  if (fixed) out.push('', `FIXED CONTEXT  ${fixed.head}`, ...fixed.notes.map(n => (md ? n : `  ${n}`)), ...indent(grid(fixed.tree, [1])))
+  const fixed = fixedBlock(month, sub)
+  if (fixed) out.push('', `FIXED CONTEXT  ${fixed.head}`, ...(md ? fixed.notes : fixed.notes.flatMap(n => wrap(n, '  ', '  '))), ...indent(grid(fixed.tree, [1])))
   const accuracy = accuracyRows(month, opts.pause, opts.measureFrom ? Date.parse(opts.measureFrom) : 0)
   if (accuracy.rows.length) out.push(...section('ACCURACY', grid(accuracy.rows)))
-  const problem = problems(month, switches.filter(since(30)))
+  const problem = problems(month, switches.filter(since(30)), sub)
   out.push(...(problem.length ? section('NOT COUNTED AS SAVINGS', grid(problemRows(problem))) : ['', 'NOT COUNTED AS SAVINGS', md ? 'Nothing yet.' : '  Nothing yet.']))
   // Time is measured and reported here; it never chooses a route.
   const time = timeRows(month)
@@ -638,9 +705,12 @@ export function buildReport(
   const t = cols[2].t
   const foot = [
     'Estimated: actual cost vs staying at your own model and effort.',
-    ...(nothing ? [] : [`Total saved is after the cost of rating prompts (${money(t.overhead)} in 30 days).`]),
-    ...(cols.some(s => s.t.extra > 0.005) ? ["Extra spent on harder prompts: what raising effort or using a stronger model cost, for better answers. It isn't taken off Total saved."] : []),
-    ...(sub ? ['Dollar amounts are what the same use would cost on the API.', 'You only pay for your subscription.'] : []),
+    ...(nothing ? [] : [`Total saved is after the cost of rating prompts (${money(t.overhead)}${sub ? ' API-equivalent' : ''} in 30 days).`]),
+    ...(cols.some(s => s.t.extra > 0.005)
+      ? [sub ? "Extra on harder prompts: what raising effort or using a stronger model would cost on the API, for better answers. It isn't taken off Total saved." : "Extra spent on harder prompts: what raising effort or using a stronger model cost, for better answers. It isn't taken off Total saved."]
+      : []),
+    ...(sub && cols.some(s => s.kept) ? ['Window shares are ranges because the rate limits report whole percents.'] : []),
+    ...(sub ? ['Dollar amounts are API-equivalent: what the same use would cost on the API.', 'You only pay for your subscription.'] : []),
   ]
   out.push('', ...(md ? foot : foot.flatMap(f => wrap(f, '', '', 78))))
   return out.join('\n')
@@ -669,7 +739,7 @@ export function shareMessage(lines: readonly RunLine[], opts: { now: number; sub
       '',
       `rightsize ${what} over the last 30 days, by its own estimate. It matches each prompt to the right model and effort level. Free and open source: ${SHARE_LINK}`,
       '',
-      `The number is rightsize's estimate from your last 30 days (${t.rated} rated prompts); /rightsize report shows the details. Edit the message as you like.`,
+      `The number is rightsize's estimate from your last 30 days (${t.rated} rated prompts)${opts.subscription ? ', as a share of API-equivalent cost, not money' : ''}; /rightsize report shows the details. Edit the message as you like.`,
     ].join('\n')
   }
   return [

@@ -92,7 +92,7 @@ import {
 import { BRIEF_MAX, cutRequest, parseRating, ratingPrompt, ratingSystem } from './rate'
 import { isApprovalStep } from './approval'
 import { LIMITS, type Limits, type Signals, type Struggle, blockedError, callKey, isSensitivity, isTestCommand, noSignals, noteCall, oneUp, struggle } from './struggle'
-import { type Change, type HelperLine, type RunLine, type SwitchLine, type Windows, SESSION_TOTAL, buildReport, parseLines, sessionTotal, shareMessage, windowRates } from './report'
+import { type Change, type HelperLine, type RunLine, type SwitchLine, type Windows, SESSION_TOTAL, buildReport, parseLines, sessionTotal, shareMessage, windowCostText, windowRates } from './report'
 
 // Before a prompt is sent, a quick Haiku call rates the effort, the model and
 // the work needs on each model, and the cost model prices each route that fits. The first time
@@ -429,6 +429,8 @@ let rememberMode: 'ask' | 'every session' | 'this session' = 'ask'
 let limits: Limits = LIMITS.normal
 /** The pace the prompt being rated was decided at. */
 let paceNow: Pace = NORMAL_PACE
+/** The pace note, for a subscription only: it quotes how full a usage window is, and a window share is never shown on the API. */
+const paceText = (acts: boolean) => (billing === 'subscription' ? paceNote(paceNow, acts) : '')
 /** Raise effort mid-turn when the turn shows it is struggling. */
 let escalation = true
 /** Days between suggestions of a different starting model and level; null: off. */
@@ -1801,19 +1803,16 @@ const idleFor = (ms: number) => {
   return m < 120 ? n(m, 'minute') : m < 48 * 60 ? n(Math.round(m / 60), 'hour') : n(Math.round(m / 1440), 'day')
 }
 
-/** A subscriber's 5-hour window used per API-equivalent dollar over the last 30 days of runs; undefined until runs show it. */
+/** A subscriber's 5-hour window used per API-equivalent dollar over the last 30 days of runs, as a range; undefined until runs show it. */
 async function windowPerDollar($: EngineInterface) {
   const now = await $.clock.now()
   const lines = await readRuns($)
-  return windowRates(lines.filter(l => now - Date.parse(l.at) <= 30 * 24 * 60 * 60_000 && Date.parse(l.at) >= measureFrom), 'five_hour')?.perDollar
+  return windowRates(lines.filter(l => now - Date.parse(l.at) <= 30 * 24 * 60 * 60_000 && Date.parse(l.at) >= measureFrom), 'five_hour')
 }
 
-/** "$0.16" on the API; on a subscription, "0.8% of your 5-hour window ($0.16 API-equivalent)" once runs show the rate. */
-function usageCostText(d: number, perDollar: number | undefined) {
-  if (billing === 'api') return money(d)
-  if (perDollar === undefined) return `${money(d)} API-equivalent`
-  const pct = d * perDollar
-  return `${pct < 0.1 ? 'under 0.1' : pct.toFixed(1)}% of your 5-hour window (${money(d)} API-equivalent)`
+/** "about $0.16" on the API; on a subscription, "~0.8–1.6% of your 5-hour window ($0.16 API-equivalent)" once runs show the rate. */
+function usageCostText(d: number, rates: Awaited<ReturnType<typeof windowPerDollar>>) {
+  return billing === 'api' ? `about ${money(d)}` : windowCostText(d, rates)
 }
 
 // After the cache expired, the next request writes the whole conversation again. Past
@@ -1830,22 +1829,22 @@ async function holdIdle($: EngineInterface): Promise<boolean> {
   const c = idleCost(prices[s.tier], context)
   if (c.resend < idleWarning) return false
   idleWarnedFor = last.at
-  const perDollar = billing === 'subscription' ? await windowPerDollar($) : undefined
+  const rates = billing === 'subscription' ? await windowPerDollar($) : undefined
   // Not timed: sending would cost more than a warm cache, so the prompt stays held until the person answers.
   // After the wait the band says so; the question stays open.
-  const cost = usageCostText(c.resend, perDollar)
+  const cost = usageCostText(c.resend, rates)
   let answered = false
   let shown = false
   void $.clock.sleep(QUESTION_WAIT_MS).then(async () => {
     if (answered) return
     shown = true
-    const text = `Held: sending now costs about ${cost} more than a warm cache. Answer to go on.`
+    const text = `Held: sending now costs ${cost} more than a warm cache. Answer to go on.`
     await setBand($, { acted: true, text })
     await log($, `no answer in ${WAIT_MINUTES} minutes to Idle: the prompt stays held; band: ${text}`)
   }, () => undefined)
   const a = await pick($, {
     header: 'Idle',
-    question: `This session sat idle for ${idleFor(idle)}, so its cache has likely expired. Sending writes the whole conversation (~${Math.round(context / 1000)}K tokens) to the cache again: about ${usageCostText(c.resend, perDollar)} more on ${TIER_NAME[s.tier]} than a warm cache. /clear costs nothing; /compact about ${usageCostText(c.compact, perDollar)}.`,
+    question: `This session sat idle for ${idleFor(idle)}, so its cache has likely expired. Sending writes the whole conversation (~${Math.round(context / 1000)}K tokens) to the cache again: ${usageCostText(c.resend, rates)} more on ${TIER_NAME[s.tier]} than a warm cache. /clear costs nothing; /compact ${usageCostText(c.compact, rates)}.`,
     options: [
       ['Send it', false],
       ['Hold it: I will /clear or /compact first', true],
@@ -2014,7 +2013,7 @@ async function summary($: EngineInterface) {
     `  Session switch: ${session ?? 'none'}`,
     ...(billingYours() ? [] : [`  Reports: ${billing} (${billingBy ?? 'default'})`]),
     ...(billingYours() && detectedBilling && detectedBilling !== billing ? [`  Rate limits look like ${sees}; Reports is set to ${billing} by you.`] : []),
-    ...(pacing && paceNow.mode !== 'normal' ? [`  ${paceNote(paceNow)}`] : []),
+    ...(pacing && paceText(true) ? [`  ${paceText(true)}`] : []),
     `  Measured runs: ${runs}`,
     ...(sw ? [`  Effort switches that missed the cache: ${Math.round(sw.ratio * 100)}% of ${sw.n} (each one in ~/.claude/mods-logs/rightsize/<session>/switches.jsonl)`] : []),
     ...(typeof install === 'string' ? [`  Sharing install ID: ${install} (quote it to rightsize@aivalue.blog to ask about or delete your shared data)`] : []),
@@ -2671,7 +2670,7 @@ export const register: Register = (on, options) => {
           await countTie($)
         }
         const was = base.rules ?? DEFAULT_RULES
-        const note = paceNote(paceNow, skipped || movedRules.handOff !== was.handOff || movedRules.lower !== was.lower)
+        const note = paceText(skipped || movedRules.handOff !== was.handOff || movedRules.lower !== was.lower)
         const band = noDowngrade
           ? { text: 'No change: the context was cut or missing, so rightsize did not lower this or hand it to a cheaper model.', acted: false }
           : p !== unfanned

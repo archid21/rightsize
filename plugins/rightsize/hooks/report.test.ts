@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { accuracyRows, type RunLine, buildReport, counterfactual, fixedBlock, parseLines, problems, sessionTotal, shareMessage, span, tieCounts, totals } from './report'
+import { accuracyRows, type RunLine, buildReport, counterfactual, fixedBlock, parseLines, problems, sessionTotal, shareMessage, shareText, span, tieCounts, totals, windowCostText, windowRates } from './report'
 import type { StartBlock } from './start'
 
 const NOW = Date.parse('2026-10-23T18:00:00.000Z')
@@ -12,7 +12,7 @@ const cells = (text: string, label: string) => text.split('\n').find(l => l.star
 /** The report's section titles, in order. */
 const titles = (text: string) => text.split('\n').filter(l => /^[A-Z]{3}/.test(l)).map(l => l.split('  ')[0])
 /** The rows of one section, up to its blank line. */
-const SUB_FOOT = 'Dollar amounts are what the same use would cost on the API. You only pay for your subscription.'
+const SUB_FOOT = 'Dollar amounts are API-equivalent: what the same use would cost on the API. You only pay for your subscription.'
 const sectionOf = (text: string, title: string) => {
   const out = text.split('\n')
   const at = out.findIndex(l => l.startsWith(title))
@@ -89,12 +89,12 @@ test('the report is laid out: title and headline, period table, sections in orde
   const text = report(month(), { subscription: true, switches: [{ at: ago(0), kept: false }, { at: ago(0), kept: true }], measureFrom: ago(18) })
   const out = text.split('\n')
   expect(out[0]).toBe('rightsize report')
-  expect(out[1]).toMatch(/^Saved ~[\d.]+% of your 5-hour window \(~\d+ min\) in the last 30 days\.$/)
+  expect(out[1]).toMatch(/^Saved ~[\d.]+–[\d.]+% of your 5-hour window \(~\d+–\d+ min\) in the last 30 days\.$/)
   expect(out[2], 'the restart note is near the top').toMatch(/^Cost measurement restarted on 2026-10-0\d\.$/)
   expect(titles(text)).toEqual(['FIXED CONTEXT', 'ACCURACY', 'NOT COUNTED AS SAVINGS', 'NEXT STEPS'])
   const foot = out.indexOf('Estimated: actual cost vs staying at your own model and effort.')
   expect(foot, 'the footer follows the last section').toBeGreaterThan(out.indexOf('NEXT STEPS'))
-  expect(out[foot + 1]).toMatch(/^Total saved is after the cost of rating prompts \(\$[\d.]+ in 30 days\)\.$/)
+  expect(out.slice(foot + 1, foot + 3).join(' ')).toMatch(/^Total saved is after the cost of rating prompts \(\$[\d.]+ API-equivalent in 30 days\)\./)
   expect(out.slice(-2).join(' '), 'the footer is last').toBe(SUB_FOOT)
   expect(out.filter(l => l.length > 80), 'no line past 80 characters').toEqual([])
   expect(text, 'plain text: no markdown table or emoji').not.toMatch(/\||\*\*|---|\p{Extended_Pictographic}/u)
@@ -124,12 +124,12 @@ test('reports each period in columns, the window kept for a subscriber, and says
   const sub = report(lines, { subscription: true })
   expect(cells(sub, 'Prompts rated')).toEqual(['2', '2', '3'])
   expect(cells(sub, 'Kept / lowered / raised')).toEqual(['1/1/0', '1/1/0', '1/2/0'])
-  // 2% of the window for $1 over 2 minutes: $0.49 saved is ~1% and about 1 minute; the old session's rating calls take it to $0.44 in 30 days.
-  expect(cells(sub, '5-hour window saved')).toEqual(['~1.0%', '~1.0%', '~0.9%'])
+  // 2% of the window for $1 over 2 runs and 2 minutes, give or take sqrt(2) points of rounding: $0.49 saved is ~0.3–1.7%; the old session's rating calls take it to $0.44 in 30 days.
+  expect(cells(sub, '5-hour window saved')).toEqual(['~0.3–1.7%', '~0.3–1.7%', '~0.3–1.5%'])
   expect(cells(sub, 'Share of cost saved')).toEqual(['~33%', '~33%', '~27%'])
-  expect(sub, 'the rating cost is in the footer').toContain('Total saved is after the cost of rating prompts ($0.06 in 30 days).')
-  expect(cells(sub, 'Total saved')).toEqual(['~$0.49', '~$0.49', '~$0.44'])
-  expect(sub.split('\n')[1], 'a subscriber reads the window first').toBe('Saved ~0.9% of your 5-hour window (~1 min) in the last 30 days.')
+  expect(sub.replace(/\s+/g, ' '), 'the rating cost is in the footer').toContain('Total saved is after the cost of rating prompts ($0.06 API-equivalent in 30 days).')
+  expect(cells(sub, 'Total saved (API-equivalent)'), 'dollars on a subscription are labelled').toEqual(['~$0.49', '~$0.49', '~$0.44'])
+  expect(sub.split('\n')[1], 'a subscriber reads the window first, as a range').toBe('Saved ~0.3–1.5% of your 5-hour window (under 2 min) in the last 30 days.')
   expect(sub.split('\n').slice(-2).join(' ')).toBe(SUB_FOOT)
   const api = report(lines)
   expect(api.split('\n')[1], 'an API user reads dollars').toBe('Saved ~$0.44 (~27%) in the last 30 days.')
@@ -138,17 +138,19 @@ test('reports each period in columns, the window kept for a subscriber, and says
   const worse = report([run({ change: 'none', overhead: 0.03 })])
   expect(worse.split('\n')[1]).toBe('Cost ~$0.03 more than it saved in the last 30 days.')
   expect(cells(worse, 'Total saved')).toEqual(['-$0.03', '-$0.03', '-$0.03'])
+  expect(worse, 'on the API dollars are real: no label').not.toContain('API-equivalent')
   const worseSub = report([run({ change: 'none', overhead: 0.03 })], { subscription: true })
   expect(worseSub.split('\n')[1], 'no window measured yet: the share alone').toBe('Used more than it saved in the last 30 days (~$0.03 more, API-equivalent).')
   expect(cells(worseSub, 'Share of cost saved')).toEqual(['–', '–', '–'])
+  expect(cells(worseSub, 'Total saved (API-equivalent)')).toEqual(['-$0.03', '-$0.03', '-$0.03'])
   expect(report([run({ change: 'none' })]).split('\n')[1]).toBe('About even in the last 30 days: savings and rating calls cancel out.')
 })
 
 test('a window used more than staying would have shows as a negative share', async () => {
   const lines = [run({ change: 'raise', actual: 0.3, stay: 0.1, taken: 0.2, overhead: 0.5, durationMs: 60_000, before: { five_hour: 10 }, after: { five_hour: 12 } })]
   const text = report(lines, { subscription: true })
-  expect(text.split('\n')[1]).toMatch(/^Used ~[\d.]+% more of your 5-hour window than staying would have in the last 30 days\.$/)
-  expect(cells(text, '5-hour window saved')?.[0]).toMatch(/^-[\d.]+%$/)
+  expect(text.split('\n')[1]).toBe('Used ~1.7–5.0% more of your 5-hour window than staying would have in the last 30 days.')
+  expect(cells(text, '5-hour window saved')?.[0]).toBe('-1.7 to -5.0%')
 })
 
 test('nothing rated yet: says so, with no table and no empty sections', async () => {
@@ -180,13 +182,13 @@ test('rows with nothing to say are left out of the table', async () => {
 
 test('savings lead the table, before what rightsize did', async () => {
   const labels = report(month(), { subscription: true }).split('\n').filter(l => /^ {2}\S/.test(l)).map(l => l.trim().split(/ {2,}/)[0])
-  expect(labels[0]).toBe('Total saved')
+  expect(labels[0]).toBe('Total saved (API-equivalent)')
   expect(labels.indexOf('Prompts rated')).toBeGreaterThan(labels.indexOf('Share of cost saved'))
   const windowed = [
     run({ change: 'lower', offered: 'lower', actual: 0.5, stay: 1, taken: 0.5, overhead: 0.01, durationMs: 60_000, before: { five_hour: 10 }, after: { five_hour: 11 } }),
     run({ change: 'none', actual: 0.5, durationMs: 60_000, before: { five_hour: 11 }, after: { five_hour: 12 } }),
   ]
-  expect(report(windowed, { subscription: true }).split('\n').filter(l => /^ {2}\S/.test(l)).map(l => l.trim().split(/ {2,}/)[0]).slice(0, 2)).toEqual(['Total saved', '5-hour window saved'])
+  expect(report(windowed, { subscription: true }).split('\n').filter(l => /^ {2}\S/.test(l)).map(l => l.trim().split(/ {2,}/)[0]).slice(0, 2)).toEqual(['Total saved (API-equivalent)', '5-hour window saved'])
 })
 
 test('for the desktop app, the aligned blocks go in code fences and prose is not wrapped', async () => {
@@ -594,12 +596,126 @@ test('sessionTotal puts the session net in plain words, from the same figure as 
   expect(sessionTotal([saved], 's1', false)).toBe('Session: ~$0.49 saved')
   expect(sessionTotal([cost], 's1', false)).toBe('Session: ~$0.50 more')
   expect(sessionTotal([saved, run({ session: 's2', change: 'lower', offered: 'lower', actual: 0.1, stay: 5, taken: 0.1 })], 's1', false), 'another session adds nothing').toBe('Session: ~$0.49 saved')
-  expect(sessionTotal([{ ...saved, ...win }], 's1', true), 'subscription with a window').toBe('Session: ~1.0% of the 5-hour window saved')
-  expect(sessionTotal([{ ...cost, before: { five_hour: 10 }, after: { five_hour: 12 } }], 's1', true)).toBe('Session: ~3.3% more of the 5-hour window')
+  expect(sessionTotal([{ ...saved, ...win }], 's1', true), 'subscription with a window').toBe('Session: under 2.0% of the 5-hour window saved')
+  expect(sessionTotal([{ ...cost, before: { five_hour: 10 }, after: { five_hour: 12 } }], 's1', true)).toBe('Session: ~1.7–5.0% more of the 5-hour window')
   expect(sessionTotal([saved], 's1', true), 'subscription without window data').toBe('Session: ~$0.49 saved (API-equivalent)')
   expect(sessionTotal([cost], 's1', true)).toBe('Session: ~$0.50 more (API-equivalent)')
   // The band's figure is the report's Session "Total saved".
   const lines = [saved, run({ change: 'lower', offered: 'lower', actual: 0.1, stay: 0.3, taken: 0.15, overhead: 0.02 })]
   const shown = cells(report(lines), 'Total saved')?.[0]
   expect(sessionTotal(lines, 's1', false)).toBe(`Session: ${shown} saved`)
+})
+
+// ---- Window shares as ranges ------------------------------------------------
+
+/** `n` runs that each cost `each` dollars and moved the 5-hour window by the given points. */
+const near = (a: number | undefined, b: number) => a !== undefined && Math.abs(a - b) < 1e-9
+const windowRuns = (points: readonly number[], each = 0.5) => points.map((p, i) => run({ at: ago(0), actual: each, id: `w${i}`, before: { five_hour: 10 }, after: { five_hour: 10 + p } }))
+
+test('windowRates: the share per dollar as a range from the rounding error, sqrt(n) points either way', async () => {
+  // One run: 5 points for $1. Each endpoint is a whole percent, so the total is 5 give or take 1.
+  const one = windowRates(windowRuns([5], 1), 'five_hour')
+  expect([one?.low, one?.perDollar, one?.high]).toEqual([4, 5, 6])
+  // Nine runs: 9 points for $4.50 over 9 runs, give or take sqrt(9) = 3 points.
+  const nine = windowRates(windowRuns([1, 1, 1, 1, 1, 1, 1, 1, 1]), 'five_hour')
+  expect(near(nine?.perDollar, 2)).toBe(true)
+  expect(near(nine?.low, 6 / 4.5)).toBe(true)
+  expect(near(nine?.high, 12 / 4.5)).toBe(true)
+  // A total smaller than the rounding error: the low end stops at 0, it does not go negative.
+  const clamped = windowRates(windowRuns([1, 1, 0, 0, 0, 0, 0, 0, 0]), 'five_hour')
+  expect(clamped?.low).toBe(0)
+  expect(near(clamped?.perDollar, 2 / 4.5)).toBe(true)
+  expect(near(clamped?.high, 5 / 4.5)).toBe(true)
+  // Runs that count are the runs that measured: a window that reset, an aborted turn, a line with no window and a stopped turn add nothing.
+  const mixed = windowRates([...windowRuns([5], 1), run({ actual: 1, before: { five_hour: 50 }, after: { five_hour: 3 } }), run({ actual: 1, aborted: true, before: { five_hour: 1 }, after: { five_hour: 9 } }), run({ actual: 1 })], 'five_hour')
+  expect([mixed?.low, mixed?.high], 'n is 1').toEqual([4, 6])
+  expect(windowRates([], 'five_hour')).toBeUndefined()
+  expect(windowRates(windowRuns([0]), 'five_hour'), 'no movement: no rate').toBeUndefined()
+})
+
+test('a window share is written as a range: one decimal, an en dash, a single value when both ends agree, "under" when the low end is 0.0', async () => {
+  expect(shareText({ lo: 0.8, hi: 1.6 })).toBe('~0.8–1.6%')
+  expect(shareText({ lo: 0.84, hi: 1.55 })).toBe('~0.8–1.6%')
+  expect(shareText({ lo: 0.96, hi: 1.04 }), 'both ends read 1.0').toBe('~1.0%')
+  expect(shareText({ lo: 0, hi: 1.6 })).toBe('under 1.6%')
+  expect(shareText({ lo: 0.04, hi: 1.6 }), 'a low end that reads 0.0').toBe('under 1.6%')
+  expect(shareText({ lo: 0.01, hi: 0.04 }), 'both ends read 0.0').toBe('under 0.1%')
+  expect(shareText({ lo: -1.6, hi: -0.8 }), 'a loss is written as its size').toBe('~0.8–1.6%')
+  expect(shareText({ lo: -1.6, hi: -0 }), 'a loss with a low end of 0').toBe('under 1.6%')
+  expect(windowCostText(0.16, { low: 4, high: 6 })).toBe('~0.6–1.0% of your 5-hour window ($0.16 API-equivalent)')
+  expect(windowCostText(0.16, { low: 0, high: 6 })).toBe('under 1.0% of your 5-hour window ($0.16 API-equivalent)')
+  expect(windowCostText(0.16, undefined), 'no rate yet: dollars alone, labelled').toBe('about $0.16 API-equivalent')
+})
+
+test('the headline, the table and the band show the window share as a range, the minutes too, and a single value once the data is enough', async () => {
+  const lines = [
+    run({ change: 'lower', offered: 'lower', actual: 0.5, stay: 1, taken: 0.5, durationMs: 60_000, before: { five_hour: 10 }, after: { five_hour: 14 } }),
+    run({ change: 'none', actual: 0.5, durationMs: 60_000, before: { five_hour: 14 }, after: { five_hour: 18 } }),
+  ]
+  // 8 points for $1 over 2 runs and 2 minutes, give or take sqrt(2) points; $0.50 saved is 3.3–4.7 points of the window, about 1 minute.
+  const text = report(lines, { subscription: true })
+  expect(text.split('\n')[1]).toBe('Saved ~3.3–4.7% of your 5-hour window (~1 min) in the last 30 days.')
+  expect(cells(text, '5-hour window saved')).toEqual(['~3.3–4.7%', '~3.3–4.7%', '~3.3–4.7%'])
+  expect(sessionTotal(lines, 's1', true)).toBe('Session: ~3.3–4.7% of the 5-hour window saved')
+  // The 7-day window gets its own range.
+  const week = lines.map(l => ({ ...l, before: { ...l.before, seven_day: 20 }, after: { ...l.after, seven_day: 21 } }))
+  expect(cells(report(week, { subscription: true }), '7-day window saved')?.[0]).toBe('~0.3–1.7%')
+  // The minutes are a range too: 4 points for $0.50 over 10 minutes, one run.
+  const slow = (points: number) => [run({ change: 'lower', offered: 'lower', actual: 0.5, stay: 1, taken: 0.5, durationMs: 600_000, before: { five_hour: 10 }, after: { five_hour: 10 + points } })]
+  expect(report(slow(4), { subscription: true }).split('\n')[1]).toBe('Saved ~3.0–5.0% of your 5-hour window (~8–13 min) in the last 30 days.')
+  expect(report(slow(1), { subscription: true }).split('\n')[1]).toBe('Saved under 2.0% of your 5-hour window (under 20 min) in the last 30 days.')
+  // 400 runs of 10 points for $0.10 each, and one that saved $0.02: 2.0 points give or take 0.01.
+  const big = [
+    ...Array.from({ length: 399 }, (_, i) => run({ id: `m${i}`, actual: 0.1, before: { five_hour: 0 }, after: { five_hour: 10 } })),
+    run({ change: 'lower', offered: 'lower', actual: 0.1, stay: 0.12, taken: 0.1, before: { five_hour: 0 }, after: { five_hour: 10 } }),
+  ]
+  expect(report(big, { subscription: true }).split('\n')[1]).toBe('Saved ~2.0% of your 5-hour window in the last 30 days.')
+  expect(sessionTotal(big, 's1', true)).toBe('Session: ~2.0% of the 5-hour window saved')
+  // One turn: the rounding error is as big as the reading, so the low end is 0.
+  const one = [run({ change: 'lower', offered: 'lower', actual: 0.5, stay: 1, taken: 0.5, before: { five_hour: 10 }, after: { five_hour: 11 } })]
+  expect(report(one, { subscription: true }).split('\n')[1]).toBe('Saved under 2.0% of your 5-hour window in the last 30 days.')
+})
+
+// ---- Capacity, API-equivalent cost and real spending stay apart ----------------
+
+test('on a subscription, every dollar figure in the report is labelled API-equivalent', async () => {
+  const text = report(month(), { subscription: true, markdown: true, switches: [{ at: ago(0), kept: false }, { at: ago(0), kept: true }] })
+  const dollars = text.split('\n').filter(l => l.includes('$'))
+  // The table's two dollar rows, the hand-off and workflow problems, the fixed context and the footer.
+  expect(dollars.length).toBeGreaterThanOrEqual(5)
+  for (const l of dollars) expect(l, 'a dollar line without the label').toContain('API-equivalent')
+  expect(text).not.toMatch(/Extra spent|\bsaved \$|spent/)
+  const raised = [run({ change: 'raise', offered: 'raise', actual: 0.3, stay: 0.1, taken: 0.2 })]
+  const extra = report(raised, { subscription: true })
+  expect(cells(extra, 'Extra on harder prompts (API-equivalent)'), 'the row says what the dollars are').toEqual(['$0.20', '$0.20', '$0.20'])
+  expect(extra.replace(/\s+/g, ' ')).toContain('Extra on harder prompts: what raising effort or using a stronger model would cost on the API, for better answers.')
+  expect(extra).not.toMatch(/Extra spent|spent/)
+})
+
+test('on a subscription, the problems and the fixed context label their dollars; on the API they stay plain', async () => {
+  const lines = month()
+  const switches = [{ at: ago(0), kept: false }]
+  const sub = problems(lines, switches, true).map(p => p.reason).filter(r => r.includes('$'))
+  expect(sub.length).toBeGreaterThanOrEqual(2)
+  for (const r of sub) expect(r).toContain('API-equivalent')
+  expect(problems(lines, switches).map(p => p.reason).join(' ')).not.toContain('API-equivalent')
+  expect(fixedBlock(lines, true)?.notes.join(' ')).toMatch(/^Fixed context adds to your usage in every session\. Cutting it saves more\. At least ~\$[\d.]+ API-equivalent over \d+ requests/)
+  expect(fixedBlock(lines)?.notes.join(' ')).toMatch(/^Fixed context adds to your cost in every session\. Cutting it saves more\. At least ~\$[\d.]+ over \d+ requests/)
+})
+
+test('on the API, dollars are real spending: no label, no window share', async () => {
+  const win = { before: { five_hour: 10 }, after: { five_hour: 12 }, durationMs: 60_000 }
+  const lines = [run({ change: 'lower', offered: 'lower', actual: 0.5, stay: 1, taken: 0.5, ...win }), run({ change: 'raise', offered: 'raise', actual: 0.3, stay: 0.1, taken: 0.2, ...win })]
+  const text = report(lines, { markdown: true })
+  expect(text).not.toMatch(/API-equivalent|window|usage/)
+  expect(cells(report(lines), 'Extra spent on harder prompts')).toBeDefined()
+  expect(sessionTotal(lines, 's1', false)).toMatch(/^Session: ~\$[\d.]+ saved$/)
+  expect(shareMessage(many(20), { now: NOW, subscription: false })).not.toMatch(/API-equivalent|usage|window/)
+})
+
+test('share: on a subscription the number is said to be a share of API-equivalent cost, not money', async () => {
+  const text = shareMessage(many(20), { now: NOW, subscription: true })
+  expect(text).toContain('as a share of API-equivalent cost, not money')
+  expect(text).not.toMatch(/\$/)
+  expect(shareMessage(many(20), { now: NOW, subscription: false })).not.toContain('API-equivalent')
 })

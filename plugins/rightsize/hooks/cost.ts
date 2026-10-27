@@ -463,7 +463,10 @@ export function parseIdleWarning(v: unknown): number | null {
 /** One rate-limit window as a response reports it. */
 export type Limit = { kind: string; percentUsed: number; resetsAt?: string }
 export type Pace = {
-  /** hot: on pace to hit a limit before it resets. cool: much of a window will go unused. max: a window is nearly used up. */
+  /**
+   * hot: on pace to hit a limit before it resets. max: a window is nearly used up.
+   * cool: much of a window will go unused. It is kept for the log only: an unused window never changes a decision.
+   */
   mode: 'normal' | 'hot' | 'cool' | 'max'
   window?: 'five_hour' | 'seven_day'
   /** Share of the window used over share of its time gone. */
@@ -501,30 +504,29 @@ export function paceOf(limits: readonly Limit[], now: number): Pace {
 }
 
 /**
- * The thresholds at this pace: looser when running hot, stricter when running cool.
- * A threshold you set (`set`) stays as you set it: pacing moves only one left at its default.
+ * The thresholds at this pace: looser when running hot or nearly used up.
+ * An underused window (cool) moves nothing: a lower bar would make rightsize spend more, and spare room in a window
+ * is never a reason to spend. A threshold you set (`set`) stays as you set it: pacing moves only one left at its default.
  */
 export function pacedRules(rules: Rules, p: Pace, set: { handOff?: boolean; lower?: boolean } = {}): Rules {
   const moved = (to: Rules): Rules => ({ handOff: set.handOff ? rules.handOff : to.handOff, lower: set.lower ? rules.lower : to.lower })
   if (p.mode === 'max') return moved({ handOff: Math.max(rules.handOff, 0.95), lower: 1 })
   if (p.mode === 'hot') return moved({ handOff: Math.min(0.95, rules.handOff + 0.15), lower: Math.min(0.99, rules.lower + 0.07) })
-  if (p.mode === 'cool') return moved({ handOff: Math.max(0.3, rules.handOff - 0.2), lower: Math.max(0.5, rules.lower - 0.1) })
   return rules
 }
 
 const WINDOW_NAME = { five_hour: '5-hour', seven_day: '7-day' } as const
 
 /**
- * Why a decision moved, for the band; empty at a normal pace. `acts` is false when pacing changed
+ * Why a decision moved, for the band; empty at a normal pace and at a cool one (an underused window changes nothing). `acts` is false when pacing changed
  * nothing because every setting it could move was yours: a window nearly used up is then only reported.
  */
 export function paceNote(p: Pace, acts = true) {
   if (p.mode === 'normal' || !p.window) return ''
   const w = WINDOW_NAME[p.window]
   if (p.mode === 'max') return `${Math.round(p.used ?? 0)}% of the ${w} window is used${acts ? ', so rightsize saves all it can' : ''}.`
-  if (!acts) return ''
-  if (p.mode === 'hot') return `The ${w} window is on pace to run out before it resets, so rightsize saves harder.`
-  return `Much of the ${w} window will go unused, so rightsize puts quality first.`
+  if (!acts || p.mode !== 'hot') return ''
+  return `The ${w} window is on pace to run out before it resets, so rightsize saves harder.`
 }
 
 const clampFloor = (l: Level, floor: Level) => (levelRank(l) < levelRank(floor) ? floor : l)

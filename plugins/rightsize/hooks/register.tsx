@@ -34,6 +34,7 @@ import {
   effortPlan,
   isLevel,
   levelRank,
+  REVIEW_LEVEL,
   learn,
   mainCost,
   money,
@@ -155,8 +156,8 @@ const qUp = (cur: string, to: string): Question<Route> => ({
   header: 'Stronger',
   question: `When a prompt needs a stronger model than ${cur} (such as ${to}), what should I do?`,
   options: [
-    ['Send it to a subagent automatically (Recommended)', 'auto'],
-    ['Ask before sending it to a subagent', 'ask'],
+    ['Use the stronger model automatically (Recommended)', 'auto'],
+    ['Ask before using it', 'ask'],
     [`Stay on ${cur}, raise effort only`, 'stay'],
     ['Ask me each time', 'each'],
   ],
@@ -234,7 +235,9 @@ type Run = {
   resized: Resized[]
   /** The hand-off was a close call that the task-type guide broke. */
   tie?: Tie
-  /** A fixed rule chose the route rather than the rating: reviews go to Opus. */
+  /** The main chat runs this turn on another model, then goes back: a review on Opus. */
+  switchTo?: { tier: Tier; level: Level }
+  /** A fixed rule chose the route rather than the rating: reviews run on Opus at high or more. */
   rule?: 'review'
   /** Uncalibrated estimates of the route taken, for calibration. */
   rawMain: number
@@ -301,6 +304,8 @@ let cal: Calibration = {}
 let pending: Run | null = null
 let active: Run | null = null
 let lastApplied: Level | undefined
+/** The last main-chat step ran on a model rightsize rewrote. */
+let lastSwitched = false
 let lastContext = 0
 let lastAuto: { text: string; level: Level; normal: Level } | null = null
 let skipOnce: string | null = null
@@ -873,7 +878,7 @@ const costLine = (d: number, stay: number, cur: string) =>
     ? `About ${money(d)} that way vs ${money(stay)} staying on ${cur} (estimated).`
     : `That uses ${share(d, stay)} the usage vs staying on ${cur} (estimated).`
 
-type Decision = { level?: Level; session?: Level; auto?: boolean; delegate?: Run['delegate'] }
+type Decision = { level?: Level; session?: Level; auto?: boolean; delegate?: Run['delegate']; model?: Run['switchTo'] }
 
 async function resolveEffort($: EngineInterface, p: Plan, r: Rating, s: Situation): Promise<Decision> {
   if (p.kind !== 'effort') return {}
@@ -903,13 +908,24 @@ async function resolve($: EngineInterface, p: Plan, r: Rating, s: Situation): Pr
   if (p.kind === 'effort') return resolveEffort($, p, r, s)
   const cur = TIER_NAME[s.tier]
   const to = TIER_NAME[p.tier]
+  if (p.kind === 'switch') {
+    const c = await choice($, 'up', qUp(cur, to))
+    const send: Decision = { model: { tier: p.tier, level: p.level } }
+    const stay = () => resolveEffort($, effortPlan(r, s, floor), r, s)
+    if (c === 'auto') return send
+    if (c === 'stay') return stay()
+    if (c !== 'ask' && c !== 'each') return {}
+    const question = `This is a review: reviews run on ${to} at ${REVIEW_LEVEL} effort or more. Run this prompt on ${to} at ${p.level}, then go back to ${cur}? ${costLine(p.cost, p.mainCost, cur)}`
+    const a = await pick($, { header: 'Stronger', question, options: [[`Run it on ${to}`, 'send'], [`Stay on ${cur}`, 'stay']] })
+    return a === 'send' ? send : a === 'stay' ? stay() : {}
+  }
   const c = p.dir === 'up' ? await choice($, 'up', qUp(cur, to)) : await choice($, 'down', qDown(cur, to))
   const send: Decision = { delegate: { tier: p.tier, level: p.level, dir: p.dir } }
   const stay = () => resolveEffort($, effortPlan(r, s, floor), r, s)
   if (c === 'auto') return send
   if (c === 'stay') return stay()
   if (c !== 'ask' && c !== 'each') return {}
-  const why = p.rule === 'review' ? ' (reviews run on Opus at high effort or more)' : r.reason ? ` (${r.reason})` : ''
+  const why = r.reason ? ` (${r.reason})` : ''
   const lead = p.dir === 'up' ? `This needs a stronger model${why}.` : `${to} at ${p.level} effort could do this${why}${p.instead ? `, where ${cur} needs ${p.instead}` : ''}.`
   const question = `${lead} Send it to a ${to} subagent? ${costLine(p.delegateCost, p.mainCost, cur)}`
   if (c === 'ask') {
@@ -945,18 +961,24 @@ export function delegateNote(d: NonNullable<Run['delegate']>) {
   ].join('\n')
 }
 
-const planChange = (p: Plan): Change => (p.kind === 'none' ? 'none' : p.kind === 'effort' ? p.dir : `delegate-${p.dir}`)
+const planChange = (p: Plan): Change => (p.kind === 'none' ? 'none' : p.kind === 'effort' ? p.dir : p.kind === 'switch' ? 'switch-up' : `delegate-${p.dir}`)
 
 /** `base` is the person's own level, before any session switch rightsize made: the level savings are counted against. */
 function startRun(r: Rating, s: Situation, d: Decision, p: Plan, base: Level, overhead: number): Run {
-  const level = d.level ?? d.session ?? s.level
+  const sw = d.model
+  const level = sw?.level ?? d.level ?? d.session ?? s.level
   const change: Change = d.delegate
     ? `delegate-${d.delegate.dir}`
-    : level === base
-      ? 'none'
-      : levelRank(level) < levelRank(base)
-        ? 'lower'
-        : 'raise'
+    : sw
+      ? 'switch-up'
+      : level === base
+        ? 'none'
+        : levelRank(level) < levelRank(base)
+          ? 'lower'
+          : 'raise'
+  // The turn on another model: its work at that level, plus writing the conversation to that model's cache once.
+  const swOn: Situation | undefined = sw ? { ...s, tier: sw.tier } : undefined
+  const swCost = sw && swOn ? mainCost(r, swOn, sw.level, 0) + (s.context * s.prices[sw.tier].cacheWrite) / 1e6 : 0
   // A per-prompt switch goes and comes back; a session switch goes once.
   const switches = d.level && d.level !== s.level ? 2 : d.session ? 1 : 0
   return {
@@ -970,12 +992,13 @@ function startRun(r: Rating, s: Situation, d: Decision, p: Plan, base: Level, ov
     workflows: 0,
     auto: d.auto === true,
     delegate: d.delegate,
-    rawMain: rawMainCost(r, s, level),
+    ...(sw ? { switchTo: sw } : {}),
+    rawMain: rawMainCost(r, swOn ?? s, level),
     rawDelegate: d.delegate ? rawDelegateCost(r, s, d.delegate.tier, d.delegate.level) : undefined,
     stay: mainCost(r, s, base, 0),
     change,
     offered: planChange(p),
-    takenMain: mainCost(r, s, level, switches),
+    takenMain: sw ? swCost : mainCost(r, s, level, switches),
     takenDelegate: d.delegate ? delegateCost(r, s, d.delegate.tier, d.delegate.level) : undefined,
     overhead,
     agentCalls: 0,
@@ -993,7 +1016,7 @@ function startRun(r: Rating, s: Situation, d: Decision, p: Plan, base: Level, ov
     signals: noSignals(),
     escalations: [],
     requests: 0,
-    ...(p.kind !== 'none' && p.rule ? { rule: p.rule } : {}),
+    ...('rule' in p && p.rule ? { rule: p.rule } : {}),
   }
 }
 
@@ -1002,6 +1025,7 @@ function startRun(r: Rating, s: Situation, d: Decision, p: Plan, base: Level, ov
 async function showStatus($: EngineInterface) {
   const run = active ?? pending
   if (run?.delegate) return $.ui.status(`Handing this to a ${TIER_NAME[run.delegate.tier]} subagent`)
+  if (run?.switchTo) return $.ui.status(`Running this review on ${TIER_NAME[run.switchTo.tier]} at ${run.switchTo.level} effort`)
   if (run?.raisedTo) return $.ui.status(`Effort: ${run.raisedTo} (raised mid-turn)`)
   if (run?.steppedUp) return $.ui.status(`Effort: back to ${run.normal} (the task got harder)`)
   if (run?.level) return $.ui.status(run.auto ? `Effort: ${run.level} (auto) · /rightsize undo` : `Effort: ${run.level} (this prompt)`)
@@ -1036,13 +1060,14 @@ const RULES: Record<keyof Choices, readonly (readonly [string, string])[]> = {
 }
 
 /** What the band shows for a rated prompt: what was done, or what was suggested and not done. */
-export function bandFor(run: Pick<Run, 'id' | 'tier' | 'normal' | 'auto' | 'delegate' | 'stay' | 'takenDelegate'>, d: Decision, p: Plan): Band {
+export function bandFor(run: Pick<Run, 'id' | 'tier' | 'normal' | 'auto' | 'delegate' | 'stay' | 'takenDelegate'> & Partial<Pick<Run, 'switchTo' | 'takenMain'>>, d: Decision, p: Plan): Band {
   const cur = TIER_NAME[run.tier]
+  if (run.switchTo) {
+    return { text: `Running this review on ${TIER_NAME[run.switchTo.tier]} at ${run.switchTo.level} effort, then back to ${cur}. ${costLine(run.takenMain ?? 0, run.stay, cur)}`, acted: true, rule: 'up' }
+  }
   if (run.delegate) {
     const to = `${TIER_NAME[run.delegate.tier]} subagent at ${run.delegate.level} effort`
-    const instead = p.kind === 'delegate' && p.rule === 'review'
-      ? ': reviews run on Opus at high effort or more'
-      : p.kind === 'delegate' && p.instead && levelRank(p.instead) > levelRank(run.normal) ? ` instead of raising ${cur} to ${p.instead}` : ''
+    const instead = p.kind === 'delegate' && p.instead && levelRank(p.instead) > levelRank(run.normal) ? ` instead of raising ${cur} to ${p.instead}` : ''
     return { text: `Sending this to a ${to}${instead}. ${costLine(run.takenDelegate ?? 0, run.stay, cur)}`, acted: true, rule: run.delegate.dir }
   }
   const level = d.level ?? d.session
@@ -1060,8 +1085,8 @@ export function bandFor(run: Pick<Run, 'id' | 'tier' | 'normal' | 'auto' | 'dele
     }
   }
   if (p.kind === 'none') return { text: `No change: ${run.normal} on ${cur} fits this prompt.`, acted: false }
-  const what = p.kind === 'effort' ? `${p.level} effort` : `a ${TIER_NAME[p.tier]} subagent at ${p.level}`
-  const rule = p.kind === 'effort' ? (p.dir === 'lower' ? 'lower' : 'raise') : p.dir
+  const what = p.kind === 'effort' ? `${p.level} effort` : p.kind === 'switch' ? `${TIER_NAME[p.tier]} at ${p.level}` : `a ${TIER_NAME[p.tier]} subagent at ${p.level}`
+  const rule = p.kind === 'effort' ? (p.dir === 'lower' ? 'lower' : 'raise') : p.kind === 'switch' ? 'up' : p.dir
   return { text: `No change: ${what} would fit, kept ${run.normal} on ${cur}.`, acted: false, rule }
 }
 
@@ -1171,8 +1196,10 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
     // A turn that stepped back up, or was raised mid-turn, ran at more than one
     // level, so its cost says nothing about one level's estimate: it teaches nothing.
     else if (!run.delegate && !run.steppedUp && !run.escalations.length) {
-      const sample = ratioSample(Math.max(0, actual - run.missCost), run.rawMain)
-      for (const key of mainKeys(r.type, run.tier, run.ranAt)) teach(key, sample)
+      // A switched turn teaches the switched model's keys, with the one cache write the switch costs taken out.
+      const written = run.switchTo ? (run.context * prices[run.switchTo.tier].cacheWrite) / 1e6 : 0
+      const sample = ratioSample(Math.max(0, actual - run.missCost - written), run.rawMain)
+      for (const key of mainKeys(r.type, run.switchTo?.tier ?? run.tier, run.ranAt)) teach(key, sample)
     }
     await saveCal($)
   }
@@ -1200,6 +1227,7 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
       ...(run.resized.length ? { resized: run.resized } : {}),
       ...(run.tie ? { tie: run.tie } : {}),
       ...(run.rule ? { rule: run.rule } : {}),
+      ...(run.switchTo ? { switched: run.switchTo.tier, switchedLevel: run.switchTo.level } : {}),
       ...(run.pace.mode !== 'normal' ? { pace: { ...run.pace, ...(run.pace.pace === undefined ? {} : { pace: Number(run.pace.pace.toFixed(2)) }) } } : {}),
       auto: run.auto,
       steppedUp: run.steppedUp,
@@ -1219,7 +1247,7 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
       ...(run.approvalSteps ? { approvalSteps: run.approvalSteps } : {}),
       requests: run.requests,
       // Each request reads the fixed context from the cache, at least.
-      ...(fixed ? { fixed: { ...fixed, cost: round((run.requests * fixed.tokens * prices[run.tier].cacheRead) / 1e6) } } : {}),
+      ...(fixed ? { fixed: { ...fixed, cost: round((run.requests * fixed.tokens * prices[run.switchTo?.tier ?? run.tier].cacheRead) / 1e6) } } : {}),
       ...(run.workflows ? { workflows: run.workflows } : {}),
       ...(workflowSeen ? { afterWorkflow: true } : {}),
       durationMs,
@@ -1834,6 +1862,7 @@ export const register: Register = (on, options) => {
     pending = null
     active = null
     lastApplied = undefined
+    lastSwitched = false
     lastContext = 0
     workflowSeen = false
     askedWorkflows.clear()
@@ -1993,7 +2022,7 @@ export const register: Register = (on, options) => {
         const unfanned = workflowSeen && planned.kind === 'delegate' && (workflows === 'ask' || workflows === 'pause rightsize') ? effortPlan(r, s, floor) : planned
         // A window nearly used up: nothing that costs more than staying, unless the matching rule
         // (Raising for more effort, Stronger model for a stronger one) is yours: then it follows your rule.
-        const costlier = (unfanned.kind === 'effort' && unfanned.dir === 'raise') || (unfanned.kind === 'delegate' && unfanned.dir === 'up')
+        const costlier = (unfanned.kind === 'effort' && unfanned.dir === 'raise') || unfanned.kind === 'switch' || (unfanned.kind === 'delegate' && unfanned.dir === 'up')
         const mine = await choices($)
         const followsYou = unfanned.kind === 'effort' ? mine.raise !== undefined : mine.up !== undefined
         const skipped = paceNow.mode === 'max' && costlier && !followsYou
@@ -2010,10 +2039,10 @@ export const register: Register = (on, options) => {
         const was = base.rules ?? DEFAULT_RULES
         const note = paceNote(paceNow, skipped || movedRules.handOff !== was.handOff || movedRules.lower !== was.lower)
         const band = p !== unfanned
-          ? { text: `Kept ${s.level} on ${TIER_NAME[s.tier]} instead of ${unfanned.kind === 'delegate' ? `a ${TIER_NAME[unfanned.tier]} subagent` : `raising to ${unfanned.kind === 'effort' ? unfanned.level : ''}`}.`, acted: true }
+          ? { text: `Kept ${s.level} on ${TIER_NAME[s.tier]} instead of ${unfanned.kind === 'delegate' ? `a ${TIER_NAME[unfanned.tier]} subagent` : unfanned.kind === 'switch' ? `running on ${TIER_NAME[unfanned.tier]}` : `raising to ${unfanned.kind === 'effort' ? unfanned.level : ''}`}.`, acted: true }
           : bandFor(run, d, p)
         await setBand($, note ? { ...band, text: `${band.text} ${note}` } : band)
-        const did = d.delegate ? `delegate ${d.delegate.tier}` : d.level ? `${d.auto ? 'auto ' : ''}${d.level} for the prompt` : d.session ? `${d.session} for the session` : 'no change'
+        const did = d.delegate ? `delegate ${d.delegate.tier}` : d.model ? `switch to ${d.model.tier} at ${d.model.level} for the turn` : d.level ? `${d.auto ? 'auto ' : ''}${d.level} for the prompt` : d.session ? `${d.session} for the session` : 'no change'
         const fit = TIERS.map(t => `${t[0]}:${r.fit[t] ?? (r.fit[t] === null ? 'no' : '?')}`).join(' ')
         if (unfanned !== planned) await log($, `hand-off to ${planned.kind === 'delegate' ? planned.tier : '?'} skipped: a workflow ran this session`)
         const paced = paceNow.mode === 'normal' ? '' : `, ${paceNow.mode} pace on ${paceNow.window}${paceNow.pace === undefined ? '' : ` (${paceNow.pace.toFixed(2)})`}`
@@ -2063,7 +2092,9 @@ export const register: Register = (on, options) => {
     if (isLevel(e.effort)) await $.state.set({ plugin: 'rightsize', key: 'seenEffort' }, e.effort)
     const session = await sessionEffort($)
     const own = session ?? (isLevel(e.effort) ? e.effort : undefined)
-    let level: Level | undefined = run?.level ?? session ?? undefined
+    // A switched turn (a review on Opus) runs every step on that model at its level, and only that turn.
+    const sw = run?.switchTo
+    let level: Level | undefined = sw?.level ?? run?.level ?? session ?? undefined
     if (run?.auto && (e.index >= STEP_UP_AFTER || run.errors > 0)) {
       level = own
       if (!run.steppedUp) {
@@ -2078,13 +2109,14 @@ export const register: Register = (on, options) => {
       if (sign) await escalate($, run, sign, level ?? own, e.index)
     }
     if (run?.raisedTo && (!level || levelRank(run.raisedTo) > levelRank(level))) level = run.raisedTo
-    const send = level && e.effort !== undefined ? { ...e, effort: level } : e
+    const send = sw && level ? { ...e, model: sw.tier, effort: level } : level && e.effort !== undefined ? { ...e, effort: level } : e
     const applied = isLevel(send.effort) ? send.effort : undefined
     const out = yield* next(send)
     const u = out.usage
     if (u) {
       // An effort switch may make this request re-write the conversation: measure it.
-      if (applied && lastApplied && applied !== lastApplied && lastContext > 5000) {
+      // A model rewritten on this step or the last one makes the cache miss the model's, not an effort switch's: not measured.
+      if (!sw && !lastSwitched && applied && lastApplied && applied !== lastApplied && lastContext > 5000) {
         const missed = u.cache_read_input_tokens < lastContext * 0.5
         teach(SWITCH_KEY, missed ? 1 : 0)
         // One line per measured switch: the evidence for whether the engine keeps the cache.
@@ -2108,9 +2140,11 @@ export const register: Register = (on, options) => {
         void saveCal($)
       }
       if (applied) lastApplied = applied
+      lastSwitched = sw !== undefined
       lastContext = contextOf(u)
       await $.state.set({ plugin: 'rightsize', key: 'context' }, lastContext)
-      await $.state.set({ plugin: 'rightsize', key: 'seenModel' }, u.model)
+      // The session's own model stays the one the next prompt is planned on.
+      if (!sw) await $.state.set({ plugin: 'rightsize', key: 'seenModel' }, u.model)
       if (run) {
         run.mainCost += usageCost(prices, u.model, u)
         run.requests += 1

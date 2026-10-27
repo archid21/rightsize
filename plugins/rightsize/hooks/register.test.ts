@@ -5,7 +5,7 @@ import { KEYS, SETTINGS, type SettingKey, inOptions } from './settings'
 // Typed loosely: the AskUserQuestion matcher's full type is too deep for tsc.
 type AskInput = { questions: { question: string; header?: string; options?: { label: string }[] }[] }
 type LooseOn = (event: string, match: object, hook: (_$: unknown, e: AskInput) => Promise<unknown>) => void
-type StepInput = { effort?: string; turnId: string; index: number; agentId?: string }
+type StepInput = { effort?: string; model?: string; turnId: string; index: number; agentId?: string }
 type LooseStep = (event: string, hook: (_$: unknown, e: StepInput) => AsyncGenerator<never, unknown>) => void
 type Run = { text?: string }
 type Engine = {
@@ -20,6 +20,7 @@ type Engine = {
 const LOOKUP = 'what does the parseConfig function in src/config.ts return exactly'
 const DEBUG = 'find and fix the race in token refresh across the auth services please'
 const SEARCH = 'find every call site of the old logger across the whole repo and list them'
+const REVIEW = '{"level":"high","model":"opus","size":"small","type":"review","read":30000,"write":3000,"steps":10,"reason":"subtle bug hunt"}'
 const NO_CHANGE = '{"level":"medium","model":"same","size":"small","type":"lookup","read":2000,"write":300,"steps":1}'
 const FREE_SWITCHES = { 'cache:effort-switch': { n: 20, ratio: 0 } }
 // A report table row's cells (session, 7 days, 30 days), by its label.
@@ -36,7 +37,7 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
     rating: '{"level":"medium"}',
     answers: {} as Record<string, string>,
     asked: [] as { header: string; question: string; options: string[] }[],
-    sent: [] as { effort?: string; agentId?: string; turnId: string }[],
+    sent: [] as { effort?: string; model?: string; agentId?: string; turnId: string }[],
     submitted: [] as { text: string; context?: readonly string[] }[],
     logs: [] as string[],
     filled: [] as string[],
@@ -225,11 +226,11 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
     return { text: e.text } as never
   })
   ;(on as unknown as LooseStep)('turn.step', async function* (_$, e) {
-    h.sent.push({ effort: e.effort, agentId: e.agentId, turnId: e.turnId })
+    h.sent.push({ effort: e.effort, model: e.model, agentId: e.agentId, turnId: e.turnId })
     if (h.ledger !== undefined) h.ledger += h.stepCost
     if (!e.agentId && h.windowStep) h.rateLimits = h.rateLimits.map(l => ({ ...l, percentUsed: l.percentUsed + h.windowStep }))
     const usage = { input_tokens: 200, output_tokens: 400, cache_read_input_tokens: 20_000, cache_creation_input_tokens: 300 }
-    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: { ...usage, model: e.agentId ? h.subModel : h.model } } as never
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: { ...usage, model: e.agentId ? h.subModel : (e.model ?? h.model) } } as never
   })
   on('turn.complete', async () => ({ text: '' }) as never)
   // The engine's own band above the prompt: an empty row.
@@ -404,7 +405,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.complete('t0')
 
     h.rating = '{"level":"high","model":"fable","size":"small","type":"debug","read":30000,"write":4000,"steps":12,"reason":"subtle concurrency bug"}'
-    h.answers = { Stronger: 'Ask before sending it to a subagent', Remember: 'Just this session', Subagent: 'Send it to a Fable subagent' }
+    h.answers = { Stronger: 'Ask before using it', Remember: 'Just this session', Subagent: 'Send it to a Fable subagent' }
     await d.submit(DEBUG)
     expect(h.asked.map(a => a.header)).toEqual(['Stronger', 'Remember', 'Subagent'])
     expect(h.asked[2]?.question ?? '', 'the question carries both costs').toMatch(/About \$[\d.]+ that way vs \$[\d.]+ staying on Opus/)
@@ -426,6 +427,80 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await bandText($, surface), 'the band carries the result').toMatch(/^rightsize: Sent to Fable: \$[\d.]+ vs about \$[\d.]+ staying on Opus \(estimated\)/)
     const cal = h.store[CAL_STORE] as Record<string, { n: number }>
     expect(cal['debug:delegate']?.n).toBe(1)
+  })
+
+  test(`a review in a Sonnet session runs its turn on Opus at high, then goes back (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-sonnet-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES } })
+    const d = drive($, h)
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+
+    h.rating = REVIEW
+    h.answers = { Stronger: 'Use the stronger model automatically (Recommended)', Remember: 'Just this session' }
+    await d.submit(DEBUG)
+    expect(h.asked.map(a => a.header), 'Q3 then the remember question').toEqual(['Stronger', 'Remember'])
+    expect(h.submitted.at(-1)?.context ?? [], 'no subagent note').toEqual([])
+    await d.step('t1', 0)
+    await d.step('t1', 1)
+    const turn = h.sent.filter(s => s.turnId === 't1')
+    expect(turn.map(s => s.model), 'every step on Opus').toEqual(['opus', 'opus'])
+    expect(turn.map(s => s.effort), 'at high').toEqual(['high', 'high'])
+    await d.complete('t1')
+    expect(await bandText($, surface)).toMatch(/^rightsize: Running this review on Opus at high effort, then back to Sonnet\. About \$[\d.]+ that way vs \$[\d.]+ staying on Sonnet/)
+
+    // The next prompt goes back to the session's model and level.
+    h.rating = NO_CHANGE
+    await d.submit(LOOKUP)
+    await d.step('t2')
+    await d.complete('t2')
+    expect(last(h.sent)?.model, 'back on the session model').toBe('claude-sonnet-5-5')
+    expect(last(h.sent)?.effort).toBe('medium')
+
+    // The switch is not an effort switch: nothing measured, nothing logged, and the session stays Sonnet.
+    const cal = h.store[CAL_STORE] as Record<string, { n: number }>
+    expect(cal['cache:effort-switch']?.n, 'no switch measured').toBe(20)
+    expect(h.files['/home/test/.claude/mods-logs/rightsize-switches.jsonl'], 'no switch line').toBeUndefined()
+    expect(cal['review:main:opus:high']?.n, "the switched tier's key is taught").toBe(1)
+    expect(cal['review:main:sonnet:high'], "Sonnet's key is not taught Opus costs").toBeUndefined()
+    const runs = (h.files['/home/test/.claude/mods-logs/rightsize-runs.jsonl'] ?? '').trim().split('\n').map(l => JSON.parse(l) as Record<string, unknown>)
+    const run = runs.find(l => l.type === 'review')
+    expect(run).toMatchObject({ rule: 'review', switched: 'opus', switchedLevel: 'high', change: 'switch-up', offered: 'switch-up', route: 'main', tier: 'sonnet' })
+    expect(runs.find(l => l.type === 'lookup')).toMatchObject({ change: 'none', tier: 'sonnet' })
+  })
+
+  test(`a review in a Sonnet session stays on Sonnet when Stronger model is Stay (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-sonnet-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES } })
+    const d = drive($, h)
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+
+    h.rating = REVIEW
+    h.answers = { Stronger: 'Stay on Sonnet, raise effort only', Raising: 'Raise automatically (Recommended)', Remember: 'Just this session' }
+    await d.submit(DEBUG)
+    await d.step('t1')
+    await d.complete('t1')
+    expect(last(h.sent)?.model, 'no model rewrite').toBe('claude-sonnet-5-5')
+    const runs = (h.files['/home/test/.claude/mods-logs/rightsize-runs.jsonl'] ?? '').trim().split('\n').map(l => JSON.parse(l) as Record<string, unknown>)
+    expect(runs.find(l => l.type === 'review')?.switched).toBeUndefined()
+  })
+
+  test(`asking: a review's question offers Opus or staying, and Opus runs the turn (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-sonnet-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES, remember: true, choices: { up: 'ask' } } })
+    const d = drive($, h)
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+
+    h.rating = REVIEW
+    h.answers = { Stronger: 'Run it on Opus' }
+    await d.submit(DEBUG)
+    expect(h.asked.map(a => a.header)).toEqual(['Stronger'])
+    expect(h.asked[0]?.question ?? '').toContain('This is a review: reviews run on Opus at high effort or more. Run this prompt on Opus at high, then go back to Sonnet?')
+    expect(h.asked[0]?.options).toEqual(['Run it on Opus', 'Stay on Sonnet'])
+    await d.step('t1')
+    expect(last(h.sent)).toMatchObject({ model: 'opus', effort: 'high' })
   })
 
   test(`Q4 hands a big search on Fable down to Haiku, and says so when Claude does not (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -1307,7 +1382,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
     // "off": a hand-off result goes back to a transcript line.
     h.rating = '{"level":"high","model":"fable","size":"small","type":"debug","read":30000,"write":4000,"steps":12,"reason":"subtle concurrency bug"}'
-    h.answers = { Stronger: 'Send it to a subagent automatically (Recommended)', Remember: 'Just this session' }
+    h.answers = { Stronger: 'Use the stronger model automatically (Recommended)', Remember: 'Just this session' }
     await d.submit(DEBUG)
     await d.step('t1')
     await d.complete('t1')
@@ -2043,7 +2118,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     { key: 'handOff', value: '80%', start: { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES } }, see: async c => (await handOff(c, SEARCH, NEAR, CHEAPER_AUTO)).to, set: 'haiku', def: undefined },
     { key: 'lowering', value: '70%', start: { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES } }, see: c => effortOf(c, LOOKUP, LOWER_300, { Lowering: 'Lower automatically', ...YES_REMEMBER }), set: 'medium', def: 'low' },
     { key: 'useHaiku', value: 'off', start: FABLE, warm: true, see: async c => (await handOff(c, SEARCH, FIT_LOW, CHEAPER_AUTO)).to, set: 'sonnet', def: 'haiku' },
-    { key: 'useFable', value: 'off', start: OPUS, see: async c => (await handOff(c, DEBUG, NEEDS_FABLE, { Stronger: 'Send it to a subagent automatically (Recommended)', ...YES_REMEMBER })).to, set: undefined, def: 'fable' },
+    { key: 'useFable', value: 'off', start: OPUS, see: async c => (await handOff(c, DEBUG, NEEDS_FABLE, { Stronger: 'Use the stronger model automatically (Recommended)', ...YES_REMEMBER })).to, set: undefined, def: 'fable' },
     {
       key: 'subagents',
       value: 'off',
@@ -2066,7 +2141,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
       see: async c => {
         const asked = c.h.asked.length
         c.h.rating = NO_CHANGE
-        c.h.answers = { Workflow: 'Pause rightsize for workflows (recommended)', Stronger: 'Send it to a subagent automatically (Recommended)', ...YES_REMEMBER }
+        c.h.answers = { Workflow: 'Pause rightsize for workflows (recommended)', Stronger: 'Use the stronger model automatically (Recommended)', ...YES_REMEMBER }
         await c.d.submit(LOOKUP)
         const t = c.turn()
         await c.d.step(t)
@@ -2193,7 +2268,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
       value: 'subscription',
       start: OPUS,
       see: async c => {
-        await prompt(c, DEBUG, NEEDS_FABLE, { Stronger: 'Ask before sending it to a subagent', Subagent: 'Send it to a Fable subagent', ...YES_REMEMBER })
+        await prompt(c, DEBUG, NEEDS_FABLE, { Stronger: 'Ask before using it', Subagent: 'Send it to a Fable subagent', ...YES_REMEMBER })
         const q = c.h.asked.find(a => a.header === 'Subagent')?.question ?? ''
         return /That uses/.test(q) ? 'usage' : /About \$/.test(q) ? 'dollars' : q
       },
@@ -2447,7 +2522,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   // ---- Your setting wins ----------------------------------------------------------------------------
 
   const REPORTS_DOLLARS = /About \$[\d.]+ that way/
-  const askAboutFable = { Stronger: 'Ask before sending it to a subagent', Subagent: 'Send it to a Fable subagent', ...YES_REMEMBER }
+  const askAboutFable = { Stronger: 'Ask before using it', Subagent: 'Send it to a Fable subagent', ...YES_REMEMBER }
 
   test(`Reports set in /config is yours: rate limits that show a subscription change nothing, and /rightsize says they disagree (${surface})`, { timeoutMs: 30000, options: { billing: 'api' } }, async ($, on) => {
     const h = engine(on, { ...OPUS, stored: { billing: 'api' } })
@@ -2860,7 +2935,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.sets.find(x => x.key === 'rightsize.lowerRule')?.value).toBe('never lower')
 
     // /rightsize settings asks the four questions again and writes every row.
-    h.answers = { Lowering: 'Ask me each time', Raising: 'Never raise', Stronger: 'Send it to a subagent automatically (Recommended)', Cheaper: 'Ask before sending it', ...YES_REMEMBER }
+    h.answers = { Lowering: 'Ask me each time', Raising: 'Never raise', Stronger: 'Use the stronger model automatically (Recommended)', Cheaper: 'Ask before sending it', ...YES_REMEMBER }
     const text = (await d.command('settings')).text ?? ''
     expect(h.stored).toMatchObject({ lowerRule: 'ask me', raiseRule: 'never raise', upRule: 'always send', downRule: 'ask first' })
     expect(text).toContain('Lowering: ask me')

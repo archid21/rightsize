@@ -13,7 +13,7 @@ An effort level: low, medium, high, xhigh or max.
 _Avoid_: thinking budget, effort setting
 
 **Session model**:
-The tier the main chat runs on. rightsize never changes it.
+The tier the main chat runs on. rightsize changes it only for a switch, for one turn.
 _Avoid_: main model, parent model
 
 ## Deciding
@@ -30,7 +30,11 @@ For one tier, the lowest level at which that tier does the work well, or "would 
 _Avoid_: capability, suitability
 
 **Route**:
-Where the work runs and at what level: on the session model, or handed off to a subagent on another tier.
+Where the work runs and at what level: on the session model, switched to another tier for the turn, or handed off to a subagent on another tier.
+
+**Switch**:
+A route that runs one turn of the main chat on another tier, then goes back to the session model. The main chat keeps the whole conversation, so nothing is briefed or checked.
+_Avoid_: model change, escalation
 
 **Hand-off**:
 A route that sends the work to a subagent on another tier. A hand-down goes to a cheaper tier; a hand-up goes to a stronger one.

@@ -9,7 +9,7 @@ import type { StartBlock } from './start'
 // scaled by the ratio of the two routes' estimates (staying at the person's own
 // level and model vs the route taken), so the estimates' own error cancels out.
 
-export type Change = 'none' | 'lower' | 'raise' | 'delegate-up' | 'delegate-down'
+export type Change = 'none' | 'lower' | 'raise' | 'delegate-up' | 'delegate-down' | 'switch-up'
 /** Rate-limit windows as percent used: `five_hour`, `seven_day`, `spend_limit`. */
 export type Windows = Record<string, number>
 
@@ -127,7 +127,7 @@ export function totals(lines: readonly RunLine[]): Totals {
   const t: Totals = {
     rated: 0,
     subagents: 0,
-    changed: { none: 0, lower: 0, raise: 0, 'delegate-up': 0, 'delegate-down': 0 },
+    changed: { none: 0, lower: 0, raise: 0, 'delegate-up': 0, 'delegate-down': 0, 'switch-up': 0 },
     declined: 0,
     saved: 0,
     extra: 0,

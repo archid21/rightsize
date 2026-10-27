@@ -2,8 +2,8 @@
 
 ## 0.8.0 (unreleased)
 
-- **Start on Sonnet; reviews go to Opus.** The recommended start is Sonnet 5.5 at medium. Every review now runs on Opus at high effort or more, whatever the rating says: from a Haiku or Sonnet session it goes to an Opus helper, on Opus effort is raised to high and not lowered, and from Fable it is never handed below Opus. **Stronger model** (Q3) still decides whether it is sent, and **Highest effort** still caps the level. The band says "reviews run on Opus at high effort or more", and the run log marks these with `rule: "review"`. A review sent up this way doesn't push the start suggestion toward Opus.
-- **Q3 Stronger model now recommends sending automatically.** "Send it to a subagent automatically" is listed first and marked Recommended; "Ask before sending it to a subagent" is second. A rule you already set is unchanged.
+- **Start on Sonnet; reviews switch to Opus for one turn.** The recommended start is Sonnet 5.5 at medium. Every review now runs on Opus at high effort or more, whatever the rating says. From a Haiku or Sonnet session the main chat itself switches to Opus for that turn and then goes back, so the review keeps the whole conversation (no subagent brief). On Opus, effort is raised to high and not lowered; from Fable a review is never handed below Opus. **Stronger model** (Q3) still decides whether the switch happens, and **Highest effort** still caps the level. The band says what happened, and the run log marks these with `rule: "review"`, `switched` and `change: "switch-up"`. A switched review doesn't push the start suggestion toward Opus.
+- **Q3 Stronger model now recommends using the stronger model automatically.** Its answers are now "Use the stronger model automatically" (first, Recommended), "Ask before using it", "Stay on <model>, raise effort only" and "Ask me each time". A rule you already set is unchanged.
 - The task-type guide for close calls picks Opus for reviews.
 
 ## 0.7.4 (2026-10-25)

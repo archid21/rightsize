@@ -407,9 +407,9 @@ export type Plan =
       instead?: Level
       /** Set when two routes were close in cost and the task-type guide broke the tie. */
       tie?: Tie
-      /** Set when a fixed rule chose the route rather than the rating: reviews go to Opus. */
-      rule?: 'review'
     }
+  /** The main chat runs this one turn on another model, then goes back: reviews on Opus. */
+  | { kind: 'switch'; tier: Tier; level: Level; cost: number; mainCost: number; rule: 'review' }
 
 /** Hand work down only when the subagent route costs under this share of staying. */
 export const SAVING_RULE = 0.7
@@ -539,7 +539,7 @@ export function effortPlan(r: Rating, s: Situation, floor: Level): Plan {
 
 // Reviews run on Opus at high effort or more, whatever the rating says: below that, a review
 // misses the subtle bugs it is for, and the rater can't tell from the prompt. A session below
-// Opus hands the review up; an Opus session raises to high and doesn't lower. Fable plans as usual,
+// Opus switches the main chat to Opus for that turn; an Opus session raises to high and doesn't lower. Fable plans as usual,
 // with no route below Opus.
 export const REVIEW_TIER: Tier = 'opus'
 export const REVIEW_LEVEL: Level = 'high'
@@ -549,7 +549,9 @@ function reviewPlan(r: Rating, s: Situation, floor: Level): Plan | undefined {
   const level = clampCeiling(clampFloor(atLeast(r.fit[REVIEW_TIER] ?? REVIEW_LEVEL, REVIEW_LEVEL), floor), ceilingOf(s))
   if (tierRank(s.tier) < tierRank(REVIEW_TIER)) {
     if (s.without?.includes(REVIEW_TIER)) return undefined
-    return { kind: 'delegate', dir: 'up', tier: REVIEW_TIER, level, delegateCost: delegateCost(r, s, REVIEW_TIER, level), mainCost: mainCost(r, s, s.level, 0), rule: 'review' }
+    // The main chat on Opus for one turn: its work at that level, plus writing the conversation to Opus's cache once.
+    const cost = mainCost(r, { ...s, tier: REVIEW_TIER }, level, 0) + (s.context * s.prices[REVIEW_TIER].cacheWrite) / 1e6
+    return { kind: 'switch', tier: REVIEW_TIER, level, cost, mainCost: mainCost(r, s, s.level, 0), rule: 'review' }
   }
   if (s.tier !== REVIEW_TIER) return undefined
   const target = capRaise(level, s)

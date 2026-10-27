@@ -206,6 +206,7 @@ rightsize: Effort lowered: high → medium for this prompt (automatically).  [Un
 - In the CLI, focus the band (ctrl+x tab or a click) and press a button's number.
 - **👍 and 👎** appear on a hand-off's result and on a lowering, so you can say whether it was the right call. Pressing one writes a `feedback` line to the run log, takes the buttons off the band so they can't be pressed twice, and shows a short thanks. Nothing is sent anywhere: the mark tunes rightsize's choices on this machine (see [How it decides](#how-it-decides)).
 - After a hand-off, the band shows the result, for example `Sent to Haiku: $0.04 vs about $0.31 staying on Fable (estimated), saved about 87%.` With the band off, that result is a line in the transcript instead.
+- Every band ends with the session's running total, for example `· Session: ~$0.84 saved`: the same figure as the Session column of `/rightsize report`, once the session has a rated prompt.
 
 The band shows in the CLI and the desktop app. VS Code and the mobile app keep the status line.
 

@@ -305,6 +305,20 @@ function headline(s: Stats, subscription: boolean) {
   return net > 0 ? `Saved ~${money(net)} (~${savedShare(t)}%) ${DAYS_30}.` : `Cost ~${money(-net)} more than it saved ${DAYS_30}.`
 }
 
+/** A running total already on a band's text, in any of the forms `sessionTotal` writes: `setBand` strips it before it adds the current one. */
+export const SESSION_TOTAL = / · Session: (?:about even|~\$[\d.,]+ (?:saved|more)|~\d+\.\d% (?:of the 5-hour window saved|more of the 5-hour window))(?: \(API-equivalent\))?/g
+
+/** The session's running net, in the band's words. The same figure as the report's Session "Total saved": it comes from `stats`. */
+export function sessionTotal(lines: readonly RunLine[], session: string, subscription: boolean): string | undefined {
+  if (session === '') return undefined
+  const { net, empty, kept } = stats(lines.filter(l => l.session === session), subscription)
+  if (empty) return undefined
+  if (Math.abs(net) < 0.005) return 'Session: about even'
+  if (kept) return kept.five > 0 ? `Session: ~${kept.five.toFixed(1)}% of the 5-hour window saved` : `Session: ~${(-kept.five).toFixed(1)}% more of the 5-hour window`
+  const text = net > 0 ? `Session: ~${money(net)} saved` : `Session: ~${money(-net)} more`
+  return subscription ? `${text} (API-equivalent)` : text
+}
+
 /**
  * Plain-text columns that line up in a monospace font: every column but a row's last is padded to its widest cell, and
  * the columns in `right` are right-aligned. If alignment breaks somewhere (the desktop app's font), make this one

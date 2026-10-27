@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { accuracyRows, type RunLine, buildReport, counterfactual, fixedBlock, parseLines, problems, shareMessage, span, tieCounts, totals } from './report'
+import { accuracyRows, type RunLine, buildReport, counterfactual, fixedBlock, parseLines, problems, sessionTotal, shareMessage, span, tieCounts, totals } from './report'
 import type { StartBlock } from './start'
 
 const NOW = Date.parse('2026-10-23T18:00:00.000Z')
@@ -581,4 +581,25 @@ test('share: always writes rightsize in lowercase, with the link, and no exclama
       expect(text).not.toContain('!')
     }
   }
+})
+
+test('sessionTotal puts the session net in plain words, from the same figure as the report', async () => {
+  const win = { before: { five_hour: 10 }, after: { five_hour: 11 } }
+  const saved = run({ change: 'lower', offered: 'lower', actual: 0.5, stay: 1, taken: 0.5, overhead: 0.01 })
+  const cost = run({ change: 'raise', offered: 'raise', actual: 0.3, stay: 0.1, taken: 0.2, overhead: 0.5 })
+  expect(sessionTotal([], 's1', false), 'no lines').toBeUndefined()
+  expect(sessionTotal([saved], '', false), 'no session id').toBeUndefined()
+  expect(sessionTotal([run({ session: 's2' })], 's1', false), 'only other sessions have lines').toBeUndefined()
+  expect(sessionTotal([run({ change: 'lower', offered: 'lower', actual: 0.101, stay: 0.1, taken: 0.05 })], 's1', false)).toBe('Session: about even')
+  expect(sessionTotal([saved], 's1', false)).toBe('Session: ~$0.49 saved')
+  expect(sessionTotal([cost], 's1', false)).toBe('Session: ~$0.50 more')
+  expect(sessionTotal([saved, run({ session: 's2', change: 'lower', offered: 'lower', actual: 0.1, stay: 5, taken: 0.1 })], 's1', false), 'another session adds nothing').toBe('Session: ~$0.49 saved')
+  expect(sessionTotal([{ ...saved, ...win }], 's1', true), 'subscription with a window').toBe('Session: ~1.0% of the 5-hour window saved')
+  expect(sessionTotal([{ ...cost, before: { five_hour: 10 }, after: { five_hour: 12 } }], 's1', true)).toBe('Session: ~3.3% more of the 5-hour window')
+  expect(sessionTotal([saved], 's1', true), 'subscription without window data').toBe('Session: ~$0.49 saved (API-equivalent)')
+  expect(sessionTotal([cost], 's1', true)).toBe('Session: ~$0.50 more (API-equivalent)')
+  // The band's figure is the report's Session "Total saved".
+  const lines = [saved, run({ change: 'lower', offered: 'lower', actual: 0.1, stay: 0.3, taken: 0.15, overhead: 0.02 })]
+  const shown = cells(report(lines), 'Total saved')?.[0]
+  expect(sessionTotal(lines, 's1', false)).toBe(`Session: ${shown} saved`)
 })

@@ -92,7 +92,7 @@ import {
 import { BRIEF_MAX, cutRequest, parseRating, ratingPrompt, ratingSystem } from './rate'
 import { isApprovalStep } from './approval'
 import { LIMITS, type Limits, type Signals, type Struggle, blockedError, callKey, isSensitivity, isTestCommand, noSignals, noteCall, oneUp, struggle } from './struggle'
-import { type Change, type HelperLine, type RunLine, type SwitchLine, type Windows, buildReport, parseLines, shareMessage, windowRates } from './report'
+import { type Change, type HelperLine, type RunLine, type SwitchLine, type Windows, SESSION_TOTAL, buildReport, parseLines, sessionTotal, shareMessage, windowRates } from './report'
 
 // Before a prompt is sent, a quick Haiku call rates the effort, the model and
 // the work needs on each model, and the cost model prices each route that fits. The first time
@@ -1391,8 +1391,14 @@ const isBandMode = (v: unknown): v is BandMode => v === 'when it acts' || v === 
 
 /** A line every band of this turn carries, so a later band (a hand-off's result) does not hide it: a miss just forgiven. */
 let bandNote: string | null = null
-const setBand = ($: EngineInterface, band: Band | null) =>
-  $.state.set(BAND, band && bandNote && !band.text.includes(bandNote) ? { ...band, text: `${band.text} ${bandNote}` } : band).catch(() => undefined)
+const setBand = ($: EngineInterface, band: Band | null) => {
+  if (!band) return $.state.set(BAND, null).catch(() => undefined)
+  // A band built from an earlier band's text already carries a total: drop it, and add the current one last.
+  let text = band.text.replace(SESSION_TOTAL, '')
+  if (bandNote && !text.includes(bandNote)) text = `${text} ${bandNote}`
+  const total = sessionTotal(runLog, sessionId, billing === 'subscription')
+  return $.state.set(BAND, { ...band, text: total ? `${text} · ${total}` : text }).catch(() => undefined)
+}
 
 async function setBandMode($: EngineInterface, v: BandMode) {
   bandMode = v

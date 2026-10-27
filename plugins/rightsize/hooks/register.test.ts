@@ -2374,7 +2374,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(last(h.toasts)).toBe('Rightsize: thanks — this tunes its choices on this machine.')
     expect((await ui.findAll({ type: 'Button' })).map(b => b.key)).toEqual(['undo', 'rule-ask', 'rule-never', 'mode', 'close'])
     await ui.unmount()
-    expect(await bandText($, surface)).toBe('rightsize: Effort lowered: medium → low for this prompt (automatically).')
+    expect(await bandText($, surface), 'the session total ends the band: this run saved something').toMatch(/^rightsize: Effort lowered: medium → low for this prompt \(automatically\)\. · Session: ~\$\d+\.\d\d saved$/)
     // The next lowering has its own id.
     await d.submit(LOOKUP)
     await d.step('t2')
@@ -5256,6 +5256,36 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.rating = NO_CHANGE
     await d.submit(LOOKUP)
     expect(await bandText($, surface)).not.toContain('missed once')
+  })
+
+  test(`every band ends with the session's running total once the session has rated prompts, and never carries it twice (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES } })
+    const d = drive($, h)
+    h.now = Date.now()
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+
+    // The first lowering: nothing is rated yet, so its band has no total.
+    h.rating = LOWER
+    h.answers = { Lowering: 'Lower automatically (Recommended)', Remember: 'Just this session' }
+    await d.submit(LOOKUP)
+    expect(await bandText($, surface), 'no rated prompt yet').not.toContain('Session:')
+    await d.step('t1')
+    await d.complete('t1')
+    // The next band to be set, with this run's line in the log, ends with the total.
+    // A second lowering, then a subagent of Claude's own moved to Haiku: the end-of-turn band is built from the first one's text.
+    await d.submit(LOOKUP)
+    expect(await bandText($, surface)).toMatch(/Effort lowered: medium → low for this prompt \(automatically\)\. · Session: ~\$\d+\.\d\d saved$/)
+    h.rating = '{"fit":{"haiku":"low","sonnet":"low","opus":"low","fable":"low"},"size":"small","type":"search","read":8000,"write":500,"steps":5,"reason":"list call sites"}'
+    await d.step('t2', 0)
+    await d.spawn('lister')
+    await d.step('t2', 0, 'agent-lister')
+    await d.complete('t2')
+    const rebuilt = await bandText($, surface)
+    expect(rebuilt, 'the earlier text and the new sentence are both there').toMatch(/Effort lowered.*Ran Claude's subagent on Haiku \(low\) instead of Opus\./)
+    expect(rebuilt.match(/Session:/g), 'one total only').toHaveLength(1)
+    expect(rebuilt, 'and it is last, with the figure as of now').toMatch(/ · Session: ~\$\d+\.\d\d (saved|more)$/)
   })
 
   test(`Quality: 2 misses in 5 pauses search, the first of them forgiven (${surface})`, { timeoutMs: 30000, options: inProfile('Quality', { handOff: '90%' }).options }, async ($, on) => {

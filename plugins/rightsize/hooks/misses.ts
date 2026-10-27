@@ -190,12 +190,8 @@ export function missMap(rates: Rates): Record<string, number> {
   return out
 }
 
-/**
- * The tasks per task type and model: what the profile's minimum of logged tasks is counted against. A task with
- * several outcomes (a run and its 👎) counts once. A key with a research prior counts its PRIOR_N pseudo-tasks
- * until real tasks outnumber them.
- */
-export function missCounts(lines: readonly RunLine[]): Record<string, number> {
+/** The tasks the log itself holds per task type and model: none of them research priors. A task with several outcomes (a run and its 👎) counts once. */
+export function ownTasks(lines: readonly RunLine[]): Record<string, number> {
   const tasks = new Map<string, Set<string>>()
   for (const [o, task] of counted(lines)) {
     const key = missKey(o.type, o.tier)
@@ -203,9 +199,36 @@ export function missCounts(lines: readonly RunLine[]): Record<string, number> {
     seen.add(task)
     tasks.set(key, seen)
   }
-  const out: Record<string, number> = Object.fromEntries([...tasks].map(([key, seen]) => [key, seen.size]))
+  return Object.fromEntries([...tasks].map(([key, seen]) => [key, seen.size]))
+}
+
+/**
+ * The tasks per task type and model: what the profile's minimum of logged tasks is counted against. A task with
+ * several outcomes (a run and its 👎) counts once. A key with a research prior counts its PRIOR_N pseudo-tasks
+ * until real tasks outnumber them.
+ */
+export function missCounts(lines: readonly RunLine[]): Record<string, number> {
+  const out = ownTasks(lines)
   for (const key of Object.keys(RESEARCH_PRIORS)) out[key] = Math.max(out[key] ?? 0, PRIOR_N)
   return out
+}
+
+/**
+ * How sure rightsize is that a route's cheaper model does this kind of work well: one sentence for the band.
+ * `own` is the person's own logged tasks per `${type}:${tier}` (ownTasks, not missCounts: that one counts the
+ * research priors as tasks), and `misses` the miss shares (missMap). Fewer than PRIOR_N own tasks: low, from the
+ * research and those tasks. PRIOR_N or more: only the person's own log counts: high under 10% missed, else medium.
+ */
+export function howSure(type: string, tier: string, own: Readonly<Record<string, number>>, misses: Readonly<Record<string, number>>): string {
+  const key = missKey(type, tier)
+  const n = own[key] ?? 0
+  if (n < PRIOR_N) {
+    // Only routes with a research prior start from research; the rest have only this machine's few tasks.
+    if (RESEARCH_PRIORS[key] === undefined) return `How sure: low, ${n > 0 ? `only ${n} of your tasks` : 'none of your tasks yet'}.`
+    return `How sure: low, from research${n > 0 ? ` and ${n} of your tasks` : ''}.`
+  }
+  const share = misses[key] ?? 0
+  return `How sure: ${share < 0.1 ? 'high' : 'medium'}, ${n} of your tasks, ${Math.round(share * 100)}% missed.`
 }
 
 /** All outcomes together: how many were misses of how many. */

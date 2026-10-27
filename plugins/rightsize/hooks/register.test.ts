@@ -1426,7 +1426,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.rating = LOWER
     h.answers = { Lowering: 'Lower automatically (Recommended)', Remember: 'Just this session' }
     await d.submit(LOOKUP)
-    expect(await bandText($, surface)).toBe('rightsize: Effort lowered: medium → low for this prompt (automatically).')
+    expect(await bandText($, surface), 'what was done, why, and how sure').toBe('rightsize: Effort lowered: medium → low for this prompt (automatically). Why: One function lookup. How sure: low, none of your tasks yet.')
     const ui = await mount($, surface)
     expect((await ui.findAll({ type: 'Button' })).map(b => b.key), 'a lowering can be marked 👍 or 👎').toEqual(['undo', 'good', 'bad', 'rule-ask', 'rule-never', 'mode', 'close'])
 
@@ -2374,7 +2374,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(last(h.toasts)).toBe('Rightsize: thanks — this tunes its choices on this machine.')
     expect((await ui.findAll({ type: 'Button' })).map(b => b.key)).toEqual(['undo', 'rule-ask', 'rule-never', 'mode', 'close'])
     await ui.unmount()
-    expect(await bandText($, surface), 'the session total ends the band: this run saved something').toMatch(/^rightsize: Effort lowered: medium → low for this prompt \(automatically\)\. · Session: ~\$\d+\.\d\d saved$/)
+    expect(await bandText($, surface), 'the session total ends the band: this run saved something').toMatch(/^rightsize: Effort lowered: medium → low for this prompt \(automatically\)\. Why: .+ How sure: .+\. · Session: ~\$\d+\.\d\d saved$/)
     // The next lowering has its own id.
     await d.submit(LOOKUP)
     await d.step('t2')
@@ -2400,6 +2400,99 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.submit(DEBUG)
     expect(await bandText($, surface)).toContain('Effort raised')
     expect(await buttons($)).toEqual(['rule-ask', 'rule-never', 'mode', 'close'])
+  })
+
+  // The band says why, and for a move to a cheaper model how sure rightsize is; a hand-off or a switch-run
+  // also offers "Run on <current model>", which runs this prompt once as it would have run without rightsize.
+  const SMALL_FEATURE = '{"fit":{"haiku":"high","sonnet":"high","opus":"high","fable":"medium"},"size":"small","type":"feature","read":20000,"write":2000,"steps":6,"reason":"small helper with tests"}'
+
+  test(`a hand-off down says why and how sure, and Run on Opus runs the prompt once as normal (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    const d = drive($, h)
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+    h.rating = SMALL_FEATURE
+    h.answers = { Cheaper: 'Send it to a cheaper subagent (Recommended)', Remember: 'Just this session' }
+    await d.submit(DEBUG)
+    const text = await bandText($, surface)
+    expect(text).toMatch(/^rightsize: Sending this to a Haiku subagent at high effort/)
+    expect(text).toContain('Why: Small helper with tests.')
+    expect(text, 'a fresh log: the research alone').toContain('How sure: low, from research.')
+    expect(await buttons($), 'the rule buttons stay, for the future').toEqual(['stay', 'rule-ask', 'rule-stay', 'mode', 'close'])
+
+    const ui = await mount($, surface)
+    expect((await ui.find({ type: 'Button', label: 'Run on Opus' }))?.text ?? 'none', 'named for the current model').not.toBe('none')
+    await ui.press({ key: 'stay' })
+    expect(h.filled.at(-1), 'the prompt is back in the box').toBe(DEBUG)
+    expect(last(h.toasts) ?? '').toContain('run it on Opus at medium')
+    await ui.unmount()
+    expect(await bandText($, surface), 'the band closes').toBe('')
+
+    // Sending it again: not rated, no hand-off note; the next prompt after it is rated again.
+    const rated = h.ratings
+    await d.submit(DEBUG)
+    expect(h.ratings, 'not rated').toBe(rated)
+    expect(last(h.submitted)?.context ?? [], 'no subagent note').toEqual([])
+    h.rating = NO_CHANGE
+    await d.submit(LOOKUP)
+    expect(h.ratings, 'rated again').toBe(rated + 1)
+  })
+
+  test(`a switch-run says why, offers Run on Sonnet, and has no how sure (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-sonnet-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES } })
+    const d = drive($, h)
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+    h.rating = REVIEW
+    h.answers = { Stronger: 'Use the stronger model automatically (Recommended)', Remember: 'Just this session' }
+    await d.submit(DEBUG)
+    const text = await bandText($, surface)
+    expect(text).toContain('Running this review on Opus at high effort')
+    expect(text).toContain('Why: Subtle bug hunt.')
+    expect(text).not.toContain('How sure')
+    await d.step('t1')
+    await d.complete('t1')
+    expect(await buttons($)).toContain('stay')
+    const ui = await mount($, surface)
+    await ui.press({ key: 'stay' })
+    expect(h.filled.at(-1)).toBe(DEBUG)
+    expect(last(h.toasts) ?? '').toContain('run it on Sonnet at medium')
+    await ui.unmount()
+    const rated = h.ratings
+    await d.submit(DEBUG)
+    expect(h.ratings, 'not rated').toBe(rated)
+    await d.step('t2')
+    expect(last(h.sent)?.model, 'runs on the session model').not.toBe('opus')
+  })
+
+  test(`a raise says why but not how sure, and offers no Run on (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    const d = drive($, h)
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+    h.rating = '{"level":"high","model":"same","type":"debug","read":20000,"write":3000,"steps":8,"reason":"unknown cause"}'
+    h.answers = { Raising: 'Raise automatically (Recommended)', Remember: 'Just this session' }
+    await d.submit(DEBUG)
+    const text = await bandText($, surface)
+    expect(text).toContain('Effort raised')
+    expect(text).toContain('Why: Unknown cause.')
+    expect(text).not.toContain('How sure')
+    expect(await buttons($)).not.toContain('stay')
+  })
+
+  test(`a band with no reason from the rater has no Why (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES } })
+    const d = drive($, h)
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+    h.rating = LOWER.replace(',"reason":"one function lookup"', '')
+    h.answers = { Lowering: 'Lower automatically (Recommended)', Remember: 'Just this session' }
+    await d.submit(LOOKUP)
+    expect(await bandText($, surface)).toBe('rightsize: Effort lowered: medium → low for this prompt (automatically). How sure: low, none of your tasks yet.')
   })
 
   // The record steers the next decisions: a model the rater has often got wrong gets no lowering.
@@ -3163,7 +3256,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     {
       name: 'Raising set in /config to automatic: followed, and the band only says how full the window is',
       stored: { raiseRule: 'raise automatically', ...BOTH_THRESHOLDS },
-      want: { effort: 'high', asked: [], band: 'rightsize: Effort raised: medium → high for this prompt. 93% of the 5-hour window is used.' },
+      want: { effort: 'high', asked: [], band: 'rightsize: Effort raised: medium → high for this prompt. Why: Unknown cause. 93% of the 5-hour window is used.' },
     },
     {
       name: 'Raising answered in an earlier session and saved: yours too, and the default thresholds that moved are said',
@@ -3171,7 +3264,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
       stored: {},
       want: r => {
         expect([r.effort, r.asked]).toEqual(['high', []])
-        expect(r.band).toContain('Effort raised: medium → high for this prompt. 93% of the 5-hour window is used, so rightsize saves all it can.')
+        expect(r.band).toContain('Effort raised: medium → high for this prompt. Why: Unknown cause. 93% of the 5-hour window is used, so rightsize saves all it can.')
       },
     },
     { name: 'Raising set to "ask me": asked', stored: { raiseRule: 'ask me' }, answers: { Effort: 'Raise for this prompt' }, want: r => expect([r.effort, r.asked]).toEqual(['high', ['Effort']]) },
@@ -5276,7 +5369,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     // The next band to be set, with this run's line in the log, ends with the total.
     // A second lowering, then a subagent of Claude's own moved to Haiku: the end-of-turn band is built from the first one's text.
     await d.submit(LOOKUP)
-    expect(await bandText($, surface)).toMatch(/Effort lowered: medium → low for this prompt \(automatically\)\. · Session: ~\$\d+\.\d\d saved$/)
+    expect(await bandText($, surface)).toMatch(/Effort lowered: medium → low for this prompt \(automatically\)\. Why: .+ How sure: .+\. · Session: ~\$\d+\.\d\d saved$/)
     h.rating = '{"fit":{"haiku":"low","sonnet":"low","opus":"low","fable":"low"},"size":"small","type":"search","read":8000,"write":500,"steps":5,"reason":"list call sites"}'
     await d.step('t2', 0)
     await d.spawn('lister')

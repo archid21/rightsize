@@ -60,7 +60,7 @@ import {
   CAL_STORE,
 } from './cost'
 import { PRICING_URL, applyPrices, diffPrices, isDue, parsePricingPage } from './prices'
-import { missCounts, missMap, pauseRates } from './misses'
+import { howSure, missCounts, missMap, ownTasks, pauseRates } from './misses'
 import { SHARE_ASK_AFTER, SHARE_EVERY_MS, SHARE_URL, newInstall, nextBatch } from './share'
 import { START_CHECK_DAYS, START_SNOOZE_DAYS, adviseStart, startBlock, startKey, startTip } from './start'
 import {
@@ -366,7 +366,12 @@ let lastApplied: Level | undefined
 /** The last main-chat step ran on a model rightsize rewrote. */
 let lastSwitched = false
 let lastContext = 0
-let lastAuto: { text: string; level: Level; normal: Level } | null = null
+/**
+ * The last prompt's route, for the band's one-click overrides: a lowering (Undo) or a hand-off or switch-run (Run on
+ * the current model). `back` finishes "run it ...": where the prompt runs once the override is pressed. One slot: a
+ * prompt takes one route.
+ */
+let lastAuto: { text: string; back: string; kind: 'lower'; level: Level; normal: Level } | { text: string; back: string; kind: 'route'; model: string } | null = null
 let skipOnce: string | null = null
 /**
  * A workflow ran in this session (ultracode, or asked for). Claude is then fanning
@@ -407,6 +412,8 @@ let minTasks = 0
 /** The outcomes logged per task type and model (misses.ts): minTasks is counted against these. */
 // Before the log is read, the research priors alone.
 let counts: Record<string, number> = missCounts([])
+/** The tasks the log itself holds per type and model, research priors left out: what "How sure" in the band counts. */
+let ownCounts: Record<string, number> = {}
 /**
  * Chances a task has to retry: a helper raised a level, or the main chat reworking a hand-off. When they
  * are used up, the helper goes back to the main chat and the main chat finishes the task itself.
@@ -614,6 +621,7 @@ async function refreshMisses($: EngineInterface, announce = false) {
     const { rates, forgiven } = pauseRates(measured, new Set(await forgivenSeen($)))
     misses = missMap(rates)
     counts = missCounts(measured)
+    ownCounts = ownTasks(measured)
     if (!forgiven.length) return
     // Read again just before writing, so the routes another session forgave are kept.
     await $.store.set(FORGIVEN_STORE, [...new Set([...(await forgivenSeen($)), ...forgiven])]).catch(() => undefined)
@@ -1377,7 +1385,7 @@ async function showStatus($: EngineInterface) {
   if (run?.raisedTo) return $.ui.status(`Effort: ${run.raisedTo} (raised mid-turn)`)
   if (run?.steppedUp) return $.ui.status(`Effort: back to ${run.normal} (the task got harder)`)
   if (run?.level) return $.ui.status(run.auto ? `Effort: ${run.level} (auto) · /rightsize undo` : `Effort: ${run.level} (this prompt)`)
-  if (!run && lastAuto) return $.ui.status(`Last prompt ran at ${lastAuto.level} (auto) · /rightsize undo`)
+  if (!run && lastAuto?.kind === 'lower') return $.ui.status(`Last prompt ran at ${lastAuto.level} (auto) · /rightsize undo`)
   const session = await sessionEffort($)
   $.ui.status(session ? `Effort: ${session} (this session)` : undefined)
 }
@@ -1416,23 +1424,33 @@ const RULES: Record<keyof Choices, readonly (readonly [string, string])[]> = {
   down: [['auto', 'Always send'], ['ask', 'Ask first'], ['stay', 'Stay, lower effort only']],
 }
 
+/** The rater's reason as a sentence for the band: "Why: Simple lookup in one file."; nothing when it gave none. */
+const whyText = (reason: string) => {
+  const r = reason.trim().replace(/[.\s]+$/, '')
+  return r ? `Why: ${r[0]!.toUpperCase()}${r.slice(1)}.` : ''
+}
+
 /** What the band shows for a rated prompt: what was done, or what was suggested and not done. */
-export function bandFor(run: Pick<Run, 'id' | 'tier' | 'normal' | 'auto' | 'delegate' | 'stay' | 'takenDelegate'> & Partial<Pick<Run, 'switchTo' | 'takenMain'>>, d: Decision, p: Plan): Band {
+export function bandFor(run: Pick<Run, 'id' | 'tier' | 'normal' | 'auto' | 'delegate' | 'stay' | 'takenDelegate'> & Partial<Pick<Run, 'switchTo' | 'takenMain'>> & { rating?: Pick<Rating, 'reason' | 'type'> }, d: Decision, p: Plan): Band {
   const cur = TIER_NAME[run.tier]
+  // Why this route, and for a move to a cheaper model (a lowering or a hand-off down: the routes the miss rate scores) how sure rightsize is.
+  const why = run.rating ? whyText(run.rating.reason) : ''
+  const sure = (tier: Tier) => (run.rating ? howSure(run.rating.type, tier, ownCounts, misses) : '')
+  const more = (...parts: string[]) => parts.filter(Boolean).map(x => ` ${x}`).join('')
   if (run.switchTo) {
-    return { text: `Running this review on ${TIER_NAME[run.switchTo.tier]} at ${run.switchTo.level} effort, then back to ${cur}. ${costLine(run.takenMain ?? 0, run.stay, cur)}`, acted: true, rule: 'up' }
+    return { text: `Running this review on ${TIER_NAME[run.switchTo.tier]} at ${run.switchTo.level} effort, then back to ${cur}. ${costLine(run.takenMain ?? 0, run.stay, cur)}${more(why)}`, acted: true, rule: 'up', canStay: true }
   }
   if (run.delegate) {
     const to = `${TIER_NAME[run.delegate.tier]} subagent at ${run.delegate.level} effort`
     const instead = p.kind === 'delegate' && p.instead && levelRank(p.instead) > levelRank(run.normal) ? ` instead of raising ${cur} to ${p.instead}` : ''
-    return { text: `Sending this to a ${to}${instead}. ${costLine(run.takenDelegate ?? 0, run.stay, cur)}`, acted: true, rule: run.delegate.dir }
+    return { text: `Sending this to a ${to}${instead}. ${costLine(run.takenDelegate ?? 0, run.stay, cur)}${more(why, run.delegate.dir === 'down' ? sure(run.delegate.tier) : '')}`, acted: true, rule: run.delegate.dir, canStay: true }
   }
   const level = d.level ?? d.session
   if (level) {
     const lower = levelRank(level) < levelRank(run.normal)
     const scope = d.level ? `this prompt${run.auto ? ' (automatically)' : ''}` : 'this session'
     return {
-      text: `Effort ${lower ? 'lowered' : 'raised'}: ${run.normal} → ${level} for ${scope}.`,
+      text: `Effort ${lower ? 'lowered' : 'raised'}: ${run.normal} → ${level} for ${scope}.${more(why, lower ? sure(run.tier) : '')}`,
       acted: true,
       rule: lower ? 'lower' : 'raise',
       // A lowering can be marked right or wrong: it was a bet on the rating.
@@ -1444,7 +1462,8 @@ export function bandFor(run: Pick<Run, 'id' | 'tier' | 'normal' | 'auto' | 'dele
   if (p.kind === 'none') return { text: `No change: ${run.normal} on ${cur} fits this prompt.`, acted: false }
   const what = p.kind === 'effort' ? `${p.level} effort` : p.kind === 'switch' ? `${TIER_NAME[p.tier]} at ${p.level}` : `a ${TIER_NAME[p.tier]} subagent at ${p.level}`
   const rule = p.kind === 'effort' ? (p.dir === 'lower' ? 'lower' : 'raise') : p.kind === 'switch' ? 'up' : p.dir
-  return { text: `No change: ${what} would fit, kept ${run.normal} on ${cur}.`, acted: false, rule }
+  const down = p.kind === 'effort' ? (p.dir === 'lower' ? run.tier : undefined) : p.kind === 'delegate' && p.dir === 'down' ? p.tier : undefined
+  return { text: `No change: ${what} would fit, kept ${run.normal} on ${cur}.${more(why, down ? sure(down) : '')}`, acted: false, rule }
 }
 
 async function setRule($: EngineInterface, key: keyof Choices, value: string) {
@@ -1453,18 +1472,25 @@ async function setRule($: EngineInterface, key: keyof Choices, value: string) {
   $.ui.toast(`Rightsize: ${RULE_NAME[key]} is now "${label}".`)
 }
 
-async function undo($: EngineInterface) {
-  if (!lastAuto) return 'Nothing to undo: the last prompt was not lowered automatically.'
-  const { text, normal } = lastAuto
+/**
+ * Puts the last prompt back in the box and lets it run once as it would have without rightsize: not rated, not
+ * changed. Undo does it for a lowering, "Run on <model>" for a hand-off or a switch-run.
+ */
+async function runAsIs($: EngineInterface, kind: 'lower' | 'route', none: string) {
+  if (lastAuto?.kind !== kind) return none
+  const { text, back } = lastAuto
   lastAuto = null
   skipOnce = text.trim()
   const filled = await $.prompt.fill({ text, mode: 'replace' }).catch(() => null)
   await setBand($, null)
   await showStatus($)
   return filled?.isFilled
-    ? `The prompt is back in the box. Press Enter to run it at ${normal}.`
-    : `Could not fill the prompt box. Send the prompt again and it runs at ${normal}.`
+    ? `The prompt is back in the box. Press Enter to run it ${back}.`
+    : `Could not fill the prompt box. Send the prompt again and it runs ${back}.`
 }
+
+const undo = ($: EngineInterface) => runAsIs($, 'lower', 'Nothing to undo: the last prompt was not lowered automatically.')
+const runOnCurrent = ($: EngineInterface) => runAsIs($, 'route', 'Nothing to run again: the last prompt was not handed off or run on another model.')
 
 async function clearSession($: EngineInterface) {
   const level = await sessionEffort($)
@@ -2680,7 +2706,13 @@ export const register: Register = (on, options) => {
       run.entering = true
       pending.push(run)
     }
-    const auto = run?.auto && run.level ? { text: e.text, level: run.level, normal: run.normal } : null
+    const auto: typeof lastAuto = !run
+      ? null
+      : run.auto && run.level
+      ? { kind: 'lower', text: e.text, level: run.level, normal: run.normal, back: `at ${run.normal}` }
+      : run.delegate || run.switchTo
+      ? { kind: 'route', text: e.text, model: TIER_NAME[run.tier], back: `on ${TIER_NAME[run.tier]} at ${run.normal}` }
+      : null
     lastAuto = auto
     await showStatus($)
     const result = await next(out)
@@ -2922,6 +2954,7 @@ export const register: Register = (on, options) => {
     const have = rule ? (await choices($))[rule] : undefined
     const buttons: { key: string; label: string; press: () => Promise<unknown> }[] = []
     if (band.canUndo) buttons.push({ key: 'undo', label: 'Undo', press: async () => $.ui.toast(await undo($)) })
+    if (band.canStay && lastAuto?.kind === 'route') buttons.push({ key: 'stay', label: `Run on ${lastAuto.model}`, press: async () => $.ui.toast(await runOnCurrent($)) })
     if (band.canClear) buttons.push({ key: 'clear', label: 'Clear', press: async () => $.ui.toast(await clearSession($)) })
     if (band.tip) {
       const tip = band.tip

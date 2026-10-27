@@ -35,6 +35,8 @@ export type RightsizeBand = {
   rule?: keyof RightsizeChoices
   /** The prompt was lowered on its own and can be run again at the normal level. */
   canUndo?: boolean
+  /** The prompt was handed to a subagent on another model, or runs one turn on another model: the band offers "Run on <current model>", which runs this prompt once as it would have without rightsize. The rules stay as they are. */
+  canStay?: boolean
   /** A session switch can be dropped. */
   canClear?: boolean
   /** A suggested starting model and level (`sonnet:high`): the band offers Not now and Stop suggesting. */

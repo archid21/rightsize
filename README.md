@@ -201,6 +201,7 @@ rightsize: Effort lowered: high → medium for this prompt (automatically).  [Un
 ```
 
 - **Undo** puts the prompt back in the box, to run at your normal level. **Clear** drops a session-wide switch.
+- Each route says **why** (the rater's reason, for example `Why: Simple lookup in one file.`). A lowering or a hand-off to a cheaper model also says **how sure** rightsize is: `How sure: low, from research and 4 of your tasks.` until 10 of your own tasks are logged on that route, then `high` or `medium` from how often it missed. A hand-off or a switch to another model has a **Run on <your model>** button: it puts this prompt back in the box and runs it once without rightsize, like Undo, and leaves your rules as they are.
 - The rule buttons change your answer for this case (Q1–Q4) in one press, and set the matching row in `/config` too. Your current answer is not shown.
 - **⋯** chooses when the band shows. **×** closes it until your next prompt.
 - In the CLI, focus the band (ctrl+x tab or a click) and press a button's number.

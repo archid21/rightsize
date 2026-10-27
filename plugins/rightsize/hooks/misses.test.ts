@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import { MISS_BLOCK } from './cost'
-import { MISS_MIN, PRIOR_N, RESEARCH_PRIORS, checkTotals, missCounts, missMap, missRate, missRates, missTotals, outcomes, pauseRates } from './misses'
+import { MISS_MIN, PRIOR_N, RESEARCH_PRIORS, checkTotals, howSure, missCounts, missMap, missRate, missRates, missTotals, outcomes, ownTasks, pauseRates } from './misses'
 import type { RunLine } from './report'
 
 const at = new Date(Date.parse('2026-10-23T18:00:00.000Z')).toISOString()
@@ -152,4 +152,29 @@ test('the first automatic miss on a route is forgiven once; a 👎 never is', as
   const both = [rework({ agentCalls: 2, id: 'r2' }), { at, kind: 'feedback', ref: 'r2', value: 'down' } as RunLine]
   expect(pauseRates(both, none).rates['extract:haiku'], 'the automatic miss is forgiven, the 👎 on the same run is not').toEqual({ n: 1, misses: 1 })
   expect(missRates(two)['extract:haiku'], 'missRates still counts every miss').toEqual({ n: 6, misses: 2 })
+})
+
+test('howSure: under PRIOR_N own tasks it is low, from research and the tasks there are', async () => {
+  expect(howSure('lookup', 'haiku', {}, {}), 'a fresh log: research alone').toBe('How sure: low, from research.')
+  expect(howSure('lookup', 'haiku', { 'lookup:haiku': 0 }, {})).toBe('How sure: low, from research.')
+  expect(howSure('lookup', 'haiku', { 'lookup:haiku': 3 }, { 'lookup:haiku': 0.04 })).toBe('How sure: low, from research and 3 of your tasks.')
+  expect(howSure('lookup', 'haiku', { 'lookup:haiku': PRIOR_N - 1 }, {}), 'one short of PRIOR_N').toBe(`How sure: low, from research and ${PRIOR_N - 1} of your tasks.`)
+  expect(howSure('lookup', 'haiku', { 'search:haiku': 50 }, {}), 'another route\'s tasks do not count').toBe('How sure: low, from research.')
+  expect(howSure('lookup', 'opus', {}, {}), 'no research prior: says so').toBe('How sure: low, none of your tasks yet.')
+  expect(howSure('lookup', 'opus', { 'lookup:opus': 4 }, {})).toBe('How sure: low, only 4 of your tasks.')
+})
+
+test('howSure: with PRIOR_N or more own tasks, high under 10% missed and medium at 10% or more', async () => {
+  expect(howSure('lookup', 'haiku', { 'lookup:haiku': PRIOR_N }, {}), 'no misses: not in the map').toBe(`How sure: high, ${PRIOR_N} of your tasks, 0% missed.`)
+  expect(howSure('lookup', 'haiku', { 'lookup:haiku': 25 }, { 'lookup:haiku': 0.08 })).toBe('How sure: high, 25 of your tasks, 8% missed.')
+  expect(howSure('lookup', 'haiku', { 'lookup:haiku': 20 }, { 'lookup:haiku': 0.1 }), 'the line itself is medium').toBe('How sure: medium, 20 of your tasks, 10% missed.')
+  expect(howSure('lookup', 'haiku', { 'lookup:haiku': 20 }, { 'lookup:haiku': 0.25 })).toBe('How sure: medium, 20 of your tasks, 25% missed.')
+  expect(howSure('review', 'sonnet', { 'review:sonnet': 12 }, { 'review:sonnet': 0.3, 'lookup:sonnet': 0 }), 'reads its own key').toBe('How sure: medium, 12 of your tasks, 30% missed.')
+})
+
+test('ownTasks counts the log\'s own tasks, not the research priors that missCounts adds', async () => {
+  const lines = [handDown({ task: 'a' }), handDown({ task: 'a' }), handDown({ task: 'b' })]
+  expect(ownTasks(lines), 'a task counts once').toEqual({ 'search:haiku': 2 })
+  expect(ownTasks([])).toEqual({})
+  expect(missCounts([])['lookup:haiku'], 'missCounts still stands for the prior').toBe(PRIOR_N)
 })

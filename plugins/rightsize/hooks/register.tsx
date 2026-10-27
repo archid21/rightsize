@@ -4,6 +4,7 @@ import type {
   RightsizeBandMode as BandMode,
   RightsizeChoices as Choices,
   RightsizeLevel as Level,
+  RightsizeTaskType as TaskType,
   RightsizeTier as Tier,
 } from '../types'
 import {
@@ -33,6 +34,7 @@ import {
   mainKeys,
   effortPlan,
   isLevel,
+  isTaskType,
   levelRank,
   REVIEW_LEVEL,
   learn,
@@ -87,7 +89,7 @@ import {
 } from './settings'
 import { parseRating, ratingPrompt, ratingSystem } from './rate'
 import { isApprovalStep } from './approval'
-import { LIMITS, type Limits, type Signals, type Struggle, callKey, isSensitivity, noSignals, noteCall, oneUp, struggle } from './struggle'
+import { LIMITS, type Limits, type Signals, type Struggle, blockedError, callKey, isSensitivity, noSignals, noteCall, oneUp, struggle } from './struggle'
 import { type Change, type RunLine, type SwitchLine, type Windows, buildReport, parseLines, shareMessage, windowRates } from './report'
 
 // Before a prompt is sent, a quick Haiku call rates the effort, the model and
@@ -254,6 +256,10 @@ type Run = {
   /** A rater check's cost that landed in the ledger while the turn ran: not the turn's own. */
   sideCost: number
   errors: number
+  /** Tool errors that came from the environment (blockedError): not struggling, so not in `errors`. */
+  blocked: number
+  /** The prompt continued its task: the type the rater gave it, when planning used the task's type instead. */
+  ratedType?: TaskType
   steppedUp: boolean
   delegated: boolean
   change: Change
@@ -513,6 +519,25 @@ async function sessionEffort($: EngineInterface) {
 async function seenEffort($: EngineInterface) {
   const v = (await $.state.get({ plugin: 'rightsize', key: 'seenEffort' }).catch(() => undefined))?.value
   return isLevel(v) ? v : null
+}
+
+// The type of the task in progress, kept from the last rating that started one. A follow-up that continues
+// the task is planned as this type, so a one-line "yes, go ahead" is not typed as a new kind of work.
+async function taskType($: EngineInterface) {
+  const v = (await $.state.get({ plugin: 'rightsize', key: 'taskType' }).catch(() => undefined))?.value
+  return isTaskType(v) ? v : null
+}
+
+// The text of a failed tool call, as the model read it.
+function errorText(result: unknown): string {
+  const r = result as { text?: unknown; result?: unknown }
+  if (typeof r.text === 'string') return r.text
+  if (typeof r.result === 'string') return r.result
+  try {
+    return r.result === undefined ? '' : JSON.stringify(r.result)
+  } catch {
+    return ''
+  }
 }
 
 async function choices($: EngineInterface): Promise<Choices> {
@@ -1038,6 +1063,7 @@ function startRun(r: Rating, s: Situation, d: Decision, p: Plan, base: Level, ov
     missCost: 0,
     sideCost: 0,
     errors: 0,
+    blocked: 0,
     steppedUp: false,
     delegated: false,
     pace: paceNow,
@@ -1240,6 +1266,8 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
       id: run.id,
       session: sessionId,
       type: r.type,
+      continues: r.continues === true,
+      ...(run.ratedType ? { ratedType: run.ratedType } : {}),
       route: delegated ? `delegate:${run.delegate?.tier}` : 'main',
       tier: run.tier,
       level: run.steppedUp ? run.normal : (run.level ?? run.normal),
@@ -1273,6 +1301,7 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
       missCost: round(run.missCost),
       agentCalls: run.agentCalls,
       ...(run.approvalSteps ? { approvalSteps: run.approvalSteps } : {}),
+      ...(run.blocked ? { blocked: run.blocked } : {}),
       requests: run.requests,
       // Each request reads the fixed context from the cache, at least.
       ...(fixed ? { fixed: { ...fixed, cost: round((run.requests * fixed.tokens * prices[run.switchTo?.tier ?? run.tier].cacheRead) / 1e6) } } : {}),
@@ -1889,6 +1918,7 @@ export const register: Register = (on, options) => {
     sessionId = await $.session.id().catch(() => '')
     pending = null
     active = null
+    await $.state.set({ plugin: 'rightsize', key: 'taskType' }, null).catch(() => undefined)
     lastApplied = undefined
     lastSwitched = false
     lastContext = 0
@@ -2042,7 +2072,13 @@ export const register: Register = (on, options) => {
       const set = { handOff: yours.has('handOff'), lower: yours.has('lowering') }
       const movedRules = pacedRules(base.rules ?? DEFAULT_RULES, paceNow, set)
       const s: Situation = { ...base, rules: movedRules }
-      const { rating: r, overhead, prompt, failed } = await rate($, text, s)
+      const { rating: rated, overhead, prompt, failed } = await rate($, text, s)
+      // A rating that continues the task is planned as the task's type; any other starts a task of its own type.
+      const kept = rated ? await taskType($) : null
+      const follows = rated !== undefined && rated.continues === true && kept !== null
+      const ratedType = follows && kept !== rated.type ? rated.type : undefined
+      const r = rated && follows && kept !== rated.type ? { ...rated, type: kept } : rated
+      if (rated && !follows) await $.state.set({ plugin: 'rightsize', key: 'taskType' }, rated.type).catch(() => undefined)
       if (r) {
         // While Claude fans work out to workflows, a single hand-off would only cut across it. After one,
         // Workflows says whether hand-offs go on (follow my rules, right-size every agent) or wait (the default).
@@ -2059,6 +2095,7 @@ export const register: Register = (on, options) => {
         if (d.session) await $.state.set({ plugin: 'rightsize', key: 'sessionEffort' }, d.session)
         if (d.delegate) out = { ...e, context: [...(e.context ?? []), delegateNote(d.delegate)] }
         run = startRun(r, s, d, p, (await seenEffort($)) ?? s.level, overhead)
+        if (ratedType) run.ratedType = ratedType
         // A close call the guide broke: kept on the run for the log, and counted so every fifth explores.
         if (planned.kind === 'delegate' && planned.tie) {
           run.tie = planned.tie
@@ -2074,7 +2111,7 @@ export const register: Register = (on, options) => {
         const fit = TIERS.map(t => `${t[0]}:${r.fit[t] ?? (r.fit[t] === null ? 'no' : '?')}`).join(' ')
         if (unfanned !== planned) await log($, `hand-off to ${planned.kind === 'delegate' ? planned.tier : '?'} skipped: a workflow ran this session`)
         const paced = paceNow.mode === 'normal' ? '' : `, ${paceNow.mode} pace on ${paceNow.window}${paceNow.pace === undefined ? '' : ` (${paceNow.pace.toFixed(2)})`}`
-        await log($, `${r.type} on ${s.tier}/${s.level}${paced}: rated ${fit}, plan ${p.kind}${'dir' in p ? ` ${p.dir}` : ''}${run.tie ? ` (tie ${run.tie.by} over ${run.tie.over})` : ''}: ${did}`)
+        await log($, `${r.type}${ratedType ? ` (rated ${ratedType}, continues the ${r.type} task)` : ''} on ${s.tier}/${s.level}${paced}: rated ${fit}, plan ${p.kind}${'dir' in p ? ` ${p.dir}` : ''}${run.tie ? ` (tie ${run.tie.by} over ${run.tie.over})` : ''}: ${did}`)
         // Every 50th rating gets Sonnet's second opinion, in the background.
         if (await dueCheck($)) void spotCheck($, sessionId, s.tier, s.level, prompt, r)
       } else {
@@ -2216,10 +2253,14 @@ export const register: Register = (on, options) => {
       if (String(e.tool) === 'Agent' && active.delegate && tierOf(typeof model === 'string' ? model : undefined) === active.delegate.tier) active.delegated = true
       if (String(e.tool) === 'Agent' || String(e.tool) === 'SendMessage') active.agentCalls += 1
       const isError = (result as { isError?: boolean }).isError === true
-      if (isError) active.errors += 1
+      // An error from the environment (no network, no login, a denied sandbox, a missing program) is a Blocked
+      // stall: more effort would not fix it, so it is neither an error nor a sign of struggling.
+      const blocked = isError && blockedError(errorText(result))
+      if (blocked) active.blocked += 1
+      else if (isError) active.errors += 1
       if (!(result as { deny?: string }).deny && isApprovalStep(String(e.tool), e as Record<string, unknown>)) active.approvalSteps += 1
       // A refused call (a denied permission) says nothing about the work.
-      if (!(result as { deny?: string }).deny) active.signals = noteCall(active.signals, callKey(String(e.tool), e as Record<string, unknown>), isError)
+      if (!(result as { deny?: string }).deny && !blocked) active.signals = noteCall(active.signals, callKey(String(e.tool), e as Record<string, unknown>), isError)
     }
     return result
   }).catch(($, e, next) => next(e))

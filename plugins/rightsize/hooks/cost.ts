@@ -131,6 +131,8 @@ export type Rating = {
   steps: number
   /** Mainly a step only the person can approve (push, publish, deploy, send): never handed off. */
   approval?: boolean
+  /** The prompt carries on the task in the last reply rather than starting a new goal. */
+  continues?: boolean
   reason: string
 }
 

@@ -3,7 +3,8 @@ import { LEVELS, levelRank } from './cost'
 
 // Signs, inside one turn, that the main chat is struggling at the effort it runs
 // at: tool calls failing, the same call failing again, the same call going round,
-// or a turn running far past the rating's step guess. Each kind can raise effort
+// or a turn running far past the rating's step guess. An error that comes from the
+// environment (blockedError) is not one of them. Each kind can raise effort
 // once a turn. How soon each sign counts is the Stuck sensitivity setting (LIMITS).
 // Pure functions, no engine calls.
 
@@ -42,6 +43,41 @@ export const isSensitivity = (v: unknown): v is Sensitivity => typeof v === 'str
 /** Raises in one turn, and the highest level a raise goes to: max stays a person's choice. */
 export const MAX_RAISES = 2
 export const CEILING: Level = 'xhigh'
+
+/**
+ * Whether a failed tool call's text shows the environment, not the work: a denied permission or
+ * sandbox, no network, no login, or a program that is not installed. More effort would not fix
+ * these (a Blocked stall), so they are not signs of struggling. A missing file is not here: the
+ * model typed a wrong path, which is its own mistake. Only the shell's "command not found" form
+ * counts as a missing program.
+ */
+const BLOCKED: readonly RegExp[] = [
+  // Permission and sandbox.
+  /operation not permitted/i,
+  /\b(?:EACCES|EPERM)\b/,
+  /permission denied/i,
+  /sandbox\b[^\n]{0,80}\b(?:den(?:y|ied)|block(?:ed)?|restrict(?:ed)?|violation|not allowed)/i,
+  /\b(?:den(?:y|ied)|block(?:ed)?|restrict(?:ed)?|violation)\b[^\n]{0,80}\bsandbox\b/i,
+  // Network.
+  /could not resolve host/i,
+  /temporary failure in name resolution/i,
+  /\b(?:ENOTFOUND|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN)\b/,
+  /network is unreachable/i,
+  /connection refused/i,
+  // Login. A bare 401 or 403 could be a line number, so it needs an HTTP word beside it.
+  /\b(?:http|status|error|code)\b\D{0,12}\b(?:401|403)\b/i,
+  /\b(?:401|403)\s+(?:unauthorized|forbidden)\b/i,
+  /\bnot (?:logged|signed) in\b/i,
+  /\bauthentication (?:failed|failure|required|error)\b/i,
+  /\bplease (?:log|sign) ?in\b/i,
+  // A program that is not installed.
+  /\bcommand not found\b/i,
+]
+
+export const blockedError = (text: string): boolean => {
+  const t = text.slice(0, 20_000)
+  return BLOCKED.some(re => re.test(t))
+}
 
 export const noSignals = (): Signals => ({ errors: 0, calls: {}, fired: [] })
 

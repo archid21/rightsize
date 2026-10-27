@@ -217,10 +217,12 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
     h.events.push('workflow')
     return { result: { content: 'started in the background' } }
   })
-  // A command starting "fail" fails; one starting "denied" is refused, as a denied permission is.
+  // A command starting "fail" fails; one starting "denied" is refused, as a denied permission is; one starting "env:" fails with the text after it.
   ;(on as unknown as LooseOn)('tool.call', { tool: 'Bash' }, async (_$, e) => {
     const command = String((e as unknown as { command: string }).command)
     if (command.startsWith('denied')) return { deny: 'permission denied' }
+    // "env:<text>" fails with that text, as the environment does (no network, a missing program); the text is part of the call.
+    if (command.startsWith('env:')) return { result: command.slice(4), text: command.slice(4), isError: true }
     return command.startsWith('fail') ? { result: { stdout: '', stderr: 'boom' }, text: 'boom', isError: true } : { result: { stdout: 'ok', stderr: '' }, text: 'ok' }
   })
   on('agent.spawn', async ($, e) => {
@@ -477,6 +479,79 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const run = runs.find(l => l.type === 'review')
     expect(run).toMatchObject({ rule: 'review', switched: 'opus', switchedLevel: 'high', change: 'switch-up', offered: 'switch-up', route: 'main', tier: 'sonnet' })
     expect(runs.find(l => l.type === 'lookup')).toMatchObject({ change: 'none', tier: 'sonnet' })
+  })
+
+  const rated = (type: string, continues: boolean) => `{"fit":{"haiku":"no","sonnet":"medium","opus":"medium","fable":"medium"},"type":"${type}","read":8000,"write":1200,"steps":5,"continues":${continues},"reason":"rated"}`
+  const readRuns = (h: ReturnType<typeof engine>) => (h.files['/home/test/.claude/mods-logs/rightsize-runs.jsonl'] ?? '').trim().split('\n').map(l => JSON.parse(l) as Record<string, unknown>)
+  const FOLLOW_UP = 'yes that looks right so go ahead and put it in parentheses'
+
+  test(`a follow-up keeps its task's type: a continuing prompt typed review in a feature task plans as feature, a new goal typed review switches (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-sonnet-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES } })
+    const d = drive($, h)
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+    h.answers = { Stronger: 'Use the stronger model automatically (Recommended)', Remember: 'Just this session' }
+
+    h.rating = rated('feature', false)
+    await d.submit(DEBUG)
+    await d.step('t1')
+    await d.complete('t1')
+    expect(last(h.sent)?.model, 'a feature stays on Sonnet').toBe('claude-sonnet-5-5')
+
+    // The one-line follow-up is typed review, but it continues the feature task.
+    h.rating = rated('review', true)
+    await d.submit(FOLLOW_UP)
+    await d.step('t2')
+    await d.complete('t2')
+    expect(last(h.sent)?.model, 'no switch to Opus for the follow-up').toBe('claude-sonnet-5-5')
+    expect(h.asked.map(a => a.header), 'and no Stronger-model question').toEqual([])
+    expect(h.files['/home/test/.claude/mods-logs/rightsize.log'] ?? '', 'the log names both types').toContain('feature (rated review, continues the feature task) on sonnet/medium')
+
+    // A new goal typed review is a review: it switches.
+    h.rating = rated('review', false)
+    await d.submit('now review the whole auth module for subtle bugs please')
+    await d.step('t3')
+    expect(last(h.sent)?.model, 'a review of its own').toBe('opus')
+    await d.complete('t3')
+
+    const runs = readRuns(h)
+    expect(runs.map(r => [r.type, r.continues, r.ratedType ?? null, r.switched ?? null])).toEqual([
+      ['feature', false, null, null],
+      ['feature', true, 'review', null],
+      ['review', false, null, 'opus'],
+    ])
+  })
+
+  test(`a continuing prompt in a review task is still a review; a continuing prompt with no task kept takes its own type (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-sonnet-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES } })
+    const d = drive($, h)
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+    h.answers = { Stronger: 'Use the stronger model automatically (Recommended)', Remember: 'Just this session' }
+
+    // The session has kept no task yet: "continues" has nothing to continue, so the rated type stands and becomes the task.
+    h.rating = rated('review', true)
+    await d.submit(DEBUG)
+    await d.step('t1')
+    expect(last(h.sent)?.model, 'a review').toBe('opus')
+    await d.complete('t1')
+
+    // A follow-up typed lookup carries on the review: it gets the review rule.
+    h.rating = rated('lookup', true)
+    await d.submit(FOLLOW_UP)
+    await d.step('t2')
+    expect(last(h.sent)?.model, 'the review rule holds for the follow-up').toBe('opus')
+    await d.complete('t2')
+
+    // A new goal ends the task.
+    h.rating = rated('lookup', false)
+    await d.submit(LOOKUP)
+    await d.step('t3')
+    expect(last(h.sent)?.model).toBe('claude-sonnet-5-5')
+    await d.complete('t3')
+    expect(readRuns(h).map(r => [r.type, r.ratedType ?? null])).toEqual([['review', null], ['review', 'lookup'], ['lookup', null]])
   })
 
   test(`a review in a Sonnet session stays on Sonnet when Stronger model is Stay (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -996,6 +1071,61 @@ for (const surface of ['desktop', 'terminal'] as const) {
     for (let i = 0; i < 3; i++) await d.bash('denied rm -rf build')
     await d.step('t1', 1)
     expect(last(h.sent)?.effort).toBe('medium')
+  })
+
+  test(`blocked errors (sandbox, network, missing program) do not raise effort, however often they repeat (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: AUTO_RAISE })
+    const d = drive($, h)
+    await d.start(surface)
+    h.rating = NO_CHANGE
+    await d.submit(LOOKUP)
+    await d.step('t1', 0)
+    // The same blocked call three times (a repeat failure and a loop for any other error), then three different ones.
+    for (let i = 0; i < 3; i++) await d.bash('env:curl: (6) Could not resolve host: registry.example.com')
+    await d.step('t1', 1)
+    expect(last(h.sent)?.effort, 'a network failure repeated').toBe('medium')
+    await d.bash('env:bash: /etc/hosts: Operation not permitted')
+    await d.bash('env:zsh: command not found: jq')
+    await d.bash('env:The command was blocked by the sandbox: write outside the allowed directories')
+    await d.step('t1', 2)
+    expect(last(h.sent)?.effort, 'sandbox, a missing program: still not struggling').toBe('medium')
+    expect(h.asked.length).toBe(0)
+    await d.complete('t1')
+    const line = JSON.parse(last((h.files['/home/test/.claude/mods-logs/rightsize-runs.jsonl'] ?? '').trim().split('\n')) ?? '{}') as { blocked?: number; escalations?: unknown[] }
+    expect(line.blocked, 'counted apart, on the run line').toBe(6)
+    expect(line.escalations).toBeUndefined()
+
+    // Ordinary failures in the next turn still raise, and a turn with none writes no `blocked`.
+    await d.submit(LOOKUP)
+    await d.step('t2', 0)
+    await d.bash('fail npm test')
+    await d.bash('fail npm test')
+    await d.step('t2', 1)
+    expect(last(h.sent)?.effort, 'the same ordinary failure twice').toBe('high')
+    await d.complete('t2')
+    const next = JSON.parse(last((h.files['/home/test/.claude/mods-logs/rightsize-runs.jsonl'] ?? '').trim().split('\n')) ?? '{}') as Record<string, unknown>
+    expect('blocked' in next).toBe(false)
+  })
+
+  test(`a blocked error does not step an auto-lowered turn back up; an ordinary failure does (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES } })
+    const d = drive($, h)
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+    h.rating = LOWER
+    h.answers = { Lowering: 'Lower automatically', Remember: 'Just this session' }
+
+    await d.submit(LOOKUP)
+    await d.step('t1', 0)
+    expect(last(h.sent)?.effort, 'lowered').toBe('low')
+    await d.bash('env:ssh: connect to host example.com port 22: Network is unreachable')
+    await d.step('t1', 1)
+    expect(last(h.sent)?.effort, 'the network is down: effort would not help').toBe('low')
+    await d.bash('fail npm test')
+    await d.step('t1', 2)
+    expect(last(h.sent)?.effort, 'a failure of the work: back to medium').toBe('medium')
+    await d.complete('t1')
   })
 
   test(`Escalation off in /config: no mid-turn raise (${surface})`, { timeoutMs: 30000, options: { escalation: 'off' } }, async ($, on) => {

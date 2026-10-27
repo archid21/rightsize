@@ -76,6 +76,7 @@ test('reads each model\'s level, filling gaps from the models below', async () =
     read: 5000,
     write: 800,
     steps: 6,
+    continues: false,
     reason: 'small helper',
   })
   const gaps = parseRating('{"fit":{"haiku":"no","sonnet":"xhigh","opus":"no","fable":"oops"}}', 'opus')

@@ -52,6 +52,8 @@ declare module 'claude-code' {
       seenEffort: RightsizeLevel | null
       /** The main thread's model id, as last reported by the API; null before the first. */
       seenModel: string | null
+      /** The type of the task in progress, from the last rating that started one; null before the first. A prompt that continues it is planned as this type. */
+      taskType: RightsizeTaskType | null
       /** Tokens in the main conversation's last request. */
       context: number
       /** Answers to Q1-Q4 for this session. */

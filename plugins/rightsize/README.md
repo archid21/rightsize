@@ -20,7 +20,7 @@ Each question is asked once, the first time its case comes up:
 
 - **Q1 Lowering**, when a prompt needs less effort: Lower automatically · Ask me each time · Never lower.
 - **Q2 Raising**, when it needs more effort on the same model: Raise automatically · Ask me each time · Never raise.
-- **Q3 Stronger model**, when a stronger model than the current one fits better: Ask before sending it to a subagent · Send it automatically · Stay on the current model, raise effort only · Ask me each time.
+- **Q3 Stronger model**, when a stronger model than the current one fits better: Send it automatically · Ask before sending it to a subagent · Stay on the current model, raise effort only · Ask me each time.
 - **Q4 Cheaper model**, when a task could run on a cheaper model: Send it to a cheaper subagent · Ask before sending it · Stay on the current model, lower effort only · Ask me each time.
 
 After the first answer, it asks "Use these choices in every session?". Each question is also a row in `/config` (**Lowering**, **Raising**, **Stronger model**, **Cheaper model**), and **Remember choices** answers the follow-up ahead of time. A rule set in a row is used as it is, and its question is never asked.
@@ -39,11 +39,12 @@ After the first answer, it asks "Use these choices in every session?". Each ques
   On the way down, if the cheaper model still fails after 2 reworks, the main chat finishes the task itself.
 
   Steps only you can approve (push, publish, release, deploy, send) stay in the main chat: the subagent prepares the work and stops, since it can't see your approval, and rightsize blocks those steps if it tries them. A request that is mainly such a step isn't handed off.
+- **Reviews run on Opus at high effort or more.** Below that, a review misses the subtle bugs it is for, and a rating can't tell that from the prompt. From Haiku or Sonnet, a review goes to an Opus subagent; on Opus, effort is raised to high and not lowered; from Fable, a review is never handed below Opus. **Stronger model** still decides whether it is sent, asked about or kept on your model. A review sent up this way doesn't count toward a starting-model suggestion.
 - **Handing work down needs a clear saving.** A subagent is used only when the estimate is under 70% of the cost of staying at the level the work needs, counting the brief, the report and the check. The subagent runs at the level its model needs: rightsize sets it. Lowering effort needs the lower level to cost under 90% of staying. Both are defaults you can change in `/config`. **Highest effort** caps how high the mod raises effort, including the level a subagent runs at, and **Use Haiku** and **Use Fable** turn off the work sent to either model.
 - **Close calls go to the model suited to the task.** When two cheaper models that fit are close in estimated cost, the mod picks by task type:
   - Haiku for lookups, searches, bulk edits, extraction and summaries.
-  - Sonnet for writing, reviews, features, debugging, refactors and other work.
-  - Opus for design.
+  - Sonnet for writing, features, debugging, refactors and other work.
+  - Opus for design and reviews.
 
   "Close" starts at 25% and shrinks to nothing by 20 measured runs. One close call in five takes the other model, so both get measured (**Explore close calls** turns that off). It never overrides the hand-off threshold.
 - **Haiku's rating is scored against what happens.** Per task type and model, a hand-off that needed rework, a lowered turn that stepped back up or was raised mid-turn, an unchanged turn raised mid-turn, a 👎, and a Sonnet check that disagreed each count as a miss; a hand-off without rework, a lowered turn that held, a 👍 and an agreeing check count as hits. A type needs 5 outcomes on a model before its own rate counts, else the model's rate across types does (also from 5). Over the last 30 days, a rate at or over the **Pause after misses** line (30% by default) stops hand-downs to that model for that kind of work, and lowering effort on it. The starting-point comparison weighs the same rate. All of it is read from the run log on your machine.
@@ -54,7 +55,7 @@ A one-row band above the prompt (CLI and desktop app) shows what the mod did, wi
 
 ## Choosing a starting model
 
-Start on Sonnet 5.5 at medium (cheapest for lookups, searches, edits and writing) or Opus 5.5 at medium (safer for features, debugging and design: hand-offs only go down, and Opus checks them). Avoid Opus at low (frequent raises re-write the cache) and Fable (the biggest saving percent, but the highest total).
+Start on Sonnet 5.5 at medium. It handles lookups, searches, edits, features, debugging and writing well, for much less than Opus. rightsize sends what Sonnet is weaker at to an Opus subagent: every review, at high effort or more, and any prompt the rating says Sonnet would struggle with. Start on Opus 5.5 at medium only if most of your work is design or review. Avoid Opus at low (frequent raises re-write the cache) and Fable (the biggest saving percent, but the highest total).
 
 Once a week (or a month) at session start, the mod estimates what the last 30 days of rated prompts would have cost from Sonnet and Opus at medium and high, its own changes counted and Haiku's miss rate on the start's model weighed in. The band suggests a switch when another start is at least 15% cheaper (25% while it has few measured runs) and sends no more than 1 prompt in 10 to a stronger model, or when over 15% of prompts needed a stronger model or a mid-turn raise. It needs 50 rated prompts in 30 days and 20 on the current start. **Not now** quiets it for 14 days; **Stop suggesting** turns it off. The estimate follows your Use Haiku, Use Fable and Highest effort settings. It never changes the model itself: switch with `/model`.
 

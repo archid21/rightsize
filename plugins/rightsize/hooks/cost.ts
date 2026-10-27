@@ -342,7 +342,7 @@ export const PREFERRED: Record<TaskType, Tier> = {
   extract: 'haiku',
   summarize: 'haiku',
   writing: 'sonnet',
-  review: 'sonnet',
+  review: 'opus',
   other: 'sonnet',
   feature: 'sonnet',
   debug: 'sonnet',
@@ -394,7 +394,7 @@ const runsOn = (cal: Calibration, keys: readonly string[]) => cal[keys[keys.leng
 
 export type Plan =
   | { kind: 'none'; why: string }
-  | { kind: 'effort'; dir: 'lower' | 'raise'; level: Level; saving?: number }
+  | { kind: 'effort'; dir: 'lower' | 'raise'; level: Level; saving?: number; rule?: 'review' }
   | {
       kind: 'delegate'
       dir: 'up' | 'down'
@@ -407,6 +407,8 @@ export type Plan =
       instead?: Level
       /** Set when two routes were close in cost and the task-type guide broke the tie. */
       tie?: Tie
+      /** Set when a fixed rule chose the route rather than the rating: reviews go to Opus. */
+      rule?: 'review'
     }
 
 /** Hand work down only when the subagent route costs under this share of staying. */
@@ -535,6 +537,26 @@ export function effortPlan(r: Rating, s: Situation, floor: Level): Plan {
   return { kind: 'effort', dir: 'lower', level: target, saving: now - lowered }
 }
 
+// Reviews run on Opus at high effort or more, whatever the rating says: below that, a review
+// misses the subtle bugs it is for, and the rater can't tell from the prompt. A session below
+// Opus hands the review up; an Opus session raises to high and doesn't lower. Fable plans as usual,
+// with no route below Opus.
+export const REVIEW_TIER: Tier = 'opus'
+export const REVIEW_LEVEL: Level = 'high'
+const atLeast = (l: Level, min: Level) => (levelRank(l) < levelRank(min) ? min : l)
+
+function reviewPlan(r: Rating, s: Situation, floor: Level): Plan | undefined {
+  const level = clampCeiling(clampFloor(atLeast(r.fit[REVIEW_TIER] ?? REVIEW_LEVEL, REVIEW_LEVEL), floor), ceilingOf(s))
+  if (tierRank(s.tier) < tierRank(REVIEW_TIER)) {
+    if (s.without?.includes(REVIEW_TIER)) return undefined
+    return { kind: 'delegate', dir: 'up', tier: REVIEW_TIER, level, delegateCost: delegateCost(r, s, REVIEW_TIER, level), mainCost: mainCost(r, s, s.level, 0), rule: 'review' }
+  }
+  if (s.tier !== REVIEW_TIER) return undefined
+  const target = capRaise(level, s)
+  if (levelRank(target) > levelRank(s.level)) return { kind: 'effort', dir: 'raise', level: target, rule: 'review' }
+  return { kind: 'none', why: `reviews stay on ${TIER_NAME[REVIEW_TIER]} at ${REVIEW_LEVEL} effort or more` }
+}
+
 // Every model that fits is a route: the session's model at its level in the main
 // chat, each other model at its own level as a subagent. When the session's model
 // would struggle, the cheapest stronger route that fits. Otherwise the cheapest
@@ -543,13 +565,18 @@ export function effortPlan(r: Rating, s: Situation, floor: Level): Plan {
 export function plan(r: Rating, s: Situation, floor: Level): Plan {
   // A subagent cannot see the person's approval, so it would refuse the work.
   if (r.approval) return effortPlan(r, s, floor)
+  if (r.type === 'review') {
+    const p = reviewPlan(r, s, floor)
+    if (p) return p
+  }
   const stay = mainCost(r, s, s.level, 0)
   const routes = TIERS.flatMap(t => {
     const need = r.fit[t]
     if (t === s.tier || !need || s.without?.includes(t)) return []
+    if (r.type === 'review' && tierRank(t) < tierRank(REVIEW_TIER)) return []
     // A hand-down to a model the rater has been wrong about for this kind of work waits until its record mends.
     if (tierRank(t) < tierRank(s.tier) && blocked(s, r.type, t)) return []
-    const level = clampCeiling(clampFloor(need, floor), ceilingOf(s))
+    const level = clampCeiling(clampFloor(r.type === 'review' && t === REVIEW_TIER ? atLeast(need, REVIEW_LEVEL) : need, floor), ceilingOf(s))
     return [{ tier: t, level, cost: delegateCost(r, s, t, level), n: runsOn(s.cal, delegateKeys(r.type, t, level)) }]
   }).sort((a, b) => a.cost - b.cost)
   const ties = s.ties ?? 0

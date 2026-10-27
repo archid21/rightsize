@@ -24,6 +24,13 @@ test('replays a prompt from any start and counts hand-ups to a stronger model', 
   expect(kept.up, '"Stay" keeps work on the start').toBe(0)
 })
 
+test('a review sent to Opus by rule is not counted as a hand-up', async () => {
+  const reviews = [line(0, easy, { type: 'review' }), line(1, easy, { type: 'review' })]
+  const sonnet = replay(reviews, { tier: 'sonnet', level: 'medium' }, C)
+  expect(sonnet.up, 'every start below Opus sends reviews up: not a sign the start is too weak').toBe(0)
+  expect(sonnet.cost, 'but their Opus cost is counted').toBeGreaterThan(replay([line(0, easy), line(1, easy)], { tier: 'sonnet', level: 'medium' }, C).cost)
+})
+
 test('waits for enough prompts, and for enough on the current start', async () => {
   expect(adviseStart(many(START_MIN_PROMPTS - 1, easy), C, NOW)).toMatchObject({ kind: 'wait', need: 50, prompts: 49 })
   const moved = [...many(45, easy), ...many(10, easy, { tier: 'sonnet', normal: 'high', level: 'high' }).map((l, i) => ({ ...l, at: at(60 + i) }))]

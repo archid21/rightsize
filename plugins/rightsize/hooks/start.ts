@@ -100,7 +100,8 @@ function once(l: Rated, fit: Fit, start: Start, context: number, c: StartContext
   const s = { tier: start.tier, level: start.level, context, prices: c.prices, cal: c.cal, rules: c.rules, ties: 1, ...(c.ceiling ? { ceiling: c.ceiling } : {}), ...(c.without ? { without: c.without } : {}) }
   let p = plan(r, s, c.floor)
   if (p.kind === 'delegate' && c.choices[p.dir] === 'stay') p = effortPlan(r, s, c.floor)
-  if (p.kind === 'delegate') return { cost: p.delegateCost, up: p.dir === 'up' ? 1 : 0 }
+  // A review sent up by rule isn't a sign the start is too weak: from any start below Opus it goes up.
+  if (p.kind === 'delegate') return { cost: p.delegateCost, up: p.dir === 'up' && !p.rule ? 1 : 0 }
   if (p.kind === 'effort' && c.choices[p.dir] !== 'never') return { cost: mainCost(r, s, p.level, 2), up: 0 }
   return { cost: mainCost(r, s, start.level, 0), up: 0 }
 }

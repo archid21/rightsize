@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.0 (unreleased)
+
+- **Start on Sonnet; reviews go to Opus.** The recommended start is Sonnet 5.5 at medium. Every review now runs on Opus at high effort or more, whatever the rating says: from a Haiku or Sonnet session it goes to an Opus helper, on Opus effort is raised to high and not lowered, and from Fable it is never handed below Opus. **Stronger model** (Q3) still decides whether it is sent, and **Highest effort** still caps the level. The band says "reviews run on Opus at high effort or more", and the run log marks these with `rule: "review"`. A review sent up this way doesn't push the start suggestion toward Opus.
+- **Q3 Stronger model now recommends sending automatically.** "Send it to a subagent automatically" is listed first and marked Recommended; "Ask before sending it to a subagent" is second. A rule you already set is unchanged.
+- The task-type guide for close calls picks Opus for reviews.
+
 ## 0.7.4 (2026-10-25)
 
 - **Ready for Anthropic's plugin directory.** Each `/config` row is written with its own fixed key, so the directory can check every settings write (rightsize still writes only its own `rightsize.*` rows). A parameter that shared its name with `on` is renamed. No behavior changes.

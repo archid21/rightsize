@@ -155,8 +155,8 @@ const qUp = (cur: string, to: string): Question<Route> => ({
   header: 'Stronger',
   question: `When a prompt needs a stronger model than ${cur} (such as ${to}), what should I do?`,
   options: [
-    ['Ask before sending it to a subagent (Recommended)', 'ask'],
-    ['Send it to a subagent automatically', 'auto'],
+    ['Send it to a subagent automatically (Recommended)', 'auto'],
+    ['Ask before sending it to a subagent', 'ask'],
     [`Stay on ${cur}, raise effort only`, 'stay'],
     ['Ask me each time', 'each'],
   ],
@@ -234,6 +234,8 @@ type Run = {
   resized: Resized[]
   /** The hand-off was a close call that the task-type guide broke. */
   tie?: Tie
+  /** A fixed rule chose the route rather than the rating: reviews go to Opus. */
+  rule?: 'review'
   /** Uncalibrated estimates of the route taken, for calibration. */
   rawMain: number
   rawDelegate?: number
@@ -907,7 +909,7 @@ async function resolve($: EngineInterface, p: Plan, r: Rating, s: Situation): Pr
   if (c === 'auto') return send
   if (c === 'stay') return stay()
   if (c !== 'ask' && c !== 'each') return {}
-  const why = r.reason ? ` (${r.reason})` : ''
+  const why = p.rule === 'review' ? ' (reviews run on Opus at high effort or more)' : r.reason ? ` (${r.reason})` : ''
   const lead = p.dir === 'up' ? `This needs a stronger model${why}.` : `${to} at ${p.level} effort could do this${why}${p.instead ? `, where ${cur} needs ${p.instead}` : ''}.`
   const question = `${lead} Send it to a ${to} subagent? ${costLine(p.delegateCost, p.mainCost, cur)}`
   if (c === 'ask') {
@@ -991,6 +993,7 @@ function startRun(r: Rating, s: Situation, d: Decision, p: Plan, base: Level, ov
     signals: noSignals(),
     escalations: [],
     requests: 0,
+    ...(p.kind !== 'none' && p.rule ? { rule: p.rule } : {}),
   }
 }
 
@@ -1037,7 +1040,9 @@ export function bandFor(run: Pick<Run, 'id' | 'tier' | 'normal' | 'auto' | 'dele
   const cur = TIER_NAME[run.tier]
   if (run.delegate) {
     const to = `${TIER_NAME[run.delegate.tier]} subagent at ${run.delegate.level} effort`
-    const instead = p.kind === 'delegate' && p.instead && levelRank(p.instead) > levelRank(run.normal) ? ` instead of raising ${cur} to ${p.instead}` : ''
+    const instead = p.kind === 'delegate' && p.rule === 'review'
+      ? ': reviews run on Opus at high effort or more'
+      : p.kind === 'delegate' && p.instead && levelRank(p.instead) > levelRank(run.normal) ? ` instead of raising ${cur} to ${p.instead}` : ''
     return { text: `Sending this to a ${to}${instead}. ${costLine(run.takenDelegate ?? 0, run.stay, cur)}`, acted: true, rule: run.delegate.dir }
   }
   const level = d.level ?? d.session
@@ -1194,6 +1199,7 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
       ...(delegated ? { subLevel: run.subLevel ?? null } : {}),
       ...(run.resized.length ? { resized: run.resized } : {}),
       ...(run.tie ? { tie: run.tie } : {}),
+      ...(run.rule ? { rule: run.rule } : {}),
       ...(run.pace.mode !== 'normal' ? { pace: { ...run.pace, ...(run.pace.pace === undefined ? {} : { pace: Number(run.pace.pace.toFixed(2)) }) } } : {}),
       auto: run.auto,
       steppedUp: run.steppedUp,

@@ -200,6 +200,36 @@ test('offers a stronger model as a subagent, with both costs', async () => {
   }
 })
 
+// Reviews: whatever the rating says, they run on Opus at high effort or more.
+const sonnetSession: Situation = { tier: 'sonnet', level: 'medium', context: 20_000, prices: DEFAULT_PRICES, cal: {} }
+const review = (fit: Rating['fit'], level: Rating['level'] = 'high') => rating({ type: 'review', level, fit, read: 30_000, write: 2000, steps: 10 })
+
+test('a review on Sonnet goes up to Opus at high, even when the rating says Sonnet at high fits', async () => {
+  const p = plan(review({ haiku: null, sonnet: 'high', opus: 'medium', fable: 'low' }), sonnetSession, 'low')
+  expect(p).toMatchObject({ kind: 'delegate', dir: 'up', tier: 'opus', level: 'high', rule: 'review' })
+  const xhigh = plan(review({ sonnet: null, opus: 'xhigh' }), sonnetSession, 'low')
+  expect(xhigh, 'a rating above high is kept').toMatchObject({ tier: 'opus', level: 'xhigh' })
+  expect(plan(review({ haiku: 'low', sonnet: 'low', opus: 'low' }), { ...sonnetSession, tier: 'haiku' }, 'low'), 'from Haiku too').toMatchObject({ dir: 'up', tier: 'opus', level: 'high' })
+})
+
+test('a review on Opus raises to high and never lowers; Highest effort still caps it', async () => {
+  expect(plan(review({ opus: 'low' }, 'low'), opus, 'low')).toMatchObject({ kind: 'effort', dir: 'raise', level: 'high', rule: 'review' })
+  expect(plan(review({ opus: 'low' }, 'low'), { ...opus, level: 'xhigh' }, 'low').kind, 'xhigh is kept, not lowered').toBe('none')
+  expect(plan(review({ haiku: 'low', sonnet: 'low', opus: 'low' }, 'low'), opus, 'low').kind, 'no hand-down below Opus').toBe('effort')
+  expect(plan(review({ sonnet: 'high', opus: 'medium' }), { ...sonnetSession, ceiling: 'medium' }, 'low'), 'the ceiling wins').toMatchObject({ tier: 'opus', level: 'medium' })
+})
+
+test('a review on Fable is never handed below Opus, and Opus runs it at high or more', async () => {
+  const p = plan(review({ haiku: 'low', sonnet: 'low', opus: 'low', fable: 'low' }, 'low'), fable, 'low')
+  if (p.kind === 'delegate') expect(p).toMatchObject({ tier: 'opus', level: 'high' })
+  else expect(p.kind).not.toBe('delegate')
+})
+
+test('other work on Sonnet still stays on Sonnet when the rating says it fits', async () => {
+  const p = plan(rating({ type: 'debug', level: 'high', fit: { haiku: null, sonnet: 'high', opus: 'medium' }, read: 30_000, write: 2000, steps: 10 }), sonnetSession, 'low')
+  expect(p).toMatchObject({ kind: 'effort', dir: 'raise', level: 'high' })
+})
+
 test('calibration moves estimates toward what runs really cost', async () => {
   const r = rating({ type: 'search', read: 10_000, write: 1000, steps: 4 })
   const before = mainCost(r, opus, 'medium', 0)
@@ -450,6 +480,7 @@ test('the task-type guide names a model for every task type', async () => {
   expect(PREFERRED.lookup).toBe('haiku')
   expect(PREFERRED.feature).toBe('sonnet')
   expect(PREFERRED.design).toBe('opus')
+  expect(PREFERRED.review).toBe('opus')
 })
 
 test('a close call on a hand-down goes to the guide\'s model, not the slightly cheaper one', async () => {

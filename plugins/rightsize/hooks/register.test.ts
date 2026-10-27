@@ -404,7 +404,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.complete('t0')
 
     h.rating = '{"level":"high","model":"fable","size":"small","type":"debug","read":30000,"write":4000,"steps":12,"reason":"subtle concurrency bug"}'
-    h.answers = { Stronger: 'Ask before sending it to a subagent (Recommended)', Remember: 'Just this session', Subagent: 'Send it to a Fable subagent' }
+    h.answers = { Stronger: 'Ask before sending it to a subagent', Remember: 'Just this session', Subagent: 'Send it to a Fable subagent' }
     await d.submit(DEBUG)
     expect(h.asked.map(a => a.header)).toEqual(['Stronger', 'Remember', 'Subagent'])
     expect(h.asked[2]?.question ?? '', 'the question carries both costs').toMatch(/About \$[\d.]+ that way vs \$[\d.]+ staying on Opus/)
@@ -1307,7 +1307,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
     // "off": a hand-off result goes back to a transcript line.
     h.rating = '{"level":"high","model":"fable","size":"small","type":"debug","read":30000,"write":4000,"steps":12,"reason":"subtle concurrency bug"}'
-    h.answers = { Stronger: 'Send it to a subagent automatically', Remember: 'Just this session' }
+    h.answers = { Stronger: 'Send it to a subagent automatically (Recommended)', Remember: 'Just this session' }
     await d.submit(DEBUG)
     await d.step('t1')
     await d.complete('t1')
@@ -2043,7 +2043,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     { key: 'handOff', value: '80%', start: { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES } }, see: async c => (await handOff(c, SEARCH, NEAR, CHEAPER_AUTO)).to, set: 'haiku', def: undefined },
     { key: 'lowering', value: '70%', start: { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES } }, see: c => effortOf(c, LOOKUP, LOWER_300, { Lowering: 'Lower automatically', ...YES_REMEMBER }), set: 'medium', def: 'low' },
     { key: 'useHaiku', value: 'off', start: FABLE, warm: true, see: async c => (await handOff(c, SEARCH, FIT_LOW, CHEAPER_AUTO)).to, set: 'sonnet', def: 'haiku' },
-    { key: 'useFable', value: 'off', start: OPUS, see: async c => (await handOff(c, DEBUG, NEEDS_FABLE, { Stronger: 'Send it to a subagent automatically', ...YES_REMEMBER })).to, set: undefined, def: 'fable' },
+    { key: 'useFable', value: 'off', start: OPUS, see: async c => (await handOff(c, DEBUG, NEEDS_FABLE, { Stronger: 'Send it to a subagent automatically (Recommended)', ...YES_REMEMBER })).to, set: undefined, def: 'fable' },
     {
       key: 'subagents',
       value: 'off',
@@ -2066,7 +2066,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
       see: async c => {
         const asked = c.h.asked.length
         c.h.rating = NO_CHANGE
-        c.h.answers = { Workflow: 'Pause rightsize for workflows (recommended)', Stronger: 'Send it to a subagent automatically', ...YES_REMEMBER }
+        c.h.answers = { Workflow: 'Pause rightsize for workflows (recommended)', Stronger: 'Send it to a subagent automatically (Recommended)', ...YES_REMEMBER }
         await c.d.submit(LOOKUP)
         const t = c.turn()
         await c.d.step(t)
@@ -2193,7 +2193,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
       value: 'subscription',
       start: OPUS,
       see: async c => {
-        await prompt(c, DEBUG, NEEDS_FABLE, { Stronger: 'Ask before sending it to a subagent (Recommended)', Subagent: 'Send it to a Fable subagent', ...YES_REMEMBER })
+        await prompt(c, DEBUG, NEEDS_FABLE, { Stronger: 'Ask before sending it to a subagent', Subagent: 'Send it to a Fable subagent', ...YES_REMEMBER })
         const q = c.h.asked.find(a => a.header === 'Subagent')?.question ?? ''
         return /That uses/.test(q) ? 'usage' : /About \$/.test(q) ? 'dollars' : q
       },
@@ -2447,7 +2447,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   // ---- Your setting wins ----------------------------------------------------------------------------
 
   const REPORTS_DOLLARS = /About \$[\d.]+ that way/
-  const askAboutFable = { Stronger: 'Ask before sending it to a subagent (Recommended)', Subagent: 'Send it to a Fable subagent', ...YES_REMEMBER }
+  const askAboutFable = { Stronger: 'Ask before sending it to a subagent', Subagent: 'Send it to a Fable subagent', ...YES_REMEMBER }
 
   test(`Reports set in /config is yours: rate limits that show a subscription change nothing, and /rightsize says they disagree (${surface})`, { timeoutMs: 30000, options: { billing: 'api' } }, async ($, on) => {
     const h = engine(on, { ...OPUS, stored: { billing: 'api' } })
@@ -2860,7 +2860,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.sets.find(x => x.key === 'rightsize.lowerRule')?.value).toBe('never lower')
 
     // /rightsize settings asks the four questions again and writes every row.
-    h.answers = { Lowering: 'Ask me each time', Raising: 'Never raise', Stronger: 'Send it to a subagent automatically', Cheaper: 'Ask before sending it', ...YES_REMEMBER }
+    h.answers = { Lowering: 'Ask me each time', Raising: 'Never raise', Stronger: 'Send it to a subagent automatically (Recommended)', Cheaper: 'Ask before sending it', ...YES_REMEMBER }
     const text = (await d.command('settings')).text ?? ''
     expect(h.stored).toMatchObject({ lowerRule: 'ask me', raiseRule: 'never raise', upRule: 'always send', downRule: 'ask first' })
     expect(text).toContain('Lowering: ask me')

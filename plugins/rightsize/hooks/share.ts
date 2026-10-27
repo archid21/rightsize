@@ -65,6 +65,8 @@ export function shareEvent(l: RunLine, install: string): Record<string, unknown>
       afterWorkflow: l.afterWorkflow,
       tie: l.tie?.by,
       durationMs: l.durationMs,
+      // How long the rating took: a number, never text.
+      ratingMs: typeof l.ratingMs === 'number' ? l.ratingMs : undefined,
     })
   }
   if (kind === 'feedback' && l.ref && (l.value === 'up' || l.value === 'down')) return { kind: 'feedback', at: l.at, ref: hashRef(install, l.ref), value: l.value }

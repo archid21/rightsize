@@ -67,7 +67,12 @@ export type RunLine = {
   workflows?: number
   /** A workflow ran in the session by this turn's end: its agents' cost may be in this turn's. */
   afterWorkflow?: boolean
+  /** A run line: how long the turn took, in ms (from the turn's completion). */
   durationMs?: number
+  /** A run or unrated line: wall time of all the prompt's rating attempts, in ms (0.8 on). Measured and reported; never used to choose a route. */
+  ratingMs?: number
+  /** A run line: when the prompt was submitted (ISO), before its rating; `at` is when its turn ended (0.8 on). */
+  submittedAt?: string
   /** A subagent line: the model it would have run on and the one it ran on, at what level, and the raw estimates on each. */
   from?: string
   tier?: string
@@ -460,7 +465,7 @@ export function problems(lines: readonly RunLine[], switches: readonly SwitchLin
     })
   }
   const unrated = lines.filter(l => l.kind === 'unrated').length
-  if (unrated) out.push({ n: unrated, unit: ['prompt', 'prompts'], reason: 'not rated (the rating failed or could not be read), so the session was left as it was' })
+  if (unrated) out.push({ n: unrated, unit: ['prompt', 'prompts'], reason: 'not rated (the rating failed), so nothing was changed' })
   const aborted = lines.filter(l => isRun(l) && l.aborted).length
   if (aborted) out.push({ n: aborted, unit: TURN, reason: 'you stopped (their rating cost still counts)' })
   return out.sort((a, b) => b.n - a.n)
@@ -475,6 +480,69 @@ function problemRows(ps: readonly Problem[]) {
 }
 
 const k = (n: number) => (n >= 1000 ? `${Math.round(n / 1000)}K` : `${Math.round(n)}`)
+
+/** A duration for people: seconds under a minute (one decimal under 10), then minutes and seconds, then hours and minutes. */
+export function span(ms: number) {
+  const s = Math.max(0, ms) / 1000
+  if (s < 9.95) return `${s.toFixed(1)} s`
+  const whole = Math.round(s)
+  if (whole < 60) return `${whole} s`
+  const m = Math.floor(whole / 60)
+  if (m < 60) return `${m} min ${String(whole % 60).padStart(2, '0')} s`
+  return `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, '0')} min`
+}
+
+/** The value at fraction `q` of the sorted values (nearest rank; 0.5 averages the two middle ones of an even count). Needs at least one value. */
+function quantile(xs: readonly number[], q: number) {
+  const v = [...xs].sort((a, b) => a - b)
+  if (q === 0.5 && v.length % 2 === 0) return ((v[v.length / 2 - 1] ?? 0) + (v[v.length / 2] ?? 0)) / 2
+  return v[Math.max(0, Math.ceil(q * v.length) - 1)] ?? 0
+}
+
+const median = (xs: readonly number[]) => quantile(xs, 0.5)
+const p90 = (xs: readonly number[]) => quantile(xs, 0.9)
+const finite = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0
+
+/** The reason an unrated line carries when the rating ran out of its time. */
+const BUDGET_REASON = 'rating budget used up'
+
+/**
+ * Time, from run lines that carry `ratingMs` (0.8 on); older lines are left out. A task is the run lines that share a `task`
+ * (or an `id`). Claude's time per task is rating plus turn time, summed over its runs; time to done runs from the task's
+ * first submit to its last turn's end, so it includes your own time between prompts. Undefined when no line has the field.
+ */
+export function timeRows(lines: readonly RunLine[]) {
+  const runs = lines.filter(l => isRun(l) && finite(l.ratingMs))
+  const rated = lines.filter(l => l.kind === 'unrated' && finite(l.ratingMs))
+  if (!runs.length && !rated.length) return undefined
+  const tasks = new Map<string, RunLine[]>()
+  for (const l of runs) {
+    const key = l.task ?? l.id ?? l.at
+    tasks.set(key, [...(tasks.get(key) ?? []), l])
+  }
+  const group = [...tasks.values()]
+  const claude = (t: readonly RunLine[]) => t.reduce((n, l) => n + num(l.ratingMs) + num(l.durationMs), 0)
+  const done = group.flatMap(t => {
+    const starts = t.map(l => Date.parse(l.submittedAt ?? ''))
+    const ends = t.map(l => Date.parse(l.at))
+    return starts.every(Number.isFinite) && ends.every(Number.isFinite) ? [Math.max(...ends) - Math.min(...starts)] : []
+  })
+  const cheaper = group.filter(t => t.some(l => delegated(l) && l.change === 'delegate-down'))
+  const stayed = group.filter(t => !t.some(delegated))
+  const delays = [...runs, ...rated].map(l => num(l.ratingMs))
+  const hit = rated.filter(l => l.reason?.startsWith(BUDGET_REASON)).length
+  const per = (g: readonly (readonly RunLine[])[]) => (g.length ? `median ${span(median(g.map(claude)))} over ${plural(g.length, 'task')}` : 'none yet')
+  const all = group.map(claude)
+  return [
+    ['Tasks finished', String(group.length)],
+    ["Claude's time per task", all.length ? `median ${span(median(all))}, 90th percentile ${span(p90(all))}` : '–'],
+    ['Time to done, with your time', done.length ? `median ${span(median(done))} over ${plural(done.length, 'task')}` : '–'],
+    ['Rating delay per prompt', `median ${span(median(delays))}, 90th percentile ${span(p90(delays))}`],
+    ['Rating budget used up', `${hit} of ${plural(delays.length, 'prompt')}`],
+    ["Claude's time, cheaper route", per(cheaper)],
+    ["Claude's time, stayed", per(stayed)],
+  ]
+}
 
 /** The context every request carried, by part (largest first), request-weighted, what re-reading it cost, and how to cut it. */
 export function fixedBlock(lines: readonly RunLine[]) {
@@ -547,13 +615,16 @@ export function buildReport(
   if (accuracy.rows.length) out.push(...section('ACCURACY', grid(accuracy.rows)))
   const problem = problems(month, switches.filter(since(30)))
   out.push(...(problem.length ? section('NOT COUNTED AS SAVINGS', grid(problemRows(problem))) : ['', 'NOT COUNTED AS SAVINGS', md ? 'Nothing yet.' : '  Nothing yet.']))
+  // Time is measured and reported here; it never chooses a route.
+  const time = timeRows(month)
+  out.push(...(time ? section('TIME', grid(time)) : ['', 'Time: not measured yet (needs prompts from rightsize 0.8).']))
   // Actions from the sections above, in their own words: fixed context, the start, a pause.
   const next = [fixed?.fix, start?.tip, accuracy.paused].filter((n): n is string => !!n)
   if (next.length) out.push('', 'NEXT STEPS', ...(md ? next.map(n => `- ${n}`) : indent(next.flatMap(n => wrap(n, '- ', '  ', 76)))))
   const t = cols[2].t
   const foot = [
     'Estimated: actual cost vs staying at your own model and effort.',
-    ...(nothing ? [] : [`Total saved is after the cost of rating prompts with Haiku (${money(t.overhead)} in 30 days).`]),
+    ...(nothing ? [] : [`Total saved is after the cost of rating prompts (${money(t.overhead)} in 30 days).`]),
     ...(cols.some(s => s.t.extra > 0.005) ? ["Extra spent on harder prompts: what raising effort or using a stronger model cost, for better answers. It isn't taken off Total saved."] : []),
     ...(sub ? ['Dollar amounts are what the same use would cost on the API.', 'You only pay for your subscription.'] : []),
   ]

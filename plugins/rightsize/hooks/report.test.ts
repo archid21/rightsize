@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { accuracyRows, type RunLine, buildReport, counterfactual, fixedBlock, parseLines, problems, shareMessage, tieCounts, totals } from './report'
+import { accuracyRows, type RunLine, buildReport, counterfactual, fixedBlock, parseLines, problems, shareMessage, span, tieCounts, totals } from './report'
 import type { StartBlock } from './start'
 
 const NOW = Date.parse('2026-10-23T18:00:00.000Z')
@@ -94,7 +94,7 @@ test('the report is laid out: title and headline, period table, sections in orde
   expect(titles(text)).toEqual(['FIXED CONTEXT', 'ACCURACY', 'NOT COUNTED AS SAVINGS', 'NEXT STEPS'])
   const foot = out.indexOf('Estimated: actual cost vs staying at your own model and effort.')
   expect(foot, 'the footer follows the last section').toBeGreaterThan(out.indexOf('NEXT STEPS'))
-  expect(out[foot + 1]).toMatch(/^Total saved is after the cost of rating prompts with Haiku \(\$[\d.]+ in 30 days\)\.$/)
+  expect(out[foot + 1]).toMatch(/^Total saved is after the cost of rating prompts \(\$[\d.]+ in 30 days\)\.$/)
   expect(out.slice(-2).join(' '), 'the footer is last').toBe(SUB_FOOT)
   expect(out.filter(l => l.length > 80), 'no line past 80 characters').toEqual([])
   expect(text, 'plain text: no markdown table or emoji').not.toMatch(/\||\*\*|---|\p{Extended_Pictographic}/u)
@@ -127,7 +127,7 @@ test('reports each period in columns, the window kept for a subscriber, and says
   // 2% of the window for $1 over 2 minutes: $0.49 saved is ~1% and about 1 minute; the old session's rating calls take it to $0.44 in 30 days.
   expect(cells(sub, '5-hour window saved')).toEqual(['~1.0%', '~1.0%', '~0.9%'])
   expect(cells(sub, 'Share of cost saved')).toEqual(['~33%', '~33%', '~27%'])
-  expect(sub, 'the rating cost is in the footer').toContain('Total saved is after the cost of rating prompts with Haiku ($0.06 in 30 days).')
+  expect(sub, 'the rating cost is in the footer').toContain('Total saved is after the cost of rating prompts ($0.06 in 30 days).')
   expect(cells(sub, 'Total saved')).toEqual(['~$0.49', '~$0.49', '~$0.44'])
   expect(sub.split('\n')[1], 'a subscriber reads the window first').toBe('Saved ~0.9% of your 5-hour window (~1 min) in the last 30 days.')
   expect(sub.split('\n').slice(-2).join(' ')).toBe(SUB_FOOT)
@@ -234,9 +234,9 @@ test('unrated prompts are counted under Not counted as savings, with their ratin
   expect(Number(t.overhead.toFixed(5)), 'what the failed rating calls cost still counts').toBe(0.003)
   expect(Number(t.saved.toFixed(5))).toBe(0.04)
   const one = problems([unrated()], [])
-  expect(one).toEqual([{ n: 1, unit: ['prompt', 'prompts'], reason: 'not rated (the rating failed or could not be read), so the session was left as it was' }])
+  expect(one).toEqual([{ n: 1, unit: ['prompt', 'prompts'], reason: 'not rated (the rating failed), so nothing was changed' }])
   const text = report([unrated(), unrated({ reason: 'rating call timed out' })])
-  expect(sectionOf(text, 'NOT COUNTED AS SAVINGS')[0]).toMatch(/^2 prompts +not rated \(the rating failed or could not be read\), so the session was left as it was$/)
+  expect(sectionOf(text, 'NOT COUNTED AS SAVINGS')[0]).toMatch(/^2 prompts +not rated \(the rating failed\), so nothing was changed$/)
   expect(text, 'a report of only unrated prompts is not "nothing rated"').not.toContain('Nothing rated')
   expect(cells(text, 'Prompts rated')).toEqual(['0', '0', '0'])
 })
@@ -462,6 +462,71 @@ test('next steps collect the actions, and the block is left out when there are n
   const fits = report([run({})], { start: { head: 'Opus at medium, 60 rated prompts in 30 days', rows: [], note: 'Estimated from your log. Your start fits: no other start is clearly cheaper without sending more work to a stronger model.' } })
   expect(fits).not.toContain('NEXT STEPS')
   expect(fits.split('\n').filter(l => l.length > 80), 'a long note wraps').toEqual([])
+})
+
+// ---- Time ----
+
+const mins = (m: number) => new Date(NOW - m * 60_000).toISOString()
+// Task a stays (two prompts), task b hands off to Haiku (one), task c stays and has no submit time (a log without it). One line is from before 0.8.
+const timed = (): RunLine[] => [
+  run({ id: 'a1', task: 'a', submittedAt: mins(40), at: mins(38), ratingMs: 2000, durationMs: 100_000 }),
+  run({ id: 'a2', task: 'a', submittedAt: mins(30), at: mins(28), ratingMs: 1000, durationMs: 59_000 }),
+  run({ id: 'b1', task: 'b', submittedAt: mins(20), at: mins(15), ratingMs: 4000, durationMs: 296_000, route: 'delegate:haiku', change: 'delegate-down', offered: 'delegate-down' }),
+  run({ id: 'c1', ratingMs: 500, durationMs: 61_500 }),
+  run({ id: 'old1', durationMs: 999_000 }),
+  { at: mins(10), kind: 'unrated', session: 's1', task: 'a', reason: 'rating budget used up', rater: 'sonnet', overhead: 0, ratingMs: 12_000 },
+  { at: mins(9), kind: 'unrated', session: 's1', reason: 'rating call timed out', rater: 'haiku', overhead: 0, ratingMs: 3000 },
+]
+
+test('durations read as seconds, minutes and seconds, or hours and minutes', async () => {
+  expect([0, 400, 1800, 9949, 12_000, 59_600, 60_000, 162_000, 3_599_000, 3_900_000].map(span)).toEqual(['0.0 s', '0.4 s', '1.8 s', '9.9 s', '12 s', '1 min 00 s', '1 min 00 s', '2 min 42 s', '59 min 59 s', '1 h 05 min'])
+})
+
+test('the Time section: Claude\'s time per task, time to done, the rating delay, budget hits, and cheaper routes against staying', async () => {
+  const text = report(timed())
+  const rows = sectionOf(text, 'TIME')
+  const cell = (label: string) => rows.find(l => l.startsWith(label))?.slice(label.length).trim()
+  expect(cell('Tasks finished'), 'tasks a, b and c; the pre-0.8 line is left out').toBe('3')
+  // a: 3 s + 159 s = 2 min 42 s; b: 300 s; c: 62 s. The 90th percentile of three is the largest.
+  expect(cell("Claude's time per task")).toBe('median 2 min 42 s, 90th percentile 5 min 00 s')
+  // a: 12 min from its first submit to its last turn's end; b: 5 min; c has no submit time, so it is left out.
+  expect(cell('Time to done, with your time')).toBe('median 8 min 30 s over 2 tasks')
+  // Six prompts: four rated and two unrated, 0.5 s to 12 s.
+  expect(cell('Rating delay per prompt')).toBe('median 2.5 s, 90th percentile 12 s')
+  expect(cell('Rating budget used up'), 'only the unrated prompt with the budget reason').toBe('1 of 6 prompts')
+  expect(cell("Claude's time, cheaper route")).toBe('median 5 min 00 s over 1 task')
+  expect(cell("Claude's time, stayed")).toBe('median 1 min 52 s over 2 tasks')
+})
+
+test('the Time section sits after the cost sections and before the notes, within 80 columns, and is fenced for the desktop app', async () => {
+  // Without the unrated lines: their existing Not counted row is wider than 80 columns, which is not this test's business.
+  const lines = [...month(), ...timed().filter(l => l.kind !== 'unrated')]
+  const text = report(lines, { start: { head: 'Opus at medium, 60 rated prompts in 30 days', rows: [], tip: 'Switch with /model.' } })
+  const order = titles(text)
+  expect(order.indexOf('TIME')).toBe(order.indexOf('NOT COUNTED AS SAVINGS') + 1)
+  expect(order.indexOf('NEXT STEPS')).toBe(order.indexOf('TIME') + 1)
+  expect(text.split('\n').filter(l => l.length > 80)).toEqual([])
+  const md = report(lines, { markdown: true })
+  const out = md.split('\n')
+  const at = out.indexOf('TIME')
+  expect(out[at + 1], 'the block opens a code fence').toBe('```')
+  expect(out.slice(at + 1, at + 12).filter(l => l === '```').length).toBe(2)
+})
+
+test('the Time section leaves out a group with no tasks, and takes tasks without a task id by their own id', async () => {
+  const text = report([run({ id: 'x', ratingMs: 1000, durationMs: 9000, submittedAt: mins(5), at: mins(4) }), run({ id: 'y', ratingMs: 3000, durationMs: 7000 })])
+  const rows = sectionOf(text, 'TIME')
+  expect(rows.find(l => l.startsWith('Tasks finished'))).toMatch(/2$/)
+  expect(rows.find(l => l.startsWith("Claude's time, cheaper route"))).toMatch(/none yet$/)
+  expect(rows.find(l => l.startsWith('Rating budget used up'))).toMatch(/0 of 2 prompts$/)
+})
+
+test('no line carries the new time fields: one line says so', async () => {
+  for (const lines of [[], month(), [run({ durationMs: 5000 })]]) {
+    const text = report(lines)
+    expect(text.split('\n')).toContain('Time: not measured yet (needs prompts from rightsize 0.8).')
+    expect(titles(text)).not.toContain('TIME')
+  }
 })
 
 const saver = (x: Partial<RunLine> = {}) => run({ change: 'lower', offered: 'lower', actual: 0.05, stay: 0.1, taken: 0.05, ...x })

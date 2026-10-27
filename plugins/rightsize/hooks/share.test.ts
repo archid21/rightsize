@@ -33,12 +33,15 @@ test('a run keeps numbers and labels only: no session, fixed context, reasons or
     subLevel: 'high',
     fit: { sonnet: 'high' },
     actual: 0.5,
+    ratingMs: 1800,
+    submittedAt: at(0),
     fixed: { tokens: 1, servers: { private_mcp: 1 } },
     escalations: [{ step: 1, from: 'low', to: 'medium', why: 'cat /Users/me/secret.txt failed' }],
     tie: { by: 'guide', over: 'opus' },
   } as unknown as RunLine
   const e = shareEvent(line, I) ?? {}
-  expect(Object.keys(e).sort()).toEqual(['actual', 'at', 'escalations', 'fit', 'kind', 'level', 'ref', 'route', 'subLevel', 'tie', 'tier', 'type'])
+  expect(Object.keys(e).sort()).toEqual(['actual', 'at', 'escalations', 'fit', 'kind', 'level', 'ratingMs', 'ref', 'route', 'subLevel', 'tie', 'tier', 'type'])
+  expect(e.ratingMs, 'the rating delay is a number').toBe(1800)
   expect(e.escalations).toBe(1)
   expect(e.tie).toBe('guide')
   expect(JSON.stringify(e)).not.toMatch(/sess|private_mcp|secret/)

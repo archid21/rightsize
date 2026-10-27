@@ -133,6 +133,10 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
     contextTokens: undefined as number | undefined,
     /** Rating replies to give before `rating`, in order; a reply starting with "timeout" is a timed-out call, one starting with "unavailable" a refused one. */
     ratingQueue: [] as string[],
+    /** How long each rating call takes, in ms, in order: the clock moves on by it before the call answers. A call with none listed takes no time. */
+    ratingTakes: [] as number[],
+    /** The timeoutMs each rating call (not the spot-check) was given, in order. */
+    ratingTimeouts: [] as number[],
     /** True: a $.clock.sleep ends after a moment (the wait ran out), after any answer that is ready. False: it never ends, so an answer always comes first. */
     sleepEnds: false,
     /** A header's question answers only once its promise settles: an answer that comes after the wait. */
@@ -257,13 +261,15 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
   on('model.complete', async (_$, e) => {
     const model = String((e as { model?: unknown }).model ?? '')
     h.completions.push(model)
-    // The spot-check is the only call with a 15 s timeout; a Sonnet rating call has 10 s, like Haiku's.
+    // The spot-check is the only call with a 15 s timeout; a rating call has what is left of its prompt's 12 s.
     if (model === 'sonnet' && (e as { timeoutMs?: number }).timeoutMs === 15_000) {
       if (h.checkHold) await h.checkHold
       if (h.ledger !== undefined) h.ledger += h.checkCost
       return { value: { isAnswered: true, text: h.checkRating ?? h.rating, usage: h.checkUsage } } as never
     }
     h.ratings += 1
+    h.ratingTimeouts.push((e as { timeoutMs?: number }).timeoutMs ?? -1)
+    h.now += h.ratingTakes.shift() ?? 0
     h.ratingPrompts.push(String((e as { prompt?: unknown }).prompt ?? ''))
     // The rating call is priced too; the turn's measured cost leaves it out.
     if (h.ledger !== undefined) h.ledger += 0.5
@@ -1891,7 +1897,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const report = (await d.command('report')).text ?? ''
     expect(cellsOf(report, 'Prompts rated')).toEqual(['2', '2', '2'])
     expect(cellsOf(report, 'Kept / lowered / raised')).toEqual(['1/1/0', '1/1/0', '1/1/0'])
-    expect(report).toContain('Total saved is after the cost of rating prompts with Haiku')
+    expect(report).toContain('Total saved is after the cost of rating prompts')
     expect(report.includes('```'), 'fenced only in the desktop app').toBe(surface === 'desktop')
     expect(report).toContain('NOT COUNTED AS SAVINGS')
   })
@@ -2154,9 +2160,97 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const unrated = runLines(h).filter(l => l.kind === 'unrated')
     // An unrated prompt is part of the task in progress: the last rated run's.
     const task = (last(runLines(h).filter(l => l.kind === 'run')) as { task: string }).task
-    expect(unrated).toEqual([{ at: expect.any(String), kind: 'unrated', session: 'sess-1', task, reason: 'rating unreadable', rater: 'haiku', overhead: 2.1 }])
+    expect(unrated).toEqual([{ at: expect.any(String), kind: 'unrated', session: 'sess-1', task, reason: 'rating unreadable', rater: 'haiku', overhead: 2.1, ratingMs: 0 }])
     expect(h.files[LOG_FILE] ?? '').toContain('prompt not rated (rating unreadable)')
     expect(h.files[LOG_FILE] ?? '').toContain('rating by sonnet failed (rating call timed out): trying haiku')
+  })
+
+  test(`all rating attempts for a prompt fit in 12 s: Sonnet gets 9, Haiku the rest, and run lines carry ratingMs and submittedAt (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    const d = drive($, h)
+    h.now = Date.now()
+    await d.start(surface)
+    h.rating = FIT_NO
+
+    // A rating inside its time: Sonnet had 9 s, and the run says how long it took and when the prompt came in.
+    h.ratingTakes = [1800]
+    const t0 = h.now
+    await d.submit(LOOKUP)
+    expect(h.ratingTimeouts, 'Sonnet had at most 9 s').toEqual([9000])
+    await d.step('t1')
+    await d.complete('t1')
+    const first = last(runLines(h).filter(l => l.kind === 'run')) as { ratingMs: number; submittedAt: string; rater: string }
+    expect(first.ratingMs).toBe(1800)
+    expect(first.submittedAt, 'when the prompt was submitted, before its rating').toBe(new Date(t0).toISOString())
+    expect(first.rater).toBe('sonnet')
+
+    // Sonnet used its 9 s: Haiku gets the 3 s that are left, and rates. The two attempts took 10 s.
+    h.ratingTimeouts = []
+    h.completions = []
+    h.ratingQueue = ['timeout']
+    h.ratingTakes = [9000, 1000]
+    await d.submit(`${LOOKUP} slow`)
+    expect(h.completions).toEqual(['sonnet', 'haiku'])
+    expect(h.ratingTimeouts, 'Sonnet 9 s, then what is left of 12 s').toEqual([9000, 3000])
+    await d.step('t2')
+    await d.complete('t2')
+    const second = last(runLines(h).filter(l => l.kind === 'run')) as { ratingMs: number; rater: string }
+    expect(second.rater).toBe('haiku')
+    expect(second.ratingMs).toBe(10_000)
+  })
+
+  test(`when Sonnet used nearly all the budget, Haiku is skipped: the prompt is unrated, runs unchanged, and the line says why (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    const d = drive($, h)
+    h.now = Date.now()
+    await d.start(surface)
+    h.rating = LOWER
+    h.ratingQueue = ['timeout']
+    // 10.5 s gone: 1.5 s is left, under the 2 s an attempt needs.
+    h.ratingTakes = [10_500]
+    await d.submit(LOOKUP)
+    expect(h.completions, 'Sonnet only: no Haiku attempt').toEqual(['sonnet'])
+    await d.step('t1')
+    expect(last(h.sent)?.effort, 'no rating, no change').toBe('medium')
+    expect(last(h.sent)?.model).toBe('claude-opus-5-5')
+    await d.complete('t1')
+    expect(runLines(h).filter(l => l.kind === 'unrated')).toEqual([{ at: expect.any(String), kind: 'unrated', session: 'sess-1', reason: 'rating budget used up', rater: 'sonnet', overhead: 0, ratingMs: 10_500 }])
+    expect(h.files[LOG_FILE] ?? '').toContain('rating budget used up: not rated')
+    expect(h.files[LOG_FILE] ?? '').toContain('prompt not rated (rating budget used up)')
+
+    // Exactly 2 s left is enough for an attempt.
+    h.completions = []
+    h.ratingTimeouts = []
+    h.ratingQueue = ['timeout']
+    h.ratingTakes = [10_000]
+    await d.submit(`${LOOKUP} again`)
+    expect(h.completions).toEqual(['sonnet', 'haiku'])
+    expect(h.ratingTimeouts).toEqual([9000, 2000])
+
+    // The report counts the budget hit.
+    const text = (await d.command('report')).text ?? ''
+    expect(text).toMatch(/Rating budget used up +1 of \d+ prompts?/)
+  })
+
+  test(`Rater set to haiku: the first try leaves room for the retry, and a retry with under 2 s left is not made (${surface})`, { timeoutMs: 30000, options: { rater: 'haiku' } }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', stored: { rater: 'haiku' } })
+    const d = drive($, h)
+    h.now = Date.now()
+    await d.start(surface)
+    h.rating = FIT_NO
+    h.ratingQueue = ['timeout']
+    h.ratingTakes = [10_000, 500]
+    await d.submit(LOOKUP)
+    expect(h.completions).toEqual(['haiku', 'haiku'])
+    expect(h.ratingTimeouts, 'the first try 10 s, the retry the 2 s that are left').toEqual([10_000, 2000])
+
+    h.completions = []
+    h.ratingTimeouts = []
+    h.ratingQueue = ['timeout']
+    h.ratingTakes = [10_500]
+    await d.submit(`${LOOKUP} slow`)
+    expect(h.completions, 'no retry: 1.5 s is left').toEqual(['haiku'])
+    expect(runLines(h).filter(l => l.kind === 'unrated').at(-1)).toMatchObject({ reason: 'rating budget used up', rater: 'haiku', ratingMs: 10_500 })
   })
 
   test(`a Haiku rating after a Sonnet failure counts toward the spot-check, and one check is asked (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -4008,7 +4102,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const unrated = runLines(h).filter(l => l.kind === 'unrated')
     // An unrated prompt is part of the task in progress: the last rated run's.
     const task = (last(runLines(h).filter(l => l.kind === 'run')) as { task: string }).task
-    expect(unrated).toEqual([{ at: expect.any(String), kind: 'unrated', session: 'sess-1', task, reason: 'rating call timed out', rater: 'haiku', overhead: 0.00315 }])
+    expect(unrated).toEqual([{ at: expect.any(String), kind: 'unrated', session: 'sess-1', task, reason: 'rating call timed out', rater: 'haiku', overhead: 0.00315, ratingMs: 0 }])
     expect(h.files[LOG_FILE] ?? '').toContain('prompt not rated (rating call timed out)')
 
     // An answer that cannot be read is tried again the same way.
@@ -4029,7 +4123,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
     // The report counts them as not counted, with a plain reason.
     const report = (await d.command('report')).text ?? ''
-    expect(report).toMatch(/3 prompts +not rated \(the rating failed or could not be read\), so the session was left as it was/)
+    expect(report).toMatch(/3 prompts +not rated \(the rating failed\), so nothing was changed/)
   })
 
 

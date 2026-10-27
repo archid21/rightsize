@@ -317,6 +317,8 @@ type Run = {
   rater?: Rater
   /** The rating call's cost. */
   overhead: number
+  /** Wall time of all this prompt's rating attempts, in ms. Measured and reported; never used to choose a route. */
+  ratingMs?: number
   agentCalls: number
   /** Main-chat steps only the person can approve (push, publish, deploy, send). */
   approvalSteps: number
@@ -1038,7 +1040,7 @@ async function countTie($: EngineInterface) {
 }
 
 // `unsure` says why the rater may have seen too little: the request was cut, or a task is in progress and its last reply could not be read.
-async function rate($: EngineInterface, text: string, s: Situation): Promise<{ rating?: Rating; overhead: number; prompt: string; by: Rater; failed?: string; task: Awaited<ReturnType<typeof currentTask>>; unsure?: Unsure }> {
+async function rate($: EngineInterface, text: string, s: Situation): Promise<{ rating?: Rating; overhead: number; ratingMs: number; prompt: string; by: Rater; failed?: string; task: Awaited<ReturnType<typeof currentTask>>; unsure?: Unsure }> {
   const task = await currentTask($)
   let lastReply = ''
   try {
@@ -1058,29 +1060,53 @@ async function rate($: EngineInterface, text: string, s: Situation): Promise<{ r
   return { ...(await rateWithFallback($, s.tier, s.level, prompt)), prompt, task, ...(unsure ? { unsure } : {}) }
 }
 
+// A rating must never hold the prompt long. One budget covers every rating attempt of one prompt: Sonnet gets at most
+// SONNET_RATING_MS of it, and a fallback or retry gets what is left, or is skipped when under MIN_ATTEMPT_MS is left.
+// No rating means no change (the safe route), so running out of time costs a saving, never a wrong route.
+const RATING_BUDGET_MS = 12_000
+const SONNET_RATING_MS = 9_000
+const MIN_ATTEMPT_MS = 2_000
+const BUDGET_USED_UP = 'rating budget used up'
+
 /**
  * Rates a prompt: the chosen rater first. Sonnet (the default) that times out, is refused or answers
  * something unreadable is followed by one Haiku attempt, and no more: two attempts at most, never a
  * retry of each. Haiku chosen in Rater keeps its one retry after a timeout or an unreadable answer.
+ * All attempts fit in RATING_BUDGET_MS; an attempt with under MIN_ATTEMPT_MS left is not made, and the prompt is unrated.
  * `by` is the model whose call ended the rating: the one that rated, or the last that failed.
+ * `ratingMs` is the wall time of all the attempts: measured, never used to choose a route.
  */
-async function rateWithFallback($: EngineInterface, tier: Tier, level: Level, prompt: string): Promise<{ rating?: Rating; overhead: number; by: Rater; failed?: string }> {
+async function rateWithFallback($: EngineInterface, tier: Tier, level: Level, prompt: string): Promise<{ rating?: Rating; overhead: number; ratingMs: number; by: Rater; failed?: string }> {
+  const started = await $.clock.now()
+  const spent = async () => Math.max(0, (await $.clock.now()) - started)
+  const left = async () => Math.floor(RATING_BUDGET_MS - (await spent()))
   if (rater === 'sonnet') {
-    const first = await askRater($, 'sonnet', tier, level, prompt).catch((err): Awaited<ReturnType<typeof askRater>> => ({ overhead: 0, failed: `rating call threw: ${err instanceof Error ? err.message : String(err)}`, retry: false }))
-    if (first.rating) return { rating: first.rating, overhead: first.overhead, by: 'sonnet' }
+    const first = await askRater($, 'sonnet', tier, level, prompt, SONNET_RATING_MS).catch((err): Awaited<ReturnType<typeof askRater>> => ({ overhead: 0, failed: `rating call threw: ${err instanceof Error ? err.message : String(err)}`, retry: false }))
+    if (first.rating) return { rating: first.rating, overhead: first.overhead, ratingMs: await spent(), by: 'sonnet' }
+    const remaining = await left()
+    if (remaining < MIN_ATTEMPT_MS) {
+      await log($, `rating by sonnet failed (${first.failed ?? 'no rating'}); ${BUDGET_USED_UP}: not rated`)
+      return { overhead: first.overhead, ratingMs: await spent(), by: 'sonnet', failed: BUDGET_USED_UP }
+    }
     await log($, `rating by sonnet failed (${first.failed ?? 'no rating'}): trying ${FALLBACK_RATER}`)
-    const second = await askRater($, FALLBACK_RATER, tier, level, prompt)
-    return { rating: second.rating, overhead: first.overhead + second.overhead, by: FALLBACK_RATER, ...(second.rating ? {} : { failed: second.failed ?? first.failed ?? 'no rating' }) }
+    const second = await askRater($, FALLBACK_RATER, tier, level, prompt, remaining)
+    return { rating: second.rating, overhead: first.overhead + second.overhead, ratingMs: await spent(), by: FALLBACK_RATER, ...(second.rating ? {} : { failed: second.failed ?? first.failed ?? 'no rating' }) }
   }
   // A timeout or an answer that cannot be read may pass on a second try; a rater that is not there will not.
-  let first = await askRater($, 'haiku', tier, level, prompt)
+  // The first try leaves room for the retry, so a timeout does not use up the whole budget.
+  let first = await askRater($, 'haiku', tier, level, prompt, RATING_BUDGET_MS - MIN_ATTEMPT_MS)
   let overhead = first.overhead
   if (!first.rating && first.retry) {
+    const remaining = await left()
+    if (remaining < MIN_ATTEMPT_MS) {
+      await log($, `rating by haiku failed (${first.failed ?? 'no rating'}); ${BUDGET_USED_UP}: not rated`)
+      return { overhead, ratingMs: await spent(), by: 'haiku', failed: BUDGET_USED_UP }
+    }
     await log($, `rating retried once: ${first.failed ?? 'no rating'}`)
-    first = await askRater($, 'haiku', tier, level, prompt)
+    first = await askRater($, 'haiku', tier, level, prompt, remaining)
     overhead += first.overhead
   }
-  return { rating: first.rating, overhead, by: 'haiku', ...(first.rating ? {} : { failed: first.failed ?? 'no rating' }) }
+  return { rating: first.rating, overhead, ratingMs: await spent(), by: 'haiku', ...(first.rating ? {} : { failed: first.failed ?? 'no rating' }) }
 }
 
 // ---- Rater check -------------------------------------------------------------
@@ -1132,14 +1158,14 @@ async function spotCheck($: EngineInterface, session: string, tier: Tier, level:
 /** Why a rating did not come, and whether a second try may help (a timeout or an unreadable answer; not a rater that is unavailable). */
 type RaterFailure = { failed: string; retry: boolean }
 
-async function askRater($: EngineInterface, model: Rater, tier: Tier, level: Level, prompt: string): Promise<{ rating?: Rating; overhead: number } & Partial<RaterFailure>> {
+async function askRater($: EngineInterface, model: Rater, tier: Tier, level: Level, prompt: string, timeoutMs: number): Promise<{ rating?: Rating; overhead: number } & Partial<RaterFailure>> {
   const r = await $.model.complete({
     model,
     system: ratingSystem(tier, level),
     prompt,
     maxTokens: 300,
     effort: 'low',
-    timeoutMs: 10_000,
+    timeoutMs,
   })
   const usage = (r as { usage?: Usage }).usage
   const overhead = usage ? usageCost(prices, model, usage) : 0
@@ -1578,6 +1604,9 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
       aborted,
       ...(run.rater ? { rater: run.rater } : {}),
       overhead: round(run.overhead),
+      ...(run.ratingMs !== undefined ? { ratingMs: Math.round(run.ratingMs) } : {}),
+      // When the prompt was submitted (before its rating); `at` is when its turn ended.
+      submittedAt: new Date(run.submittedAt).toISOString(),
       missCost: round(run.missCost),
       agentCalls: run.agentCalls,
       ...(run.approvalSteps ? { approvalSteps: run.approvalSteps } : {}),
@@ -2543,6 +2572,8 @@ export const register: Register = (on, options) => {
       return next(e)
     }
     if (text.startsWith('/')) return next(e)
+    // When the prompt came in, before any rating or question: the start of the task's time to done.
+    const submittedAt = await $.clock.now()
     if (await holdIdle($)) {
       await $.prompt.fill({ text: e.text, mode: 'replace' }).catch(() => null)
       return { drop: 'rightsize held this prompt and put it back in the box. Run /clear or /compact, then send it.' }
@@ -2564,7 +2595,7 @@ export const register: Register = (on, options) => {
       const set = { handOff: yours.has('handOff'), lower: yours.has('lowering') }
       const movedRules = pacedRules(base.rules ?? DEFAULT_RULES, paceNow, set)
       const s: Situation = { ...base, rules: movedRules }
-      const { rating: rated, overhead, prompt, failed, by, task: kept, unsure } = await rate($, text, s)
+      const { rating: rated, overhead, ratingMs, prompt, failed, by, task: kept, unsure } = await rate($, text, s)
       // A rating that continues the task is planned as the task's type; any other starts a task of its own type.
       const follows = rated !== undefined && rated.continues === true && kept !== null
       const ratedType = follows && kept.type !== rated.type ? rated.type : undefined
@@ -2588,7 +2619,7 @@ export const register: Register = (on, options) => {
         const d = await resolve($, p, r, s)
         if (d.session) await $.state.set({ plugin: 'rightsize', key: 'sessionEffort' }, d.session)
         if (d.delegate) out = { ...e, context: [...(e.context ?? []), delegateNote(d.delegate, chances)] }
-        run = startRun(r, s, d, p, (await seenEffort($)) ?? s.level, overhead, { text, at: await $.clock.now(), ...(e.turnId !== undefined ? { during: e.turnId } : {}) })
+        run = startRun(r, s, d, p, (await seenEffort($)) ?? s.level, overhead, { text, at: submittedAt, ...(e.turnId !== undefined ? { during: e.turnId } : {}) })
         prevTask = kept
         if (follows) {
           run.task = kept.id
@@ -2601,6 +2632,7 @@ export const register: Register = (on, options) => {
         if (ratedType) run.ratedType = ratedType
         if (unsure) run.unsure = unsure
         run.rater = by
+        run.ratingMs = ratingMs
         // A close call the guide broke: kept on the run for the log, and counted so every fifth explores.
         if (planned.kind === 'delegate' && planned.tie) {
           run.tie = planned.tie
@@ -2631,7 +2663,7 @@ export const register: Register = (on, options) => {
         // An unrated prompt is planned as nothing, but it is still part of the task in progress, and counts as one of its prompts.
         const task = kept?.id
         if (kept) await $.state.set({ plugin: 'rightsize', key: 'task' }, { ...kept, prompts: kept.prompts + 1 }).catch(() => undefined)
-        const line: RunLine = { at: new Date().toISOString(), kind: 'unrated', session: sessionId, ...(task ? { task } : {}), reason, rater: by, overhead: round(overhead) }
+        const line: RunLine = { at: new Date().toISOString(), kind: 'unrated', session: sessionId, ...(task ? { task } : {}), reason, rater: by, overhead: round(overhead), ratingMs: Math.round(ratingMs) }
         await append($, 'runs.jsonl', JSON.stringify(line), RUNS_LOG_MAX)
       }
     } catch (err) {

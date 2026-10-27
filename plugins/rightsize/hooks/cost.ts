@@ -522,6 +522,8 @@ export function paceNote(p: Pace, acts = true) {
 const clampFloor = (l: Level, floor: Level) => (levelRank(l) < levelRank(floor) ? floor : l)
 const clampCeiling = (l: Level, ceiling: Level) => (levelRank(l) > levelRank(ceiling) ? ceiling : l)
 const ceilingOf = (s: Situation): Level => s.ceiling ?? 'max'
+/** A model whose rated level is above Highest effort does not fit: capped lower, it would do the work worse than rated. */
+const overCeiling = (need: Level, s: Situation) => levelRank(need) > levelRank(ceilingOf(s))
 
 /** A level on the session's model: a raise stops at the ceiling, and never falls below the level in use. */
 const capRaise = (target: Level, s: Situation) => {
@@ -552,6 +554,8 @@ export const REVIEW_LEVEL: Level = 'high'
 const atLeast = (l: Level, min: Level) => (levelRank(l) < levelRank(min) ? min : l)
 
 function reviewPlan(r: Rating, s: Situation, floor: Level): Plan | undefined {
+  // Unlike a route in plan(), a ceiling below high does not drop this one: the review must still run,
+  // so the switch is capped at the ceiling on purpose, though it then runs below the level a review needs.
   const level = clampCeiling(clampFloor(atLeast(r.fit[REVIEW_TIER] ?? REVIEW_LEVEL, REVIEW_LEVEL), floor), ceilingOf(s))
   if (tierRank(s.tier) < tierRank(REVIEW_TIER)) {
     if (s.without?.includes(REVIEW_TIER)) return undefined
@@ -582,6 +586,9 @@ export function plan(r: Rating, s: Situation, floor: Level): Plan {
     const need = r.fit[t]
     if (t === s.tier || !need || s.without?.includes(t)) return []
     if (r.type === 'review' && tierRank(t) < tierRank(REVIEW_TIER)) return []
+    // A model that needs more than Highest effort allows does not fit: no route, up or down. The review
+    // minimum is not counted here: a review on Opus is capped at the ceiling on purpose (see reviewPlan).
+    if (overCeiling(need, s)) return []
     // A hand-down to a model the rater has been wrong about for this kind of work waits until its record mends.
     if (tierRank(t) < tierRank(s.tier) && blocked(s, r.type, t)) return []
     const level = clampCeiling(clampFloor(r.type === 'review' && t === REVIEW_TIER ? atLeast(need, REVIEW_LEVEL) : need, floor), ceilingOf(s))
@@ -647,6 +654,10 @@ export function sizeSubagent(r: Rating, s: Situation, parent: Tier, floor: Level
   const weaker = TIERS.flatMap(t => {
     const need = r.fit[t]
     if (tierRank(t) >= tierRank(parent) || !need || s.without?.includes(t)) return []
+    // A model that needs more than Highest effort allows does not fit.
+    if (overCeiling(need, s)) return []
+    // A model paused for too many misses on this kind of work gets no subagent either.
+    if (blocked(s, r.type, t)) return []
     const level = clampCeiling(clampFloor(need, floor), ceilingOf(s))
     return [{ tier: t, level, ...priced(t, level), parentCost: p.cost, parentRaw: p.raw }]
   })

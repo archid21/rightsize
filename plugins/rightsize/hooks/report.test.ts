@@ -19,12 +19,34 @@ const sectionOf = (text: string, title: string) => {
   return out.slice(at + 1, out.findIndex((l, i) => i > at && l === '')).map(l => l.trim())
 }
 
-test('counts a saving against staying, scaled by what the turn really cost', async () => {
-  expect(counterfactual(run({ change: 'lower', actual: 0.02, stay: 0.06, taken: 0.03 })), 'staying: 2x the route taken').toBe(0.04)
+test('counts a saving against the frozen baseline, not one rescaled by what the turn really cost', async () => {
+  expect(counterfactual(run({ change: 'lower', actual: 0.02, stay: 0.06, taken: 0.03 })), 'the baseline as it was recorded').toBe(0.06)
+  expect(counterfactual(run({ change: 'lower', actual: 0.2, stay: 0.06, taken: 0.03 })), 'a turn that cost far more than estimated leaves the baseline alone').toBe(0.06)
+  expect(counterfactual(run({ change: 'lower', actual: 0.002, stay: 0.06, taken: 0.03 })), 'and so does one that cost far less').toBe(0.06)
+  expect(counterfactual(run({ change: 'delegate-down', route: 'delegate:haiku', actual: 0.4, stay: 0.3, taken: 0.1 })), 'a hand-off that cost more than staying').toBe(0.3)
   expect(counterfactual(run({ change: 'none', actual: 0.05, stay: 0.09, taken: 0.03 })), 'unchanged: no saving').toBe(0.05)
   expect(counterfactual(run({ change: 'lower', steppedUp: true, actual: 0.05, stay: 0.1, taken: 0.02 })), 'stepped up: none claimed').toBe(0.05)
   expect(counterfactual({ at: ago(0), actual: 0.05 }), 'a line from before 0.5: none claimed').toBe(0.05)
   expect(counterfactual(run({ change: 'lower', escalations: [{ step: 3, from: 'low', to: 'medium', why: 'x' }], actual: 0.05, stay: 0.1, taken: 0.02 })), 'raised mid-turn: none claimed').toBe(0.05)
+})
+
+test('a task that cost more than its baseline is a negative saving, printed as a plain negative amount', async () => {
+  const lines = [run({ change: 'lower', offered: 'lower', actual: 0.5, stay: 0.2, taken: 0.1 }), run({ change: 'lower', offered: 'lower', actual: 0.1, stay: 0.3, taken: 0.15 })]
+  const t = totals(lines)
+  expect(Number(t.saved.toFixed(5)), 'the baseline minus the cost, per task: -0.3 and +0.2').toBe(-0.1)
+  const text = report(lines)
+  expect(text.split('\n')[1]).toBe('Cost ~$0.10 more than it saved in the last 30 days.')
+  expect(cells(text, 'Total saved')).toEqual(['-$0.10', '-$0.10', '-$0.10'])
+  expect(cells(text, 'Share of cost saved'), 'no share of a negative saving').toEqual(['–', '–', '–'])
+  expect(text, 'no doubled signs or a minus before words').not.toMatch(/-~|~-|--|-under/)
+  // Small: under half a cent either way reads as even, never as "-under $0.01".
+  expect(cells(report([run({ change: 'lower', offered: 'lower', actual: 0.101, stay: 0.1, taken: 0.05 })]), 'Total saved')).toEqual(['even', 'even', 'even'])
+  // A subscriber reads it in API-equivalent dollars.
+  expect(report(lines, { subscription: true }).split('\n')[1]).toBe('Used more than it saved in the last 30 days (~$0.10 more, API-equivalent).')
+  // A raise that came out cheaper than its baseline takes the extra down, and a lowering's negative saving counts against savings.
+  const raised = totals([run({ change: 'raise', offered: 'raise', actual: 0.05, stay: 0.1, taken: 0.2 })])
+  expect(Number(raised.extra.toFixed(5)), 'spent less than staying would have').toBe(-0.05)
+  expect(report([run({ change: 'raise', offered: 'raise', actual: 0.05, stay: 0.1, taken: 0.2 })]), 'a negative extra is not shown as a row').not.toContain('Extra spent')
 })
 
 test('keeps raising apart from saving, takes off the rating calls, and skips stopped turns', async () => {
@@ -37,8 +59,8 @@ test('keeps raising apart from saving, takes off the rating calls, and skips sto
   ])
   expect(t.rated).toBe(4)
   expect(t.declined, 'kept the level once').toBe(1)
-  expect(Number(t.saved.toFixed(5))).toBe(0.02)
-  expect(Number(t.extra.toFixed(5)), 'raising spent half again').toBe(0.15)
+  expect(Number(t.saved.toFixed(5)), 'the baseline 0.06 minus the 0.02 it cost').toBe(0.04)
+  expect(Number(t.extra.toFixed(5)), 'raising cost 0.3 against a baseline of 0.1').toBe(0.2)
   expect(Number(t.overhead.toFixed(5)), 'every rating call, the failed one too').toBe(0.005)
 })
 
@@ -151,7 +173,7 @@ test('rows with nothing to say are left out of the table', async () => {
   const busy = report([run({ change: 'raise', offered: 'raise', actual: 0.3, stay: 0.1, taken: 0.2 }), run({ change: 'none', offered: 'lower' }), run({ change: 'delegate-down', route: 'delegate:haiku' })])
   expect(cells(busy, 'Sent to cheaper / stronger model')).toEqual(['1/0', '1/0', '1/0'])
   expect(cells(busy, 'Suggestions declined')).toEqual(['1', '1', '1'])
-  expect(cells(busy, 'Extra spent on harder prompts')).toEqual(['$0.15', '$0.15', '$0.15'])
+  expect(cells(busy, 'Extra spent on harder prompts')).toEqual(['$0.20', '$0.20', '$0.20'])
   expect(busy, 'the footer says what the extra is').toContain("It isn't taken off Total saved.")
   expect(text, 'no extra: no footer line for it').not.toContain('Extra spent')
 })
@@ -202,6 +224,21 @@ test('problems: what was not counted as saving, each with a plain reason, the bi
   expect(approved.some(p => p.reason.includes('skipped')), 'kept in the main chat for steps only you can approve: not a skip').toBe(false)
   const plain = report(lines, { measureFrom: ago(60) })
   expect(plain, 'the old jargon is gone').not.toMatch(/Negative ROI|Rescue|Anomal/)
+})
+
+test('unrated prompts are counted under Not counted as savings, with their rating cost as overhead and no saving', async () => {
+  const unrated = (x: Partial<RunLine> = {}): RunLine => ({ at: ago(0), kind: 'unrated', session: 's1', reason: 'rating unreadable', overhead: 0.002, ...x })
+  const t = totals([unrated(), unrated({ overhead: 0.001 }), run({ change: 'lower', offered: 'lower', actual: 0.02, stay: 0.06, taken: 0.03 })])
+  expect(t.unrated).toBe(2)
+  expect(t.rated, 'an unrated prompt is not a rated one').toBe(1)
+  expect(Number(t.overhead.toFixed(5)), 'what the failed rating calls cost still counts').toBe(0.003)
+  expect(Number(t.saved.toFixed(5))).toBe(0.04)
+  const one = problems([unrated()], [])
+  expect(one).toEqual([{ n: 1, unit: ['prompt', 'prompts'], reason: 'not rated (the rating failed or could not be read), so the session was left as it was' }])
+  const text = report([unrated(), unrated({ reason: 'rating call timed out' })])
+  expect(sectionOf(text, 'NOT COUNTED AS SAVINGS')[0]).toMatch(/^2 prompts +not rated \(the rating failed or could not be read\), so the session was left as it was$/)
+  expect(text, 'a report of only unrated prompts is not "nothing rated"').not.toContain('Nothing rated')
+  expect(cells(text, 'Prompts rated')).toEqual(['0', '0', '0'])
 })
 
 test('problems line up: counts right-aligned, units padded, detail under the reason', async () => {

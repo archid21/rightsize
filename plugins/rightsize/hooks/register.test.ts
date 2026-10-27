@@ -95,6 +95,12 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
     breakdown: undefined as Record<string, unknown> | undefined,
     /** Where the session draws: the surface it started on. */
     surfaces: [] as string[],
+    /** What $.session.model() answers: the model in use now, as /model shows it. Defaults to the starting model. */
+    liveModel: undefined as string | undefined,
+    /** The input tokens of the live window's last response, as $.session.usage() reports; undefined: none yet. */
+    contextTokens: undefined as number | undefined,
+    /** Rating replies to give before `rating`, in order; a reply starting with "timeout" is a timed-out call, one starting with "unavailable" a refused one. */
+    ratingQueue: [] as string[],
   }
   on('session.start', async ($, e) => {
     h.surfaces = e.surface ? [e.surface] : []
@@ -110,9 +116,10 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
   })
   on('session.messages', async () => ({ value: [] }) as never)
   on('session.id', async () => ({ value: 'sess-1' }) as never)
+  on('session.model', async () => ({ value: h.liveModel ?? h.model }) as never)
   on('session.usage', async ($, e) => {
     const breakdown = (e as { breakdown?: string }).breakdown && h.breakdown ? { breakdown: h.breakdown } : {}
-    return { value: { startedAt: 0, context: { window: 200_000, ...breakdown }, rateLimits: h.rateLimits, ...(h.ledger === undefined ? {} : { cost: { usd: h.ledger } }) } } as never
+    return { value: { startedAt: 0, context: { window: 200_000, ...(h.contextTokens === undefined ? {} : { tokens: h.contextTokens }), ...breakdown }, rateLimits: h.rateLimits, ...(h.ledger === undefined ? {} : { cost: { usd: h.ledger } }) } } as never
   })
   on('fs.exists', async ($, e) => {
     const { path } = e as { path: string }
@@ -191,7 +198,10 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
     h.ratings += 1
     // The rating call is priced too; the turn's measured cost leaves it out.
     if (h.ledger !== undefined) h.ledger += 0.5
-    return { value: { isAnswered: true, text: h.rating, usage: h.ratingUsage } } as never
+    const queued = h.ratingQueue.shift()
+    if (queued?.startsWith('timeout')) return { value: { isAnswered: false, reason: 'aborted', usage: h.ratingUsage } } as never
+    if (queued?.startsWith('unavailable')) return { value: { isAnswered: false, reason: 'api-error', status: 401, error: 'authentication_failed', usage: h.ratingUsage } } as never
+    return { value: { isAnswered: true, text: queued ?? h.rating, usage: h.ratingUsage } } as never
   })
   ;(on as unknown as LooseOn)('tool.call', { tool: 'AskUserQuestion' }, async (_$, e) => {
     const q = e.questions[0]
@@ -1651,10 +1661,11 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(last(runs())?.change).toBe('lower')
     expect(last(runs())?.offered).toBe('lower')
 
-    // A rating that comes to nothing: its cost is logged alone.
+    // A rating that comes to nothing, twice: the prompt is logged as unrated, with what both calls cost.
     h.rating = 'no json here'
     await d.submit(LOOKUP)
-    expect(last(runs())?.kind).toBe('overhead')
+    expect(last(runs())?.kind).toBe('unrated')
+    expect(last(runs())?.overhead, 'both rating calls, 1000 in and 100 out each').toBe(0.0003)
 
     const report = (await d.command('report')).text ?? ''
     expect(cellsOf(report, 'Prompts rated')).toEqual(['2', '2', '2'])
@@ -3579,6 +3590,125 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.posts.length, 'no POST').toBe(posts)
     expect(h.fetches, 'no fetch').toBe(fetches)
     expect(h.asked, 'no question').toEqual([])
+  })
+
+
+  // The first prompt of a session: nothing has run a step yet, so the model and the window come from the engine.
+  const PLAIN = '{"level":"medium","model":"same","size":"small","type":"lookup","read":2000,"write":300,"steps":1}'
+  const LOG_FILE = '/home/test/.claude/mods-logs/rightsize.log'
+  const firstPrompt = async (h: ReturnType<typeof engine>, d: ReturnType<typeof drive>, turn: string) => {
+    h.rating = PLAIN
+    await d.submit(LOOKUP)
+    await d.step(turn)
+    await d.complete(turn)
+    return runLines(h).filter(l => l.kind === 'run').at(-1) as { tier: string; context: number } | undefined
+  }
+
+  test(`the first prompt of a session started on Sonnet, with no model setting, is planned on Sonnet (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-sonnet-5-5', effort: 'medium' })
+    const d = drive($, h)
+    await d.start(surface)
+    const run = await firstPrompt(h, d, 't1')
+    expect(run?.tier, 'the run was planned on the live model, not the Opus fallback').toBe('sonnet')
+    const log = h.files[LOG_FILE] ?? ''
+    expect(log).toContain('lookup on sonnet/')
+    expect(log).not.toContain('on opus/')
+    expect(log, 'the model was known: nothing to say about it').not.toContain('session model unknown')
+  })
+
+  test(`a /model change before the next prompt is planned on the new model, ahead of the one last seen (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-sonnet-5-5', effort: 'medium' })
+    const d = drive($, h)
+    await d.start(surface)
+    await firstPrompt(h, d, 't1')
+    h.liveModel = 'claude-haiku-5-5'
+    h.model = 'claude-haiku-5-5'
+    h.rating = PLAIN
+    await d.submit(LOOKUP)
+    expect(h.files[LOG_FILE] ?? '', 'the second prompt, planned on Haiku').toContain('lookup on haiku/')
+  })
+
+  test(`a model nobody can name is planned as Opus, and the log says it was unknown (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'mystery-1', effort: 'medium' })
+    const d = drive($, h)
+    await d.start(surface)
+    h.rating = PLAIN
+    await d.submit(LOOKUP)
+    const log = h.files[LOG_FILE] ?? ''
+    expect(log).toContain('session model unknown')
+    expect(log, 'a fallback, not a guess made silently').toContain('lookup on opus/')
+  })
+
+  test(`the first prompt is planned at the live context size when the engine reports one (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    const d = drive($, h)
+    h.contextTokens = 150_000
+    await d.start(surface)
+    expect((await firstPrompt(h, d, 't1'))?.context, 'a resumed session of 150K').toBe(150_000)
+
+  })
+
+  test(`the first prompt keeps the 20K start size when the engine has no reading yet (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    const d = drive($, h)
+    await d.start(surface)
+    expect((await firstPrompt(h, d, 't1'))?.context, 'a fresh session').toBe(20_000)
+  })
+
+  test(`a rating that times out is tried once more; if it still fails the prompt is logged as unrated and the session is left as it was (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    const d = drive($, h)
+    h.ratingUsage = { input_tokens: 1000, output_tokens: 100, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+    // The log's times are the wall clock's: the report's periods count from now.
+    h.now = Date.now()
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+
+    // One timeout, then an answer: the retry rates the prompt, and nothing is logged as unrated.
+    h.ratingQueue = ['timeout']
+    h.rating = LOWER
+    h.answers = { Lowering: 'Lower automatically', Remember: 'Just this session' }
+    const before = h.ratings
+    await d.submit(LOOKUP)
+    expect(h.ratings - before, 'two calls').toBe(2)
+    expect(runLines(h).some(l => l.kind === 'unrated')).toBe(false)
+    await d.step('t1')
+    expect(last(h.sent)?.effort, 'the rating counted: lowered').toBe('low')
+    await d.complete('t1')
+
+    // Two timeouts: no route, the session as it is, one unrated line carrying both calls' cost.
+    h.ratingQueue = ['timeout', 'timeout']
+    const calls = h.ratings
+    await d.submit(LOOKUP)
+    expect(h.ratings - calls, 'one retry, no more').toBe(2)
+    await d.step('t2')
+    expect(last(h.sent)?.effort, 'effort as the session has it').toBe('medium')
+    expect(last(h.sent)?.model, 'model as the session has it').toBe('claude-opus-5-5')
+    await d.complete('t2')
+    const unrated = runLines(h).filter(l => l.kind === 'unrated')
+    expect(unrated).toEqual([{ at: expect.any(String), kind: 'unrated', session: 'sess-1', reason: 'rating call timed out', overhead: 0.0003 }])
+    expect(h.files[LOG_FILE] ?? '').toContain('prompt not rated (rating call timed out)')
+
+    // An answer that cannot be read is tried again the same way.
+    h.ratingQueue = ['no json', 'still no json']
+    const reads = h.ratings
+    await d.submit(LOOKUP)
+    expect(h.ratings - reads).toBe(2)
+    expect(runLines(h).filter(l => l.kind === 'unrated').at(-1)?.reason).toBe('rating unreadable')
+    await d.step('t3')
+    await d.complete('t3')
+
+    // A rater that is not available is not asked again.
+    h.ratingQueue = ['unavailable']
+    const asked = h.ratings
+    await d.submit(LOOKUP)
+    expect(h.ratings - asked, 'one call').toBe(1)
+    expect(runLines(h).filter(l => l.kind === 'unrated').at(-1)?.reason).toBe('rating call failed (status 401)')
+
+    // The report counts them as not counted, with a plain reason.
+    const report = (await d.command('report')).text ?? ''
+    expect(report).toMatch(/3 prompts +not rated \(the rating failed or could not be read\), so the session was left as it was/)
   })
 
 }

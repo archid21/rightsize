@@ -740,16 +740,27 @@ async function choice<K extends keyof Choices>($: EngineInterface, key: K, q: Qu
 // ---- Deciding --------------------------------------------------------------
 
 async function situation($: EngineInterface): Promise<Situation> {
-  const model = (await $.state.get({ plugin: 'rightsize', key: 'seenModel' }).catch(() => undefined))?.value
-  let tier = tierOf(model)
-  if (!tier) tier = tierOf(String((await $.settings.read({ key: 'model' }).catch(() => '')) ?? '')) ?? 'opus'
+  // The model in use now comes first: a session started with --model or /model has run no step yet, so seenModel is empty.
+  const live = await $.session.model().catch(() => undefined)
+  const seen = (await $.state.get({ plugin: 'rightsize', key: 'seenModel' }).catch(() => undefined))?.value
+  let tier = tierOf(typeof live === 'string' ? live : undefined) ?? tierOf(typeof seen === 'string' ? seen : undefined)
+  if (!tier) tier = tierOf(String((await $.settings.read({ key: 'model' }).catch(() => '')) ?? ''))
+  if (!tier) {
+    // No source names a known tier: plan as Opus, the model a session starts on, but say so in the log.
+    tier = 'opus'
+    await log($, `session model unknown (live ${JSON.stringify(live ?? null)}, seen ${JSON.stringify(seen ?? null)}, no usable model setting): planned as Opus`)
+  }
   let level = (await sessionEffort($)) ?? (await seenEffort($))
   if (!level) {
     const set = await $.settings.read({ key: 'effortLevel' }).catch(() => undefined)
     level = isLevel(set) ? set : DEFAULT_LEVEL[tier]
   }
-  const context = (await $.state.get({ plugin: 'rightsize', key: 'context' }).catch(() => undefined))?.value
-  return { tier, level, context: typeof context === 'number' && context > 0 ? context : DEFAULT_CONTEXT, prices, cal, rules, ties: await tiesSeen($), misses, missBlock, ceiling, without, explore }
+  const kept = (await $.state.get({ plugin: 'rightsize', key: 'context' }).catch(() => undefined))?.value
+  // Nothing kept yet (the first prompt, or a resumed session): the live window's fill, as the engine reports it.
+  const have = typeof kept === 'number' && kept > 0
+  const reported = have ? undefined : (await usageNow($))?.context?.tokens
+  const context = have ? kept : typeof reported === 'number' && reported > 0 ? reported : DEFAULT_CONTEXT
+  return { tier, level, context, prices, cal, rules, ties: await tiesSeen($), misses, missBlock, ceiling, without, explore }
 }
 
 // Close calls seen so far, kept in the store so the one-in-five exploration holds across sessions.
@@ -765,7 +776,7 @@ async function countTie($: EngineInterface) {
   await $.store.set(TIES_STORE, (await tiesSeen($)) + 1).catch(() => undefined)
 }
 
-async function rate($: EngineInterface, text: string, s: Situation): Promise<{ rating?: Rating; overhead: number; prompt: string }> {
+async function rate($: EngineInterface, text: string, s: Situation): Promise<{ rating?: Rating; overhead: number; prompt: string; failed?: string }> {
   let lastReply = ''
   try {
     const rows = await $.session.messages()
@@ -780,7 +791,15 @@ async function rate($: EngineInterface, text: string, s: Situation): Promise<{ r
     // Rated on the prompt alone.
   }
   const prompt = ratingPrompt(text, lastReply)
-  return { ...(await askRater($, s.tier, s.level, prompt)), prompt }
+  // A timeout or an answer that cannot be read may pass on a second try; a rater that is not there will not.
+  let first = await askRater($, s.tier, s.level, prompt)
+  let overhead = first.overhead
+  if (!first.rating && first.retry) {
+    await log($, `rating retried once: ${first.failed ?? 'no rating'}`)
+    first = await askRater($, s.tier, s.level, prompt)
+    overhead += first.overhead
+  }
+  return { rating: first.rating, overhead, prompt, ...(first.rating ? {} : { failed: first.failed ?? 'no rating' }) }
 }
 
 // ---- Rater check -------------------------------------------------------------
@@ -829,7 +848,10 @@ async function spotCheck($: EngineInterface, session: string, tier: Tier, level:
   }
 }
 
-async function askRater($: EngineInterface, tier: Tier, level: Level, prompt: string): Promise<{ rating?: Rating; overhead: number }> {
+/** Why a rating did not come, and whether a second try may help (a timeout or an unreadable answer; not a rater that is unavailable). */
+type RaterFailure = { failed: string; retry: boolean }
+
+async function askRater($: EngineInterface, tier: Tier, level: Level, prompt: string): Promise<{ rating?: Rating; overhead: number } & Partial<RaterFailure>> {
   const r = await $.model.complete({
     model: RATER,
     system: ratingSystem(tier, level),
@@ -842,10 +864,16 @@ async function askRater($: EngineInterface, tier: Tier, level: Level, prompt: st
   const overhead = usage ? usageCost(prices, RATER, usage) : 0
   if (!r.isAnswered) {
     await log($, `rating failed: ${r.reason}`)
-    return { overhead }
+    // 'aborted' is the timeout; an API error with no status is a dropped connection or provider timeout. Any other
+    // API error (a refusal, a missing login, a limit) says the rater is not available now.
+    const timedOut = r.reason === 'aborted' || (r.reason === 'api-error' && r.status === null)
+    return { overhead, failed: r.reason === 'api-error' ? `rating call failed (${r.status === null ? 'no response' : `status ${r.status}`})` : r.reason === 'aborted' ? 'rating call timed out' : 'rating call came back empty', retry: timedOut || r.reason === 'empty-reply' }
   }
   const rating = parseRating(r.text, tier)
-  if (!rating) await log($, `rating unreadable: ${JSON.stringify(r.text.slice(0, 80))}`)
+  if (!rating) {
+    await log($, `rating unreadable: ${JSON.stringify(r.text.slice(0, 80))}`)
+    return { overhead, failed: 'rating unreadable', retry: true }
+  }
   return { rating, overhead }
 }
 
@@ -2014,7 +2042,7 @@ export const register: Register = (on, options) => {
       const set = { handOff: yours.has('handOff'), lower: yours.has('lowering') }
       const movedRules = pacedRules(base.rules ?? DEFAULT_RULES, paceNow, set)
       const s: Situation = { ...base, rules: movedRules }
-      const { rating: r, overhead, prompt } = await rate($, text, s)
+      const { rating: r, overhead, prompt, failed } = await rate($, text, s)
       if (r) {
         // While Claude fans work out to workflows, a single hand-off would only cut across it. After one,
         // Workflows says whether hand-offs go on (follow my rules, right-size every agent) or wait (the default).
@@ -2049,9 +2077,12 @@ export const register: Register = (on, options) => {
         await log($, `${r.type} on ${s.tier}/${s.level}${paced}: rated ${fit}, plan ${p.kind}${'dir' in p ? ` ${p.dir}` : ''}${run.tie ? ` (tie ${run.tie.by} over ${run.tie.over})` : ''}: ${did}`)
         // Every 50th rating gets Sonnet's second opinion, in the background.
         if (await dueCheck($)) void spotCheck($, sessionId, s.tier, s.level, prompt, r)
-      } else if (overhead > 0) {
-        // A rating that came to nothing still cost something: the report counts it.
-        const line: RunLine = { at: new Date().toISOString(), kind: 'overhead', session: sessionId, overhead: round(overhead) }
+      } else {
+        // No rating, even after a second try: the session stays as it is, the safe route. The log line says so, and carries
+        // what the rating calls cost; /rightsize report counts the prompt as not counted, and the cost as overhead.
+        const reason = failed ?? 'no rating'
+        await log($, `prompt not rated (${reason}): kept ${s.level} on ${TIER_NAME[s.tier]}`)
+        const line: RunLine = { at: new Date().toISOString(), kind: 'unrated', session: sessionId, reason, overhead: round(overhead) }
         await append($, 'rightsize-runs.jsonl', JSON.stringify(line), RUNS_LOG_MAX)
       }
     } catch (err) {

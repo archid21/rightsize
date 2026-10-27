@@ -714,16 +714,55 @@ test('Highest effort stops a raise at the ceiling, and never lowers what you are
 })
 
 test('Highest effort caps the level a hand-off subagent and Claude\'s own subagents run at', async () => {
-  // Haiku needs max for this: a hand-down from Fable still pays, and the level is the ceiling at most.
-  const r = rating({ level: 'max', fit: { haiku: 'max', sonnet: null, opus: null, fable: 'low' }, type: 'search', read: 150_000, write: 3000, steps: 30 })
+  // Haiku needs xhigh for this: a hand-down from Fable still pays, and the level is the ceiling at most.
+  const r = rating({ level: 'xhigh', fit: { haiku: 'xhigh', sonnet: null, opus: null, fable: 'low' }, type: 'search', read: 150_000, write: 3000, steps: 30 })
   const open = plan(r, fable, 'low')
-  expect(open.kind === 'delegate' && [open.tier, open.level], 'no ceiling').toEqual(['haiku', 'max'])
-  const capped = plan(r, { ...fable, ceiling: 'xhigh' }, 'low')
-  expect(capped.kind === 'delegate' && [capped.tier, capped.level], 'the same hand-down, at xhigh').toEqual(['haiku', 'xhigh'])
-  expect(capped.kind === 'delegate' && capped.delegateCost, 'priced at the level it runs at').toBe(delegateCost(r, fable, 'haiku', 'xhigh'))
-  const listing = rating({ type: 'search', fit: { haiku: 'max', sonnet: 'max', opus: 'low', fable: 'low' }, read: 8000, write: 500, steps: 5 })
-  expect(sizeSubagent(listing, opus, 'opus', 'low')?.level, 'no ceiling').toBe('max')
-  expect(sizeSubagent(listing, { ...opus, ceiling: 'high' }, 'opus', 'low')?.level, 'capped').toBe('high')
+  expect(open.kind === 'delegate' && [open.tier, open.level], 'no ceiling').toEqual(['haiku', 'xhigh'])
+  const atCeiling = plan(r, { ...fable, ceiling: 'xhigh' }, 'low')
+  expect(atCeiling.kind === 'delegate' && [atCeiling.tier, atCeiling.level], 'the ceiling itself is allowed').toEqual(['haiku', 'xhigh'])
+  expect(atCeiling.kind === 'delegate' && atCeiling.delegateCost, 'priced at the level it runs at').toBe(delegateCost(r, fable, 'haiku', 'xhigh'))
+  // A floor raises the level a route runs at, and the ceiling still caps it (the need itself fits).
+  const floored = plan(rating({ ...r, fit: { haiku: 'low', sonnet: null, opus: null, fable: 'low' } }), { ...fable, ceiling: 'medium' }, 'high')
+  expect(floored.kind === 'delegate' && floored.level, 'floor above the ceiling: the ceiling wins').toBe('medium')
+  const listing = rating({ type: 'search', fit: { haiku: 'high', sonnet: 'high', opus: 'low', fable: 'low' }, read: 8000, write: 500, steps: 5 })
+  expect(sizeSubagent(listing, opus, 'opus', 'low')?.level, 'no ceiling').toBe('high')
+  expect(sizeSubagent(listing, { ...opus, ceiling: 'high' }, 'opus', 'low')?.level, 'the ceiling itself is allowed').toBe('high')
+  const hard = rating({ type: 'search', fit: { haiku: 'max', sonnet: 'max', opus: 'low', fable: 'low' }, read: 8000, write: 500, steps: 5 })
+  expect(sizeSubagent(hard, opus, 'opus', 'low')?.level, 'no ceiling').toBe('max')
+})
+
+test('a model that needs more than Highest effort allows does not fit: no route is offered for it', async () => {
+  // Haiku needs xhigh and Sonnet high. A ceiling of high drops Haiku, and a ceiling of medium drops both.
+  const r = rating({ level: 'xhigh', fit: { haiku: 'xhigh', sonnet: 'high', opus: null, fable: 'low' }, type: 'search', read: 150_000, write: 3000, steps: 30 })
+  const toTier = (p: ReturnType<typeof plan>) => (p.kind === 'delegate' ? [p.dir, p.tier, p.level] : p.kind)
+  expect(toTier(plan(r, { ...fable, ceiling: 'xhigh' }, 'low')), 'ceiling xhigh: Haiku fits').toEqual(['down', 'haiku', 'xhigh'])
+  expect(toTier(plan(r, { ...fable, ceiling: 'high' }, 'low')), 'ceiling high: Haiku needs xhigh, so Sonnet at high').toEqual(['down', 'sonnet', 'high'])
+  expect(plan(r, { ...fable, ceiling: 'medium' }, 'low').kind, 'nothing capped is offered as a hand-off').not.toBe('delegate')
+  // A hand-up the same way: Opus needs xhigh, so under a ceiling of high there is no hand-up to it.
+  const sonnet = { ...opus, tier: 'sonnet' as const, level: 'high' as const }
+  const hard = rating({ level: 'xhigh', fit: { sonnet: null, opus: 'xhigh', fable: null }, type: 'debug', read: 30_000, write: 4000, steps: 12 })
+  expect(toTier(plan(hard, { ...sonnet, ceiling: 'xhigh' }, 'low')), 'ceiling xhigh: hand up to Opus').toEqual(['up', 'opus', 'xhigh'])
+  expect(plan(hard, { ...sonnet, ceiling: 'high' }, 'low').kind, 'ceiling high: Opus would run capped, so no hand-up').not.toBe('delegate')
+  // Claude's own subagents: a model whose need is over the ceiling gets none.
+  const listing = rating({ type: 'search', fit: { haiku: 'max', sonnet: 'high', opus: 'low', fable: 'low' }, read: 8000, write: 500, steps: 5 })
+  expect(sizeSubagent(listing, opus, 'opus', 'low')?.tier, 'no ceiling: Haiku, the cheapest that fits').toBe('haiku')
+  expect(sizeSubagent(listing, { ...opus, ceiling: 'xhigh' }, 'opus', 'low')?.tier, 'Haiku needs max: Sonnet').toBe('sonnet')
+  expect(sizeSubagent(listing, { ...opus, ceiling: 'medium' }, 'opus', 'low'), 'neither fits').toBeUndefined()
+  // A review that must run is still capped, not dropped: the ceiling wins (see the review test above).
+  const review = rating({ type: 'review', fit: { sonnet: 'high', opus: 'high' }, read: 30_000, write: 3000, steps: 10 })
+  expect(plan(review, { ...sonnet, ceiling: 'medium' }, 'low'), 'the switch still runs, capped').toMatchObject({ kind: 'switch', tier: 'opus', level: 'medium' })
+})
+
+test('a model paused for misses on this kind of work gets no subagent of Claude\'s own', async () => {
+  const listing = rating({ type: 'search', fit: { haiku: 'low', sonnet: 'low', opus: 'low', fable: 'low' }, read: 8000, write: 500, steps: 5 })
+  expect(sizeSubagent(listing, opus, 'opus', 'low')?.tier, 'not paused: Haiku').toBe('haiku')
+  const wrong = { 'search:haiku': 0.4 }
+  expect(sizeSubagent(listing, { ...opus, misses: wrong }, 'opus', 'low')?.tier, 'Haiku paused at the default line: Sonnet').toBe('sonnet')
+  expect(sizeSubagent(listing, { ...opus, misses: wrong, missBlock: 0.5 }, 'opus', 'low')?.tier, 'a looser line').toBe('haiku')
+  expect(sizeSubagent(listing, { ...opus, misses: wrong, missBlock: null }, 'opus', 'low')?.tier, 'pausing off').toBe('haiku')
+  expect(sizeSubagent(listing, { ...opus, misses: { ...wrong, 'search:sonnet': 0.4 } }, 'opus', 'low'), 'every weaker model paused: none').toBeUndefined()
+  // A miss record for another kind of work, or another model, pauses nothing here.
+  expect(sizeSubagent(listing, { ...opus, misses: { 'lookup:haiku': 0.9, 'search:opus': 0.9 } }, 'opus', 'low')?.tier).toBe('haiku')
 })
 
 test('Use Haiku and Use Fable off: no hand-off or resized subagent goes to that model', async () => {

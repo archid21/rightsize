@@ -5,9 +5,9 @@ import type { StartBlock } from './start'
 // /rightsize report: what the mod saved, what it cost to run, and what went
 // wrong, read from its run log. Pure functions, no engine calls.
 //
-// A saving is an estimate. Staying would have cost what the turn really cost,
-// scaled by the ratio of the two routes' estimates (staying at the person's own
-// level and model vs the route taken), so the estimates' own error cancels out.
+// A saving is an estimate. Staying would have cost the baseline: rightsize's estimate,
+// made when it chose the route, of the task on the person's own model and level. It is
+// never changed afterward, so a task that cost more than the baseline shows a negative saving.
 
 export type Change = 'none' | 'lower' | 'raise' | 'delegate-up' | 'delegate-down' | 'switch-up'
 /** Rate-limit windows as percent used: `five_hour`, `seven_day`, `spend_limit`. */
@@ -19,8 +19,9 @@ export type RunLine = {
   /**
    * 'overhead': a rating call that came to nothing (failed or unreadable). 'subagent': one of Claude's subagents moved to a cheaper model, when it answered.
    * 'check': Sonnet's second opinion on a rating. 'feedback': a 👍 or 👎 on a run. Neither counts as a rated run.
+   * 'unrated': a prompt whose rating failed twice or could not be read, so the session was left as it was; `reason` says why and `overhead` is what the rating calls cost.
    */
-  kind?: 'run' | 'overhead' | 'subagent' | 'check' | 'feedback'
+  kind?: 'run' | 'overhead' | 'subagent' | 'check' | 'feedback' | 'unrated'
   /** A run line's own id, which feedback lines name in `ref`. */
   id?: string
   session?: string
@@ -39,6 +40,8 @@ export type RunLine = {
   actual?: number
   /** The rating call's cost. */
   overhead?: number
+  /** An unrated line: why the rating did not come (timeout, unreadable answer, and so on). */
+  reason?: string
   /** What effort-switch cache misses cost. */
   missCost?: number
   /** Subagent calls (Agent and SendMessage) on the main thread: more than one on a hand-off is rework. */
@@ -104,17 +107,22 @@ const SAVING: readonly Change[] = ['lower', 'delegate-down']
 const SPENDING: readonly Change[] = ['raise', 'delegate-up']
 const delegated = (l: RunLine) => (l.route ?? '').startsWith('delegate:')
 
-/** What staying would have cost, by the estimate; the actual cost where there is nothing to compare. */
+/**
+ * What staying would have cost: the baseline, `stay`, which rightsize recorded when it chose the route and never changes.
+ * The actual cost where there is nothing to compare (no change, a turn that stepped up or was raised, a workflow).
+ */
 export function counterfactual(l: RunLine) {
   const actual = num(l.actual)
-  if (l.steppedUp || l.escalations?.length || l.afterWorkflow || !l.taken || !l.stay || l.change === undefined || l.change === 'none') return actual
-  return (actual * l.stay) / l.taken
+  if (l.steppedUp || l.escalations?.length || l.afterWorkflow || !l.stay || l.change === undefined || l.change === 'none') return actual
+  return l.stay
 }
 
 type Totals = {
   rated: number
   /** Claude's own subagents moved to a cheaper model. */
   subagents: number
+  /** Prompts whose rating failed: the session was left as it was. */
+  unrated: number
   changed: Record<Change, number>
   declined: number
   saved: number
@@ -127,6 +135,7 @@ export function totals(lines: readonly RunLine[]): Totals {
   const t: Totals = {
     rated: 0,
     subagents: 0,
+    unrated: 0,
     changed: { none: 0, lower: 0, raise: 0, 'delegate-up': 0, 'delegate-down': 0, 'switch-up': 0 },
     declined: 0,
     saved: 0,
@@ -136,6 +145,10 @@ export function totals(lines: readonly RunLine[]): Totals {
   }
   for (const l of lines) {
     t.overhead += num(l.overhead)
+    if (l.kind === 'unrated') {
+      t.unrated += 1
+      continue
+    }
     // Its cost is already in its turn's; what it saved is not: the same work on the parent's model, scaled as a turn's is.
     if (l.kind === 'subagent') {
       t.subagents += 1
@@ -218,7 +231,7 @@ type Stats = { t: Totals; net: number; empty: boolean; kept?: Kept; ties?: { gui
 function stats(lines: readonly RunLine[], subscription: boolean, withTies = false): Stats {
   const t = totals(lines)
   const kept = subscription ? windowKept(lines, t) : undefined
-  return { t, net: t.saved - t.overhead, empty: !t.rated && !t.overhead && !t.subagents, ...(kept ? { kept } : {}), ...(withTies ? { ties: tieCounts(lines) } : {}) }
+  return { t, net: t.saved - t.overhead, empty: !t.rated && !t.overhead && !t.subagents && !t.unrated, ...(kept ? { kept } : {}), ...(withTies ? { ties: tieCounts(lines) } : {}) }
 }
 
 const DAYS_30 = 'in the last 30 days'
@@ -398,6 +411,8 @@ export function problems(lines: readonly RunLine[], switches: readonly SwitchLin
       detail: [`${plural(flows, 'workflow')}, from ultracode or asked for`, 'hand-offs paused in those sessions; nothing learned from them'],
     })
   }
+  const unrated = lines.filter(l => l.kind === 'unrated').length
+  if (unrated) out.push({ n: unrated, unit: ['prompt', 'prompts'], reason: 'not rated (the rating failed or could not be read), so the session was left as it was' })
   const aborted = lines.filter(l => isRun(l) && l.aborted).length
   if (aborted) out.push({ n: aborted, unit: TURN, reason: 'you stopped (their rating cost still counts)' })
   return out.sort((a, b) => b.n - a.n)

@@ -24,7 +24,7 @@ claude --plugin-dir plugins/rightsize
 
 - `hooks/register.tsx`: the hooks, the four questions, the band above the prompt and the reports.
 - `hooks/cost.ts`: the cost model, plans and calibration. These are pure functions, tested in `cost.test.ts`.
-- `hooks/settings.ts`: the `/config` rows (title, options, default) and which of them are yours. A new row goes in `plugin.json`, in this table, in `applyOption` in `register.tsx`, in the README's `/config` lists, and gets a scenario in `register.test.ts`. `scripts/check-settings.mjs` fails until all of those agree.
+- `hooks/settings.ts`: the `/config` rows (title, options, default) and which of them are yours. A new row goes in `plugin.json`, in this table, in `applyOption` in `register.tsx`, in the README's `/config` lists, and gets a scenario in `register.test.ts`. Its title starts with `Advanced · ` (only Profile, the first row, does not), and the README lists give the name without the prefix. `scripts/check-settings.mjs` fails until all of those agree.
 - `hooks/rate.ts`: the Haiku rating prompt and its parser.
 - `hooks/prices.ts`: the pricing-page parser and the monthly check.
 - `prices.json`: the price table, in US dollars per 1M tokens.

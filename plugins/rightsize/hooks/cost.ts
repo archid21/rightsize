@@ -272,6 +272,10 @@ export type Situation = {
   misses?: Record<string, number>
   /** The share of misses at which that pause starts (Pause after misses); null: never pause. MISS_BLOCK when absent. */
   missBlock?: number | null
+  /** Tasks logged per `${type}:${tier}` (misses.ts): what minTasks is counted against. */
+  counts?: Record<string, number>
+  /** The tasks a task type must have logged on a model before a cheaper route to it, or a lowering on it, is used (the profile's evidence rule). 0 when absent. */
+  minTasks?: number
   /** The highest effort rightsize raises to (Highest effort); max when absent. A ceiling under the level in use stops raises; it never lowers. */
   ceiling?: Level
   /** Models rightsize sends no work to: hand-offs and Claude's subagents never go to them (Use Haiku, Use Fable). */
@@ -282,9 +286,11 @@ export type Situation = {
 
 /** The share of wrong judgements at which rightsize stops trusting the rater for a task type and model: the default of Pause after misses. */
 export const MISS_BLOCK = 0.3
+/** Fewer tasks logged than the evidence rule asks for. */
+const unproven = (s: Situation, type: TaskType, tier: Tier) => (s.minTasks ?? 0) > (s.counts?.[`${type}:${tier}`] ?? 0)
 const blocked = (s: Situation, type: TaskType, tier: Tier) => {
   const line = s.missBlock === undefined ? MISS_BLOCK : s.missBlock
-  return line !== null && (s.misses?.[`${type}:${tier}`] ?? 0) >= line
+  return unproven(s, type, tier) || (line !== null && (s.misses?.[`${type}:${tier}`] ?? 0) >= line)
 }
 
 /** The main chat doing the work at `level`, before calibration. */
@@ -551,7 +557,10 @@ export function effortPlan(r0: Rating, s: Situation, floor: Level): Plan {
   const target = capRaise(clampFloor(r.level, floor), s)
   if (target === s.level) return { kind: 'none', why: 'the level in use fits' }
   if (levelRank(target) > levelRank(s.level)) return { kind: 'effort', dir: 'raise', level: target }
-  if (blocked(s, r.type, s.tier)) return { kind: 'none', why: `lowering ${r.type} work on ${TIER_NAME[s.tier]} is paused: the rating was wrong too often` }
+  if (blocked(s, r.type, s.tier)) {
+    const why = unproven(s, r.type, s.tier) ? `only ${s.counts?.[`${r.type}:${s.tier}`] ?? 0} of the ${s.minTasks} tasks it needs are logged` : 'the rating was wrong too often'
+    return { kind: 'none', why: `lowering ${r.type} work on ${TIER_NAME[s.tier]} is paused: ${why}` }
+  }
   // A per-prompt lower switches twice: down for this turn, back for the next.
   const now = mainCost(r, s, s.level, 0)
   const lowered = mainCost(r, s, target, 2)

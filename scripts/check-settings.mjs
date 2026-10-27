@@ -3,10 +3,11 @@
 //   node scripts/check-settings.mjs
 //
 // Plugin tests cannot read files (they run with no fs), so this is the check that can:
-//   - plugin.json: each row is a string picker with a title, a description, a default and options.
+//   - plugin.json: each row is a string picker with a title, a description, a default and options. Profile is first; the others are titled "Advanced · ...".
 //   - hooks/settings.ts: each row has an entry with the same title, default and (when written out) options.
 //   - hooks/register.tsx: each row has a `case '<key>'` in applyOption, the parse that applies it.
 //   - README.md: each row's title is in the `/config` list under "Commands and settings" (a bullet that opens with a bold title).
+//     Every row but Profile is titled "Advanced · <name>" in /config; the list gives the name, under its note that the rest are Advanced.
 //   - plugins/rightsize/README.md: each row's title is in its `/config` list.
 //   - hooks/register.test.ts: each row has a scenario that names its key.
 // It exits 1 and lists everything missing.
@@ -42,6 +43,9 @@ const problems = []
 const fail = (key, what) => problems.push(`${key}: ${what}`)
 const rows = Object.entries(manifest.userConfig ?? {})
 if (rows.length === 0) problems.push('plugin.json declares no userConfig rows')
+// /config has no row groups: Profile comes first and every other row is titled "Advanced · ...".
+if (rows[0]?.[0] !== 'profile') problems.push(`profile: not the first row of plugin.json (it is ${rows[0]?.[0]})`)
+for (const [key, row] of rows) if (key !== 'profile' && !String(row.title).startsWith('Advanced · ')) fail(key, `title ${JSON.stringify(row.title)} does not start with "Advanced · "`)
 
 // `  key: { title: 'T', options: ['a', 'b'], default: 'a' },` as written in settings.ts.
 const entry = key => new RegExp(`^  ${key}: \\{(.*)\\},?$`, 'm').exec(settings)?.[1]
@@ -68,8 +72,9 @@ for (const [key, row] of rows) {
     }
   }
   if (!new RegExp(`case '${key}':`).test(register)) fail(key, "no `case '" + key + "':` in hooks/register.tsx (the parse)")
-  if (!rootConfig.includes(`**${row.title}**`)) fail(key, `no **${row.title}** in the /config list of the root README.md`)
-  if (!pluginConfig.includes(`**${row.title}**`)) fail(key, `no **${row.title}** in the /config list of plugins/rightsize/README.md`)
+  const named = row.title.replace(/^Advanced · /, '')
+  if (!rootConfig.includes(`**${named}**`)) fail(key, `no **${named}** in the /config list of the root README.md`)
+  if (!pluginConfig.includes(`**${named}**`)) fail(key, `no **${named}** in the /config list of plugins/rightsize/README.md`)
   if (!new RegExp(`key: '${key}'`).test(test)) fail(key, "no scenario with `key: '" + key + "'` in hooks/register.test.ts")
 }
 

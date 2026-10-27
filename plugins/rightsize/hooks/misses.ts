@@ -150,6 +150,11 @@ export function missMap(rates: Rates): Record<string, number> {
   return out
 }
 
+/** The outcomes logged per task type and model: what the profile's minimum of logged tasks is counted against. Cold-start priors are not counted. */
+export function missCounts(rates: Rates): Record<string, number> {
+  return Object.fromEntries(Object.entries(rates).map(([key, e]) => [key, e.n]))
+}
+
 /** All outcomes together: how many were misses of how many. */
 export function missTotals(rates: Rates) {
   return Object.values(rates).reduce((t, e) => ({ n: t.n + e.n, misses: t.misses + e.misses }), { n: 0, misses: 0 })

@@ -40,7 +40,8 @@ import {
   tieBand,
   type Calibration,
 } from './cost'
-import { missMap, missRates } from './misses'
+import { missCounts, missMap, missRates } from './misses'
+import { PROFILES } from './settings'
 import { parseRating } from './rate'
 import type { RunLine } from './report'
 import { report } from './register'
@@ -803,6 +804,89 @@ test('a model paused for misses on this kind of work gets no subagent of Claude\
   expect(sizeSubagent(listing, { ...opus, misses: { ...wrong, 'search:sonnet': 0.4 } }, 'opus', 'low'), 'every weaker model paused: none').toBeUndefined()
   // A miss record for another kind of work, or another model, pauses nothing here.
   expect(sizeSubagent(listing, { ...opus, misses: { 'lookup:haiku': 0.9, 'search:opus': 0.9 } }, 'opus', 'low')?.tier).toBe('haiku')
+})
+
+// The profile's evidence rule: a cheaper route needs the fit, and for Quality at least minTasks logged tasks of
+// that task type on that model with misses under maxMiss. It is passed as Situation.minTasks, counts and missBlock.
+
+const evidence = (profile: keyof typeof PROFILES, counts: Record<string, number>, misses: Record<string, number> = {}): Situation => ({
+  ...fable,
+  counts,
+  misses,
+  missBlock: PROFILES[profile].evidence.maxMiss,
+  minTasks: PROFILES[profile].evidence.minTasks,
+})
+const cheaperTo = (s: Situation) => {
+  const r = rating({ level: 'low', fit: { haiku: 'low', sonnet: 'low', fable: 'low' }, type: 'search', read: 150_000, write: 3000, steps: 30 })
+  const p = plan(r, s, 'low')
+  return p.kind === 'delegate' && p.dir === 'down' ? p.tier : p.kind
+}
+
+test('Quality refuses a cheaper route with fewer than 10 logged tasks, or with 10% misses, and allows it with 10 under 10%', async () => {
+  // Haiku and Sonnet are both cheaper than Fable and both fit: each needs its own 10 tasks.
+  expect(cheaperTo(evidence('Quality', {})), 'nothing logged: stays').not.toBe('haiku')
+  expect(cheaperTo(evidence('Quality', {})), 'nothing logged: no hand-down at all').toBe('none')
+  expect(cheaperTo(evidence('Quality', { 'search:haiku': 9, 'search:sonnet': 9 })), '9 tasks: stays').toBe('none')
+  expect(cheaperTo(evidence('Quality', { 'search:haiku': 10, 'search:sonnet': 9 })), '10 tasks on Haiku, none miss').toBe('haiku')
+  expect(cheaperTo(evidence('Quality', { 'search:haiku': 10, 'search:sonnet': 9 }, { 'search:haiku': 0.1 })), '10% misses: refused').toBe('none')
+  expect(cheaperTo(evidence('Quality', { 'search:haiku': 10, 'search:sonnet': 10 }, { 'search:haiku': 0.1 })), 'Haiku refused, Sonnet has its 10').toBe('sonnet')
+  expect(cheaperTo(evidence('Quality', { 'search:haiku': 10 }, { 'search:haiku': 0.09 })), 'under 10%: allowed').toBe('haiku')
+  // The tasks are counted for this task type on that model.
+  expect(cheaperTo(evidence('Quality', { 'lookup:haiku': 50, 'search:opus': 50 })), 'tasks of another type or model do not count').toBe('none')
+})
+
+test('Quality needs the same evidence for lowering and for a subagent of Claude\'s own', async () => {
+  const lower = rating({ level: 'low', type: 'lookup', write: 1500 })
+  const s = { ...evidence('Quality', {}), tier: 'opus' as const, level: 'medium' as const, cal: freeSwitches }
+  const refused = effortPlan(lower, s, 'low')
+  expect(refused.kind, 'no logged lookup tasks on Opus: not lowered').toBe('none')
+  if (refused.kind === 'none') expect(refused.why).toContain('10 tasks')
+  expect(effortPlan(lower, { ...s, counts: { 'lookup:opus': 9 } }, 'low').kind, '9 tasks').toBe('none')
+  expect(effortPlan(lower, { ...s, counts: { 'lookup:opus': 10 } }, 'low').kind, '10 tasks, no misses').toBe('effort')
+  expect(effortPlan(lower, { ...s, counts: { 'lookup:opus': 10 }, misses: { 'lookup:opus': 0.1 } }, 'low').kind, '10% misses').toBe('none')
+  // A raise needs no evidence.
+  expect(effortPlan(rating({ level: 'xhigh' }), s, 'low'), 'a raise is not a cheaper route').toEqual({ kind: 'effort', dir: 'raise', level: 'xhigh' })
+  const listing = rating({ type: 'search', fit: { haiku: 'low', sonnet: 'low', opus: 'low', fable: 'low' }, read: 8000, write: 500, steps: 5 })
+  const o = { ...evidence('Quality', {}), tier: 'opus' as const, level: 'medium' as const }
+  expect(sizeSubagent(listing, o, 'opus', 'low'), 'nothing logged: Claude\'s subagent stays').toBeUndefined()
+  expect(sizeSubagent(listing, { ...o, counts: { 'search:haiku': 10, 'search:sonnet': 9 } }, 'opus', 'low')?.tier).toBe('haiku')
+  expect(sizeSubagent(listing, { ...o, counts: { 'search:haiku': 9, 'search:sonnet': 12 } }, 'opus', 'low')?.tier, 'Sonnet has its 10').toBe('sonnet')
+})
+
+test('a stronger route is never held back by the evidence rule', async () => {
+  const r = rating({ level: 'high', fit: { sonnet: null, opus: 'high', fable: 'medium' }, type: 'debug', read: 30_000, write: 4000, steps: 12 })
+  const s = { ...evidence('Quality', {}), tier: 'sonnet' as const, level: 'high' as const }
+  const p = plan(r, s, 'low')
+  expect(p.kind === 'delegate' && p.dir, 'a hand-up with nothing logged').toBe('up')
+})
+
+test('Balanced pauses a kind of work at 20% misses, and Economy at 30%, with no minimum of logged tasks', async () => {
+  // No tasks logged is fine in both: only the miss rate counts.
+  expect(cheaperTo(evidence('Balanced', {})), 'Balanced: no minimum').toBe('haiku')
+  expect(cheaperTo(evidence('Economy', {})), 'Economy: no minimum').toBe('haiku')
+  expect(cheaperTo(evidence('Balanced', {}, { 'search:haiku': 0.19 })), 'Balanced under 20%').toBe('haiku')
+  expect(cheaperTo(evidence('Balanced', {}, { 'search:haiku': 0.2 })), 'Balanced at 20%: Sonnet instead').toBe('sonnet')
+  expect(cheaperTo(evidence('Economy', {}, { 'search:haiku': 0.2 })), 'Economy at 20%: still Haiku').toBe('haiku')
+  expect(cheaperTo(evidence('Economy', {}, { 'search:haiku': 0.29 })), 'Economy under 30%').toBe('haiku')
+  expect(cheaperTo(evidence('Economy', {}, { 'search:haiku': 0.3 })), 'Economy at 30%: Sonnet instead').toBe('sonnet')
+  expect(cheaperTo(evidence('Economy', {}, { 'search:haiku': 0.3, 'search:sonnet': 0.3 })), 'both paused: no hand-down').not.toMatch(/haiku|sonnet/)
+})
+
+test('the logged tasks per route come from the outcomes in the run log', async () => {
+  const at = '2026-01-01T00:00:00.000Z'
+  const hand = (n: number, agentCalls = 1): RunLine[] =>
+    Array.from({ length: n }, (_, i) => ({ at, kind: 'run', id: `r${i}`, type: 'search', tier: 'fable', route: 'delegate:haiku', change: 'delegate-down', agentCalls }) as RunLine)
+  const rates = missRates([...hand(9), ...hand(1, 2)])
+  expect(missCounts(rates)).toEqual({ 'search:haiku': 10 })
+  expect(Math.abs((missMap(rates)['search:haiku'] ?? 0) - 0.1), 'one in ten needed rework').toBeLessThan(1e-9)
+  // 10 tasks and exactly 10% misses: Quality refuses; with 11 tasks and the same one miss, it is under 10%.
+  const q = (lines: RunLine[]) => {
+    const r2 = missRates(lines)
+    return cheaperTo({ ...evidence('Quality', missCounts(r2)), misses: missMap(r2) })
+  }
+  expect(q([...hand(9), ...hand(1, 2)]), '1 of 10: 10%').toBe('none')
+  expect(q([...hand(10), ...hand(1, 2)]), '1 of 11: under 10%').toBe('haiku')
+  expect(q(hand(9)), '9 tasks').toBe('none')
 })
 
 test('Use Haiku and Use Fable off: no hand-off or resized subagent goes to that model', async () => {

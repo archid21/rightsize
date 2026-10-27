@@ -1,5 +1,5 @@
 import type { RightsizeChoices as Choices } from '../types'
-import { MISS_BLOCK, parseShare } from './cost'
+import { DEFAULT_RULES, MISS_BLOCK, parseShare } from './cost'
 
 // The settings in /config, in one table: each row's title, its options and its
 // default. plugin.json declares the same rows (every one a string picker), and a
@@ -7,7 +7,9 @@ import { MISS_BLOCK, parseShare } from './cost'
 // changed or bypassed by rightsize's own behaviour, so it has to know which
 // values are yours. Claude Code hands the module every value with defaults filled
 // in, so it cannot tell them apart; it reads them off settings.json instead, and
-// follows the changes made in /config. Pure functions, no engine calls.
+// follows the changes made in /config. The first row, Profile, supplies the defaults of a few of
+// the others (PROFILES); the rest are Advanced, as their titles say, since /config has no groups.
+// Pure functions, no engine calls.
 
 type Spec = { title: string; options: readonly string[]; default: string }
 
@@ -27,33 +29,39 @@ const ruleOptions = (rule: keyof Choices) => [...RULE_LABELS[rule].map(l => l[0]
 export const RULE_KEYS = { lower: 'lowerRule', raise: 'raiseRule', up: 'upRule', down: 'downRule' } as const
 
 export const SETTINGS = {
-  floor: { title: 'Lowest effort', options: ['low', 'medium', 'high'], default: 'low' },
-  ceiling: { title: 'Highest effort', options: ['high', 'xhigh', 'max'], default: 'max' },
-  lowerRule: { title: 'Lowering', options: ruleOptions('lower'), default: NOT_SET },
-  raiseRule: { title: 'Raising', options: ruleOptions('raise'), default: NOT_SET },
-  upRule: { title: 'Stronger model', options: ruleOptions('up'), default: NOT_SET },
-  downRule: { title: 'Cheaper model', options: ruleOptions('down'), default: NOT_SET },
-  remember: { title: 'Remember choices', options: ['ask', 'every session', 'this session'], default: 'ask' },
-  handOff: { title: 'Hand-off threshold', options: ['50%', '60%', '70%', '80%', '90%'], default: '70%' },
-  lowering: { title: 'Lowering threshold', options: ['70%', '80%', '90%', '95%'], default: '90%' },
-  useHaiku: { title: 'Use Haiku', options: ['on', 'off'], default: 'on' },
-  useFable: { title: 'Use Fable', options: ['on', 'off'], default: 'on' },
-  subagents: { title: "Claude's subagents", options: ['cheaper when it fits', 'off'], default: 'cheaper when it fits' },
-  workflows: { title: 'Workflows', options: ['ask', 'pause rightsize', 'follow my rules', 'right-size every agent'], default: 'ask' },
-  explore: { title: 'Explore close calls', options: ['on', 'off'], default: 'on' },
-  missPause: { title: 'Pause after misses', options: ['off', '20%', '30%', '40%', '50%'], default: '30%' },
-  pacing: { title: 'Budget pacing', options: ['on', 'off'], default: 'on' },
-  escalation: { title: 'Raise when stuck', options: ['on', 'off'], default: 'on' },
-  stuck: { title: 'Stuck sensitivity', options: ['relaxed', 'normal', 'sensitive'], default: 'normal' },
-  rater: { title: 'Rater', options: ['sonnet', 'haiku'], default: 'sonnet' },
-  raterCheck: { title: 'Rater check', options: ['every 25', 'every 50', 'every 100', 'off'], default: 'every 50' },
-  startTips: { title: 'Start suggestions', options: ['weekly', 'monthly', 'off'], default: 'weekly' },
-  idleWarning: { title: 'Idle warning', options: ['over $0.10', 'over $0.50', 'over $1', 'off'], default: 'over $0.10' },
-  billing: { title: 'Reports', options: ['api', 'subscription'], default: 'api' },
-  band: { title: 'Band', options: ['when it acts', 'always', 'off'], default: 'when it acts' },
-  share: { title: 'Share anonymous feedback', options: ['off', 'on'], default: 'off' },
-  priceCheck: { title: 'Price check', options: ['monthly', 'off'], default: 'monthly' },
+  profile: { title: 'Profile', options: ['Quality', 'Balanced', 'Economy'], default: 'Balanced' },
+  floor: { title: 'Advanced · Lowest effort', options: ['low', 'medium', 'high'], default: 'low' },
+  ceiling: { title: 'Advanced · Highest effort', options: ['high', 'xhigh', 'max'], default: 'max' },
+  lowerRule: { title: 'Advanced · Lowering', options: ruleOptions('lower'), default: NOT_SET },
+  raiseRule: { title: 'Advanced · Raising', options: ruleOptions('raise'), default: NOT_SET },
+  upRule: { title: 'Advanced · Stronger model', options: ruleOptions('up'), default: NOT_SET },
+  downRule: { title: 'Advanced · Cheaper model', options: ruleOptions('down'), default: NOT_SET },
+  remember: { title: 'Advanced · Remember choices', options: ['ask', 'every session', 'this session'], default: 'ask' },
+  handOff: { title: 'Advanced · Hand-off threshold', options: ['50%', '60%', '70%', '80%', '90%'], default: '70%' },
+  lowering: { title: 'Advanced · Lowering threshold', options: ['70%', '80%', '90%', '95%'], default: '90%' },
+  useHaiku: { title: 'Advanced · Use Haiku', options: ['on', 'off'], default: 'on' },
+  useFable: { title: 'Advanced · Use Fable', options: ['on', 'off'], default: 'on' },
+  subagents: { title: "Advanced · Claude's subagents", options: ['cheaper when it fits', 'off'], default: 'cheaper when it fits' },
+  workflows: { title: 'Advanced · Workflows', options: ['ask', 'pause rightsize', 'follow my rules', 'right-size every agent'], default: 'ask' },
+  explore: { title: 'Advanced · Explore close calls', options: ['on', 'off'], default: 'off' },
+  missPause: { title: 'Advanced · Pause after misses', options: ['off', '20%', '30%', '40%', '50%'], default: '30%' },
+  pacing: { title: 'Advanced · Budget pacing', options: ['on', 'off'], default: 'on' },
+  escalation: { title: 'Advanced · Raise when stuck', options: ['on', 'off'], default: 'on' },
+  stuck: { title: 'Advanced · Stuck sensitivity', options: ['relaxed', 'normal', 'sensitive'], default: 'normal' },
+  rater: { title: 'Advanced · Rater', options: ['sonnet', 'haiku'], default: 'sonnet' },
+  raterCheck: { title: 'Advanced · Rater check', options: ['every 25', 'every 50', 'every 100', 'off'], default: 'every 50' },
+  startTips: { title: 'Advanced · Start suggestions', options: ['weekly', 'monthly', 'off'], default: 'weekly' },
+  idleWarning: { title: 'Advanced · Idle warning', options: ['over $0.10', 'over $0.50', 'over $1', 'off'], default: 'over $0.10' },
+  billing: { title: 'Advanced · Reports', options: ['api', 'subscription'], default: 'api' },
+  band: { title: 'Advanced · Band', options: ['when it acts', 'always', 'off'], default: 'when it acts' },
+  share: { title: 'Advanced · Share anonymous feedback', options: ['off', 'on'], default: 'off' },
+  priceCheck: { title: 'Advanced · Price check', options: ['monthly', 'off'], default: 'monthly' },
 } as const satisfies Record<string, Spec>
+
+/** Every row but Profile is titled with this prefix, so /config lists Profile first and the rest as Advanced. */
+export const ADVANCED = 'Advanced · '
+/** The row's title without the prefix: what /rightsize and its messages call it. */
+export const plainTitle = (title: string) => (title.startsWith(ADVANCED) ? title.slice(ADVANCED.length) : title)
 
 export type SettingKey = keyof typeof SETTINGS
 export type Values = Record<SettingKey, string>
@@ -128,7 +136,9 @@ export function settingNamed(name: string): SettingKey | undefined {
   if (exact) return exact
   const want = name.trim().toLowerCase().replace(/\s+/g, ' ')
   if (!want) return undefined
-  return KEYS.find(k => SETTINGS[k].title.toLowerCase() === want) ?? KEYS.find(k => k.toLowerCase() === want)
+  // The title as /config shows it ("advanced · hand-off threshold") or without the prefix ("hand-off threshold").
+  const titled = (k: SettingKey) => [SETTINGS[k].title, plainTitle(SETTINGS[k].title)].some(t => t.toLowerCase() === want)
+  return KEYS.find(titled) ?? KEYS.find(k => k.toLowerCase() === want)
 }
 
 /** A change made in /config by the person: the menu (`composer`) or a `/config key=value` from their phone (`bridge`). */
@@ -202,3 +212,81 @@ export function raterEvery(v: string): number | null {
 
 /** "30%" as 0.3; "off" as null. */
 export const missPauseOf = (v: string): number | null => (v === 'off' ? null : parseShare(v, MISS_BLOCK))
+
+// ---- Profiles ------------------------------------------------------------------
+
+export const PROFILE_NAMES = ['Quality', 'Balanced', 'Economy'] as const
+export type Profile = (typeof PROFILE_NAMES)[number]
+export const isProfile = (v: unknown): v is Profile => PROFILE_NAMES.some(p => p === v)
+
+/**
+ * The evidence a cheaper route needs (a hand-down, a moved subagent, a lowering): the fit the rating
+ * names, and for the route's task type on that model at least `minTasks` logged tasks with a miss rate
+ * under `maxMiss`.
+ */
+export type Evidence = { minTasks: number; maxMiss: number }
+
+/** The option each question has first, marked (Recommended). */
+export type Answers = { [K in keyof Choices]-?: NonNullable<Choices[K]> }
+
+export type ProfileValues = {
+  evidence: Evidence
+  /** A cheaper route must cost under this share of staying (Hand-off threshold). */
+  handOff: number
+  /** Every this many Haiku ratings, Sonnet checks one (Rater check). */
+  raterEvery: number
+  /** Chances a task has to retry: a helper raised a level, or the main chat reworking a hand-off. */
+  chances: number
+  answers: Answers
+}
+
+// What each profile stands for. The Quality and Balanced values are starting points, to be recalibrated
+// after the benchmark; Economy's follow from them. Values outside a row's options (a 10% miss pause, an
+// 85% hand-off threshold, a spot-check every 20) are profile values: a row can only hold its own options.
+export const PROFILES: Record<Profile, ProfileValues> = {
+  Quality: {
+    evidence: { minTasks: 10, maxMiss: 0.1 },
+    handOff: 0.5,
+    raterEvery: 10,
+    chances: 1,
+    answers: { lower: 'ask', raise: 'auto', up: 'auto', down: 'ask' },
+  },
+  Balanced: {
+    evidence: { minTasks: 0, maxMiss: 0.2 },
+    handOff: 0.7,
+    raterEvery: 20,
+    chances: 2,
+    answers: { lower: 'auto', raise: 'auto', up: 'auto', down: 'auto' },
+  },
+  Economy: {
+    evidence: { minTasks: 0, maxMiss: 0.3 },
+    handOff: 0.85,
+    raterEvery: 30,
+    chances: 3,
+    answers: { lower: 'auto', raise: 'auto', up: 'stay', down: 'auto' },
+  },
+}
+
+/** The profile a Profile row's value names; Balanced for anything else. */
+export const profileOf = (v: unknown): Profile => (isProfile(v) ? v : 'Balanced')
+
+/** What the profile governs, as it applies now. */
+export type InUse = { handOff: number; minTasks: number; maxMiss: number | null; raterEvery: number | null; chances: number; answers: Answers }
+
+/**
+ * The profile's values, each replaced by its row where the row is yours: your setting wins. The evidence rule
+ * is one value held by the Pause after misses row, so a row you set replaces all of it, the minimum of logged
+ * tasks too (Pause after misses "off" has to mean off). Chances and the questions' first options have no row.
+ */
+export function inUse(profile: Profile, values: Readonly<Record<string, string>>, yours: ReadonlySet<SettingKey>): InUse {
+  const p = PROFILES[profile]
+  const miss = yours.has('missPause')
+  return {
+    handOff: yours.has('handOff') ? parseShare(values.handOff ?? '', DEFAULT_RULES.handOff) : p.handOff,
+    minTasks: miss ? 0 : p.evidence.minTasks,
+    maxMiss: miss ? missPauseOf(values.missPause ?? '') : p.evidence.maxMiss,
+    raterEvery: yours.has('raterCheck') ? raterEvery(values.raterCheck ?? '') : p.raterEvery,
+    chances: p.chances,
+    answers: p.answers,
+  }
+}

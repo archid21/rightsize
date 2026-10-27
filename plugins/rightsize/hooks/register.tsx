@@ -60,24 +60,27 @@ import {
   CAL_STORE,
 } from './cost'
 import { PRICING_URL, applyPrices, diffPrices, isDue, parsePricingPage } from './prices'
-import { missMap, missRates } from './misses'
+import { missCounts, missMap, missRates } from './misses'
 import { SHARE_ASK_AFTER, SHARE_EVERY_MS, SHARE_URL, newInstall, nextBatch } from './share'
 import { START_CHECK_DAYS, START_SNOOZE_DAYS, adviseStart, startBlock, startKey, startTip } from './start'
 import {
   KEYS,
   NOT_SET,
+  PROFILES,
   RULE_KEYS,
   SETTINGS,
+  type Profile,
   type SettingKey,
   type Values,
   afterSet,
   defaults,
   fieldsSet,
   inOptions,
+  inUse,
   manifestGaps,
   mark,
-  missPauseOf,
-  raterEvery,
+  plainTitle,
+  profileOf,
   resetKeys,
   ruleLabel,
   ruleValue,
@@ -124,12 +127,6 @@ const DEFAULT_CONTEXT = 20_000
 /** About 30 days of heavy use, for /rightsize report. */
 const RUNS_LOG_MAX = 1_000_000
 const SPOT_CHECKER = 'sonnet'
-/**
- * Chances a task has to retry: a helper raised a level, or the main chat reworking a hand-off. It is
- * Balanced's value; the profiles in phase 3 set Quality 1, Balanced 2, Economy 3. When they are used up,
- * the helper goes back to the main chat and the main chat finishes the task itself.
- */
-const CHANCES = 2
 const MISS_WINDOW_DAYS = 30
 
 type Lower = NonNullable<Choices['lower']>
@@ -144,44 +141,69 @@ type Spawning = { description: string; type: string; run?: Run; size?: Omit<Meas
 type SubagentMode = 'cheaper when it fits' | 'off'
 type Question<V> = { header: string; question: string; options: readonly (readonly [string, V])[] }
 
-const qLower: Question<Lower> = {
-  header: 'Lowering',
-  question: 'When a prompt needs less effort, what should I do?',
-  options: [
-    ['Lower automatically', 'auto'],
-    ['Ask me each time', 'ask'],
-    ['Never lower', 'never'],
-  ],
+// The four questions list the answer the profile prefers first, marked (Recommended). The answer's
+// value comes from its own option, so it is right whatever the order.
+function recommend<V>(q: Question<V>, first: V): Question<V> {
+  const at = q.options.findIndex(o => o[1] === first)
+  if (at < 0) return q
+  const [label, value] = q.options[at] as readonly [string, V]
+  return { ...q, options: [[`${label} (Recommended)`, value], ...q.options.filter((_, i) => i !== at)] }
 }
-const qRaise: Question<Raise> = {
-  header: 'Raising',
-  question: 'When a prompt needs more effort on the same model, what should I do?',
-  options: [
-    ['Raise automatically (Recommended)', 'auto'],
-    ['Ask me each time', 'ask'],
-    ['Never raise', 'never'],
-  ],
-}
-const qUp = (cur: string, to: string): Question<Route> => ({
-  header: 'Stronger',
-  question: `When a prompt needs a stronger model than ${cur} (such as ${to}), what should I do?`,
-  options: [
-    ['Use the stronger model automatically (Recommended)', 'auto'],
-    ['Ask before using it', 'ask'],
-    [`Stay on ${cur}, raise effort only`, 'stay'],
-    ['Ask me each time', 'each'],
-  ],
-})
-const qDown = (cur: string, to: string): Question<Route> => ({
-  header: 'Cheaper',
-  question: `When a task could run on a cheaper model than ${cur} (such as ${to}), what should I do?`,
-  options: [
-    ['Send it to a cheaper subagent (Recommended)', 'auto'],
-    ['Ask before sending it', 'ask'],
-    [`Stay on ${cur}, lower effort only`, 'stay'],
-    ['Ask me each time', 'each'],
-  ],
-})
+
+const qLower = (): Question<Lower> =>
+  recommend(
+    {
+      header: 'Lowering',
+      question: 'When a prompt needs less effort, what should I do?',
+      options: [
+        ['Lower automatically', 'auto'],
+        ['Ask me each time', 'ask'],
+        ['Never lower', 'never'],
+      ],
+    },
+    answers.lower,
+  )
+const qRaise = (): Question<Raise> =>
+  recommend(
+    {
+      header: 'Raising',
+      question: 'When a prompt needs more effort on the same model, what should I do?',
+      options: [
+        ['Raise automatically', 'auto'],
+        ['Ask me each time', 'ask'],
+        ['Never raise', 'never'],
+      ],
+    },
+    answers.raise,
+  )
+const qUp = (cur: string, to: string): Question<Route> =>
+  recommend(
+    {
+      header: 'Stronger',
+      question: `When a prompt needs a stronger model than ${cur} (such as ${to}), what should I do?`,
+      options: [
+        ['Use the stronger model automatically', 'auto'],
+        ['Ask before using it', 'ask'],
+        [`Stay on ${cur}, raise effort only`, 'stay'],
+        ['Ask me each time', 'each'],
+      ],
+    },
+    answers.up,
+  )
+const qDown = (cur: string, to: string): Question<Route> =>
+  recommend(
+    {
+      header: 'Cheaper',
+      question: `When a task could run on a cheaper model than ${cur} (such as ${to}), what should I do?`,
+      options: [
+        ['Send it to a cheaper subagent', 'auto'],
+        ['Ask before sending it', 'ask'],
+        [`Stay on ${cur}, lower effort only`, 'stay'],
+        ['Ask me each time', 'each'],
+      ],
+    },
+    answers.down,
+  )
 const qBilling: Question<Billing> = {
   header: 'Billing',
   question: 'I could not tell how you pay for Claude Code. Reports show dollars for the API, or a share of your usage for a subscription. Which is it?',
@@ -329,7 +351,7 @@ let billingAsked = false
 let detectedBilling: Billing | undefined
 let priceCheck: 'monthly' | 'off' = 'monthly'
 let bandMode: BandMode = 'when it acts'
-let rules: Rules = DEFAULT_RULES
+let rules: Rules = { ...DEFAULT_RULES, handOff: PROFILES.Balanced.handOff }
 let checking: Promise<string> | null = null
 let prices: Prices = DEFAULT_PRICES
 let cal: Calibration = {}
@@ -374,10 +396,23 @@ let declared: Readonly<Record<string, unknown>> = {}
 let ceiling: Level = 'max'
 /** Models rightsize sends no work to (Use Haiku, Use Fable off). The rater is set apart: Rater picks it. */
 let without: Tier[] = []
+/** The profile in use (Profile). It supplies the defaults of the values below it, where their rows are not yours (settings.ts inUse). */
+let profile: Profile = 'Balanced'
 /** The miss rate at which hand-downs and lowering pause; null: never. */
 let missBlock: number | null = MISS_BLOCK
-/** One close call in five takes the route the guide did not pick. */
-let explore = true
+/** The tasks a kind of work must have logged on a model before a cheaper route to it is used; 0: no minimum. */
+let minTasks = 0
+/** The outcomes logged per task type and model (misses.ts): minTasks is counted against these. */
+let counts: Record<string, number> = {}
+/**
+ * Chances a task has to retry: a helper raised a level, or the main chat reworking a hand-off. When they
+ * are used up, the helper goes back to the main chat and the main chat finishes the task itself.
+ */
+let chances = PROFILES.Balanced.chances
+/** The first option of each of the four questions. */
+let answers = PROFILES.Balanced.answers
+/** One close call in five takes the route the guide did not pick. Off in every profile. */
+let explore = false
 /** What happens to the answers to the four questions: ask whether to keep them, keep them, or forget them at the end of the session. */
 let rememberMode: 'ask' | 'every session' | 'this session' = 'ask'
 /** How soon Claude counts as stuck. */
@@ -389,7 +424,7 @@ let escalation = true
 /** Days between suggestions of a different starting model and level; null: off. */
 let startEvery: number | null = START_CHECK_DAYS.weekly
 /** Ask Sonnet for a second opinion on every this many Haiku ratings, in the background; null: off. */
-let spotEvery: number | null = 50
+let spotEvery: number | null = PROFILES.Balanced.raterEvery
 /** The model that rates first (Rater). The other one is the fallback. */
 let rater: Rater = 'sonnet'
 /** Send anonymous numbers to the rightsize author: off until the person says yes. */
@@ -563,7 +598,9 @@ async function refreshMisses($: EngineInterface) {
     const now = await $.clock.now()
     runLog = runLog.filter(l => now - Date.parse(l.at) <= MISS_WINDOW_DAYS * 24 * 60 * 60_000)
     // Lines from before Cost measurement was restarted teach nothing.
-    misses = missMap(missRates(runLog.filter(l => Date.parse(l.at) >= measureFrom)))
+    const rates = missRates(runLog.filter(l => Date.parse(l.at) >= measureFrom))
+    misses = missMap(rates)
+    counts = missCounts(rates)
   } catch {
     // The old rates stand.
   }
@@ -771,6 +808,7 @@ const RULE_IDS = Object.keys(RULE_KEYS) as (keyof Choices)[]
 // The return type makes a new row without a case here fail the type check.
 function writeSetting($: EngineInterface, key: SettingKey, value: string): Promise<ConfigSetResult> {
   switch (key) {
+    case 'profile': return $.config.set({ key: 'rightsize.profile', value: value })
     case 'floor': return $.config.set({ key: 'rightsize.floor', value: value })
     case 'ceiling': return $.config.set({ key: 'rightsize.ceiling', value: value })
     case 'lowerRule': return $.config.set({ key: 'rightsize.lowerRule', value: value })
@@ -909,7 +947,7 @@ async function situation($: EngineInterface): Promise<Situation> {
   const have = typeof kept === 'number' && kept > 0
   const reported = have ? undefined : (await usageNow($))?.context?.tokens
   const context = have ? kept : typeof reported === 'number' && reported > 0 ? reported : DEFAULT_CONTEXT
-  return { tier, level, context, prices, cal, rules, ties: await tiesSeen($), misses, missBlock, ceiling, without, explore }
+  return { tier, level, context, prices, cal, rules, ties: await tiesSeen($), misses, missBlock, minTasks, counts, ceiling, without, explore }
 }
 
 // Close calls seen so far, kept in the store so the one-in-five exploration holds across sessions.
@@ -1081,7 +1119,7 @@ async function resolveEffort($: EngineInterface, p: Plan, r: Rating, s: Situatio
   if (p.kind !== 'effort') return {}
   // A window nearly used up skips a raise, unless Raising is yours: then it follows your rule.
   if (p.dir === 'raise' && paceNow.mode === 'max' && (await choices($)).raise === undefined) return {}
-  const c = p.dir === 'lower' ? await choice($, 'lower', qLower) : await choice($, 'raise', qRaise)
+  const c = p.dir === 'lower' ? await choice($, 'lower', qLower()) : await choice($, 'raise', qRaise())
   if (c === 'auto') return { level: p.level, auto: p.dir === 'lower' }
   if (c !== 'ask') return {}
   const verb = p.dir === 'lower' ? 'Lower' : 'Raise'
@@ -1140,7 +1178,9 @@ async function resolve($: EngineInterface, p: Plan, r: Rating, s: Situation): Pr
 }
 
 /** The hidden note that hands the request to a subagent and has the main chat check it. */
-export function delegateNote(d: NonNullable<Run['delegate']>) {
+export function delegateNote(d: NonNullable<Run['delegate']>, rounds = PROFILES.Balanced.chances) {
+  // The task's chances are its rework rounds: the profile sets how many.
+  const n = rounds === 1 ? '1 rework' : `${rounds} reworks`
   const name = TIER_NAME[d.tier]
   const why = d.dir === 'up' ? 'it needs a stronger model' : 'a cheaper model can do it for less'
   return [
@@ -1148,12 +1188,12 @@ export function delegateNote(d: NonNullable<Run['delegate']>) {
     `1. Start one subagent with the Agent tool, model "${d.tier}", effort "${d.level}". Give it a complete brief: the goal, the files, facts and decisions it needs from this conversation, and a "Done means" list of 3 to 6 items that can be checked.`,
     '   If the request includes steps only the person can approve (pushing, publishing, releasing, deploying, sending messages, acting in their accounts), the subagent prepares everything (edits, tests, notes) and stops before those steps. It cannot see the person\'s approval, so it would refuse them. You do those steps yourself after step 2.',
     '2. When it reports back, check its result against every Done-means item yourself. Use real proof where you can (run the tests, read the changed files), not its summary.',
-    '3. If an item fails, send that subagent a specific fix-up note (continue it with SendMessage where you can; otherwise start it again with the note and its last result). At most 2 rework rounds.',
+    `3. If an item fails, send that subagent a specific fix-up note (continue it with SendMessage where you can; otherwise start it again with the note and its last result). At most ${rounds === 1 ? '1 rework round' : `${rounds} rework rounds`}.`,
     d.dir === 'down'
-      ? '4. If an item still fails after 2 reworks, finish the task yourself.'
-      : '4. If an item still fails after 2 reworks, stop and say where it stands.',
+      ? `4. If an item still fails after ${n}, finish the task yourself.`
+      : `4. If an item still fails after ${n}, stop and say where it stands.`,
     `5. Answer the person with the result and one line on how it went: "Done in 1 round", "Passed after N rework(s) (what was missed)", or ${
-      d.dir === 'down' ? '"Finished it myself after 2 reworks (what was missed)"' : '"Still failing <item> after 2 reworks"'
+      d.dir === 'down' ? `"Finished it myself after ${n} (what was missed)"` : `"Still failing <item> after ${n}"`
     }.`,
   ].join('\n')
 }
@@ -1549,7 +1589,7 @@ async function escalateHelper($: EngineInterface, id: string, w: Watch, sign: St
   let why = ''
   if (!to) why = `${cur} is as high as it goes`
   // No chance left: nothing to ask about.
-  else if ((await retriesUsed($, w.task)) >= CHANCES) why = 'the task has no retry left'
+  else if ((await retriesUsed($, w.task)) >= chances) why = 'the task has no retry left'
   else if (rule !== 'auto') {
     const a = await askHelper($, sign, cur, to)
     if (a === 'no') {
@@ -1582,7 +1622,7 @@ async function askHelper($: EngineInterface, sign: Struggle, cur: Level, to: Lev
   let late = false
   const asked = pick($, {
     header: 'Stuck',
-    question: `A helper looks stuck: ${sign.why}. Raise its effort from ${cur} to ${to}? It uses one of this task's ${CHANCES} retries. With no answer in ${HELPER_ASK_MS / 60_000} minutes it goes back to the main chat.`,
+    question: `A helper looks stuck: ${sign.why}. Raise its effort from ${cur} to ${to}? It uses one of this task's ${chances} retries. With no answer in ${HELPER_ASK_MS / 60_000} minutes it goes back to the main chat.`,
     options: [
       [`Raise to ${to}`, 'yes'],
       [`Keep ${cur}`, 'no'],
@@ -1697,7 +1737,7 @@ async function retriesUsed($: EngineInterface, task: string) {
 function useChance($: EngineInterface, task: string): Promise<boolean> {
   const spend = spending.then(async () => {
     const used = await retriesUsed($, task)
-    if (used >= CHANCES) return false
+    if (used >= chances) return false
     await $.state.set(RETRIES, { task, used: used + 1 }).catch(() => undefined)
     return true
   })
@@ -1798,15 +1838,17 @@ async function summary($: EngineInterface) {
   const install = sharing ? await $.store.get('shareInstall').catch(() => undefined) : undefined
   // Only the settings you set in /config or answered: the rest are defaults, and /config shows them.
   const changed: string[] = []
+  const cur = inUse(profile, cfg, yours)
   for (const key of KEYS) {
     const rule = RULE_IDS.find(r => RULE_KEYS[r] === key)
     if (rule) {
-      if (c[rule] !== undefined) changed.push(`  ${SETTINGS[key].title}: ${ruleLabel(rule, c[rule])}`)
-    } else if (key === 'billing' ? billingYours() : yours.has(key)) changed.push(`  ${SETTINGS[key].title}: ${cfg[key]}`)
+      if (c[rule] !== undefined) changed.push(`  ${plainTitle(SETTINGS[key].title)}: ${ruleLabel(rule, c[rule])}`)
+    } else if (key === 'billing' ? billingYours() : yours.has(key)) changed.push(`  ${plainTitle(SETTINGS[key].title)}: ${cfg[key]}`)
   }
   const n = changed.length
   return [
     // Claude Code shows the output under "rightsize:", so the line leaves the name out.
+    `Profile: ${profile}`,
     off ? 'Off. Turn it on with /mods.' : 'On.',
     '',
     n
@@ -1815,6 +1857,7 @@ async function summary($: EngineInterface) {
     ...changed,
     '',
     'Now',
+    `  In use: hand-off threshold ${Math.round(cur.handOff * 100)}%, pause at ${cur.maxMiss === null ? 'no' : `${Math.round(cur.maxMiss * 100)}%`} misses${cur.minTasks ? ` and ${cur.minTasks} logged tasks` : ''}, rater check ${cur.raterEvery === null ? 'off' : `every ${cur.raterEvery}`}, ${cur.chances} ${cur.chances === 1 ? 'chance' : 'chances'} per task`,
     `  Session switch: ${session ?? 'none'}`,
     ...(billingYours() ? [] : [`  Reports: ${billing} (${billingBy ?? 'default'})`]),
     ...(billingYours() && detectedBilling && detectedBilling !== billing ? [`  Rate limits look like ${sees}; Reports is set to ${billing} by you.`] : []),
@@ -1878,7 +1921,7 @@ function confirmText(what: ResetWhat | SettingKey) {
   if (what === 'measurement') return `Reset cost measurement? ${MEASURE_GO} ${UNDONE}`
   if (what === 'both') return `Reset settings and cost measurement? ${SETTINGS_GO} ${MEASURE_GO} ${UNDONE}`
   const rule = RULE_IDS.some(r => RULE_KEYS[r] === what) ? ' Its question is asked again the next time it comes up.' : ''
-  return `Reset ${SETTINGS[what].title}? It goes back to its default, ${SETTINGS[what].default}.${rule} ${UNDONE}`
+  return `Reset ${plainTitle(SETTINGS[what].title)}? It goes back to its default, ${SETTINGS[what].default}.${rule} ${UNDONE}`
 }
 
 /** Keeps the list of reset rows (see settings.ts stillReset) in memory and in the store. */
@@ -1932,9 +1975,9 @@ async function resetSettings($: EngineInterface, keys: readonly SettingKey[], al
     await $.store.set('choices', null).catch(() => undefined)
   }
   await keepReset($, listed)
-  if (!blocked.length) return all ? 'Every setting is back to its default, and the saved answers are forgotten.' : `${SETTINGS[keys[0] ?? 'floor'].title} is back to its default, ${SETTINGS[keys[0] ?? 'floor'].default}.`
+  if (!blocked.length) return all ? 'Every setting is back to its default, and the saved answers are forgotten.' : `${plainTitle(SETTINGS[keys[0] ?? 'floor'].title)} is back to its default, ${SETTINGS[keys[0] ?? 'floor'].default}.`
   // Claude Code would not write these here (the desktop app has no /config menu): say how to reset them from a terminal.
-  const names = blocked.map(k => SETTINGS[k].title).join(', ')
+  const names = blocked.map(k => plainTitle(SETTINGS[k].title)).join(', ')
   const json = JSON.stringify(Object.fromEntries(blocked.map(k => [k, SETTINGS[k].default])))
   const fix = `To reset ${blocked.length === 1 ? 'it' : 'them'}, run this in a terminal, then restart Claude Code: echo '${json}' | claude plugin configure rightsize@archid21 --values-stdin`
   const done = all && blocked.length < keys.length ? 'The other settings are back to their defaults, and the saved answers are forgotten. ' : ''
@@ -2079,6 +2122,19 @@ async function stopStartTips($: EngineInterface) {
 
 // ---- Hooks -----------------------------------------------------------------
 
+// Sets what the profile governs: its own values, each replaced by its row where the row is yours. It runs
+// again whenever the profile or `yours` changes, so a profile switched in /config applies at once.
+function applyProfile() {
+  profile = profileOf(cfg.profile)
+  const u = inUse(profile, cfg, yours)
+  rules = { handOff: u.handOff, lower: parseShare(cfg.lowering, DEFAULT_RULES.lower) }
+  missBlock = u.maxMiss
+  minTasks = u.minTasks
+  spotEvery = u.raterEvery
+  chances = u.chances
+  answers = u.answers
+}
+
 // Sets the module's variable for one row from `cfg`: at load, when /config changes it, and when rightsize writes it itself.
 function applyOption(key: SettingKey) {
   const v = cfg[key]
@@ -2098,9 +2154,12 @@ function applyOption(key: SettingKey) {
     case 'remember':
       rememberMode = v === 'every session' || v === 'this session' ? v : 'ask'
       return
+    case 'profile':
     case 'handOff':
     case 'lowering':
-      rules = { handOff: parseShare(cfg.handOff, DEFAULT_RULES.handOff), lower: parseShare(cfg.lowering, DEFAULT_RULES.lower) }
+    case 'missPause':
+    case 'raterCheck':
+      applyProfile()
       return
     case 'useHaiku':
     case 'useFable':
@@ -2115,9 +2174,6 @@ function applyOption(key: SettingKey) {
     case 'explore':
       explore = v !== 'off'
       return
-    case 'missPause':
-      missBlock = missPauseOf(v)
-      return
     case 'pacing':
       pacing = v !== 'off'
       return
@@ -2129,9 +2185,6 @@ function applyOption(key: SettingKey) {
       return
     case 'rater':
       rater = v === 'haiku' ? 'haiku' : 'sonnet'
-      return
-    case 'raterCheck':
-      spotEvery = raterEvery(v)
       return
     case 'startTips':
       startEvery = v === 'weekly' || v === 'monthly' ? START_CHECK_DAYS[v] : null
@@ -2273,6 +2326,8 @@ export const register: Register = (on, options) => {
     const configs = await $.settings.read({ key: 'pluginConfigs' }).catch(() => undefined)
     const resetBefore = resetKeys(await $.store.get('resetFields').catch(() => undefined))
     yours = fieldsSet(configs, declared, resetBefore)
+    // What the profile governs depends on which rows are yours, now known.
+    applyProfile()
     resetFields = new Set(stillReset(configs, declared, resetBefore))
     if (resetFields.size !== resetBefore.length) await $.store.set('resetFields', [...resetFields]).catch(() => undefined)
     const from = await $.store.get('measureFrom').catch(() => undefined)
@@ -2372,8 +2427,8 @@ export const register: Register = (on, options) => {
         if (v !== undefined) await answerBilling($, v)
       } else await knowBilling($, true)
       const next: Choices = {}
-      next.lower = await pick($, qLower)
-      next.raise = await pick($, qRaise)
+      next.lower = await pick($, qLower())
+      next.raise = await pick($, qRaise())
       if (up.length) next.up = await pick($, qUp(cur, names(up)))
       if (down.length) next.down = await pick($, qDown(cur, names(down)))
       for (const k of Object.keys(next) as (keyof Choices)[]) if (next[k] === undefined) delete next[k]
@@ -2439,7 +2494,7 @@ export const register: Register = (on, options) => {
         const p: Plan = skipped ? { kind: 'none', why: 'the usage window is nearly used up' } : unfanned
         const d = await resolve($, p, r, s)
         if (d.session) await $.state.set({ plugin: 'rightsize', key: 'sessionEffort' }, d.session)
-        if (d.delegate) out = { ...e, context: [...(e.context ?? []), delegateNote(d.delegate)] }
+        if (d.delegate) out = { ...e, context: [...(e.context ?? []), delegateNote(d.delegate, chances)] }
         run = startRun(r, s, d, p, (await seenEffort($)) ?? s.level, overhead, { text, at: await $.clock.now(), ...(e.turnId !== undefined ? { during: e.turnId } : {}) })
         prevTask = kept
         if (follows) {
@@ -2673,7 +2728,7 @@ export const register: Register = (on, options) => {
           await log($, `rework refused: the task's retry budget is used up, so the main chat finishes it`)
           return { deny: REWORK_DENY }
         }
-        await log($, `rework round: used one of the task's ${CHANCES} retries`)
+        await log($, `rework round: used one of the task's ${chances} retries`)
       }
     }
     const result = await next(e)

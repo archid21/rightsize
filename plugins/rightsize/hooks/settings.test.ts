@@ -1,7 +1,10 @@
 import { expect, test } from 'claude-code/testing'
 import {
+  ADVANCED,
   KEYS,
   NOT_SET,
+  PROFILES,
+  PROFILE_NAMES,
   RULE_KEYS,
   RULE_LABELS,
   SETTINGS,
@@ -10,10 +13,13 @@ import {
   defaults,
   fieldsSet,
   inOptions,
+  inUse,
   isKey,
   manifestGaps,
   mark,
   missPauseOf,
+  plainTitle,
+  profileOf,
   raterEvery,
   ruleLabel,
   ruleValue,
@@ -29,7 +35,7 @@ import {
 const set = (...keys: SettingKey[]) => new Set<SettingKey>(keys)
 
 test('every row is a picker: a title, two or more options, and a default among them', async () => {
-  expect(KEYS.length).toBe(26)
+  expect(KEYS.length).toBe(27)
   for (const k of KEYS) {
     const row = SETTINGS[k]
     expect(row.title.length, k).toBeGreaterThan(0)
@@ -156,7 +162,7 @@ test('the rows stand for plain values', async () => {
 })
 
 test('Workflows asks by default, and Price check is monthly or off', async () => {
-  expect(SETTINGS.workflows.title).toBe('Workflows')
+  expect(SETTINGS.workflows.title).toBe('Advanced · Workflows')
   expect([...SETTINGS.workflows.options]).toEqual(['ask', 'pause rightsize', 'follow my rules', 'right-size every agent'])
   expect(SETTINGS.workflows.default).toBe('ask')
   expect([...SETTINGS.priceCheck.options]).toEqual(['monthly', 'off'])
@@ -182,6 +188,8 @@ test('a setting is named by its key or its title, in any case', async () => {
   expect(settingNamed('   ')).toBeUndefined()
   for (const k of KEYS) expect(settingNamed(k), `${k} by key`).toBe(k)
   for (const k of KEYS) expect(settingNamed(SETTINGS[k].title), `${k} by title`).toBe(k)
+  for (const k of KEYS) expect(settingNamed(plainTitle(SETTINGS[k].title)), `${k} by its title without the prefix`).toBe(k)
+  expect(settingNamed('advanced · hand-off threshold'), 'the title as /config shows it, in any case').toBe('handOff')
 })
 
 test('a reset field is not yours while its stored value is the default, and is again once it is anything else', async () => {
@@ -203,4 +211,63 @@ test('a reset field is not yours while its stored value is the default, and is a
   expect(resetKeys('floor')).toEqual([])
   // Settings unreadable: the options stand in, and a reset field at its default is not yours either way.
   expect(fieldsSet(undefined, { floor: 'low', ceiling: 'high' }, ['floor'])).toEqual(set('ceiling'))
+})
+
+test('Profile is the first row: Quality, Balanced or Economy, Balanced by default', async () => {
+  expect(KEYS[0]).toBe('profile')
+  expect(SETTINGS.profile.title).toBe('Profile')
+  expect([...SETTINGS.profile.options]).toEqual(['Quality', 'Balanced', 'Economy'])
+  expect(SETTINGS.profile.default).toBe('Balanced')
+  expect([...PROFILE_NAMES]).toEqual([...SETTINGS.profile.options])
+  expect(profileOf('Economy')).toBe('Economy')
+  expect(profileOf('balanced'), 'not an option: Balanced').toBe('Balanced')
+  expect(profileOf(undefined)).toBe('Balanced')
+})
+
+test('every other row is titled Advanced, so /config lists the profile first and the rest as advanced', async () => {
+  expect(ADVANCED).toBe('Advanced · ')
+  for (const k of KEYS.filter(k => k !== 'profile')) {
+    expect(SETTINGS[k].title.startsWith(ADVANCED), k).toBe(true)
+    expect(plainTitle(SETTINGS[k].title).length, `${k} has a title after the prefix`).toBeGreaterThan(0)
+  }
+  expect(SETTINGS.floor.title).toBe('Advanced · Lowest effort')
+  expect(plainTitle(SETTINGS.floor.title)).toBe('Lowest effort')
+  expect(plainTitle('Profile'), 'no prefix to take off').toBe('Profile')
+})
+
+test('exploring close calls is off by default', async () => {
+  expect(SETTINGS.explore.default).toBe('off')
+  expect(defaults().explore).toBe('off')
+})
+
+test('the profiles hold the values of the table', async () => {
+  const p = PROFILES
+  expect([p.Quality.evidence, p.Balanced.evidence, p.Economy.evidence]).toEqual([
+    { minTasks: 10, maxMiss: 0.1 },
+    { minTasks: 0, maxMiss: 0.2 },
+    { minTasks: 0, maxMiss: 0.3 },
+  ])
+  expect([p.Quality.handOff, p.Balanced.handOff, p.Economy.handOff]).toEqual([0.5, 0.7, 0.85])
+  expect([p.Quality.raterEvery, p.Balanced.raterEvery, p.Economy.raterEvery]).toEqual([10, 20, 30])
+  expect([p.Quality.chances, p.Balanced.chances, p.Economy.chances]).toEqual([1, 2, 3])
+  expect(p.Quality.answers).toEqual({ lower: 'ask', raise: 'auto', up: 'auto', down: 'ask' })
+  expect(p.Balanced.answers).toEqual({ lower: 'auto', raise: 'auto', up: 'auto', down: 'auto' })
+  expect(p.Economy.answers).toEqual({ lower: 'auto', raise: 'auto', up: 'stay', down: 'auto' })
+})
+
+test('a row you set wins over the profile; a row you did not set takes the profile value', async () => {
+  const values = { ...defaults(), handOff: '60%', missPause: '40%', raterCheck: 'every 100' }
+  // Nothing set: the profile's own.
+  expect(inUse('Quality', values, set())).toMatchObject({ handOff: 0.5, minTasks: 10, maxMiss: 0.1, raterEvery: 10, chances: 1 })
+  expect(inUse('Economy', values, set())).toMatchObject({ handOff: 0.85, minTasks: 0, maxMiss: 0.3, raterEvery: 30, chances: 3 })
+  // Each row set replaces only its own value.
+  expect(inUse('Quality', values, set('handOff'))).toMatchObject({ handOff: 0.6, maxMiss: 0.1, raterEvery: 10 })
+  expect(inUse('Quality', values, set('raterCheck'))).toMatchObject({ handOff: 0.5, raterEvery: 100 })
+  // The evidence rule is one value, held by Pause after misses: set, it is the whole rule.
+  expect(inUse('Quality', values, set('missPause'))).toMatchObject({ minTasks: 0, maxMiss: 0.4, handOff: 0.5 })
+  expect(inUse('Balanced', { ...values, missPause: 'off' }, set('missPause')).maxMiss, 'off is never').toBeNull()
+  expect(inUse('Balanced', { ...values, raterCheck: 'off' }, set('raterCheck')).raterEvery, 'off is never').toBeNull()
+  // Chances and the questions have no row: always the profile's.
+  expect(inUse('Economy', values, set('handOff', 'missPause', 'raterCheck')).chances).toBe(3)
+  expect(inUse('Economy', values, set('handOff')).answers.up).toBe('stay')
 })

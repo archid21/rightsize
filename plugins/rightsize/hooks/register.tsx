@@ -2550,8 +2550,7 @@ export const register: Register = (on, options) => {
 
   on('command.run', { command: CMD }, async ($, e) => {
     const arg = e.args.trim().toLowerCase()
-    // undo: the name before 0.8.
-    if (arg === 'retry' || arg === 'undo') return { text: await retry($) }
+    if (arg === 'retry') return { text: await retry($) }
     if (arg === 'reset' || arg.startsWith('reset ')) return { text: await runReset($, e.args.trim().slice('reset'.length)) }
     if (arg === 'prices') return { text: await runCheck($, 'manual') }
     if (arg === 'report') {

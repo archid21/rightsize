@@ -244,7 +244,7 @@ Your own setting always wins. A row you set under Advanced replaces what the pro
 
 - `/rightsize share`: prints a message you can paste anywhere (LinkedIn, Slack, a DM) to tell others about rightsize. It includes your estimated saving for the last 30 days once there are at least 20 rated prompts and the saving is 5% or more. It sends nothing, writes nothing and asks nothing, and it is unrelated to the **Share anonymous feedback** setting.
 - `/rightsize settings`: ask the four questions again, and set their rows in `/config` from your answers.
-- `/rightsize retry`: put the last auto-lowered prompt back in the box, to run at the normal level (it does not undo file changes). `/rightsize undo`, the old name, still works.
+- `/rightsize retry`: put the last auto-lowered prompt back in the box, to run at the normal level (it does not undo file changes).
 - `/rightsize clear`: drop a session-wide effort switch.
 - `/rightsize prices`: check prices now.
 - `/rightsize reset`: asks what to reset (Settings, Cost measurement, Both, or Cancel), then asks you to confirm, because it can't be undone.

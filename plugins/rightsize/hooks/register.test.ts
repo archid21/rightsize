@@ -5127,7 +5127,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await bandText($, surface), 'the band it set is gone').toBe('')
     const undo = await d.command('retry')
     expect(undo.text ?? '', 'nothing of it is left to retry').toContain('Nothing to retry')
-    expect((await d.command('undo')).text ?? '', 'undo, the name before 0.8, still answers').toContain('Nothing to retry')
     const runs = readRuns(h)
     expect(runs.map(l => l.kind)).toEqual(['dropped'])
     expect(runs[0]).toMatchObject({ kind: 'dropped', reason: 'a hook refused it', session: 'sess-1' })

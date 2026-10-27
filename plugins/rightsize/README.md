@@ -92,7 +92,7 @@ Your own setting always wins. A row you set under Advanced replaces what the pro
 - `/rightsize share` prints a message you can paste anywhere to tell others about rightsize, with your estimated saving for the last 30 days once there are 20 rated prompts and the saving is 5% or more. It sends nothing and is unrelated to the Share anonymous feedback setting.
 - `/rightsize settings` asks the questions again, and sets their rows in `/config` from your answers.
 - `/rightsize reset` asks what to reset (Settings, Cost measurement, Both or Cancel) and confirms, since it can't be undone. Settings puts every `/config` row back to its default and forgets the saved answers (a reset row counts as a default, not yours, until you set it again). Cost measurement clears the calibration and the close-call, spot-check and start-suggestion counts, and makes the run log before that moment teach nothing (the log and the report history stay). `/rightsize reset <setting>` resets one, named by key (`handOff`) or title (`hand-off threshold`).
-- `/rightsize retry` puts the last auto-lowered prompt back in the box to run at the normal level. It does not undo file changes. `/rightsize undo`, the old name, still works.
+- `/rightsize retry` puts the last auto-lowered prompt back in the box to run at the normal level. It does not undo file changes.
 - `/rightsize clear` drops a session-wide switch.
 - `/mods` turns the mod on or off.
 - Changing settings: in a terminal session, `/config` applies a change at once. The desktop app has no `/config` menu: change settings from a terminal (`/config` inside `claude`, or `echo '{"handOff":"60%"}' | claude plugin configure rightsize@archid21 --values-stdin`), then quit the app (⌘Q) and reopen it.

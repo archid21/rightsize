@@ -132,7 +132,7 @@ type Route = NonNullable<Choices['up']>
 type Billing = 'api' | 'subscription'
 type Resized = { from: Tier; tier: Tier; level: Level; type: Rating['type']; tie?: Tie }
 /** A moved subagent: its estimates on the model it runs on and on its parent's, and what its own requests cost so far. */
-type Measured = Resized & { raw: number; parentRaw: number; spend: number; inWorkflow?: boolean }
+type Measured = Resized & { raw: number; parentRaw: number; spend: number; inWorkflow?: boolean; task?: string; run?: string }
 /** A spawn the engine is starting: its first step can come before its id does. */
 type Spawning = { description: string; type: string; run?: Run; size?: Omit<Measured, 'spend'>; id?: string }
 type SubagentMode = 'cheaper when it fits' | 'off'
@@ -217,6 +217,8 @@ const qRemember: Question<boolean> = {
 type Run = {
   /** Unique to this run: its log line carries it, and 👍 and 👎 name it. */
   id: string
+  /** The task this run belongs to: the id of the run that started it. */
+  task: string
   turnId?: string
   rating: Rating
   tier: Tier
@@ -527,11 +529,12 @@ async function seenEffort($: EngineInterface) {
   return isLevel(v) ? v : null
 }
 
-// The type of the task in progress, kept from the last rating that started one. A follow-up that continues
-// the task is planned as this type, so a one-line "yes, go ahead" is not typed as a new kind of work.
-async function taskType($: EngineInterface) {
-  const v = (await $.state.get({ plugin: 'rightsize', key: 'taskType' }).catch(() => undefined))?.value
-  return isTaskType(v) ? v : null
+// The task in progress, kept from the last rating that started one. A follow-up that continues the task
+// is planned as its type, so a one-line "yes, go ahead" is not typed as a new kind of work, and carries its
+// id, so the log ties the brief, the follow-ups, the repairs and the subagents to one task.
+async function currentTask($: EngineInterface) {
+  const v = (await $.state.get({ plugin: 'rightsize', key: 'task' }).catch(() => undefined))?.value
+  return v && typeof v.id === 'string' && isTaskType(v.type) ? v : null
 }
 
 // The text of a failed tool call, as the model read it.
@@ -1058,8 +1061,11 @@ function startRun(r: Rating, s: Situation, d: Decision, p: Plan, base: Level, ov
   const swCost = sw && swOn ? mainCost(r, swOn, sw.level, 0) + (s.context * s.prices[sw.tier].cacheWrite) / 1e6 : 0
   // A per-prompt switch goes and comes back; a session switch goes once.
   const switches = d.level && d.level !== s.level ? 2 : d.session ? 1 : 0
+  const id = `${sessionId}:${Date.now()}-${++runSeq}`
   return {
-    id: `${sessionId}:${Date.now()}-${++runSeq}`,
+    id,
+    // A run starts a task of its own until the prompt is found to continue one.
+    task: id,
     rating: r,
     tier: s.tier,
     normal: s.level,
@@ -1289,6 +1295,7 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
       kind: 'run',
       id: run.id,
       session: sessionId,
+      task: run.task,
       type: r.type,
       continues: r.continues === true,
       ...(run.ratedType ? { ratedType: run.ratedType } : {}),
@@ -1492,6 +1499,8 @@ async function finishSubagent($: EngineInterface, m: Measured, aborted: boolean)
     kind: 'subagent',
     ...(m.inWorkflow ? { afterWorkflow: true } : {}),
     session: sessionId,
+    ...(m.task ? { task: m.task } : {}),
+    ...(m.run ? { run: m.run } : {}),
     type: m.type,
     from: m.from,
     tier: m.tier,
@@ -1946,7 +1955,7 @@ export const register: Register = (on, options) => {
     sessionId = await $.session.id().catch(() => '')
     pending = null
     active = null
-    await $.state.set({ plugin: 'rightsize', key: 'taskType' }, null).catch(() => undefined)
+    await $.state.set({ plugin: 'rightsize', key: 'task' }, null).catch(() => undefined)
     lastApplied = undefined
     lastSwitched = false
     lastContext = 0
@@ -2102,11 +2111,10 @@ export const register: Register = (on, options) => {
       const s: Situation = { ...base, rules: movedRules }
       const { rating: rated, overhead, prompt, failed, by } = await rate($, text, s)
       // A rating that continues the task is planned as the task's type; any other starts a task of its own type.
-      const kept = rated ? await taskType($) : null
+      const kept = rated ? await currentTask($) : null
       const follows = rated !== undefined && rated.continues === true && kept !== null
-      const ratedType = follows && kept !== rated.type ? rated.type : undefined
-      const r = rated && follows && kept !== rated.type ? { ...rated, type: kept } : rated
-      if (rated && !follows) await $.state.set({ plugin: 'rightsize', key: 'taskType' }, rated.type).catch(() => undefined)
+      const ratedType = follows && kept.type !== rated.type ? rated.type : undefined
+      const r = rated && follows && kept.type !== rated.type ? { ...rated, type: kept.type } : rated
       if (r) {
         // While Claude fans work out to workflows, a single hand-off would only cut across it. After one,
         // Workflows says whether hand-offs go on (follow my rules, right-size every agent) or wait (the default).
@@ -2123,6 +2131,8 @@ export const register: Register = (on, options) => {
         if (d.session) await $.state.set({ plugin: 'rightsize', key: 'sessionEffort' }, d.session)
         if (d.delegate) out = { ...e, context: [...(e.context ?? []), delegateNote(d.delegate)] }
         run = startRun(r, s, d, p, (await seenEffort($)) ?? s.level, overhead)
+        if (follows) run.task = kept.id
+        else await $.state.set({ plugin: 'rightsize', key: 'task' }, { id: run.task, type: r.type }).catch(() => undefined)
         if (ratedType) run.ratedType = ratedType
         run.rater = by
         // A close call the guide broke: kept on the run for the log, and counted so every fifth explores.
@@ -2149,7 +2159,9 @@ export const register: Register = (on, options) => {
         // what the rating calls cost; /rightsize report counts the prompt as not counted, and the cost as overhead.
         const reason = failed ?? 'no rating'
         await log($, `prompt not rated (${reason}): kept ${s.level} on ${TIER_NAME[s.tier]}`)
-        const line: RunLine = { at: new Date().toISOString(), kind: 'unrated', session: sessionId, reason, rater: by, overhead: round(overhead) }
+        // An unrated prompt is planned as nothing, but it is still part of the task in progress.
+        const task = (await currentTask($))?.id
+        const line: RunLine = { at: new Date().toISOString(), kind: 'unrated', session: sessionId, ...(task ? { task } : {}), reason, rater: by, overhead: round(overhead) }
         await append($, 'rightsize-runs.jsonl', JSON.stringify(line), RUNS_LOG_MAX)
       }
     } catch (err) {
@@ -2313,7 +2325,7 @@ export const register: Register = (on, options) => {
     const id = result.agentId
     if (run && ours && id && !run.subAgents.includes(id)) run.subAgents.push(id)
     if (size && id && tierOf(result.model) === size.tier) {
-      if (!resizedRuns.has(id)) resizedRuns.set(id, { ...size, spend: 0 })
+      if (!resizedRuns.has(id)) resizedRuns.set(id, { ...size, spend: 0, ...(run ? { task: run.task, run: run.id } : {}) })
       run?.resized.push({ from: size.from, tier: size.tier, level: size.level, type: size.type, ...(size.tie ? { tie: size.tie } : {}) })
     } else if (id) resizedRuns.delete(id)
     return result

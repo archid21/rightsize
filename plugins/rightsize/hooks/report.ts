@@ -24,6 +24,10 @@ export type RunLine = {
   kind?: 'run' | 'overhead' | 'subagent' | 'check' | 'feedback' | 'unrated'
   /** A run line's own id, which feedback lines name in `ref`. */
   id?: string
+  /** The task the line belongs to: the id of the run that started it. Follow-ups, unrated prompts and subagents carry it. */
+  task?: string
+  /** A subagent line: the id of the run whose turn started it. */
+  run?: string
   session?: string
   type?: string
   route?: string

@@ -522,6 +522,9 @@ for (const surface of ['desktop', 'terminal'] as const) {
       ['feature', true, 'review', null],
       ['review', false, null, 'opus'],
     ])
+    // One task id from the brief to its follow-up, the id of the run that started it; a new goal starts a task of its own.
+    expect(runs.map(r => r.task), 'task ids').toEqual([runs[0]?.id, runs[0]?.id, runs[2]?.id])
+    expect(runs[2]?.id).not.toBe(runs[0]?.id)
   })
 
   test(`a continuing prompt in a review task is still a review; a continuing prompt with no task kept takes its own type (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -845,6 +848,9 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(sub.length).toBe(1)
     expect([sub[0]?.from, sub[0]?.tier, sub[0]?.level, sub[0]?.type, sub[0]?.aborted]).toEqual(['opus', 'haiku', 'low', 'search', false])
     expect(Math.abs(Number(sub[0]?.actual) - TWO_HAIKU_STEPS) < 1e-6).toBe(true)
+    // The subagent line names the run whose turn started it, and that run's task.
+    const started = runs.find(l => l.kind === 'run')
+    expect([sub[0]?.run, sub[0]?.task], 'tied to its run and task').toEqual([started?.id, started?.task])
     expect(Number(sub[0]?.parentEstimate) > Number(sub[0]?.estimate) * 10, 'the same work on Opus').toBe(true)
     const cal = h.store[CAL_STORE] as Record<string, { n: number }>
     expect(['search:subagent', 'search:subagent:haiku', 'search:subagent:haiku:low'].map(k => cal[k]?.n)).toEqual([1, 1, 1])
@@ -2061,7 +2067,9 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.submit(`${LOOKUP} both`)
     expect(h.completions).toEqual(['sonnet', 'haiku'])
     const unrated = runLines(h).filter(l => l.kind === 'unrated')
-    expect(unrated).toEqual([{ at: expect.any(String), kind: 'unrated', session: 'sess-1', reason: 'rating unreadable', rater: 'haiku', overhead: 2.1 }])
+    // An unrated prompt is part of the task in progress: the last rated run's.
+    const task = (last(runLines(h).filter(l => l.kind === 'run')) as { task: string }).task
+    expect(unrated).toEqual([{ at: expect.any(String), kind: 'unrated', session: 'sess-1', task, reason: 'rating unreadable', rater: 'haiku', overhead: 2.1 }])
     expect(h.files[LOG_FILE] ?? '').toContain('prompt not rated (rating unreadable)')
     expect(h.files[LOG_FILE] ?? '').toContain('rating by sonnet failed (rating call timed out): trying haiku')
   })
@@ -3925,7 +3933,9 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(last(h.sent)?.model, 'model as the session has it').toBe('claude-opus-5-5')
     await d.complete('t2')
     const unrated = runLines(h).filter(l => l.kind === 'unrated')
-    expect(unrated).toEqual([{ at: expect.any(String), kind: 'unrated', session: 'sess-1', reason: 'rating call timed out', rater: 'haiku', overhead: 0.00315 }])
+    // An unrated prompt is part of the task in progress: the last rated run's.
+    const task = (last(runLines(h).filter(l => l.kind === 'run')) as { task: string }).task
+    expect(unrated).toEqual([{ at: expect.any(String), kind: 'unrated', session: 'sess-1', task, reason: 'rating call timed out', rater: 'haiku', overhead: 0.00315 }])
     expect(h.files[LOG_FILE] ?? '').toContain('prompt not rated (rating call timed out)')
 
     // An answer that cannot be read is tried again the same way.

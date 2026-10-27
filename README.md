@@ -124,6 +124,8 @@ Every profile asks all four, once each. The profile only changes which answer is
 
 After your first answer, rightsize asks whether to use your choices in every session. Each question is also a row in `/config` (**Lowering**, **Raising**, **Stronger model**, **Cheaper model**), and **Remember choices** answers the follow-up ahead of time. A rule you set in a row is used as it is, and its question is never asked.
 
+**Questions do not wait for ever.** Each question rightsize asks while you work waits 2 minutes. With no answer, it takes the choice that changes nothing and costs nothing extra (no raise, no stronger model, no subagent, nothing saved), and a rule question is asked again next time. A late answer to a rule question is saved for next time; the prompt that was already running is not changed. The Idle question is the exception: it keeps your prompt held until you answer, and the band says so after 2 minutes.
+
 ## How it decides
 
 - **Your setting wins.** A value you set in `/config`, or answered when rightsize asked, is never changed or bypassed by rightsize's own behavior. That covers the thresholds, the four rules, **Reports**, and every other row, and it beats the value your profile would supply for that row. Budget pacing moves only the thresholds you left at their default. A window nearly used up skips raises and stronger models only while their rule has no answer. Rate limits never change **Reports** once you set it; `/rightsize` says when they disagree. A value counts as yours once you set it, even if you set it to the number that is the default. `/rightsize` shows your profile on its first line and lists the settings you changed; the rest are defaults, shown in `/config`.

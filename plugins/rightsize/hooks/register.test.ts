@@ -2,6 +2,8 @@ import { type TestBody, expect, test } from 'claude-code/testing'
 import { CAL_FULL, CAL_STORE, DEFAULT_PRICES, type Calibration, type Rating, type Situation, delegateCost, delegateKeys, plan, sizeSubagent, subagentKeys, subWork } from './cost'
 import { KEYS, SETTINGS, type SettingKey, inOptions, plainTitle } from './settings'
 
+declare const setTimeout: (fn: (...a: unknown[]) => void, ms: number) => unknown
+
 // Typed loosely: the AskUserQuestion matcher's full type is too deep for tsc.
 type AskInput = { questions: { question: string; header?: string; options?: { label: string }[] }[] }
 type LooseOn = (event: string, match: object, hook: (_$: unknown, e: AskInput) => Promise<unknown>) => void
@@ -131,8 +133,10 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
     contextTokens: undefined as number | undefined,
     /** Rating replies to give before `rating`, in order; a reply starting with "timeout" is a timed-out call, one starting with "unavailable" a refused one. */
     ratingQueue: [] as string[],
-    /** True: a $.clock.sleep ends at once (the wait ran out). False: it never ends, so an answer always comes first. */
+    /** True: a $.clock.sleep ends after a moment (the wait ran out), after any answer that is ready. False: it never ends, so an answer always comes first. */
     sleepEnds: false,
+    /** A header's question answers only once its promise settles: an answer that comes after the wait. */
+    answerGate: {} as Record<string, Promise<void>>,
   }
   on('session.start', async ($, e) => {
     h.surfaces = e.surface ? [e.surface] : []
@@ -190,6 +194,7 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
   on('clock.now', async () => ({ value: h.now }) as never)
   on('clock.sleep', async () => {
     if (!h.sleepEnds) await new Promise(() => {})
+    await new Promise(r => setTimeout(r, 25))
     return { value: undefined } as never
   })
   on('env.get', async ($, e) => {
@@ -276,6 +281,7 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
     if (answer === undefined) return { deny: `no answer set for ${header}` }
     // Nobody there: the question stays open and is never answered.
     if (answer === NO_ONE) await new Promise(() => {})
+    await h.answerGate[header]
     return { result: { questions: e.questions, answers: { [q?.question ?? '']: answer } } }
   })
   ;(on as unknown as LooseOn)('tool.call', { tool: 'Agent' }, async () => ({ result: { content: 'done' } }))
@@ -1125,7 +1131,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.bash('fail make')
     h.answers = { Stuck: 'Keep medium' }
     await d.step('t1', 1)
-    expect(h.asked.map(a => a.question)).toEqual(['Claude looks stuck: the same tool call failed twice. Raise effort from medium to high for the rest of this turn?'])
+    expect(h.asked.map(a => a.question)).toEqual(['Claude looks stuck: the same tool call failed twice. Raise effort from medium to high for the rest of this turn? No answer in 2 minutes: it keeps medium.'])
     expect(last(h.sent)?.effort).toBe('medium')
     await d.step('t1', 2)
     expect(h.asked.length, 'the same sign is not asked again').toBe(1)
@@ -3306,7 +3312,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   // ---- Workflows ------------------------------------------------------------------------------------
 
   const WORKFLOW_QUESTION =
-    'Claude is starting a workflow. It may start many helper agents at once, often 10 or more, and each picks its own model. What should rightsize do during workflows? You can change this any time with Workflows in /config.'
+    'Claude is starting a workflow. It may start many helper agents at once, often 10 or more, and each picks its own model. What should rightsize do during workflows? You can change this any time with Workflows in /config. No answer in 2 minutes: rightsize pauses for this workflow.'
   const WORKFLOW_ANSWERS: [string, string][] = [
     ['Pause rightsize for workflows (recommended)', 'pause rightsize'],
     ['Follow my rules for the main chat', 'follow my rules'],
@@ -4180,6 +4186,226 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(helperLog(h)).toContain('no answer in 2 minutes')
     expect(((await d.bash('ls', 'agent-helper')) as { deny?: string }).deny).toContain('stuck')
     await d.complete('t1')
+  })
+
+  // ---- Every question waits 2 minutes, then takes the choice that changes nothing ----
+
+  const until = async (done: () => boolean) => {
+    for (let i = 0; i < 200 && !done(); i++) await new Promise(r => setTimeout(r, 10))
+  }
+  const NO_ANSWER = 'No answer in 2 minutes:'
+
+  test(`Lowering with nobody to answer: this prompt runs as it is, nothing is saved, and it is asked again next time (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    const d = drive($, h)
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+    h.rating = LOWER
+    h.answers = { Lowering: NO_ONE }
+    h.sleepEnds = true
+    await d.submit(LOOKUP)
+    await d.step('t1', 0)
+    expect(h.asked.map(a => a.header), 'no Remember question either').toEqual(['Lowering'])
+    expect(h.asked[0]?.question).toContain(`${NO_ANSWER} this prompt runs as it is.`)
+    expect(last(h.sent)?.effort, 'no change').toBe('medium')
+    expect(h.store.choices, 'nothing saved').toBeUndefined()
+    expect(helperLog(h)).toContain('no answer in 2 minutes to Lowering: this prompt ran with no change; nothing saved')
+    await d.complete('t1')
+    await d.submit(LOOKUP)
+    expect(h.asked.map(a => a.header), 'asked again').toEqual(['Lowering', 'Lowering'])
+  })
+
+  test(`Stronger model with nobody to answer: no switch and no hand-off, and nothing is saved (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    const d = drive($, h)
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+    h.rating = '{"level":"high","model":"fable","size":"small","type":"debug","read":30000,"write":4000,"steps":12,"reason":"subtle concurrency bug"}'
+    h.answers = { Stronger: NO_ONE }
+    h.sleepEnds = true
+    await d.submit(DEBUG)
+    await d.step('t1')
+    expect(h.asked.map(a => a.header)).toEqual(['Stronger'])
+    expect(h.asked[0]?.question).toContain(`${NO_ANSWER} this prompt runs as it is.`)
+    expect(handedTo(h), 'no hand-off').toBeUndefined()
+    expect(last(h.sent)?.model, 'no switch').not.toBe('fable')
+    expect(h.store.choices).toBeUndefined()
+    expect(helperLog(h)).toContain('no answer in 2 minutes to Stronger')
+    await d.complete('t1')
+  })
+
+  test(`Remember with nobody to answer: this session only, and it is not asked again (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    const d = drive($, h)
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+    h.rating = LOWER
+    h.answers = { Lowering: 'Lower automatically (Recommended)', Remember: NO_ONE }
+    h.sleepEnds = true
+    await d.submit(LOOKUP)
+    await d.step('t1', 0)
+    expect(h.asked.map(a => a.header)).toEqual(['Lowering', 'Remember'])
+    expect(h.asked[1]?.question).toBe(`Use these choices in every session? ${NO_ANSWER} this session only.`)
+    expect(last(h.sent)?.effort, 'the Lowering answer still applies').toBe('low')
+    expect(h.store.remember, 'not kept for every session').toBeUndefined()
+    expect(h.store.choices).toBeUndefined()
+    expect(helperLog(h)).toContain('no answer in 2 minutes to Remember: these choices stay for this session only')
+  })
+
+  test(`Billing with nobody to answer: API prices for now, not saved, asked again next session (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    const d = drive($, h)
+    h.rateLimits = []
+    h.rating = NO_CHANGE
+    h.answers = { Billing: NO_ONE }
+    h.sleepEnds = true
+    await d.start(surface)
+    await d.step('t1')
+    await d.complete('t1')
+    await d.submit(LOOKUP)
+    expect(h.asked.map(a => a.header)).toEqual(['Billing'])
+    expect(h.asked[0]?.question).toContain(`${NO_ANSWER} reports use API prices for now.`)
+    expect(h.store.billing, 'not saved').toBeUndefined()
+    expect(helperLog(h)).toContain('no answer in 2 minutes to Billing')
+    await d.start(surface)
+    await d.step('t2')
+    await d.complete('t2')
+    await d.submit(LOOKUP)
+    expect(h.asked.map(a => a.header), 'asked again in the next session').toEqual(['Billing', 'Billing'])
+  })
+
+  test(`an ask-each-time question with nobody to answer stays as it is (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { remember: true, choices: { raise: 'ask' } } })
+    const d = drive($, h)
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+    h.rating = RAISE_HIGH
+    h.answers = { Effort: NO_ONE }
+    h.sleepEnds = true
+    await d.submit(DEBUG)
+    await d.step('t1')
+    expect(h.asked.map(a => a.header)).toEqual(['Effort'])
+    expect(h.asked[0]?.question).toContain(`${NO_ANSWER} it stays as it is.`)
+    expect(last(h.sent)?.effort, 'never raised').toBe('medium')
+    expect(helperLog(h)).toContain('no answer in 2 minutes to Effort: kept medium')
+    await d.complete('t1')
+  })
+
+  test(`Subagent with nobody to answer: nothing is sent to a subagent (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { remember: true, choices: { down: 'ask' } } })
+    const d = drive($, h)
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+    h.rating = HAND_OFF()
+    h.answers = { Subagent: NO_ONE }
+    h.sleepEnds = true
+    await d.submit(SEARCH)
+    await d.step('t1')
+    expect(h.asked.map(a => a.header)).toEqual(['Subagent'])
+    expect(h.asked[0]?.question).toContain(`${NO_ANSWER} it stays as it is.`)
+    expect(handedTo(h), 'not sent').toBeUndefined()
+    expect(helperLog(h)).toContain('no answer in 2 minutes to Subagent: stayed on Opus')
+    await d.complete('t1')
+  })
+
+  test(`Stuck in the main chat with nobody to answer keeps the effort, and a late answer only gets a toast (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    const d = drive($, h)
+    await d.start(surface)
+    h.rating = NO_CHANGE
+    await d.submit(LOOKUP)
+    await d.step('t1', 0)
+    await d.bash('fail make')
+    await d.bash('fail make')
+    let release = () => {}
+    h.answerGate = { Stuck: new Promise<void>(r => (release = r)) }
+    h.answers = { Stuck: 'Raise to high for this turn' }
+    h.sleepEnds = true
+    await d.step('t1', 1)
+    expect(h.asked[0]?.question).toBe(`Claude looks stuck: the same tool call failed twice. Raise effort from medium to high for the rest of this turn? ${NO_ANSWER} it keeps medium.`)
+    expect(last(h.sent)?.effort).toBe('medium')
+    expect(helperLog(h)).toContain('no answer in 2 minutes to Stuck: kept medium')
+    release()
+    await until(() => h.toasts.some(t => t.includes('too late')))
+    expect(last(h.toasts)).toBe('rightsize: that answer came too late; nothing changed.')
+    await d.step('t1', 2)
+    expect(last(h.sent)?.effort, 'still not raised').toBe('medium')
+  })
+
+  test(`Workflow with nobody to answer pauses rightsize for this workflow without saving it; a late answer is kept for later (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { ...OPUS })
+    const d = drive($, h)
+    await d.start(surface)
+    let release = () => {}
+    h.answerGate = { Workflow: new Promise<void>(r => (release = r)) }
+    h.rating = NO_CHANGE
+    h.answers = { Workflow: 'Follow my rules for the main chat' }
+    h.sleepEnds = true
+    await d.submit(LOOKUP)
+    await d.step('t1')
+    await d.workflow()
+    expect(h.events, 'the workflow went ahead').toContain('workflow')
+    expect(h.asked[0]?.question).toContain(`${NO_ANSWER} rightsize pauses for this workflow.`)
+    expect(await settingsText(d), 'not saved').not.toContain('Workflows:')
+    expect(helperLog(h)).toContain('no answer in 2 minutes to Workflow')
+    release()
+    await until(() => h.configSet.length > 0)
+    expect(await settingsText(d), 'the late answer is kept').toContain('Workflows: follow my rules')
+  })
+
+  test(`a late answer to a rule question is saved for the next prompt, and the running one is unchanged (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    const d = drive($, h)
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+    let release = () => {}
+    h.answerGate = { Lowering: new Promise<void>(r => (release = r)) }
+    h.rating = LOWER
+    h.answers = { Lowering: 'Lower automatically (Recommended)', Remember: 'Just this session' }
+    h.sleepEnds = true
+    await d.submit(LOOKUP)
+    await d.step('t1', 0)
+    expect(last(h.sent)?.effort, 'this prompt: no change').toBe('medium')
+    await d.complete('t1')
+    release()
+    await until(() => h.toasts.some(t => t.includes('saved your answer')))
+    expect(last(h.toasts)).toBe('rightsize: saved your answer for next time.')
+
+    h.asked = []
+    await d.submit(LOOKUP)
+    await d.step('t2', 0)
+    expect(h.asked.filter(a => a.header === 'Lowering'), 'not asked again').toEqual([])
+    expect(last(h.sent)?.effort, 'the saved rule lowers it').toBe('low')
+  })
+
+  test(`Idle is not timed: after 2 minutes the band says the prompt is held, and an answer still works (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const { h, d } = await idleSetup($, on, surface)
+    h.now += 2 * 60 * MIN
+    let release = () => {}
+    h.answerGate = { Idle: new Promise<void>(r => (release = r)) }
+    h.answers = { Idle: 'Hold it: I will /clear or /compact first' }
+    h.sleepEnds = true
+    const sent = h.submitted.length
+    const pending = d.submit('continue') as Promise<{ drop?: string }>
+    let settled = false
+    void pending.then(() => (settled = true))
+    await until(() => h.asked.length > 0)
+    // The engine draws nothing while the prompt hook is open, so the log carries the band's text.
+    await until(() => helperLog(h).includes('Held:'))
+    expect(helperLog(h)).toContain('no answer in 2 minutes to Idle: the prompt stays held; band: Held: sending now costs about $0.16 more than a warm cache. Answer to go on.')
+    expect(settled, 'still waiting for the answer').toBe(false)
+    expect(h.submitted.length, 'not sent').toBe(sent)
+    release()
+    const out = await pending
+    expect(out.drop).toContain('rightsize held this prompt')
+    expect(h.submitted.length).toBe(sent)
+    expect(await bandText($, surface), 'the band clears').toBe('')
   })
 
   test(`a helper whose task has no retry left goes back without a question (${surface})`, { timeoutMs: 30000 }, async ($, on) => {

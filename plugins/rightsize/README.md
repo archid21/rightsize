@@ -27,6 +27,8 @@ Every profile asks all four, once each; the profile only changes which answer is
 
 After the first answer, it asks "Use these choices in every session?". Each question is also a row in `/config` (**Lowering**, **Raising**, **Stronger model**, **Cheaper model**), and **Remember choices** answers the follow-up ahead of time. A rule set in a row is used as it is, and its question is never asked.
 
+**Questions do not wait for ever.** Each question rightsize asks while you work waits 2 minutes. With no answer, it takes the choice that changes nothing and costs nothing extra (no raise, no stronger model, no subagent, nothing saved), and a rule question is asked again next time. A late answer to a rule question is saved for next time; the prompt that was already running is not changed. The Idle question is the exception: it keeps your prompt held until you answer, and the band says so after 2 minutes.
+
 ## How it decides
 
 - **Your setting wins.** Automatic adjustments, and the values your profile supplies, act only on settings left at their default. Budget pacing moves a threshold only when you did not set it; a window nearly used up skips a raise or a stronger model only while its rule has no answer; rate limits never change **Reports** once you set it; "Ask" always asks. `/rightsize` shows your profile on its first line and lists the settings you changed; the rest are defaults, shown in `/config`.

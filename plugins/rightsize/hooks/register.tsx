@@ -806,8 +806,12 @@ async function knowBilling($: EngineInterface, mayAsk: boolean) {
   if (seen) return saveBilling($, seen, 'detected')
   if (!mayAsk || billingAsked || lastContext === 0) return
   billingAsked = true
-  const v = await pick($, qBilling)
-  if (v !== undefined) await answerBilling($, v)
+  const v = await askWithin($, withWait(qBilling, 'reports use API prices for now'), late => answerBilling($, late))
+  if (v === TIMED_OUT) {
+    // Not saved: it is asked again next session.
+    billing = 'api'
+    await logTimeout($, 'Billing', 'reports use API prices for this session; not saved')
+  } else if (v !== undefined) await answerBilling($, v)
 }
 
 // ---- Questions -------------------------------------------------------------
@@ -821,6 +825,34 @@ async function pick<V>($: EngineInterface, q: Question<V>): Promise<V | undefine
     return undefined
   }
 }
+
+/** How long a question waits for the person before rightsize takes the choice that changes nothing and costs nothing. */
+const QUESTION_WAIT_MS = 120_000
+const WAIT_MINUTES = QUESTION_WAIT_MS / 60_000
+const TIMED_OUT: unique symbol = Symbol('timed out')
+
+/** A question's text with the sentence that says what happens when nobody answers. */
+const withWait = <V,>(q: Question<V>, what: string): Question<V> => ({ ...q, question: `${q.question} No answer in ${WAIT_MINUTES} minutes: ${what}.` })
+
+// Asks, and waits QUESTION_WAIT_MS for the answer. Past that it returns TIMED_OUT, so the caller takes its
+// safe default, and an answer that comes later goes to `onLate` (without one, a toast says it came too late).
+// A dismissed question stays undefined, as with pick().
+async function askWithin<V>($: EngineInterface, q: Question<V>, onLate?: (v: V) => void | Promise<void>): Promise<V | undefined | typeof TIMED_OUT> {
+  let late = false
+  const asked = pick($, q).then(v => {
+    if (late && v !== undefined) {
+      void Promise.resolve(onLate ? onLate(v) : $.ui.toast('rightsize: that answer came too late; nothing changed.')).catch(() => undefined)
+    }
+    return v
+  })
+  const waited = $.clock.sleep(QUESTION_WAIT_MS).then((): typeof TIMED_OUT => TIMED_OUT, (): typeof TIMED_OUT => TIMED_OUT)
+  const a = await Promise.race([asked, waited])
+  if (a === TIMED_OUT) late = true
+  return a
+}
+
+/** One log line for a question nobody answered in time. */
+const logTimeout = ($: EngineInterface, header: string, did: string) => log($, `no answer in ${WAIT_MINUTES} minutes to ${header}: ${did}`)
 
 const RULE_IDS = Object.keys(RULE_KEYS) as (keyof Choices)[]
 
@@ -893,7 +925,11 @@ async function askWorkflow($: EngineInterface, id: string | undefined) {
     if (askedWorkflows.has(id)) return
     askedWorkflows.add(id)
   }
-  const v = await pick($, qWorkflow)
+  const v = await askWithin($, withWait(qWorkflow, 'rightsize pauses for this workflow'), late => putConfig($, 'workflows', late))
+  if (v === TIMED_OUT) {
+    await logTimeout($, 'Workflow', 'rightsize paused for this workflow; not saved')
+    return
+  }
   await log($, `workflow question: ${v ?? 'dismissed'}`)
   if (v !== undefined) await putConfig($, 'workflows', v)
 }
@@ -909,8 +945,16 @@ async function saveChoices($: EngineInterface, next: Choices, explicit = false) 
   const asked = (await $.state.get({ plugin: 'rightsize', key: 'rememberAsked' }).catch(() => undefined))?.value
   if (asked === true) return
   await $.state.set({ plugin: 'rightsize', key: 'rememberAsked' }, true)
-  const yes = await pick($, qRemember)
-  if (yes === true) {
+  // A late answer is applied as an on-time one would be, to the choices as they stand then.
+  const yes = await askWithin($, withWait(qRemember, 'this session only'), async late => {
+    if (late !== true) return
+    await $.store.set('remember', true).catch(() => undefined)
+    await keepChoices($, await choices($))
+    await putConfig($, 'remember', 'every session')
+  })
+  if (yes === TIMED_OUT) {
+    await logTimeout($, 'Remember', 'these choices stay for this session only')
+  } else if (yes === true) {
     await $.store.set('remember', true).catch(() => undefined)
     await keepChoices($, next)
     await putConfig($, 'remember', 'every session')
@@ -939,7 +983,17 @@ async function followRuleRow($: EngineInterface, rule: keyof Choices, label: str
 async function choice<K extends keyof Choices>($: EngineInterface, key: K, q: Question<NonNullable<Choices[K]>>) {
   const have = (await choices($))[key]
   if (have) return have
-  const v = await pick($, q)
+  // No answer in time: this prompt runs with no change, nothing is saved, and the question comes back next time.
+  // An answer that comes later is saved as the rule, unless a newer answer is already there.
+  const v = await askWithin($, withWait(q, 'this prompt runs as it is'), async late => {
+    if ((await choices($))[key]) return void $.ui.toast('rightsize: that answer came too late; nothing changed.')
+    await saveChoices($, { ...(await choices($)), [key]: late })
+    $.ui.toast('rightsize: saved your answer for next time.')
+  })
+  if (v === TIMED_OUT) {
+    await logTimeout($, q.header, 'this prompt ran with no change; nothing saved')
+    return undefined
+  }
   if (v !== undefined) await saveChoices($, { ...(await choices($)), [key]: v })
   return v
 }
@@ -1144,7 +1198,7 @@ async function resolveEffort($: EngineInterface, p: Plan, r: Rating, s: Situatio
   if (c !== 'ask') return {}
   const verb = p.dir === 'lower' ? 'Lower' : 'Raise'
   const why = r.reason ? ` (${r.reason})` : ''
-  const a = await pick($, {
+  const a = await askWithin($, withWait({
     header: 'Effort',
     question: `This looks like a ${p.level}-effort task${why}. ${verb} from ${s.level} to ${p.level}?`,
     options: [
@@ -1152,7 +1206,8 @@ async function resolveEffort($: EngineInterface, p: Plan, r: Rating, s: Situatio
       [`${verb} for this session`, 'session'],
       [`Keep ${s.level}`, 'keep'],
     ],
-  })
+  }, 'it stays as it is'))
+  if (a === TIMED_OUT) await logTimeout($, 'Effort', `kept ${s.level}`)
   if (a === 'prompt') return { level: p.level }
   if (a === 'session') return { session: p.level }
   return {}
@@ -1171,7 +1226,8 @@ async function resolve($: EngineInterface, p: Plan, r: Rating, s: Situation): Pr
     if (c === 'stay') return stay()
     if (c !== 'ask' && c !== 'each') return {}
     const question = `This is a review: reviews run on ${to} at ${REVIEW_LEVEL} effort or more. Run this prompt on ${to} at ${p.level}, then go back to ${cur}? ${costLine(p.cost, p.mainCost, cur)}`
-    const a = await pick($, { header: 'Stronger', question, options: [[`Run it on ${to}`, 'send'], [`Stay on ${cur}`, 'stay']] })
+    const a = await askWithin($, withWait({ header: 'Stronger', question, options: [[`Run it on ${to}`, 'send'], [`Stay on ${cur}`, 'stay']] }, 'it stays as it is'))
+    if (a === TIMED_OUT) await logTimeout($, 'Stronger', `stayed on ${cur}`)
     return a === 'send' ? send : a === 'stay' ? stay() : {}
   }
   const c = p.dir === 'up' ? await choice($, 'up', qUp(cur, to)) : await choice($, 'down', qDown(cur, to))
@@ -1184,14 +1240,16 @@ async function resolve($: EngineInterface, p: Plan, r: Rating, s: Situation): Pr
   const lead = p.dir === 'up' ? `This needs a stronger model${why}.` : `${to} at ${p.level} effort could do this${why}${p.instead ? `, where ${cur} needs ${p.instead}` : ''}.`
   const question = `${lead} Send it to a ${to} subagent? ${costLine(p.delegateCost, p.mainCost, cur)}`
   if (c === 'ask') {
-    const a = await pick($, { header: 'Subagent', question, options: [[`Send it to a ${to} subagent`, 'send'], [`Stay on ${cur}`, 'stay']] })
+    const a = await askWithin($, withWait({ header: 'Subagent', question, options: [[`Send it to a ${to} subagent`, 'send'], [`Stay on ${cur}`, 'stay']] }, 'it stays as it is'))
+    if (a === TIMED_OUT) await logTimeout($, 'Subagent', `stayed on ${cur}`)
     return a === 'send' ? send : a === 'stay' ? stay() : {}
   }
   const ep = effortPlan(r, s, floor)
   const options: (readonly [string, 'send' | 'effort' | 'keep'])[] = [[`Send it to a ${to} subagent`, 'send']]
   if (ep.kind === 'effort') options.push([`${ep.dir === 'lower' ? 'Lower' : 'Raise'} effort on ${cur} to ${ep.level}`, 'effort'])
   options.push([ep.kind === 'effort' ? 'Keep as is' : `Stay on ${cur}`, 'keep'])
-  const a = await pick($, { header: 'Subagent', question, options })
+  const a = await askWithin($, withWait({ header: 'Subagent', question, options }, 'it stays as it is'))
+  if (a === TIMED_OUT) await logTimeout($, 'Subagent', `stayed on ${cur}`)
   if (a === 'send') return send
   if (a === 'effort' && ep.kind === 'effort') return { level: ep.level }
   return {}
@@ -1572,14 +1630,15 @@ async function escalate($: EngineInterface, run: Run, sign: Struggle, from: Leve
   }
   if (rule === 'never') return
   if (rule !== 'auto') {
-    const a = await pick($, {
+    const a = await askWithin($, withWait({
       header: 'Stuck',
       question: `Claude looks stuck: ${sign.why}. Raise effort from ${cur} to ${to} for the rest of this turn?`,
       options: [
         [`Raise to ${to} for this turn`, 'yes'],
         [`Keep ${cur}`, 'no'],
       ],
-    })
+    }, `it keeps ${cur}`))
+    if (a === TIMED_OUT) await logTimeout($, 'Stuck', `kept ${cur}`)
     if (a !== 'yes') return
   }
   run.raisedTo = to
@@ -1591,7 +1650,7 @@ async function escalate($: EngineInterface, run: Run, sign: Struggle, from: Leve
 
 // A helper is struggling: only more effort for struggling helps, and only from the task's retry
 // budget. Raising decides as it does for the main chat: automatic raises, Never leaves it alone, and
-// otherwise the person is asked; no answer in HELPER_ASK_MS sends the helper back, so a helper running
+// otherwise the person is asked; no answer in QUESTION_WAIT_MS sends the helper back, so a helper running
 // while nobody watches does not wait for ever. When no chance or no level is left, it goes back to the
 // main chat. Blocked errors are not struggling; a sign with only blocked errors behind it can't be told apart
 // from them, so it neither raises nor counts as a miss. Each sign is weighed once, as in escalate().
@@ -1619,7 +1678,7 @@ async function escalateHelper($: EngineInterface, id: string, w: Watch, sign: St
       await log($, `helper ${id} struggling (${sign.why}): kept at ${cur}, as you chose`)
       return
     }
-    if (a === 'timeout') why = `no answer in ${HELPER_ASK_MS / 60_000} minutes`
+    if (a === 'timeout') why = `no answer in ${WAIT_MINUTES} minutes`
   }
   if (to && !why && !(await useChance($, w.task))) why = 'the task has no retry left'
   if (to && !why) {
@@ -1636,28 +1695,24 @@ async function escalateHelper($: EngineInterface, id: string, w: Watch, sign: St
   await log($, `returned helper ${id} to the main chat at step ${w.steps}: ${sign.why}, and ${why}`)
 }
 
-/** How long a struggling helper waits for the person's answer before it goes back to the main chat. */
-const HELPER_ASK_MS = 120_000
-
 // The Stuck question for a helper. A dismissed question is a no, as for the main chat. An answer
 // that comes after the wait is too late: the helper is already back with the main chat.
 async function askHelper($: EngineInterface, sign: Struggle, cur: Level, to: Level): Promise<'yes' | 'no' | 'timeout'> {
-  let late = false
-  const asked = pick($, {
-    header: 'Stuck',
-    question: `A helper looks stuck: ${sign.why}. Raise its effort from ${cur} to ${to}? It uses one of this task's ${chances} retries. With no answer in ${HELPER_ASK_MS / 60_000} minutes it goes back to the main chat.`,
-    options: [
-      [`Raise to ${to}`, 'yes'],
-      [`Keep ${cur}`, 'no'],
-    ],
-  }).then(a => {
-    if (late && a === 'yes') $.ui.toast('rightsize: too late, the helper already went back to the main chat.')
-    return a === 'yes' ? ('yes' as const) : ('no' as const)
-  })
-  const waited = $.clock.sleep(HELPER_ASK_MS).then(() => 'timeout' as const, () => 'timeout' as const)
-  const a = await Promise.race([asked, waited])
-  if (a === 'timeout') late = true
-  return a
+  const a = await askWithin(
+    $,
+    {
+      header: 'Stuck',
+      question: `A helper looks stuck: ${sign.why}. Raise its effort from ${cur} to ${to}? It uses one of this task's ${chances} retries. With no answer in ${WAIT_MINUTES} minutes it goes back to the main chat.`,
+      options: [
+        [`Raise to ${to}`, 'yes'],
+        [`Keep ${cur}`, 'no'],
+      ],
+    },
+    late => {
+      if (late === 'yes') $.ui.toast('rightsize: too late, the helper already went back to the main chat.')
+    },
+  )
+  return a === TIMED_OUT ? 'timeout' : a === 'yes' ? 'yes' : 'no'
 }
 
 // ---- Idle resume -------------------------------------------------------------
@@ -1715,6 +1770,18 @@ async function holdIdle($: EngineInterface): Promise<boolean> {
   if (c.resend < idleWarning) return false
   idleWarnedFor = last.at
   const perDollar = billing === 'subscription' ? await windowPerDollar($) : undefined
+  // Not timed: sending would cost more than a warm cache, so the prompt stays held until the person answers.
+  // After the wait the band says so; the question stays open.
+  const cost = usageCostText(c.resend, perDollar)
+  let answered = false
+  let shown = false
+  void $.clock.sleep(QUESTION_WAIT_MS).then(async () => {
+    if (answered) return
+    shown = true
+    const text = `Held: sending now costs about ${cost} more than a warm cache. Answer to go on.`
+    await setBand($, { acted: true, text })
+    await log($, `no answer in ${WAIT_MINUTES} minutes to Idle: the prompt stays held; band: ${text}`)
+  }, () => undefined)
   const a = await pick($, {
     header: 'Idle',
     question: `This session sat idle for ${idleFor(idle)}, so its cache has likely expired. Sending writes the whole conversation (~${Math.round(context / 1000)}K tokens) to the cache again: about ${usageCostText(c.resend, perDollar)} more on ${TIER_NAME[s.tier]} than a warm cache. /clear costs nothing; /compact about ${usageCostText(c.compact, perDollar)}.`,
@@ -1723,6 +1790,8 @@ async function holdIdle($: EngineInterface): Promise<boolean> {
       ['Hold it: I will /clear or /compact first', true],
     ],
   })
+  answered = true
+  if (shown) await setBand($, null)
   await log($, `idle ${idleFor(idle)} with ${context} tokens: ${a ? 'held' : 'sent'}`)
   return a === true
 }

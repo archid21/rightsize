@@ -43,7 +43,7 @@ After the first answer, it asks "Use these choices in every session?". Each ques
 - **A follow-up keeps its task's type.** The rating also says whether a prompt carries on the task in Claude's last reply or starts a new goal. A prompt that carries on is planned as its task's type, so a one-line follow-up in a feature task is not typed as a review and sent to Opus; a prompt in a review task still gets the review rule.
 - **It plans from the session you are in.** The model in use and the conversation's size are read from Claude Code on every prompt, the first of a session included (started with `--model`, switched with `/model`, or resumed). A conversation of unknown size is planned at 20K tokens. If no source names a known model, it plans as Opus and logs that the model was unknown.
 - **Every prompt is rated as you enter it.** Short ones too: a one-word follow-up is rated in its task. The rater is also told how the task in progress began (the first 600 characters of the prompt that started it, its type and how many prompts it has had), so a short "yes, go ahead" is read for what it carries on. A request over 6,000 characters is shown to the rater as its first 4,000 and last 2,000 characters with a marked cut between, so a constraint at the end is not lost.
-- **Missing context is no reason to downgrade.** When the request was cut, or a task is in progress and Claude's last reply could not be read, the rater may see less than there is. Then a lowering of effort or a hand-off to a cheaper model is not made, and the prompt runs as it is; raising effort and using a stronger model are not affected. `rightsize.log` says so, and the run's line in the run log carries `unsure`.
+- **Missing context is no reason to downgrade.** When the request was cut, or a task is in progress and Claude's last reply could not be read, the rater may see less than there is. Then a lowering of effort or a hand-off to a cheaper model is not made, and the prompt runs as it is; raising effort and using a stronger model are not affected. The session's `rightsize.log` says so, and the run's line in its `runs.jsonl` carries `unsure`.
 - **A prompt that can't be rated is left alone.** A Sonnet rating that times out, is refused or can't be read is tried once on Haiku. If that fails too, the prompt runs unchanged on your model and level, and `/rightsize report` counts it under Not counted as savings.
 - **Handing work down needs a clear saving.** A subagent is used only when the estimate is under 70% of the cost of staying at the level the work needs, counting the brief, the report and the check. The main chat's part is priced from measured hand-offs: it reads the conversation several times, so a short task never clears the bar and a long, mechanical one can. The subagent runs at the level its model needs: rightsize sets it. Lowering effort needs the lower level to cost under 90% of staying. Both are defaults you can change in `/config`. **Highest effort** caps how high the mod raises effort, including the level a subagent runs at, and **Use Haiku** and **Use Fable** turn off the work sent to either model.
 - **Close calls go to the model suited to the task.** When two cheaper models that fit are close in estimated cost, the mod picks by task type:
@@ -104,7 +104,7 @@ Once a week (or a month) at session start, the mod estimates what the last 30 da
 
 - `/mods` pauses it; `/config` turns off single features.
 - `claude plugin disable rightsize@archid21` stops it loading and keeps its settings and learning; `claude plugin enable rightsize@archid21` brings it back.
-- `claude plugin uninstall rightsize@archid21` removes it and the settings saved in `/config`. Its stored data and logs stay on disk: `rm ~/.claude/plugins/store/rightsize_*.json ~/.claude/mods-logs/rightsize*` deletes them. If sharing was on, copy your install ID from `/rightsize` first and email rightsize@aivalue.blog to have shared data deleted.
+- `claude plugin uninstall rightsize@archid21` removes it and the settings saved in `/config`. Its stored data and logs stay on disk: `rm -r ~/.claude/plugins/store/rightsize_*.json ~/.claude/mods-logs/rightsize*` deletes them. If sharing was on, copy your install ID from `/rightsize` first and email rightsize@aivalue.blog to have shared data deleted.
 
 ## What it touches
 
@@ -112,13 +112,14 @@ rightsize is a mod: it runs inside Claude Code and hooks some of its events. Thi
 
 - **Hooks.**
   - `prompt.submit`: rates the prompt (Sonnet by default), may change the effort level, and adds the hidden hand-off note. Your text is not changed.
+  - `turn.start`: matches a turn that is starting to the prompt it was rated for (by its text), so a prompt typed while another turn runs is measured in its own turn. It changes nothing.
   - `turn.step`: watches each step to see when Claude is stuck and raises effort under your Raising rule.
   - `agent.spawn`: may move a general-purpose subagent that names no model to a cheaper model (see **Claude's subagents**).
   - `tool.call`: asks before the first workflow starts, and denies steps only you can approve (push, publish, release, deploy, send) inside a hand-off subagent. It never approves a call and never changes a permission decision anywhere else.
   - `config.set`: watches its own `rightsize.*` rows in `/config`, to know which values you set. The write goes through as you made it.
   - `command.run` (`/rightsize`), `session.start`, `turn.complete` and `ui.render` (the band above the prompt) are for its own command, start-up, measuring and display.
 - **Settings it writes.** Only its own `rightsize.*` rows in `/config`, when you answer one of its questions or run `/rightsize reset`. It never writes the permission mode or any other setting, and it sets no environment variables.
-- **Programs it runs.** Only `mkdir` and `chmod`, with fixed arguments, to create `~/.claude/mods-logs` and make its log files readable by you alone (folder 700, files 600). It downloads and runs nothing.
+- **Programs it runs.** Only `mkdir` and `chmod`, with fixed arguments, to create its log folders under `~/.claude/mods-logs` and make them readable by you alone (folders 700, files 600), and `rm -f` and `rmdir` on a session's folder inside `~/.claude/mods-logs/rightsize/` once nothing in it has changed for 45 days (never the current session's). It downloads and runs nothing.
 - **Files it writes.** The logs listed under [Logs](#logs), its own store in Claude Code's plugin store, and `prices.json` (keeping `prices.json.bak`) in its own folder. Nothing in your project.
 - **What it reads.** Your prompt, the session's usage and rate limits, your `model` and `effortLevel` settings, its own `/config` rows, and two environment variables (`HOME` and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`), to rate and price each turn. It reads no credentials: model calls go through Claude Code with your existing sign-in.
 - **Network.** It contacts two places, plus the Sonnet and Haiku calls Claude Code makes for it:
@@ -133,5 +134,8 @@ rightsize is a mod: it runs inside Claude Code and hooks some of its events. Thi
 
 ## Logs
 
-- Decisions: `~/.claude/mods-logs/rightsize.log`
-- One JSON line per rated turn, with its session, an `id`, change, costs, rating-call cost and rate-limit windows: `~/.claude/mods-logs/rightsize-runs.jsonl`. It also holds a `check` line for each Sonnet spot-check and a `feedback` line for each 👍 or 👎.
+Each session writes its own folder, `~/.claude/mods-logs/rightsize/<session ID>/`, and no other session writes to it. `/rightsize report`, the start suggestion and the miss rates read every session's folder together. A folder whose files have all gone unchanged for 45 days is removed when a session starts. Logs from older versions in `~/.claude/mods-logs/rightsize-runs.jsonl` and `rightsize-switches.jsonl` are still read, and no longer written. In each session's folder:
+
+- Decisions: `rightsize.log`
+- One JSON line per rated turn, with its session, an `id`, its turn (`turnId`, and `queued` when the prompt was typed while another turn was running), change, costs, rating-call cost and rate-limit windows: `runs.jsonl`. It also holds a `check` line for each Sonnet spot-check and a `feedback` line for each 👍 or 👎. A prompt that was rated but never ran gets a line with its rating cost and a `reason`: `dropped` when something else in Claude Code refused it, `unbound` when it was delivered into a turn already running or cancelled before its turn started. The report counts that cost as overhead and nothing else.
+- Each measured effort switch, and whether the cache was kept: `switches.jsonl`

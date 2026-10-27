@@ -62,7 +62,7 @@ import {
 import { PRICING_URL, applyPrices, diffPrices, isDue, parsePricingPage } from './prices'
 import { missMap, missRates } from './misses'
 import { SHARE_ASK_AFTER, SHARE_EVERY_MS, SHARE_URL, newInstall, nextBatch } from './share'
-import { START_CHECK_DAYS, START_SNOOZE_DAYS, adviseFromLog, startBlock, startKey, startTip } from './start'
+import { START_CHECK_DAYS, START_SNOOZE_DAYS, adviseStart, startBlock, startKey, startTip } from './start'
 import {
   KEYS,
   NOT_SET,
@@ -228,6 +228,15 @@ type Run = {
   id: string
   /** The task this run belongs to: the id of the run that started it. */
   task: string
+  /** The prompt as submitted, trimmed: a turn that starts with this text is the one this run is bound to. */
+  text: string
+  /** When the prompt was submitted, in ms. */
+  submittedAt: number
+  /** The turn that was running when the prompt was submitted: it was typed over that turn, or delivered into it. Absent when the session was idle. */
+  during?: string
+  /** True from the prompt's submit until the engine has answered it: it can still be dropped, so no idle submit unbinds it. */
+  entering?: boolean
+  /** The turn this run is bound to, once its turn has started. */
   turnId?: string
   rating: Rating
   tier: Tier
@@ -324,8 +333,11 @@ let rules: Rules = DEFAULT_RULES
 let checking: Promise<string> | null = null
 let prices: Prices = DEFAULT_PRICES
 let cal: Calibration = {}
-let pending: Run | null = null
+/** Rated prompts whose turn has not started, oldest first. A turn takes the first one with its text (turn.start). */
+let pending: Run[] = []
 let active: Run | null = null
+/** Main-chat turns that have ended in this session: a prompt delivered into one of them never gets a turn of its own. */
+const completed = new Set<string>()
 let lastApplied: Level | undefined
 /** The last main-chat step ran on a model rightsize rewrote. */
 let lastSwitched = false
@@ -457,18 +469,34 @@ async function readSwitches($: EngineInterface): Promise<Record<string, unknown>
   }
 }
 
-async function append($: EngineInterface, name: string, line: string, max: number) {
+// Every session writes its own folder, ~/.claude/mods-logs/rightsize/<session>/, and nobody else's, so two
+// sessions never overwrite each other's lines. Readers merge every folder (and the old shared files).
+const LEGACY_RUNS = 'rightsize-runs.jsonl'
+const LEGACY_SWITCHES = 'rightsize-switches.jsonl'
+/** A session folder nobody has written to for this long is removed at the next session start. */
+const PRUNE_AFTER_DAYS = 45
+
+const logsDir = () => `${home}/.claude/mods-logs`
+const sessionsDir = () => `${logsDir()}/rightsize`
+/** The session id as a folder name: nothing but letters, digits, "_" and "-", so it cannot reach outside the logs. */
+const folderOf = (id: string) => id.replace(/[^A-Za-z0-9_-]/g, '_') || 'unknown'
+const sessionDir = () => `${sessionsDir()}/${folderOf(sessionId)}`
+
+/** The tail of each file's writes, by path: a write starts when the one before it has ended. */
+const writing = new Map<string, Promise<unknown>>()
+
+async function writeLine($: EngineInterface, path: string, line: string, max: number) {
   try {
-    const dir = `${home}/.claude/mods-logs`
-    const path = `${dir}/${name}`
     const old = await readText($, path)
-    // New folder 700, new file 600; chmod only when the file is new.
-    if (!old) await $.process.run(['mkdir', '-m', '700', '-p', dir])
+    // New folders 700, new file 600; chmod only when the file is new.
+    if (!old) await $.process.run(['mkdir', '-m', '700', '-p', path.slice(0, path.lastIndexOf('/'))])
     let text = `${old}${line}\n`
     if (text.length > max) text = text.slice(text.indexOf('\n', text.length - max) + 1)
     await $.fs.write(path, text)
     if (!old) {
-      await $.process.run(['chmod', '700', dir])
+      const dir = path.slice(0, path.lastIndexOf('/'))
+      // mkdir -m sets the mode of the last folder only; the two above it are ours too.
+      await $.process.run(['chmod', '700', logsDir(), sessionsDir(), dir])
       await $.process.run(['chmod', '600', path])
     }
   } catch {
@@ -476,7 +504,58 @@ async function append($: EngineInterface, name: string, line: string, max: numbe
   }
 }
 
+// The only way a log is written. A write reads the file, adds a line and writes it back, so two writes
+// at once would both start from the same old text and one line would be lost: each waits for the one before.
+function append($: EngineInterface, name: string, line: string, max: number) {
+  const path = `${sessionDir()}/${name}`
+  const turn = (writing.get(path) ?? Promise.resolve()).then(() => writeLine($, path, line, max))
+  writing.set(path, turn)
+  void turn.then(() => {
+    if (writing.get(path) === turn) writing.delete(path)
+  })
+  return turn
+}
+
 const log = ($: EngineInterface, line: string) => append($, 'rightsize.log', `${new Date().toISOString()} ${line}`, 50_000)
+
+const atOf = (l: { at: string }) => Date.parse(l.at) || 0
+
+// Every line of one kind from every session's folder and from the old shared file, oldest first. A file that
+// cannot be read or parsed leaves the others whole.
+async function readAll<T extends { at: string }>($: EngineInterface, name: string, legacy: string): Promise<T[]> {
+  const files = [`${logsDir()}/${legacy}`]
+  try {
+    for (const d of await $.fs.list(sessionsDir())) if (d.kind === 'dir') files.push(`${sessionsDir()}/${d.name}/${name}`)
+  } catch {
+    // No session folders yet.
+  }
+  const parts = await Promise.all(files.map(f => readText($, f).then(t => parseLines<T>(t)).catch(() => [] as T[])))
+  return parts.flat().sort((a, b) => atOf(a) - atOf(b))
+}
+
+const readRuns = ($: EngineInterface) => readAll<RunLine>($, 'runs.jsonl', LEGACY_RUNS)
+const readSwitchLines = ($: EngineInterface) => readAll<SwitchLine>($, 'switches.jsonl', LEGACY_SWITCHES)
+
+// Removes the folders of sessions that have not written for 45 days. Only a folder inside the
+// sessions folder, never this session's, and only when every entry in it is a file that old.
+async function pruneSessions($: EngineInterface) {
+  try {
+    const now = await $.clock.now()
+    const own = folderOf(sessionId)
+    const folderName = /^[A-Za-z0-9_-]+$/
+    const fileName = /^[A-Za-z0-9_.-]+$/
+    for (const d of await $.fs.list(sessionsDir())) {
+      if (d.kind !== 'dir' || d.name === own || !folderName.test(d.name)) continue
+      const folder = `${sessionsDir()}/${d.name}`
+      const files = await $.fs.list(folder)
+      if (!files.length || files.some(f => f.kind !== 'file' || !fileName.test(f.name) || now - f.mtimeMs <= PRUNE_AFTER_DAYS * 24 * 60 * 60_000)) continue
+      for (const f of files) await $.process.run(['rm', '-f', `${folder}/${f.name}`])
+      await $.process.run(['rmdir', folder])
+    }
+  } catch {
+    // A folder that stays is tried again at the next start.
+  }
+}
 
 // Scores the rater again from the last 30 days of the run log (misses.ts).
 async function refreshMisses($: EngineInterface) {
@@ -492,7 +571,7 @@ async function refreshMisses($: EngineInterface) {
 
 /** Adds a line to the run log, and to the rater's record in memory. */
 async function appendRun($: EngineInterface, line: RunLine) {
-  await append($, 'rightsize-runs.jsonl', JSON.stringify(line), RUNS_LOG_MAX)
+  await append($, 'runs.jsonl', JSON.stringify(line), RUNS_LOG_MAX)
   runLog.push(line)
   await refreshMisses($)
 }
@@ -926,7 +1005,7 @@ async function spotCheck($: EngineInterface, session: string, tier: Tier, level:
     const second = r.isAnswered ? parseRating(r.text, tier) : undefined
     if (!second) {
       await log($, r.isAnswered ? 'rater check unreadable' : `rater check failed: ${r.reason}`)
-      if (overhead > 0) await append($, 'rightsize-runs.jsonl', JSON.stringify({ at: new Date().toISOString(), kind: 'overhead', session, overhead: round(overhead) } satisfies RunLine), RUNS_LOG_MAX)
+      if (overhead > 0) await append($, 'runs.jsonl', JSON.stringify({ at: new Date().toISOString(), kind: 'overhead', session, overhead: round(overhead) } satisfies RunLine), RUNS_LOG_MAX)
       return
     }
     const line: RunLine = { at: new Date().toISOString(), kind: 'check', session, type: first.type, fit: first.fit, check: { by: SPOT_CHECKER, fit: second.fit }, overhead: round(overhead) }
@@ -1082,7 +1161,7 @@ export function delegateNote(d: NonNullable<Run['delegate']>) {
 const planChange = (p: Plan): Change => (p.kind === 'none' ? 'none' : p.kind === 'effort' ? p.dir : p.kind === 'switch' ? 'switch-up' : `delegate-${p.dir}`)
 
 /** `base` is the person's own level, before any session switch rightsize made: the level savings are counted against. */
-function startRun(r: Rating, s: Situation, d: Decision, p: Plan, base: Level, overhead: number): Run {
+function startRun(r: Rating, s: Situation, d: Decision, p: Plan, base: Level, overhead: number, entered: { text: string; at: number; during?: string }): Run {
   const sw = d.model
   const level = sw?.level ?? d.level ?? d.session ?? s.level
   const change: Change = d.delegate
@@ -1104,6 +1183,9 @@ function startRun(r: Rating, s: Situation, d: Decision, p: Plan, base: Level, ov
     id,
     // A run starts a task of its own until the prompt is found to continue one.
     task: id,
+    text: entered.text,
+    submittedAt: entered.at,
+    ...(entered.during !== undefined ? { during: entered.during } : {}),
     rating: r,
     tier: s.tier,
     normal: s.level,
@@ -1145,7 +1227,7 @@ function startRun(r: Rating, s: Situation, d: Decision, p: Plan, base: Level, ov
 // ---- Reporting -------------------------------------------------------------
 
 async function showStatus($: EngineInterface) {
-  const run = active ?? pending
+  const run = active ?? pending[0] ?? null
   if (run?.delegate) return $.ui.status(`Handing this to a ${TIER_NAME[run.delegate.tier]} subagent`)
   if (run?.switchTo) return $.ui.status(`Running this review on ${TIER_NAME[run.switchTo.tier]} at ${run.switchTo.level} effort`)
   if (run?.raisedTo) return $.ui.status(`Effort: ${run.raisedTo} (raised mid-turn)`)
@@ -1337,6 +1419,9 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
       id: run.id,
       session: sessionId,
       task: run.task,
+      ...(run.turnId ? { turnId: run.turnId } : {}),
+      // Typed while another turn was running, and waited for its own.
+      ...(run.during !== undefined ? { queued: true } : {}),
       type: r.type,
       continues: r.continues === true,
       ...(run.ratedType ? { ratedType: run.ratedType } : {}),
@@ -1540,7 +1625,7 @@ const idleFor = (ms: number) => {
 /** A subscriber's 5-hour window used per API-equivalent dollar over the last 30 days of runs; undefined until runs show it. */
 async function windowPerDollar($: EngineInterface) {
   const now = await $.clock.now()
-  const lines = parseLines<RunLine>(await readText($, `${home}/.claude/mods-logs/rightsize-runs.jsonl`))
+  const lines = await readRuns($)
   return windowRates(lines.filter(l => now - Date.parse(l.at) <= 30 * 24 * 60 * 60_000 && Date.parse(l.at) >= measureFrom), 'five_hour')?.perDollar
 }
 
@@ -1700,7 +1785,7 @@ async function finishSubagent($: EngineInterface, m: Measured, aborted: boolean,
     aborted,
     ...(w ? helperLine(w, await $.clock.now()) : {}),
   }
-  await append($, 'rightsize-runs.jsonl', JSON.stringify(line), RUNS_LOG_MAX)
+  await append($, 'runs.jsonl', JSON.stringify(line), RUNS_LOG_MAX)
 }
 
 async function summary($: EngineInterface) {
@@ -1735,7 +1820,7 @@ async function summary($: EngineInterface) {
     ...(billingYours() && detectedBilling && detectedBilling !== billing ? [`  Rate limits look like ${sees}; Reports is set to ${billing} by you.`] : []),
     ...(pacing && paceNow.mode !== 'normal' ? [`  ${paceNote(paceNow)}`] : []),
     `  Measured runs: ${runs}`,
-    ...(sw ? [`  Effort switches that missed the cache: ${Math.round(sw.ratio * 100)}% of ${sw.n} (each one in ~/.claude/mods-logs/rightsize-switches.jsonl)`] : []),
+    ...(sw ? [`  Effort switches that missed the cache: ${Math.round(sw.ratio * 100)}% of ${sw.n} (each one in ~/.claude/mods-logs/rightsize/<session>/switches.jsonl)`] : []),
     ...(typeof install === 'string' ? [`  Sharing install ID: ${install} (quote it to rightsize@aivalue.blog to ask about or delete your shared data)`] : []),
     '',
     'Commands: /rightsize help',
@@ -1970,7 +2055,7 @@ async function checkStart($: EngineInterface) {
   const last = await $.store.get('startCheckedAt').catch(() => undefined)
   if (typeof last === 'number' && now - last < startEvery * DAY_MS) return
   await $.store.set('startCheckedAt', now).catch(() => undefined)
-  const a = adviseFromLog(await readText($, `${home}/.claude/mods-logs/rightsize-runs.jsonl`), await startContext($), now)
+  const a = adviseStart(await readRuns($), await startContext($), now)
   await log($, `start check: ${a.kind}${a.kind === 'switch' ? ` ${startKey(a.current)} -> ${startKey(a.to)} (${a.why}, ${Math.round(a.saving * 100)}%)` : ''}`)
   if (a.kind !== 'switch') return
   const key = startKey(a.to)
@@ -2114,6 +2199,34 @@ async function followRow($: EngineInterface, key: SettingKey, value: string) {
   }
 }
 
+// ---- Prompt queue ------------------------------------------------------------
+
+// A rated prompt waits in `pending` until its turn starts. Making it the active run reads the ledger and
+// the rate-limit windows then, after the rating call, so the ledger's difference is the turn's own cost.
+async function bind($: EngineInterface, run: Run, turnId: string) {
+  const u = await usageNow($)
+  run.turnId = turnId
+  run.ledgerStart = u?.cost?.usd
+  run.before = windows(u?.rateLimits)
+  active = run
+}
+
+// A prompt that gets no turn of its own is logged with what its rating cost, so the report counts that
+// as overhead, and it is never given another prompt's turn.
+async function unbind($: EngineInterface, run: Run, reason: string) {
+  await log($, `prompt got no turn of its own (${reason}): its rating cost counts as overhead`)
+  const line: RunLine = { at: new Date().toISOString(), kind: 'unbound', id: run.id, session: sessionId, task: run.task, reason, overhead: round(run.overhead) }
+  await append($, 'runs.jsonl', JSON.stringify(line), RUNS_LOG_MAX)
+}
+
+// The session is idle: a prompt still waiting for its turn is not going to get one. A prompt the engine is still
+// answering is not waiting, it is entering.
+async function releaseStale($: EngineInterface) {
+  const stale = pending.filter(r => !r.entering)
+  pending = pending.filter(r => r.entering)
+  for (const r of stale) await unbind($, r, r.during !== undefined ? 'delivered into the running turn' : 'cancelled before its turn started')
+}
+
 export const register: Register = (on, options) => {
   declared = (options ?? {}) as Record<string, unknown>
   cfg = valuesOf(declared)
@@ -2140,8 +2253,9 @@ export const register: Register = (on, options) => {
     // The plugin can live anywhere (a clone, ~/Projects), so ask for HOME rather than reading it off the path.
     home = (await $.env.get('HOME').catch(() => undefined)) || ($.plugin.root.split('/.claude/')[0] ?? '')
     sessionId = await $.session.id().catch(() => '')
-    pending = null
+    pending = []
     active = null
+    completed.clear()
     await $.state.set({ plugin: 'rightsize', key: 'task' }, null).catch(() => undefined)
     await $.state.set(RETRIES, null).catch(() => undefined)
     watches.clear()
@@ -2203,7 +2317,9 @@ export const register: Register = (on, options) => {
     await $.state.set({ plugin: 'rightsize', key: 'choices' }, followed)
     // Answers an earlier session saved show in /config too, so the rows say what rightsize follows.
     if (kept && typeof kept === 'object') await mirrorRules($, followed)
-    runLog = parseLines<RunLine>(await readText($, `${home}/.claude/mods-logs/rightsize-runs.jsonl`))
+    // Clearing out old sessions never holds up the start.
+    void pruneSessions($)
+    runLog = await readRuns($)
     ratedRuns.clear()
     await refreshMisses($)
     off = (await readSwitches($))[NAME] === false
@@ -2230,17 +2346,16 @@ export const register: Register = (on, options) => {
     if (arg === 'reset' || arg.startsWith('reset ')) return { text: await runReset($, e.args.trim().slice('reset'.length)) }
     if (arg === 'prices') return { text: await runCheck($, 'manual') }
     if (arg === 'report') {
-      const dir = `${home}/.claude/mods-logs`
-      const runs = parseLines<RunLine>(await readText($, `${dir}/rightsize-runs.jsonl`))
-      const switches = parseLines<SwitchLine>(await readText($, `${dir}/rightsize-switches.jsonl`))
+      const runs = await readRuns($)
+      const switches = await readSwitchLines($)
       const now = await $.clock.now()
-      const start = startBlock(adviseFromLog(await readText($, `${dir}/rightsize-runs.jsonl`), await startContext($), now), billing === 'subscription', money)
+      const start = startBlock(adviseStart(runs, await startContext($), now), billing === 'subscription', money)
       // The desktop app (any surface but the terminal) renders the report as Markdown.
       const markdown = (await $.session.surfaces()).some(x => x !== 'terminal')
       return { text: buildReport(runs, switches, { now, session: sessionId, subscription: billing === 'subscription', start, pause: missBlock, markdown, ...(measureFrom ? { measureFrom: new Date(measureFrom).toISOString() } : {}) }) }
     }
     if (arg === 'share') {
-      const runs = parseLines<RunLine>(await readText($, `${home}/.claude/mods-logs/rightsize-runs.jsonl`))
+      const runs = await readRuns($)
       return { text: shareMessage(runs, { now: await $.clock.now(), subscription: billing === 'subscription', ...(measureFrom ? { measureFrom: new Date(measureFrom).toISOString() } : {}) }) }
     }
     if (arg === 'clear') return { text: await clearSession($) }
@@ -2284,11 +2399,16 @@ export const register: Register = (on, options) => {
       await $.prompt.fill({ text: e.text, mode: 'replace' }).catch(() => null)
       return { drop: 'rightsize held this prompt and put it back in the box. Run /clear or /compact, then send it.' }
     }
+    // The session is idle, so no running turn can still take a prompt that has not started: it never will.
+    if (e.turnId === undefined) await releaseStale($)
 
     await knowBilling($, true)
     $.ui.status('Rating the prompt...')
     let out = e
     let run: Run | null = null
+    // The task as it stood before this prompt changed it, and what this prompt wrote: a dropped prompt puts it back.
+    let prevTask: Awaited<ReturnType<typeof currentTask>> | undefined
+    let wroteTask: { id: string; prompts: number } | undefined
     try {
       const base = await situation($)
       paceNow = pacing ? paceOf((await usageNow($))?.rateLimits ?? [], await $.clock.now()) : NORMAL_PACE
@@ -2320,11 +2440,16 @@ export const register: Register = (on, options) => {
         const d = await resolve($, p, r, s)
         if (d.session) await $.state.set({ plugin: 'rightsize', key: 'sessionEffort' }, d.session)
         if (d.delegate) out = { ...e, context: [...(e.context ?? []), delegateNote(d.delegate)] }
-        run = startRun(r, s, d, p, (await seenEffort($)) ?? s.level, overhead)
+        run = startRun(r, s, d, p, (await seenEffort($)) ?? s.level, overhead, { text, at: await $.clock.now(), ...(e.turnId !== undefined ? { during: e.turnId } : {}) })
+        prevTask = kept
         if (follows) {
           run.task = kept.id
+          wroteTask = { id: kept.id, prompts: kept.prompts + 1 }
           await $.state.set({ plugin: 'rightsize', key: 'task' }, { ...kept, prompts: kept.prompts + 1 }).catch(() => undefined)
-        } else await $.state.set({ plugin: 'rightsize', key: 'task' }, { id: run.task, type: r.type, brief: text.slice(0, BRIEF_MAX), prompts: 1 }).catch(() => undefined)
+        } else {
+          wroteTask = { id: run.task, prompts: 1 }
+          await $.state.set({ plugin: 'rightsize', key: 'task' }, { id: run.task, type: r.type, brief: text.slice(0, BRIEF_MAX), prompts: 1 }).catch(() => undefined)
+        }
         if (ratedType) run.ratedType = ratedType
         if (unsure) run.unsure = unsure
         run.rater = by
@@ -2359,15 +2484,56 @@ export const register: Register = (on, options) => {
         const task = kept?.id
         if (kept) await $.state.set({ plugin: 'rightsize', key: 'task' }, { ...kept, prompts: kept.prompts + 1 }).catch(() => undefined)
         const line: RunLine = { at: new Date().toISOString(), kind: 'unrated', session: sessionId, ...(task ? { task } : {}), reason, rater: by, overhead: round(overhead) }
-        await append($, 'rightsize-runs.jsonl', JSON.stringify(line), RUNS_LOG_MAX)
+        await append($, 'runs.jsonl', JSON.stringify(line), RUNS_LOG_MAX)
       }
     } catch (err) {
       await log($, `rating threw: ${err instanceof Error ? err.message : String(err)}`)
     }
-    pending = run
-    lastAuto = run?.auto && run.level ? { text: e.text, level: run.level, normal: run.normal } : null
+    // The run waits for its turn before the prompt goes down: the turn can start before next() answers.
+    if (run) {
+      run.entering = true
+      pending.push(run)
+    }
+    const auto = run?.auto && run.level ? { text: e.text, level: run.level, normal: run.normal } : null
+    lastAuto = auto
     await showStatus($)
-    return next(out)
+    const result = await next(out)
+    if (!run) return result
+    run.entering = false
+    if (result.drop !== undefined) {
+      // The prompt never entered: nothing is waiting for it, and what it set for itself goes. A session
+      // switch it set stays: that was the person's answer.
+      pending = pending.filter(r => r !== run)
+      if (lastAuto === auto) lastAuto = null
+      const now = await currentTask($)
+      if (wroteTask && now?.id === wroteTask.id && now.prompts === wroteTask.prompts) await $.state.set({ plugin: 'rightsize', key: 'task' }, prevTask ?? null).catch(() => undefined)
+      await setBand($, null)
+      await showStatus($)
+      await log($, `prompt dropped (${result.drop}): its rating cost counts as overhead`)
+      const line: RunLine = { at: new Date().toISOString(), kind: 'dropped', id: run.id, session: sessionId, task: run.task, reason: result.drop, overhead: round(run.overhead) }
+      await append($, 'runs.jsonl', JSON.stringify(line), RUNS_LOG_MAX)
+    }
+    return result
+  }).catch(($, e, next) => next(e))
+
+  // A turn starting is how a prompt finds its turn. Prompts typed while a turn runs wait in line, and the turn
+  // that starts for one carries its text, so each run is bound to its own turn, not to whichever starts next.
+  on('turn.start', async ($, e, next) => {
+    if (e.agentId !== undefined) return next(e)
+    const text = e.text.trim()
+    // A plugin beneath may have rewritten the text. The engine starts a prompt's turn before its submit answers,
+    // so a turn starting while exactly one prompt from an idle session is still entering is that prompt's.
+    const entering = pending.filter(r => r.entering && r.during === undefined)
+    const mine = pending.find(r => r.text === text) ?? (entering.length === 1 ? entering[0] : undefined)
+    // The line is first in, first out. A prompt typed during a turn that has ended, and passed over by a turn that
+    // started for a later prompt or for other text, was read by the turn it was typed in: it has no turn of its own
+    // coming. An empty text is a continuation: it says nothing about the line.
+    const passed = mine ? pending.slice(0, pending.indexOf(mine)) : text ? pending : []
+    const gone = passed.filter(r => r !== mine && r.during !== undefined && completed.has(r.during) && !r.entering)
+    pending = pending.filter(r => r !== mine && !gone.includes(r))
+    if (mine) await bind($, mine, e.turnId)
+    for (const r of gone) await unbind($, r, 'delivered into the running turn')
+    return next(e)
   }).catch(($, e, next) => next(e))
 
   on('turn.step', async function* ($, e, next) {
@@ -2398,11 +2564,15 @@ export const register: Register = (on, options) => {
       }
       return out
     }
-    if (pending && active?.turnId !== e.turnId) {
-      // Read after the rating call, so the ledger's difference is the turn's own cost.
-      const u = await usageNow($)
-      active = { ...pending, turnId: e.turnId, ledgerStart: u?.cost?.usd, before: windows(u?.rateLimits) }
-      pending = null
+    // A host with no turn.start hook (or a turn whose text matched nothing): the one prompt that was
+    // submitted while the session was idle is this turn's. With more than one, nothing says which.
+    if (active?.turnId !== e.turnId) {
+      const idle = pending.filter(r => r.during === undefined)
+      const only = idle.length === 1 ? idle[0] : undefined
+      if (only) {
+        pending = pending.filter(r => r !== only)
+        await bind($, only, e.turnId)
+      }
     }
     const run = active?.turnId === e.turnId ? active : null
     if (isLevel(e.effort)) await $.state.set({ plugin: 'rightsize', key: 'seenEffort' }, e.effort)
@@ -2438,7 +2608,7 @@ export const register: Register = (on, options) => {
         // One line per measured switch: the evidence for whether the engine keeps the cache.
         await append(
           $,
-          'rightsize-switches.jsonl',
+          'switches.jsonl',
           JSON.stringify({
             at: new Date().toISOString(),
             model: u.model,
@@ -2533,7 +2703,7 @@ export const register: Register = (on, options) => {
   // Remember its id, so its steps run at the hand-off's level. A subagent Claude
   // starts on its own with no model named goes to the cheapest model that fits.
   on('agent.spawn', async ($, e, next) => {
-    const run = active ?? pending
+    const run = active ?? pending[0] ?? null
     const size = await sizeSpawn($, e, run).catch(() => undefined)
     const ours = run?.delegate && e.parentAgentId === undefined && !e.fork && tierOf(e.model) === run.delegate.tier
     const wait: Spawning | undefined = ours || size ? { description: e.description, type: e.subagentType, ...(ours && run ? { run } : {}), ...(size ? { size } : {}) } : undefined
@@ -2605,6 +2775,7 @@ export const register: Register = (on, options) => {
     if (watched) watched.ms = Math.max(0, (await $.clock.now()) - watched.startedAt)
     if (sized) await finishSubagent($, sized, e.isAborted, watched)
     if (e.agentId === undefined) {
+      completed.add(e.turnId)
       await knowBilling($, false)
       await rememberTurn($)
     }

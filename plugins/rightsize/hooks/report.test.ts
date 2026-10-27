@@ -241,6 +241,21 @@ test('unrated prompts are counted under Not counted as savings, with their ratin
   expect(cells(text, 'Prompts rated')).toEqual(['0', '0', '0'])
 })
 
+test('dropped and unbound prompts are not rated runs: only their rating cost counts, as overhead', async () => {
+  const dropped: RunLine = { at: ago(0), kind: 'dropped', id: 'a', session: 's1', reason: 'held by a hook', overhead: 0.004 }
+  const unbound: RunLine = { at: ago(0), kind: 'unbound', id: 'b', session: 's1', reason: 'delivered into the running turn', overhead: 0.003 }
+  const t = totals([dropped, unbound, run({ change: 'lower', offered: 'lower', actual: 0.02, stay: 0.06, taken: 0.03 })])
+  expect(t.rated, 'neither is a rated run').toBe(1)
+  expect(t.unrated, 'and neither is an unrated prompt').toBe(0)
+  expect(Number(t.overhead.toFixed(5)), 'their rating calls cost what they cost').toBe(0.007)
+  expect(Number(t.saved.toFixed(5)), 'no saving from them').toBe(0.04)
+  expect(Number(t.spent.toFixed(5)), 'no turn cost from them').toBe(0.02)
+  const text = report([dropped, unbound])
+  expect(cells(text, 'Prompts rated')).toEqual(['0', '0', '0'])
+  expect(text, 'a report of only these is not "nothing rated"').not.toContain('Nothing rated')
+  expect(problems([dropped, unbound], []), 'they are not problems of the rating').toEqual([])
+})
+
 test('problems line up: counts right-aligned, units padded, detail under the reason', async () => {
   const flow = (n: number) => Array.from({ length: n }, () => run({ afterWorkflow: true, workflows: 1, actual: 0.5 }))
   const text = report([...flow(13), ...Array.from({ length: 4 }, () => run({ aborted: true })), run({ change: 'lower', steppedUp: true })])

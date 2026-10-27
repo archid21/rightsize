@@ -11,11 +11,21 @@ type Run = { text?: string }
 type Engine = {
   session: { start: (x: unknown) => Promise<unknown> }
   prompt: { submit: (x: unknown) => Promise<unknown> }
-  turn: { step: (x: unknown) => unknown; complete: (x: unknown) => Promise<unknown> }
+  turn: { start: (x: unknown) => Promise<unknown>; step: (x: unknown) => unknown; complete: (x: unknown) => Promise<unknown> }
   tool: { call: (x: unknown) => Promise<unknown> }
   agent: { spawn: (x: unknown) => Promise<unknown> }
   command: { run: (x: unknown) => Promise<Run> }
 }
+
+/** Where this session's logs go: its own folder, and only its own. */
+const LOGS = '/home/test/.claude/mods-logs'
+const SESSION_DIR = `${LOGS}/rightsize/sess-1`
+const RUNS_FILE = `${SESSION_DIR}/runs.jsonl`
+const SWITCHES_FILE = `${SESSION_DIR}/switches.jsonl`
+const LOG_PATH = `${SESSION_DIR}/rightsize.log`
+/** The shared files of 0.7 and before: still read, never written. */
+const LEGACY_RUNS = `${LOGS}/rightsize-runs.jsonl`
+const LEGACY_SWITCHES = `${LOGS}/rightsize-switches.jsonl`
 
 const LOOKUP = 'what does the parseConfig function in src/config.ts return exactly'
 const DEBUG = 'find and fix the race in token refresh across the auth services please'
@@ -56,6 +66,18 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
     pricesFile: '',
     backup: '',
     files: {} as Record<string, string>,
+    /** Last-modified times of the files, in ms; a file not listed was written now. */
+    mtimes: {} as Record<string, number>,
+    /** Every program the plugin ran, as its arguments. */
+    ran: [] as string[][],
+    /** Set to a reason: the next prompt that reaches the engine is refused with it, as a hook beneath would. */
+    dropNext: undefined as string | undefined,
+    /** Run while a submit is entering, before it answers: where the engine starts the prompt's turn. */
+    duringSubmit: undefined as (() => Promise<unknown>) | undefined,
+    /** True: rm and rmdir fail to start. */
+    rmFails: false,
+    /** What $.session.id() answers. */
+    sessionId: 'sess-1',
     toasts: [] as string[],
     /** Status bar texts, in order; undefined clears it. */
     statuses: [] as (string | undefined)[],
@@ -128,7 +150,7 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
     if (h.messagesFail) throw new Error('messages could not be read')
     return { value: h.messages } as never
   })
-  on('session.id', async () => ({ value: 'sess-1' }) as never)
+  on('session.id', async () => ({ value: h.sessionId }) as never)
   on('session.model', async () => ({ value: h.liveModel ?? h.model }) as never)
   on('session.usage', async ($, e) => {
     const breakdown = (e as { breakdown?: string }).breakdown && h.breakdown ? { breakdown: h.breakdown } : {}
@@ -146,8 +168,24 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
     const { path, text } = e as { path: string; text: string }
     if (path.endsWith('/prices.json')) h.pricesFile = text
     if (path.endsWith('/prices.json.bak')) h.backup = text
-    if (path.includes('/mods-logs/')) h.files[path] = text
+    if (path.includes('/mods-logs/')) {
+      h.files[path] = text
+      h.mtimes[path] = h.now
+    }
     return { value: undefined } as never
+  })
+  // The files under a folder, and the folders in it (the fake keeps files only); a folder with nothing in it lists as empty.
+  on('fs.list', async ($, e) => {
+    const { path } = e as { path: string }
+    const prefix = `${path}/`
+    const names = new Map<string, 'file' | 'dir'>()
+    for (const key of Object.keys(h.files)) {
+      if (!key.startsWith(prefix)) continue
+      const rest = key.slice(prefix.length)
+      const slash = rest.indexOf('/')
+      names.set(slash < 0 ? rest : rest.slice(0, slash), slash < 0 ? 'file' : 'dir')
+    }
+    return { value: [...names].map(([name, kind]) => ({ name, kind, size: kind === 'file' ? (h.files[`${prefix}${name}`] ?? '').length : 0, mtimeMs: kind === 'file' ? (h.mtimes[`${prefix}${name}`] ?? h.now) : 0, isLink: false })) } as never
   })
   on('clock.now', async () => ({ value: h.now }) as never)
   on('clock.sleep', async () => {
@@ -185,7 +223,14 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
     if (known) h.stored[known] = value as string
     return { value } as never
   })
-  on('process.run', async () => ({ value: { exitCode: 0, stdout: '', stderr: '' } }) as never)
+  // Only rm and rmdir do anything: the fake has files, not folders.
+  on('process.run', async ($, e) => {
+    const { argv } = e as { argv: string[] }
+    h.ran.push(argv)
+    if (h.rmFails && (argv[0] === 'rm' || argv[0] === 'rmdir')) throw new Error('no such program')
+    if (argv[0] === 'rm') for (const f of argv.slice(1).filter(a => !a.startsWith('-'))) delete h.files[f]
+    return { value: { exitCode: 0, stdout: '', stderr: '' } } as never
+  })
   on('ui.status', async ($, e) => {
     h.statuses.push((e as { text?: string }).text)
     return { value: undefined } as never
@@ -256,9 +301,18 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
   })
   on('agent.list', async () => ({ value: h.agents }) as never)
   on('prompt.submit', async ($, e) => {
+    if (h.dropNext !== undefined) {
+      const drop = h.dropNext
+      h.dropNext = undefined
+      return { drop } as never
+    }
     h.submitted.push({ text: e.text, context: e.context })
+    const during = h.duringSubmit
+    h.duringSubmit = undefined
+    if (during) await during()
     return { text: e.text } as never
   })
+  on('turn.start', async (_$, e) => ({ turnId: e.turnId }) as never)
   ;(on as unknown as LooseStep)('turn.step', async function* (_$, e) {
     h.sent.push({ effort: e.effort, model: e.model, agentId: e.agentId, turnId: e.turnId })
     if (h.ledger !== undefined) h.ledger += h.stepCost
@@ -276,7 +330,10 @@ const drive = ($: unknown, h: ReturnType<typeof engine>) => {
   const e = $ as Engine
   return {
     start: (surface: string) => e.session.start({ source: 'startup', cwd: '/tmp', surface, isInteractive: true }),
-    submit: (text: string) => e.prompt.submit({ text, origin: { kind: 'composer' }, wait: false }),
+    /** `turnId`: the turn that was running when the prompt was typed; left out, the session was idle. */
+    submit: (text: string, turnId?: string) => e.prompt.submit({ text, origin: { kind: 'composer' }, wait: false, ...(turnId ? { turnId } : {}) }),
+    /** The engine starting a main-chat turn for this text ("" for a continuation). */
+    turnStart: (turnId: string, text: string) => e.turn.start({ turnId, text }),
     step: async (turnId: string, index = 0, agentId?: string) => {
       const it = e.turn.step({ turnId, index, model: h.model, effort: h.effort, messageCount: 1, ...(agentId ? { agentId } : {}) })
       for await (const _ of it as AsyncIterable<unknown>) void _
@@ -384,7 +441,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.complete('t3')
 
     // Each effort switch leaves one line of evidence: low, back to medium, low, medium.
-    const switches = h.files['/home/test/.claude/mods-logs/rightsize-switches.jsonl'] ?? ''
+    const switches = h.files[SWITCHES_FILE] ?? ''
     expect(Object.keys(h.files).every(k => k.startsWith('/home/test/.claude/mods-logs/')), 'logs go to HOME, wherever the plugin lives').toBe(true)
     const lines = switches.trim().split('\n').map(l => JSON.parse(l) as { from: string; to: string; kept: boolean })
     expect(lines.map(l => `${l.from}>${l.to}`)).toEqual(['medium>low', 'low>medium', 'medium>low', 'low>medium'])
@@ -495,17 +552,17 @@ for (const surface of ['desktop', 'terminal'] as const) {
     // The switch is not an effort switch: nothing measured, nothing logged, and the session stays Sonnet.
     const cal = h.store[CAL_STORE] as Record<string, { n: number }>
     expect(cal['cache:effort-switch']?.n, 'no switch measured').toBe(20)
-    expect(h.files['/home/test/.claude/mods-logs/rightsize-switches.jsonl'], 'no switch line').toBeUndefined()
+    expect(h.files[SWITCHES_FILE], 'no switch line').toBeUndefined()
     expect(cal['review:main:opus:high']?.n, "the switched tier's key is taught").toBe(1)
     expect(cal['review:main:sonnet:high'], "Sonnet's key is not taught Opus costs").toBeUndefined()
-    const runs = (h.files['/home/test/.claude/mods-logs/rightsize-runs.jsonl'] ?? '').trim().split('\n').map(l => JSON.parse(l) as Record<string, unknown>)
+    const runs = (h.files[RUNS_FILE] ?? '').trim().split('\n').map(l => JSON.parse(l) as Record<string, unknown>)
     const run = runs.find(l => l.type === 'review')
     expect(run).toMatchObject({ rule: 'review', switched: 'opus', switchedLevel: 'high', change: 'switch-up', offered: 'switch-up', route: 'main', tier: 'sonnet' })
     expect(runs.find(l => l.type === 'lookup')).toMatchObject({ change: 'none', tier: 'sonnet' })
   })
 
   const rated = (type: string, continues: boolean) => `{"fit":{"haiku":"no","sonnet":"medium","opus":"medium","fable":"medium"},"type":"${type}","read":8000,"write":1200,"steps":5,"continues":${continues},"reason":"rated"}`
-  const readRuns = (h: ReturnType<typeof engine>) => (h.files['/home/test/.claude/mods-logs/rightsize-runs.jsonl'] ?? '').trim().split('\n').map(l => JSON.parse(l) as Record<string, unknown>)
+  const readRuns = (h: ReturnType<typeof engine>) => (h.files[RUNS_FILE] ?? '').trim().split('\n').map(l => JSON.parse(l) as Record<string, unknown>)
   const FOLLOW_UP = 'yes that looks right so go ahead and put it in parentheses'
 
   test(`a follow-up keeps its task's type: a continuing prompt typed review in a feature task plans as feature, a new goal typed review switches (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -529,7 +586,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.complete('t2')
     expect(last(h.sent)?.model, 'no switch to Opus for the follow-up').toBe('claude-sonnet-5-5')
     expect(h.asked.map(a => a.header), 'and no Stronger-model question').toEqual([])
-    expect(h.files['/home/test/.claude/mods-logs/rightsize.log'] ?? '', 'the log names both types').toContain('feature (rated review, continues the feature task) on sonnet/medium')
+    expect(h.files[LOG_PATH] ?? '', 'the log names both types').toContain('feature (rated review, continues the feature task) on sonnet/medium')
 
     // A new goal typed review is a review: it switches.
     h.rating = rated('review', false)
@@ -593,7 +650,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t1')
     await d.complete('t1')
     expect(last(h.sent)?.model, 'no model rewrite').toBe('claude-sonnet-5-5')
-    const runs = (h.files['/home/test/.claude/mods-logs/rightsize-runs.jsonl'] ?? '').trim().split('\n').map(l => JSON.parse(l) as Record<string, unknown>)
+    const runs = (h.files[RUNS_FILE] ?? '').trim().split('\n').map(l => JSON.parse(l) as Record<string, unknown>)
     expect(runs.find(l => l.type === 'review')?.switched).toBeUndefined()
   })
 
@@ -662,7 +719,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.bash('git push origin main')
     await d.complete('t1')
     expect(await bandText($, surface)).toContain('kept this in the main chat for steps only you can approve')
-    const runs = (h.files['/home/test/.claude/mods-logs/rightsize-runs.jsonl'] ?? '').trim().split('\n').map(l => JSON.parse(l) as { approvalSteps?: number })
+    const runs = (h.files[RUNS_FILE] ?? '').trim().split('\n').map(l => JSON.parse(l) as { approvalSteps?: number })
     expect(runs.at(-1)?.approvalSteps, 'the refused push does not count').toBe(1)
   })
 
@@ -724,7 +781,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t1', 1)
     await d.complete('t1')
     expect(h.sent.find(s => s.agentId === 'agent-helper')?.effort).toBe('high')
-    const runs = (h.files['/home/test/.claude/mods-logs/rightsize-runs.jsonl'] ?? '').trim().split('\n')
+    const runs = (h.files[RUNS_FILE] ?? '').trim().split('\n')
     expect((JSON.parse(last(runs) ?? '{}') as { route?: string }).route).toBe('delegate:haiku')
   })
 
@@ -789,7 +846,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     // It learns for the task type, for Haiku, and for Haiku at high.
     const cal = h.store[CAL_STORE] as Record<string, { n: number }>
     expect(['feature:delegate', 'feature:delegate:haiku', 'feature:delegate:haiku:high'].map(k => cal[k]?.n)).toEqual([1, 1, 1])
-    const runs = (h.files['/home/test/.claude/mods-logs/rightsize-runs.jsonl'] ?? '').trim().split('\n')
+    const runs = (h.files[RUNS_FILE] ?? '').trim().split('\n')
     const line = JSON.parse(last(runs) ?? '{}') as { route?: string; subLevel?: string; fit?: unknown; read?: number; write?: number; steps?: number }
     expect(line.route).toBe('delegate:haiku')
     expect(line.subLevel).toBe('high')
@@ -834,7 +891,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(sent.filter(s => s.agentId === 'agent-lister').map(s => s.effort), 'the moved subagent runs at Haiku\'s level').toEqual(['low', 'low'])
     expect(sent.find(s => s.agentId === 'agent-named')?.effort, 'a subagent left alone keeps its level').toBe('medium')
     expect(await bandText($, surface)).toBe("rightsize: Ran Claude's subagent on Haiku (low) instead of Opus.")
-    const runs = (h.files['/home/test/.claude/mods-logs/rightsize-runs.jsonl'] ?? '').trim().split('\n')
+    const runs = (h.files[RUNS_FILE] ?? '').trim().split('\n')
     const line = JSON.parse(last(runs) ?? '{}') as { route?: string; resized?: unknown }
     expect(line.route, 'not a hand-off').toBe('main')
     expect(line.resized).toEqual([{ from: 'opus', tier: 'haiku', level: 'low', type: 'search' }])
@@ -865,7 +922,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('l1', 0, 'agent-lister')
     await d.step('l1', 1, 'agent-lister')
     await d.answer('agent-lister')
-    const runs = (h.files['/home/test/.claude/mods-logs/rightsize-runs.jsonl'] ?? '').trim().split('\n').map(l => JSON.parse(l) as Record<string, unknown>)
+    const runs = (h.files[RUNS_FILE] ?? '').trim().split('\n').map(l => JSON.parse(l) as Record<string, unknown>)
     const sub = runs.filter(l => l.kind === 'subagent')
     expect(sub.length).toBe(1)
     expect([sub[0]?.from, sub[0]?.tier, sub[0]?.level, sub[0]?.type, sub[0]?.aborted]).toEqual(['opus', 'haiku', 'low', 'search', false])
@@ -880,7 +937,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     // Resumed later and stopped: logged, nothing taught.
     await d.step('l2', 0, 'agent-lister')
     await d.answer('agent-lister', true)
-    const again = (h.files['/home/test/.claude/mods-logs/rightsize-runs.jsonl'] ?? '').trim().split('\n').map(l => JSON.parse(l) as Record<string, unknown>)
+    const again = (h.files[RUNS_FILE] ?? '').trim().split('\n').map(l => JSON.parse(l) as Record<string, unknown>)
     expect(again.filter(l => l.kind === 'subagent').map(l => l.aborted)).toEqual([false, true])
     expect(Math.abs(Number(last(again)?.actual) - TWO_HAIKU_STEPS / 2) < 1e-6, 'only what it spent since it answered').toBe(true)
     expect((h.store[CAL_STORE] as Record<string, { n: number }>)['search:subagent']?.n).toBe(1)
@@ -911,7 +968,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('l1', 1, 'agent-lister')
     expect(last(h.sent)?.effort).toBe('low')
     await d.answer('agent-lister')
-    const runs = (h.files['/home/test/.claude/mods-logs/rightsize-runs.jsonl'] ?? '').trim().split('\n').map(l => JSON.parse(l) as Record<string, unknown>)
+    const runs = (h.files[RUNS_FILE] ?? '').trim().split('\n').map(l => JSON.parse(l) as Record<string, unknown>)
     expect(Math.abs(Number(runs.find(l => l.kind === 'subagent')?.actual) - TWO_HAIKU_STEPS) < 1e-6, 'both steps counted once').toBe(true)
   })
 
@@ -963,7 +1020,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await bandText($, surface)).toContain('The 5-hour window is on pace to run out before it resets, so rightsize saves harder.')
     await d.step('t1')
     await d.complete('t1')
-    const runs = (h.files['/home/test/.claude/mods-logs/rightsize-runs.jsonl'] ?? '').trim().split('\n')
+    const runs = (h.files[RUNS_FILE] ?? '').trim().split('\n')
     expect((JSON.parse(last(runs) ?? '{}') as { pace?: unknown }).pace).toEqual({ mode: 'hot', window: 'five_hour', pace: 1.33, used: 80 })
     expect((await d.command('')).text ?? '').toContain('The 5-hour window')
   })
@@ -1042,7 +1099,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.asked.length, 'automatic: nothing asked').toBe(0)
     await d.complete('t1')
 
-    const runs = (h.files['/home/test/.claude/mods-logs/rightsize-runs.jsonl'] ?? '').trim().split('\n')
+    const runs = (h.files[RUNS_FILE] ?? '').trim().split('\n')
     const line = JSON.parse(last(runs) ?? '{}') as { escalations?: { step: number; from: string; to: string }[] }
     expect(line.escalations?.map(x => [x.step, x.from, x.to])).toEqual([[2, 'medium', 'high'], [4, 'high', 'xhigh']])
     expect(Object.keys(h.store[CAL_STORE] ?? {}).filter(k => k.startsWith('lookup:')), 'a turn at two levels teaches nothing').toEqual([])
@@ -1120,7 +1177,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(last(h.sent)?.effort, 'sandbox, a missing program: still not struggling').toBe('medium')
     expect(h.asked.length).toBe(0)
     await d.complete('t1')
-    const line = JSON.parse(last((h.files['/home/test/.claude/mods-logs/rightsize-runs.jsonl'] ?? '').trim().split('\n')) ?? '{}') as { blocked?: number; escalations?: unknown[] }
+    const line = JSON.parse(last((h.files[RUNS_FILE] ?? '').trim().split('\n')) ?? '{}') as { blocked?: number; escalations?: unknown[] }
     expect(line.blocked, 'counted apart, on the run line').toBe(6)
     expect(line.escalations).toBeUndefined()
 
@@ -1132,7 +1189,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t2', 1)
     expect(last(h.sent)?.effort, 'the same ordinary failure twice').toBe('high')
     await d.complete('t2')
-    const next = JSON.parse(last((h.files['/home/test/.claude/mods-logs/rightsize-runs.jsonl'] ?? '').trim().split('\n')) ?? '{}') as Record<string, unknown>
+    const next = JSON.parse(last((h.files[RUNS_FILE] ?? '').trim().split('\n')) ?? '{}') as Record<string, unknown>
     expect('blocked' in next).toBe(false)
   })
 
@@ -1190,7 +1247,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t1', 0)
     await d.step('t1', 1)
     await d.complete('t1')
-    const runs = (h.files['/home/test/.claude/mods-logs/rightsize-runs.jsonl'] ?? '').trim().split('\n')
+    const runs = (h.files[RUNS_FILE] ?? '').trim().split('\n')
     const line = JSON.parse(last(runs) ?? '{}') as { requests?: number; fixed?: unknown }
     expect(line.requests).toBe(2)
     // Deferred MCP tools are not in the context: 20K MCP, 6K memory, 1K agents, 3K skills and commands.
@@ -1282,7 +1339,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
     // 5% of the window for $1 of turns: $0.16 is 0.8%.
     const at = new Date(h.now).toISOString()
-    h.files['/home/test/.claude/mods-logs/rightsize-runs.jsonl'] = `${JSON.stringify({ at, kind: 'run', actual: 1, before: { five_hour: 10 }, after: { five_hour: 15 } })}\n`
+    h.files[LEGACY_RUNS] = `${JSON.stringify({ at, kind: 'run', actual: 1, before: { five_hour: 10 }, after: { five_hour: 15 } })}\n`
     h.now += 3 * 60 * MIN
     await d.submit('continue')
     expect(last(h.asked)?.question).toContain(
@@ -1329,7 +1386,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t3')
     await d.complete('t3')
     expect(learned()).toEqual([1, 1, 1])
-    const lines = (h.files['/home/test/.claude/mods-logs/rightsize-runs.jsonl'] ?? '').trim().split('\n').map(l => JSON.parse(l) as { workflows?: number; afterWorkflow?: boolean })
+    const lines = (h.files[RUNS_FILE] ?? '').trim().split('\n').map(l => JSON.parse(l) as { workflows?: number; afterWorkflow?: boolean })
     expect(lines.map(l => [l.workflows ?? 0, l.afterWorkflow ?? false])).toEqual([[0, false], [1, true], [0, true]])
     h.now = Date.now()
     const flows = (await d.command('report')).text ?? ''
@@ -1377,7 +1434,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await bandText($, surface)).toBe('')
   })
 
-  const RUNS = '/home/test/.claude/mods-logs/rightsize-runs.jsonl'
+  const RUNS = LEGACY_RUNS
   /** 60 rated prompts on Opus at medium that Sonnet could do at medium: a cheaper start. */
   const easyLog = (now: number) =>
     Array.from({ length: 60 }, (_, i) =>
@@ -1755,7 +1812,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
     const d = drive($, h)
     const runs = () =>
-      (h.files['/home/test/.claude/mods-logs/rightsize-runs.jsonl'] ?? '')
+      (h.files[RUNS_FILE] ?? '')
         .trim()
         .split('\n')
         .map(l => JSON.parse(l) as { actual: number; measured: string; tokens: number })
@@ -1782,7 +1839,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES } })
     const d = drive($, h)
     const runs = () =>
-      (h.files['/home/test/.claude/mods-logs/rightsize-runs.jsonl'] ?? '')
+      (h.files[RUNS_FILE] ?? '')
         .trim()
         .split('\n')
         .map(l => JSON.parse(l) as { kind: string; session: string; change: string; offered: string; overhead: number; before?: Record<string, number>; after?: Record<string, number> })
@@ -1867,10 +1924,10 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t1', 0, 'a1')
     await d.step('t1', 1)
     await d.complete('t1')
-    const runs = (h.files['/home/test/.claude/mods-logs/rightsize-runs.jsonl'] ?? '').trim().split('\n').map(l => JSON.parse(l) as Record<string, unknown>)
+    const runs = (h.files[RUNS_FILE] ?? '').trim().split('\n').map(l => JSON.parse(l) as Record<string, unknown>)
     expect(last(runs)?.route).toBe('delegate:sonnet')
     expect(last(runs)?.tie).toEqual({ by: 'guide', over: 'opus' })
-    expect((h.files['/home/test/.claude/mods-logs/rightsize.log'] ?? '').includes('tie guide over opus'), 'the log says so').toBe(true)
+    expect((h.files[LOG_PATH] ?? '').includes('tie guide over opus'), 'the log says so').toBe(true)
 
     // The next close call is the fifth (4 before it): it explores, and is counted too.
     await d.submit(SEARCH)
@@ -1880,7 +1937,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.agent('opus')
     await d.step('t3', 1)
     await d.complete('t3')
-    const again = (h.files['/home/test/.claude/mods-logs/rightsize-runs.jsonl'] ?? '').trim().split('\n').map(l => JSON.parse(l) as Record<string, unknown>)
+    const again = (h.files[RUNS_FILE] ?? '').trim().split('\n').map(l => JSON.parse(l) as Record<string, unknown>)
     expect(last(again)?.tie).toEqual({ by: 'explore', over: 'sonnet' })
   })
 
@@ -1901,7 +1958,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.agent('opus')
     await d.step('t1', 1)
     await d.complete('t1')
-    const runs = (h.files['/home/test/.claude/mods-logs/rightsize-runs.jsonl'] ?? '').trim().split('\n').map(l => JSON.parse(l) as Record<string, unknown>)
+    const runs = (h.files[RUNS_FILE] ?? '').trim().split('\n').map(l => JSON.parse(l) as Record<string, unknown>)
     expect('tie' in (last(runs) ?? {})).toBe(false)
   })
 
@@ -1924,7 +1981,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.store.ties, 'counted').toBe(1)
     await d.step('t1', 1)
     await d.complete('t1')
-    const runs = (h.files['/home/test/.claude/mods-logs/rightsize-runs.jsonl'] ?? '').trim().split('\n').map(l => JSON.parse(l) as { resized?: { tier: string; tie?: unknown }[] })
+    const runs = (h.files[RUNS_FILE] ?? '').trim().split('\n').map(l => JSON.parse(l) as { resized?: { tier: string; tie?: unknown }[] })
     expect(last(runs)?.resized?.map(r => [r.tier, r.tie])).toEqual([['sonnet', { by: 'guide', over: 'opus' }]])
   })
 
@@ -1932,7 +1989,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   const FIT_NO = '{"fit":{"haiku":"no","sonnet":"no","opus":"medium","fable":"medium"},"type":"feature","read":2000,"write":300,"steps":1,"reason":"plain change"}'
   const CHECK_NO = '{"fit":{"haiku":"no","sonnet":"no","opus":"no","fable":"high"},"type":"feature","read":2000,"write":300,"steps":1}'
   const runLines = (h: ReturnType<typeof engine>) =>
-    (h.files[RUNS] ?? '')
+    (h.files[RUNS_FILE] ?? '')
       .split('\n')
       .filter(Boolean)
       .map(l => JSON.parse(l) as Record<string, unknown>)
@@ -2293,7 +2350,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   // its default), it takes effect when /config changes it, with no restart, and it takes effect when given at
   // load. The scenario for each shows one thing the row changes, with the value and with the default.
 
-  const LOG = '/home/test/.claude/mods-logs/rightsize.log'
+  const LOG = LOG_PATH
   const disagree = (h: ReturnType<typeof engine>) => (h.files[LOG] ?? '').includes('plugin.json and the settings table disagree')
   const settingsText = async (d: ReturnType<typeof drive>) => (await d.command('')).text ?? ''
   // A row in the "you changed" list: indented, with no (default) or (detected) mark after it.
@@ -3610,7 +3667,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(out).not.toContain('back to its default')
     expect(h.stored.handOff, 'unchanged').toBe('50%')
     expect(await settingsText(d)).toContain('Hand-off threshold: 50%')
-    expect(h.files['/home/test/.claude/mods-logs/rightsize.log'] ?? '').toContain('reset handOff: Claude Code refused to write it: only its dialog changes it')
+    expect(h.files[LOG_PATH] ?? '').toContain('reset handOff: Claude Code refused to write it: only its dialog changes it')
     expect(h.store.resetFields, 'listed, so the default counts as a default once set from a terminal').toEqual(['handOff'])
   })
 
@@ -3849,7 +3906,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
   // The first prompt of a session: nothing has run a step yet, so the model and the window come from the engine.
   const PLAIN = '{"level":"medium","model":"same","size":"small","type":"lookup","read":2000,"write":300,"steps":1}'
-  const LOG_FILE = '/home/test/.claude/mods-logs/rightsize.log'
+  const LOG_FILE = LOG_PATH
   const firstPrompt = async (h: ReturnType<typeof engine>, d: ReturnType<typeof drive>, turn: string) => {
     h.rating = PLAIN
     await d.submit(LOOKUP)
@@ -3972,7 +4029,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
   const HELPERS = { remember: true, choices: { raise: 'auto', down: 'auto' } }
   const HAND_OFF = (continues = false) => `{"fit":{"haiku":"low","sonnet":"low","opus":"low","fable":"low"},"type":"search","read":150000,"write":3000,"steps":30,"continues":${continues},"reason":"repo-wide search"}`
-  const HELPER_LOG = '/home/test/.claude/mods-logs/rightsize.log'
+  const HELPER_LOG = LOG_PATH
   const helperLog = (h: ReturnType<typeof engine>) => h.files[HELPER_LOG] ?? ''
   type Drive = ReturnType<typeof drive>
   // The main chat hands the work to a Haiku subagent called `helper`, which takes its first step (at low effort).
@@ -4342,7 +4399,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(shown.endsWith('but only in src/\n</request>')).toBe(true)
     await d.step('t2')
     expect(last(h.sent)?.effort, 'not lowered: the rater did not see all of it').toBe('medium')
-    expect(h.files['/home/test/.claude/mods-logs/rightsize.log'] ?? '').toContain('no downgrade: context cut')
+    expect(h.files[LOG_PATH] ?? '').toContain('no downgrade: context cut')
     expect(h.asked.map(a => a.header), 'and Lowering is not asked again').toEqual(['Lowering', 'Remember'])
     await d.complete('t2')
     expect(unsureOf(h)).toEqual([null, 'cut'])
@@ -4367,7 +4424,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.submit(LOOKUP)
     await d.step('t2')
     expect(last(h.sent)?.effort, 'no reply to read: not lowered').toBe('medium')
-    expect(h.files['/home/test/.claude/mods-logs/rightsize.log'] ?? '').toContain('no downgrade: context missing')
+    expect(h.files[LOG_PATH] ?? '').toContain('no downgrade: context missing')
     await d.complete('t2')
 
     // The conversation cannot be read at all.
@@ -4440,6 +4497,317 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.rating = rated('lookup', true)
     await d.submit(FOLLOW_UP)
     expect(last(h.ratingPrompts)).toContain(`Task in progress: lookup, 1 prompt so far. It started with:\n${LOOKUP}\n</task>`)
+  })
+
+
+  // ---- Logs: one folder per session, read together ----------------------------------
+  const MIN_MS = 60_000
+  /** A rated prompt for the start check's replay: the fields isRated wants. */
+  const easyLine = (at: number, tier: string) =>
+    JSON.stringify({ at: new Date(at).toISOString(), kind: 'run', session: 'x', type: 'feature', route: 'main', tier, level: 'medium', normal: 'medium', fit: { haiku: null, sonnet: 'medium', opus: 'low', fable: 'low' }, read: 8000, write: 2000, steps: 8, context: 60_000, actual: 0.1, stay: 0.1, taken: 0.1, change: 'none', offered: 'none' })
+  const FILES = (h: ReturnType<typeof engine>) => Object.keys(h.files).sort()
+  /** A rating call that costs something, so a dropped or unbound prompt has overhead to count. */
+  const PAID = { input_tokens: 1_000_000, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+
+  test(`every log is written in the session's own folder, files 600 and folders 700, and the old shared files are never written (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES } })
+    const legacy = `${easyLine(h.now - 3 * DAY, 'opus')}\n`
+    h.files[LEGACY_RUNS] = legacy
+    h.files[LEGACY_SWITCHES] = `${JSON.stringify({ at: new Date(h.now - 3 * DAY).toISOString(), kept: true })}\n`
+    const d = drive($, h)
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+    h.rating = LOWER
+    h.answers = { Lowering: 'Lower automatically', Remember: 'Just this session' }
+    await d.submit(LOOKUP)
+    await d.step('t1', 0)
+    await d.step('t1', 1)
+    await d.complete('t1')
+    await d.submit(LOOKUP)
+    await d.step('t2')
+    await d.complete('t2')
+    expect(FILES(h), 'only this session writes, in its own folder').toEqual([LEGACY_RUNS, LEGACY_SWITCHES, LOG_PATH, RUNS_FILE, SWITCHES_FILE].sort())
+    expect(h.files[LEGACY_RUNS], 'the old runs file is read, never written').toBe(legacy)
+    expect(h.files[LEGACY_SWITCHES]?.trim().split('\n').length).toBe(1)
+    expect(h.ran).toContainEqual(['mkdir', '-m', '700', '-p', SESSION_DIR])
+    expect(h.ran).toContainEqual(['chmod', '700', LOGS, `${LOGS}/rightsize`, SESSION_DIR])
+    for (const file of [RUNS_FILE, SWITCHES_FILE, LOG_PATH]) expect(h.ran, file).toContainEqual(['chmod', '600', file])
+    expect(h.ran.filter(a => a[0] === 'chmod' && a[1] === '600').length, 'each new file is made readable by you alone once').toBe(3)
+    expect(readRuns(h).map(l => l.kind)).toEqual(['run', 'run'])
+  })
+
+  for (const [id, folder] of [['../../etc/x y', '______etc_x_y'], ['', 'unknown']] as const) {
+    test(`session id ${JSON.stringify(id)} writes its logs under ${folder} (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+      const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+      h.sessionId = id
+      const d = drive($, h)
+      await d.start(surface)
+      h.rating = NO_CHANGE
+      await d.submit(LOOKUP)
+      await d.step('t1')
+      await d.complete('t1')
+      expect(FILES(h).length).toBeGreaterThan(0)
+      expect(FILES(h).every(f => f.startsWith(`${LOGS}/rightsize/${folder}/`)), `files: ${FILES(h).join(' ')}`).toBe(true)
+    })
+  }
+
+  test(`the report reads every session's folder and the old shared file together, in time order, and one unreadable file loses nothing (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    // The newest 60 prompts are in the old file, on Opus; an older Sonnet one and a newer Opus one are in two session folders.
+    // Read in file order the last prompt would be Sonnet's (a folder comes after the old file), and the start would not be Opus.
+    h.files[LEGACY_RUNS] = easyLog(h.now)
+    h.files[`${LOGS}/rightsize/aaa/runs.jsonl`] = `${easyLine(h.now - 3 * DAY, 'sonnet')}\n`
+    h.files[`${LOGS}/rightsize/zzz/runs.jsonl`] = `${easyLine(h.now - 2 * DAY, 'opus')}\n`
+    h.files[`${LOGS}/rightsize/torn/runs.jsonl`] = `not json at all\n{"at":"2026-01-01T00:00:00.000Z","kind":"ru`
+    h.files[`${LOGS}/rightsize/torn/rightsize.log`] = 'text that is not a run log\n'
+    h.files[LEGACY_SWITCHES] = `${JSON.stringify({ at: new Date(h.now - DAY).toISOString(), kept: false })}\n`
+    h.files[`${LOGS}/rightsize/zzz/switches.jsonl`] = `${JSON.stringify({ at: new Date(h.now - 2 * DAY).toISOString(), kept: false })}\n`
+    const d = drive($, h)
+    await d.start(surface)
+    const report = String((await d.command('report')).text)
+    expect(cellsOf(report, 'Prompts rated')?.slice(1), 'all three sources, 60 + 1 + 1').toEqual(['62', '62'])
+    expect(report, 'the newest prompt is Opus, so Opus is the start').toContain('STARTING POINT  Opus at medium, 62 rated prompts in 30 days')
+    expect(report, 'effort switches from both places').toMatch(/2 switches\s+missed the cache, of 2 effort switches/)
+  })
+
+  test(`two writes to one file in the same moment both land (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    const d = drive($, h)
+    await d.start(surface)
+    h.rating = NO_CHANGE
+    await Promise.all([d.submit(LOOKUP), d.submit(`${LOOKUP} in src/other.ts`)])
+    const rated = (h.files[LOG_PATH] ?? '').split('\n').filter(l => l.includes(': rated '))
+    expect(rated.length, 'both decisions are in the log').toBe(2)
+    // The two turns end together as well: a turn's line and a later one's go to the same file.
+    await d.turnStart('t1', LOOKUP)
+    await d.step('t1')
+    await d.complete('t1')
+    await d.turnStart('t2', `${LOOKUP} in src/other.ts`)
+    await d.step('t2')
+    await Promise.all([d.complete('t2'), d.submit(`${DEBUG} again`)])
+    expect(readRuns(h).filter(l => l.kind === 'run').map(l => l.turnId), 'and both turns are in the run log').toEqual(['t1', 't2'])
+  })
+
+  // ---- Prompts and turns: a queue, bound by text ------------------------------------
+
+  test(`a prompt another plugin rewrote is still bound to its turn: the turn that starts while it enters (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    const d = drive($, h)
+    await d.start(surface)
+    h.rating = NO_CHANGE
+    h.duringSubmit = () => d.turnStart('t1', `THE JOB: ${LOOKUP}`)
+    await d.submit(LOOKUP)
+    await d.step('t1')
+    await d.complete('t1')
+    expect(readRuns(h).filter(l => l.kind === 'run').map(l => l.turnId), 'bound to its turn').toEqual(['t1'])
+    expect(readRuns(h).some(l => l.kind === 'unbound'), 'not left in line').toBe(false)
+  })
+
+  test(`prompts typed during a running turn wait in line and each runs its own turn, bound by its text, with its own rating and turn id (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-sonnet-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES } })
+    const d = drive($, h)
+    await d.start(surface)
+    h.rating = rated('feature', false)
+    await d.submit('add a dark mode toggle to the settings page')
+    await d.turnStart('t1', 'add a dark mode toggle to the settings page')
+    await d.step('t1')
+    // Two more while t1 runs: each is rated as it is typed.
+    h.rating = rated('lookup', false)
+    await d.submit(LOOKUP, 't1')
+    h.rating = rated('debug', false)
+    await d.submit(DEBUG, 't1')
+    await d.complete('t1')
+    await d.turnStart('t2', `  ${LOOKUP}\n`)
+    await d.step('t2')
+    await d.complete('t2')
+    await d.turnStart('t3', DEBUG)
+    await d.step('t3')
+    await d.complete('t3')
+    const runs = readRuns(h)
+    expect(runs.map(l => l.kind), 'three runs, nothing unbound').toEqual(['run', 'run', 'run'])
+    expect(runs.map(l => [l.turnId, l.type, l.queued]), 'each is in its own turn, and the typed-over two say so').toEqual([['t1', 'feature', undefined], ['t2', 'lookup', true], ['t3', 'debug', true]])
+    expect(new Set(runs.map(l => l.id)).size, 'three ids').toBe(3)
+    expect(new Set(runs.map(l => l.task)).size, 'and three tasks').toBe(3)
+  })
+
+  test(`a prompt that never started is logged unbound at the next idle prompt and never takes another prompt's turn (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    const d = drive($, h)
+    await d.start(surface)
+    h.ratingUsage = PAID
+    h.rating = NO_CHANGE
+    await d.submit(LOOKUP)
+    // Cancelled before its turn started: no turn.start for it. The session is idle when the next one is typed.
+    await d.submit(DEBUG)
+    await d.turnStart('t1', DEBUG)
+    await d.step('t1')
+    await d.complete('t1')
+    const runs = readRuns(h)
+    expect(runs.map(l => l.kind)).toEqual(['unbound', 'run'])
+    expect(runs[0]).toMatchObject({ kind: 'unbound', reason: 'cancelled before its turn started' })
+    expect(Number(runs[0]?.overhead), 'its rating call is still counted').toBeGreaterThan(0)
+    expect(runs[1], 'the run in turn t1 is the prompt that started it').toMatchObject({ turnId: 't1' })
+    expect(runs[1]?.id).not.toBe(runs[0]?.id)
+    expect(runs[1]?.queued, 'typed while idle').toBeUndefined()
+    expect(cellsOf(String((await d.command('report')).text), 'Prompts rated')?.[0], 'one rated run in this session: the unbound prompt is not one').toBe('1')
+  })
+
+  test(`a prompt delivered into the running turn is logged unbound when the next turn starts for other text, and does not attach to it (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    const d = drive($, h)
+    await d.start(surface)
+    h.ratingUsage = PAID
+    h.rating = NO_CHANGE
+    await d.submit(LOOKUP)
+    await d.turnStart('t1', LOOKUP)
+    await d.step('t1')
+    // The engine hands this one to the model inside t1: no turn will ever start for it.
+    await d.submit(DEBUG, 't1')
+    await d.complete('t1')
+    // A continuation says nothing about the line.
+    await d.turnStart('t2', '')
+    await d.step('t2')
+    await d.complete('t2')
+    expect(readRuns(h).map(l => l.kind), 'still waiting after a continuation').toEqual(['run'])
+    // The next turn starts for other text: the prompt was read by t1.
+    await d.turnStart('t3', 'a background task finished')
+    await d.step('t3')
+    await d.complete('t3')
+    const runs = readRuns(h)
+    expect(runs.map(l => l.kind)).toEqual(['run', 'unbound'])
+    expect(runs[1]).toMatchObject({ kind: 'unbound', reason: 'delivered into the running turn' })
+    expect(Number(runs[1]?.overhead)).toBeGreaterThan(0)
+    expect(runs.filter(l => l.kind === 'run').map(l => l.turnId), 'nothing ran in t2 or t3 as a rated prompt').toEqual(['t1'])
+  })
+
+  test(`a prompt delivered into the running turn is logged unbound when the session goes idle and the next prompt is typed (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    const d = drive($, h)
+    await d.start(surface)
+    h.rating = NO_CHANGE
+    await d.submit(LOOKUP)
+    await d.turnStart('t1', LOOKUP)
+    await d.step('t1')
+    await d.submit(DEBUG, 't1')
+    await d.complete('t1')
+    await d.submit(SEARCH)
+    await d.turnStart('t2', SEARCH)
+    await d.step('t2')
+    await d.complete('t2')
+    const runs = readRuns(h)
+    expect(runs.map(l => [l.kind, l.turnId ?? l.reason])).toEqual([['run', 't1'], ['unbound', 'delivered into the running turn'], ['run', 't2']])
+  })
+
+  test(`a prompt that something beneath refuses is logged dropped with its rating cost, its own state is undone, and it does not attach to the next turn (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-sonnet-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES } })
+    const d = drive($, h)
+    await d.start(surface)
+    h.ratingUsage = PAID
+    h.rating = LOWER
+    h.answers = { Lowering: 'Lower automatically', Remember: 'Just this session' }
+    h.dropNext = 'a hook refused it'
+    const out = (await d.submit(LOOKUP)) as { drop?: string }
+    expect(out.drop, 'the refusal is passed up as it came').toBe('a hook refused it')
+    expect(await bandText($, surface), 'the band it set is gone').toBe('')
+    const undo = await d.command('undo')
+    expect(undo.text ?? '', 'nothing of it is left to undo').toContain('Nothing to undo')
+    const runs = readRuns(h)
+    expect(runs.map(l => l.kind)).toEqual(['dropped'])
+    expect(runs[0]).toMatchObject({ kind: 'dropped', reason: 'a hook refused it', session: 'sess-1' })
+    expect(Number(runs[0]?.overhead)).toBeGreaterThan(0)
+    expect(h.files[LOG_PATH] ?? '').toContain('prompt dropped (a hook refused it)')
+
+    // The next prompt starts its own task (the dropped one never began one), and its turn is its own.
+    h.rating = rated('lookup', true)
+    await d.submit(FOLLOW_UP)
+    expect(last(h.ratingPrompts), 'the dropped prompt began no task to continue').not.toContain('<task>')
+    await d.turnStart('t1', FOLLOW_UP)
+    await d.step('t1')
+    await d.complete('t1')
+    const after = readRuns(h)
+    expect(after.map(l => l.kind)).toEqual(['dropped', 'run'])
+    expect(after[1]?.turnId).toBe('t1')
+    expect(after[1]?.id, 'its own run').not.toBe(after[0]?.id)
+    expect(after[1]?.overhead, "its own rating call's cost, not the dropped one's").toBe(after[0]?.overhead)
+  })
+
+  test(`a session switch the person answered for a dropped prompt stays (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES } })
+    const d = drive($, h)
+    await d.start(surface)
+    h.rating = '{"level":"high","model":"same","type":"debug","read":20000,"write":3000,"steps":8,"reason":"unknown cause"}'
+    h.answers = { Raising: 'Ask me each time', Effort: 'Raise for this session', Remember: 'Just this session' }
+    h.dropNext = 'refused'
+    await d.submit(DEBUG)
+    expect(readRuns(h).map(l => l.kind)).toEqual(['dropped'])
+    expect(((await d.command(''))).text ?? '', 'the answer was the person\'s').toContain('Session switch: high')
+  })
+
+  test(`a session start clears the line without logging it (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    const d = drive($, h)
+    await d.start(surface)
+    h.rating = NO_CHANGE
+    await d.submit(LOOKUP)
+    await d.start(surface)
+    await d.submit(DEBUG)
+    await d.turnStart('t1', DEBUG)
+    await d.step('t1')
+    await d.complete('t1')
+    expect(readRuns(h).map(l => l.kind), 'the earlier session start left no line for the waiting prompt').toEqual(['run'])
+    expect(readRuns(h)[0]?.turnId).toBe('t1')
+  })
+
+  // ---- Pruning ----------------------------------------------------------------------
+
+  test(`a session start removes the folders of sessions that last wrote over 45 days ago, and only those (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    const at = (days: number) => h.now - days * DAY
+    const put = (path: string, days: number) => {
+      h.files[path] = `${JSON.stringify({ at: new Date(at(days)).toISOString(), kind: 'run' })}\n`
+      h.mtimes[path] = at(days)
+    }
+    const R = `${LOGS}/rightsize`
+    put(`${R}/old-one/runs.jsonl`, 46)
+    put(`${R}/old-one/rightsize.log`, 60)
+    put(`${R}/fresh/runs.jsonl`, 1)
+    put(`${R}/fresh/rightsize.log`, 50)
+    // One file written lately keeps the folder, however old the others are.
+    put(`${R}/mixed/runs.jsonl`, 90)
+    put(`${R}/mixed/switches.jsonl`, 44)
+    // This session's own folder, though everything in it is old (a resumed session).
+    put(RUNS_FILE, 100)
+    // Not session folders at all: the old shared files, and a name that is not a plain one.
+    put(LEGACY_RUNS, 100)
+    put(LEGACY_SWITCHES, 100)
+    put(`${R}/odd name/runs.jsonl`, 100)
+    const d = drive($, h)
+    await d.start(surface)
+    await flush()
+    expect(FILES(h).filter(f => f.includes('old-one')), 'the old folder is emptied').toEqual([])
+    expect(h.ran).toContainEqual(['rm', '-f', `${R}/old-one/runs.jsonl`])
+    expect(h.ran).toContainEqual(['rm', '-f', `${R}/old-one/rightsize.log`])
+    expect(h.ran).toContainEqual(['rmdir', `${R}/old-one`])
+    for (const kept of [`${R}/fresh/runs.jsonl`, `${R}/fresh/rightsize.log`, `${R}/mixed/runs.jsonl`, `${R}/mixed/switches.jsonl`, RUNS_FILE, LEGACY_RUNS, LEGACY_SWITCHES, `${R}/odd name/runs.jsonl`]) expect(h.files[kept], kept).toBeDefined()
+    const removing = h.ran.filter(a => a[0] === 'rm' || a[0] === 'rmdir')
+    expect(removing.length, 'two files and the folder, nothing else').toBe(3)
+    expect(removing.every(a => a[a.length - 1]?.startsWith(`${R}/old-one`)), 'only paths inside the one old folder').toBe(true)
+  })
+
+  test(`a failing clean-up never stops the session from starting (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    h.files[`${LOGS}/rightsize/old-one/runs.jsonl`] = '{"at":"2026-01-01T00:00:00.000Z","kind":"run"}\n'
+    h.mtimes[`${LOGS}/rightsize/old-one/runs.jsonl`] = h.now - 90 * DAY
+    h.rmFails = true
+    const d = drive($, h)
+    await d.start(surface)
+    await flush()
+    h.rating = NO_CHANGE
+    await d.submit(LOOKUP)
+    await d.step('t1')
+    await d.complete('t1')
+    expect(readRuns(h).map(l => l.kind), 'logging goes on').toEqual(['run'])
   })
 
 }

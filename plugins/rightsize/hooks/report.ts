@@ -13,21 +13,28 @@ export type Change = 'none' | 'lower' | 'raise' | 'delegate-up' | 'delegate-down
 /** Rate-limit windows as percent used: `five_hour`, `seven_day`, `spend_limit`. */
 export type Windows = Record<string, number>
 
-/** One line of rightsize-runs.jsonl. Lines from before 0.5 lack the newer fields. */
+/** One line of a session's runs.jsonl (or of the old shared rightsize-runs.jsonl). Lines from before 0.5 lack the newer fields. */
 export type RunLine = {
   at: string
   /**
    * 'overhead': a rating call that came to nothing (failed or unreadable). 'subagent': one of Claude's subagents moved to a cheaper model, when it answered.
    * 'check': Sonnet's second opinion on a rating. 'feedback': a 👍 or 👎 on a run. Neither counts as a rated run.
    * 'unrated': a prompt whose rating failed twice or could not be read, so the session was left as it was; `reason` says why and `overhead` is what the rating calls cost.
+   * 'dropped': a rated prompt that never entered because something beneath rightsize refused it; `reason` is the refusal and `overhead` what its rating cost.
+   * 'unbound': a rated prompt that never got a turn of its own, because it was delivered into a running turn or cancelled before its turn started; `reason` says which and `overhead` what its rating cost.
+   * 'dropped' and 'unbound' are not rated runs: the report counts only their overhead.
    */
-  kind?: 'run' | 'overhead' | 'subagent' | 'check' | 'feedback' | 'unrated'
+  kind?: 'run' | 'overhead' | 'subagent' | 'check' | 'feedback' | 'unrated' | 'dropped' | 'unbound'
   /** A run line's own id, which feedback lines name in `ref`. */
   id?: string
   /** The task the line belongs to: the id of the run that started it. Follow-ups, unrated prompts and subagents carry it. */
   task?: string
   /** A subagent line: the id of the run whose turn started it. */
   run?: string
+  /** A run line: the main-chat turn the prompt ran in. */
+  turnId?: string
+  /** A run line: the prompt was typed while another turn was running, and waited for its own. */
+  queued?: boolean
   session?: string
   type?: string
   route?: string
@@ -48,7 +55,7 @@ export type RunLine = {
   overhead?: number
   /** A run line: why the rater may have seen too little. 'cut': the request was longer than the rater is shown, so its middle was cut. 'missing': a task was in progress but Claude's last reply could not be read. Neither lowers effort or hands work to a cheaper model. */
   unsure?: 'cut' | 'missing'
-  /** An unrated line: why the rating did not come (timeout, unreadable answer, and so on). */
+  /** An unrated line: why the rating did not come (timeout, unreadable answer, and so on). A dropped or unbound line: why the prompt did not run. */
   reason?: string
   /** What effort-switch cache misses cost. */
   missCost?: number

@@ -33,3 +33,40 @@ test('the public prompt quotes no benchmark numbers or task names', async () => 
   expect(guidance, 'no digits, no percentages').not.toMatch(/\d/)
   expect(prompt).not.toMatch(/benchmark|pass rate|\bruns?\b of/i)
 })
+
+test('the prompt has one effort sentence: routine debugging does not need more than medium, subtle or high-stakes work does', async () => {
+  expect(prompt).toContain("Effort: routine debugging with a clear symptom does not need a higher level than the model's medium; raise the level for subtle bugs, hard reasoning or high stakes.")
+})
+
+test('a broken ending after the last complete field is cut, and the object closed again', async () => {
+  const body = '{"fit":{"haiku":"low","sonnet":"low","opus":"low","fable":"low"},"type":"lookup","read":2000,"write":300,"steps":1,"approval":false,"continues":false,"reason":"simple lookup"'
+  const whole = parseRating(`${body}}`, 'sonnet')
+  expect(whole?.type).toBe('lookup')
+  for (const ending of [',"}', ',"sonnet"}', ',}', ', }', ',\n}']) {
+    expect(parseRating(`${body}${ending}`, 'sonnet'), JSON.stringify(ending)).toEqual(whole)
+  }
+  // Inside a code fence or with prose around it, as before.
+  expect(parseRating('```json\n' + body + ',"}\n```', 'sonnet')).toEqual(whole)
+  // A last field that is a number or a boolean.
+  expect(parseRating('{"fit":{"opus":"low"},"type":"feature","steps":3,"continues":true,"}', 'opus')?.continues).toBe(true)
+})
+
+test('the parser stays strict: no value is guessed, and garbage is still refused', async () => {
+  const ok = '{"fit":{"opus":"low"},"type":"feature","reason":"x"'
+  expect(parseRating(`${ok},"fit"}`, 'opus')?.type, 'a dangling key is dropped, not given a value').toBe('feature')
+  for (const bad of [
+    `${ok},"sonnet":}`, // a key with no value
+    `${ok},"a":"b}`, // a value cut in the middle
+    `${ok},,}`,
+    `${ok} nonsense}`,
+    `${ok},"sonnet"`, // no closing brace at all
+    '{"fit":{"opus":"low"},"type":"feature"',
+    '{"fit":{"opus":"low"},"type":"feature","reason":"unfinished,"}}x',
+    'not json {oops}',
+    '{,"}',
+    '[1,2,3]',
+    '{"fit":{"opus":"maybe"},"type":"feature"}',
+  ]) {
+    expect(parseRating(bad, 'opus'), JSON.stringify(bad)).toBeUndefined()
+  }
+})

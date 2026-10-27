@@ -13,6 +13,19 @@ export type Rates = Record<string, { n: number; misses: number }>
 /** Outcomes a key needs before its own rate is used. */
 export const MISS_MIN = 5
 
+// Cold-start priors: before a person's own outcomes say anything, Haiku is assumed to miss on these
+// kinds of work half the time, which is at or over every Pause after misses setting. Each is counted as
+// pseudo-outcomes that fill the MISS_MIN a key needs; every real outcome pushes one out, and with MISS_MIN
+// real outcomes no prior is left. The share is a starting guess, not a measurement.
+/** Reviews hunt subtle bugs, which a Haiku-level read tends to miss. */
+export const PRIOR_REVIEW_HAIKU = 0.5
+/** Writing is judged on style, which Haiku tends not to hold. */
+export const PRIOR_WRITING_HAIKU = 0.5
+export const COLD_PRIORS: Readonly<Record<string, number>> = {
+  'review:haiku': PRIOR_REVIEW_HAIKU,
+  'writing:haiku': PRIOR_WRITING_HAIKU,
+}
+
 export const missKey = (type: string, tier: string) => `${type}:${tier}`
 
 const delegateTier = (l: RunLine) => {
@@ -105,9 +118,15 @@ export function missRates(lines: readonly RunLine[]): Rates {
   return rates
 }
 
-/** The share of wrong judgements for a task type on a model; with too few outcomes, the model's across all types; with too few of those, 0. */
+/**
+ * The share of wrong judgements for a task type on a model; with too few outcomes, the model's across all types; with too few of those, 0.
+ * A key with a cold-start prior (COLD_PRIORS) and fewer than MISS_MIN own outcomes is scored on its own outcomes
+ * plus enough prior pseudo-outcomes to make MISS_MIN.
+ */
 export function missRate(rates: Rates, type: string, tier: string) {
   const own = rates[missKey(type, tier)]
+  const prior = COLD_PRIORS[missKey(type, tier)]
+  if (prior !== undefined && (own?.n ?? 0) < MISS_MIN) return ((own?.misses ?? 0) + (MISS_MIN - (own?.n ?? 0)) * prior) / MISS_MIN
   if (own && own.n >= MISS_MIN) return own.misses / own.n
   let n = 0
   let misses = 0

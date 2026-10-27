@@ -101,3 +101,18 @@ test('the map for plan() holds each type and model with a rate above zero, keyed
   expect(map['lookup:haiku'], 'another type leans on the model across types').toBe(0.5)
   expect(map['search:opus'], 'no outcomes on Opus').toBeUndefined()
 })
+
+test('cold-start priors: Haiku on review and writing starts at the pause line, and real outcomes take the place of the pseudo-outcomes', async () => {
+  const hand = (type: string, n: number, bad = 0): RunLine[] => Array.from({ length: n }, (_, i) => handDown({ type, agentCalls: i < bad ? 2 : 1 }))
+  for (const type of ['review', 'writing']) {
+    expect(missRate({}, type, 'haiku'), `${type}: nothing seen`).toBeGreaterThanOrEqual(MISS_BLOCK)
+    expect(missRate(rates(hand(type, 1)), type, 'haiku'), `${type}: one good outcome`).toBeGreaterThanOrEqual(MISS_BLOCK)
+    expect(missRate(rates(hand(type, MISS_MIN)), type, 'haiku'), `${type}: five good outcomes, the prior is gone`).toBe(0)
+    expect(missRate(rates(hand(type, MISS_MIN, 2)), type, 'haiku'), `${type}: own rate`).toBe(0.4)
+  }
+  expect(missRate({}, 'search', 'haiku'), 'no prior for other work').toBe(0)
+  expect(missRate({}, 'review', 'opus'), 'no prior for other models').toBe(0)
+  expect(missMap({})).toEqual({ 'review:haiku': 0.5, 'writing:haiku': 0.5 })
+  // The report's counts are of real outcomes only.
+  expect(missRates([])).toEqual({})
+})

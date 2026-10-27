@@ -534,8 +534,20 @@ const capRaise = (target: Level, s: Situation) => {
   return levelRank(capped) > levelRank(s.level) ? capped : s.level
 }
 
+// A rated raise to a higher level for debugging is not taken from the rating alone on a Sonnet session:
+// the rater cannot tell a routine bug from a subtle one from the prompt, and a raise there bought no
+// passes. The session stays at its level (a lowering still goes through), and raising is left to stuck
+// detection (struggle.ts), which sees the turn go wrong.
+const DEBUG_HOLD_TIER: Tier = 'sonnet'
+function heldRating(r: Rating, s: Situation): Rating {
+  const own = r.fit[s.tier]
+  if (r.type !== 'debug' || s.tier !== DEBUG_HOLD_TIER || !own || levelRank(own) <= levelRank(s.level)) return r
+  return { ...r, level: levelRank(r.level) > levelRank(s.level) ? s.level : r.level, fit: { ...r.fit, [s.tier]: s.level } }
+}
+
 // The effort-only plan: lower or raise on the main model, or nothing.
-export function effortPlan(r: Rating, s: Situation, floor: Level): Plan {
+export function effortPlan(r0: Rating, s: Situation, floor: Level): Plan {
+  const r = heldRating(r0, s)
   const target = capRaise(clampFloor(r.level, floor), s)
   if (target === s.level) return { kind: 'none', why: 'the level in use fits' }
   if (levelRank(target) > levelRank(s.level)) return { kind: 'effort', dir: 'raise', level: target }
@@ -576,7 +588,8 @@ function reviewPlan(r: Rating, s: Situation, floor: Level): Plan | undefined {
 // would struggle, the cheapest stronger route that fits. Otherwise the cheapest
 // cheaper route, when it costs under the hand-off share of staying at the level
 // the work needs (a raise counted with its switch there and back); else an effort change.
-export function plan(r: Rating, s: Situation, floor: Level): Plan {
+export function plan(r0: Rating, s: Situation, floor: Level): Plan {
+  const r = heldRating(r0, s)
   // A subagent cannot see the person's approval, so it would refuse the work.
   if (r.approval) return effortPlan(r, s, floor)
   if (r.type === 'review') {

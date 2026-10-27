@@ -38,6 +38,8 @@ export type RunLine = {
   taken?: number
   stay?: number
   actual?: number
+  /** The model that rated the prompt: sonnet, or haiku (chosen in Rater, or the fallback). */
+  rater?: 'sonnet' | 'haiku'
   /** The rating call's cost. */
   overhead?: number
   /** An unrated line: why the rating did not come (timeout, unreadable answer, and so on). */

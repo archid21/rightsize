@@ -46,6 +46,7 @@ export const SETTINGS = {
   escalation: { title: 'Raise when stuck', options: ['on', 'off'], default: 'on' },
   stuck: { title: 'Stuck sensitivity', options: ['relaxed', 'normal', 'sensitive'], default: 'normal' },
   minWords: { title: 'Rate prompts from', options: ['3 words', '6 words', '10 words', '20 words'], default: '6 words' },
+  rater: { title: 'Rater', options: ['sonnet', 'haiku'], default: 'sonnet' },
   raterCheck: { title: 'Rater check', options: ['every 25', 'every 50', 'every 100', 'off'], default: 'every 50' },
   startTips: { title: 'Start suggestions', options: ['weekly', 'monthly', 'off'], default: 'weekly' },
   idleWarning: { title: 'Idle warning', options: ['over $0.10', 'over $0.50', 'over $1', 'off'], default: 'over $0.10' },

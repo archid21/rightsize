@@ -225,10 +225,20 @@
         "20 words"
       ]
     },
+    "rater": {
+      "type": "string",
+      "title": "Rater",
+      "description": "sonnet or haiku: the model that rates each prompt (and each subagent brief), at low effort. sonnet (default) reads prompts more reliably; haiku costs less per rating. With sonnet, a rating that times out, is refused or comes back unreadable is tried once more on Haiku; with haiku, a timeout or an unreadable answer is tried once more on Haiku.",
+      "default": "sonnet",
+      "options": [
+        "sonnet",
+        "haiku"
+      ]
+    },
     "raterCheck": {
       "type": "string",
       "title": "Rater check",
-      "description": "every 25, every 50 or every 100: on every that many rated prompts, ask Sonnet in the background to rate the same prompt, and log where it says a model would struggle that Haiku said does the work. These checks and the other outcomes give a miss rate per task type and model (see Pause after misses). Each check costs one Sonnet call and never delays the prompt. off: no checks (the other outcomes still count).",
+      "description": "every 25, every 50 or every 100: on every that many prompts rated by Haiku (Rater set to haiku, or Sonnet failed), ask Sonnet in the background to rate the same prompt, and log where it says a model would struggle that Haiku said does the work. These checks and the other outcomes give a miss rate per task type and model (see Pause after misses). Each check costs one Sonnet call and never delays the prompt. off: no checks (the other outcomes still count).",
       "default": "every 50",
       "options": [
         "every 25",

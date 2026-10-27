@@ -1,7 +1,7 @@
 import type { RightsizeLevel as Level, RightsizeTier as Tier } from '../types'
 import { TIERS, TIER_NAME, type Fit, isLevel, isTaskType, isTier, levelRank, needOn, tierRank, type Rating } from './cost'
 
-// The rating: one cheap Haiku call that reads the prompt (and the last reply,
+// The rating: one cheap call (Sonnet by default, Haiku as the fallback or by choice) that reads the prompt (and the last reply,
 // so "yes, go ahead" is rated as the task it continues) and returns JSON.
 
 export const ratingSystem = (tier: Tier, level: Level) => `You route one request for an AI coding assistant (Claude Code). It now runs on ${TIER_NAME[tier]} at ${level} effort. Models from weakest to strongest: haiku, sonnet, opus, fable.
@@ -17,6 +17,8 @@ fit, for each model: the lowest reasoning effort at which that model would do th
 - high: multi-file changes, debugging with an unknown cause, design choices with trade-offs, tests for real logic, careful reviews.
 - xhigh: large refactors, tricky concurrency or security work, hard algorithms, long multi-step plans.
 - max: the hardest problems only, where a wrong answer is costly and deep reasoning clearly pays off.
+
+Effort: routine debugging with a clear symptom does not need a higher level than the model's medium; raise the level for subtle bugs, hard reasoning or high stakes.
 
 A stronger model fits whatever a weaker one fits. Say "no" for the current model only when it is likely to struggle (hard reasoning, subtle bugs, high-stakes design). A cheaper model fits work that is clearly specified: haiku for finding, listing and lookups, mechanical edits across files, pulling out data, formatting, and coding against a clear spec or a failing test (small features, bug fixes with a known cause, refactors with a stated goal); sonnet for routine coding and writing that needs some judgement. Say "no" for haiku on open-ended review and hunting for subtle bugs, design with trade-offs, writing that is judged on style, and long requests where a key constraint comes last. When unsure whether a cheaper model fits work that is clearly specified, give it the level it needs; when the work is unclear or open-ended, say "no" for it.
 
@@ -71,17 +73,34 @@ function readFit(json: Record<string, unknown>, tier: Tier): Fit | undefined {
 // The reason keeps plain words only, so planted text (links, brackets, quotes) can't ride into a question.
 const plainWords = (s: string) => s.replace(/[^\p{L}\p{N} '-]/gu, ' ').replace(/\s+/g, ' ').trim()
 
+// Reads the reply as one JSON object. A model sometimes ends it badly: a stray `,"}` or `,"sonnet"}`
+// after the last field, or a comma before the closing brace. When the text does not parse, try once more
+// without that dangling end: cut the text after the last complete `"key":value` field (the end of a
+// value, then a comma) and close the object again. Nothing is guessed: no value is filled in, and a
+// reply that still does not parse is refused.
+function readJson(text: string): Record<string, unknown> | undefined {
+  const parse = (t: string) => {
+    try {
+      const v: unknown = JSON.parse(t)
+      return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined
+    } catch {
+      return undefined
+    }
+  }
+  const whole = parse(text)
+  if (whole) return whole
+  // Only an ending that is a comma, then at most one quoted fragment with no colon (so not a field), then the final brace.
+  const m = /^([\s\S]*[}\]"0-9el])\s*,\s*(?:"[^"{}[\]:,]*"?)?\s*\}$/.exec(text)
+  return m?.[1] !== undefined ? parse(`${m[1]}}`) : undefined
+}
+
 // Reads the rating's reply for a session on `tier`. Undefined when no model fits at any level.
 export function parseRating(raw: string, tier: Tier): Rating | undefined {
   const a = raw.indexOf('{')
   const b = raw.lastIndexOf('}')
   if (a < 0 || b <= a) return undefined
-  let json: Record<string, unknown>
-  try {
-    json = JSON.parse(raw.slice(a, b + 1)) as Record<string, unknown>
-  } catch {
-    return undefined
-  }
+  const json = readJson(raw.slice(a, b + 1))
+  if (!json) return undefined
   const fit = readFit(json, tier)
   if (!fit) return undefined
   const type = lower(json.type)

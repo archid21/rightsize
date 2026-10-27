@@ -113,7 +113,9 @@ import { type Change, type RunLine, type SwitchLine, type Windows, buildReport, 
 
 const NAME = 'rightsize'
 const CMD = 'rightsize'
-const RATER = 'haiku'
+/** The rater tried second, when the first is not available, and the one Rater row can pick first. */
+const FALLBACK_RATER = 'haiku'
+type Rater = 'sonnet' | 'haiku'
 const BRAIN_DUMP_WORDS = 120
 /** An auto-lowered turn steps back up from this step on. */
 const STEP_UP_AFTER = 5
@@ -267,6 +269,8 @@ type Run = {
   /** Calibrated estimates of the main-chat route and of the hand-off, as decided. */
   takenMain: number
   takenDelegate?: number
+  /** The model that rated the prompt. */
+  rater?: Rater
   /** The rating call's cost. */
   overhead: number
   agentCalls: number
@@ -343,7 +347,7 @@ let measureFrom = 0
 let declared: Readonly<Record<string, unknown>> = {}
 /** The highest effort rightsize raises to. */
 let ceiling: Level = 'max'
-/** Models rightsize sends no work to (Use Haiku, Use Fable off). The rater still runs on Haiku. */
+/** Models rightsize sends no work to (Use Haiku, Use Fable off). The rater is set apart: Rater picks it. */
 let without: Tier[] = []
 /** The miss rate at which hand-downs and lowering pause; null: never. */
 let missBlock: number | null = MISS_BLOCK
@@ -361,8 +365,10 @@ let paceNow: Pace = NORMAL_PACE
 let escalation = true
 /** Days between suggestions of a different starting model and level; null: off. */
 let startEvery: number | null = START_CHECK_DAYS.weekly
-/** Ask Sonnet for a second opinion on every this many ratings, in the background; null: off. */
+/** Ask Sonnet for a second opinion on every this many Haiku ratings, in the background; null: off. */
 let spotEvery: number | null = 50
+/** The model that rates first (Rater). The other one is the fallback. */
+let rater: Rater = 'sonnet'
 /** Send anonymous numbers to the rightsize author: off until the person says yes. */
 let sharing = false
 /** When this process last sent, or tried to: at most one send an hour. */
@@ -666,6 +672,7 @@ function writeSetting($: EngineInterface, key: SettingKey, value: string): Promi
     case 'escalation': return $.config.set({ key: 'rightsize.escalation', value: value })
     case 'stuck': return $.config.set({ key: 'rightsize.stuck', value: value })
     case 'minWords': return $.config.set({ key: 'rightsize.minWords', value: value })
+    case 'rater': return $.config.set({ key: 'rightsize.rater', value: value })
     case 'raterCheck': return $.config.set({ key: 'rightsize.raterCheck', value: value })
     case 'startTips': return $.config.set({ key: 'rightsize.startTips', value: value })
     case 'idleWarning': return $.config.set({ key: 'rightsize.idleWarning', value: value })
@@ -801,7 +808,7 @@ async function countTie($: EngineInterface) {
   await $.store.set(TIES_STORE, (await tiesSeen($)) + 1).catch(() => undefined)
 }
 
-async function rate($: EngineInterface, text: string, s: Situation): Promise<{ rating?: Rating; overhead: number; prompt: string; failed?: string }> {
+async function rate($: EngineInterface, text: string, s: Situation): Promise<{ rating?: Rating; overhead: number; prompt: string; by: Rater; failed?: string }> {
   let lastReply = ''
   try {
     const rows = await $.session.messages()
@@ -816,20 +823,37 @@ async function rate($: EngineInterface, text: string, s: Situation): Promise<{ r
     // Rated on the prompt alone.
   }
   const prompt = ratingPrompt(text, lastReply)
+  return { ...(await rateWithFallback($, s.tier, s.level, prompt)), prompt }
+}
+
+/**
+ * Rates a prompt: the chosen rater first. Sonnet (the default) that times out, is refused or answers
+ * something unreadable is followed by one Haiku attempt, and no more: two attempts at most, never a
+ * retry of each. Haiku chosen in Rater keeps its one retry after a timeout or an unreadable answer.
+ * `by` is the model whose call ended the rating: the one that rated, or the last that failed.
+ */
+async function rateWithFallback($: EngineInterface, tier: Tier, level: Level, prompt: string): Promise<{ rating?: Rating; overhead: number; by: Rater; failed?: string }> {
+  if (rater === 'sonnet') {
+    const first = await askRater($, 'sonnet', tier, level, prompt).catch((err): Awaited<ReturnType<typeof askRater>> => ({ overhead: 0, failed: `rating call threw: ${err instanceof Error ? err.message : String(err)}`, retry: false }))
+    if (first.rating) return { rating: first.rating, overhead: first.overhead, by: 'sonnet' }
+    await log($, `rating by sonnet failed (${first.failed ?? 'no rating'}): trying ${FALLBACK_RATER}`)
+    const second = await askRater($, FALLBACK_RATER, tier, level, prompt)
+    return { rating: second.rating, overhead: first.overhead + second.overhead, by: FALLBACK_RATER, ...(second.rating ? {} : { failed: second.failed ?? first.failed ?? 'no rating' }) }
+  }
   // A timeout or an answer that cannot be read may pass on a second try; a rater that is not there will not.
-  let first = await askRater($, s.tier, s.level, prompt)
+  let first = await askRater($, 'haiku', tier, level, prompt)
   let overhead = first.overhead
   if (!first.rating && first.retry) {
     await log($, `rating retried once: ${first.failed ?? 'no rating'}`)
-    first = await askRater($, s.tier, s.level, prompt)
+    first = await askRater($, 'haiku', tier, level, prompt)
     overhead += first.overhead
   }
-  return { rating: first.rating, overhead, prompt, ...(first.rating ? {} : { failed: first.failed ?? 'no rating' }) }
+  return { rating: first.rating, overhead, by: 'haiku', ...(first.rating ? {} : { failed: first.failed ?? 'no rating' }) }
 }
 
 // ---- Rater check -------------------------------------------------------------
 
-// Every 50th rating (Rater check sets it), Sonnet rates the same prompt in the background. Where it says a
+// Every 50th Haiku rating (Rater check sets it; only when Haiku rated: the Rater row picked it, or Sonnet failed), Sonnet rates the same prompt in the background. Where it says a
 // model would struggle that Haiku said does the work, Haiku missed (misses.ts). The
 // check never holds up the prompt, and its cost is logged as overhead.
 
@@ -876,9 +900,9 @@ async function spotCheck($: EngineInterface, session: string, tier: Tier, level:
 /** Why a rating did not come, and whether a second try may help (a timeout or an unreadable answer; not a rater that is unavailable). */
 type RaterFailure = { failed: string; retry: boolean }
 
-async function askRater($: EngineInterface, tier: Tier, level: Level, prompt: string): Promise<{ rating?: Rating; overhead: number } & Partial<RaterFailure>> {
+async function askRater($: EngineInterface, model: Rater, tier: Tier, level: Level, prompt: string): Promise<{ rating?: Rating; overhead: number } & Partial<RaterFailure>> {
   const r = await $.model.complete({
-    model: RATER,
+    model,
     system: ratingSystem(tier, level),
     prompt,
     maxTokens: 300,
@@ -886,9 +910,9 @@ async function askRater($: EngineInterface, tier: Tier, level: Level, prompt: st
     timeoutMs: 10_000,
   })
   const usage = (r as { usage?: Usage }).usage
-  const overhead = usage ? usageCost(prices, RATER, usage) : 0
+  const overhead = usage ? usageCost(prices, model, usage) : 0
   if (!r.isAnswered) {
-    await log($, `rating failed: ${r.reason}`)
+    await log($, `rating by ${model} failed: ${r.reason}`)
     // 'aborted' is the timeout; an API error with no status is a dropped connection or provider timeout. Any other
     // API error (a refusal, a missing login, a limit) says the rater is not available now.
     const timedOut = r.reason === 'aborted' || (r.reason === 'api-error' && r.status === null)
@@ -896,7 +920,7 @@ async function askRater($: EngineInterface, tier: Tier, level: Level, prompt: st
   }
   const rating = parseRating(r.text, tier)
   if (!rating) {
-    await log($, `rating unreadable: ${JSON.stringify(r.text.slice(0, 80))}`)
+    await log($, `rating by ${model} unreadable: ${JSON.stringify(r.text.slice(0, 80))}`)
     return { overhead, failed: 'rating unreadable', retry: true }
   }
   return { rating, overhead }
@@ -914,7 +938,7 @@ async function sizeSpawn($: EngineInterface, e: AgentSpawnInput, run: Run | null
   const s = await situation($)
   const parent = tierOf(e.parentModel) ?? s.tier
   if (parent === TIERS[0]) return undefined
-  const { rating: r, overhead } = await askRater($, parent, s.level, ratingPrompt(`${e.description}\n\n${e.prompt}`, ''))
+  const { rating: r, overhead } = await rateWithFallback($, parent, s.level, ratingPrompt(`${e.description}\n\n${e.prompt}`, ''))
   if (run) run.overhead += overhead
   if (!r) return undefined
   const size = sizeSubagent(r, { ...s, tier: parent }, parent, floor)
@@ -1297,6 +1321,7 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
       change: run.change,
       offered: run.offered,
       aborted,
+      ...(run.rater ? { rater: run.rater } : {}),
       overhead: round(run.overhead),
       missCost: round(run.missCost),
       agentCalls: run.agentCalls,
@@ -1821,6 +1846,9 @@ function applyOption(key: SettingKey) {
     case 'minWords':
       minWords = minWordsOf(v)
       return
+    case 'rater':
+      rater = v === 'haiku' ? 'haiku' : 'sonnet'
+      return
     case 'raterCheck':
       spotEvery = raterEvery(v)
       return
@@ -2072,7 +2100,7 @@ export const register: Register = (on, options) => {
       const set = { handOff: yours.has('handOff'), lower: yours.has('lowering') }
       const movedRules = pacedRules(base.rules ?? DEFAULT_RULES, paceNow, set)
       const s: Situation = { ...base, rules: movedRules }
-      const { rating: rated, overhead, prompt, failed } = await rate($, text, s)
+      const { rating: rated, overhead, prompt, failed, by } = await rate($, text, s)
       // A rating that continues the task is planned as the task's type; any other starts a task of its own type.
       const kept = rated ? await taskType($) : null
       const follows = rated !== undefined && rated.continues === true && kept !== null
@@ -2096,6 +2124,7 @@ export const register: Register = (on, options) => {
         if (d.delegate) out = { ...e, context: [...(e.context ?? []), delegateNote(d.delegate)] }
         run = startRun(r, s, d, p, (await seenEffort($)) ?? s.level, overhead)
         if (ratedType) run.ratedType = ratedType
+        run.rater = by
         // A close call the guide broke: kept on the run for the log, and counted so every fifth explores.
         if (planned.kind === 'delegate' && planned.tie) {
           run.tie = planned.tie
@@ -2112,14 +2141,15 @@ export const register: Register = (on, options) => {
         if (unfanned !== planned) await log($, `hand-off to ${planned.kind === 'delegate' ? planned.tier : '?'} skipped: a workflow ran this session`)
         const paced = paceNow.mode === 'normal' ? '' : `, ${paceNow.mode} pace on ${paceNow.window}${paceNow.pace === undefined ? '' : ` (${paceNow.pace.toFixed(2)})`}`
         await log($, `${r.type}${ratedType ? ` (rated ${ratedType}, continues the ${r.type} task)` : ''} on ${s.tier}/${s.level}${paced}: rated ${fit}, plan ${p.kind}${'dir' in p ? ` ${p.dir}` : ''}${run.tie ? ` (tie ${run.tie.by} over ${run.tie.over})` : ''}: ${did}`)
-        // Every 50th rating gets Sonnet's second opinion, in the background.
-        if (await dueCheck($)) void spotCheck($, sessionId, s.tier, s.level, prompt, r)
+        // Every 50th Haiku rating gets Sonnet's second opinion, in the background. A Sonnet rating is not checked
+        // (Sonnet would only be asked to agree with itself), and does not count toward the 50.
+        if (by === 'haiku' && (await dueCheck($))) void spotCheck($, sessionId, s.tier, s.level, prompt, r)
       } else {
         // No rating, even after a second try: the session stays as it is, the safe route. The log line says so, and carries
         // what the rating calls cost; /rightsize report counts the prompt as not counted, and the cost as overhead.
         const reason = failed ?? 'no rating'
         await log($, `prompt not rated (${reason}): kept ${s.level} on ${TIER_NAME[s.tier]}`)
-        const line: RunLine = { at: new Date().toISOString(), kind: 'unrated', session: sessionId, reason, overhead: round(overhead) }
+        const line: RunLine = { at: new Date().toISOString(), kind: 'unrated', session: sessionId, reason, rater: by, overhead: round(overhead) }
         await append($, 'rightsize-runs.jsonl', JSON.stringify(line), RUNS_LOG_MAX)
       }
     } catch (err) {

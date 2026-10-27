@@ -40,7 +40,9 @@ import {
   tieBand,
   type Calibration,
 } from './cost'
+import { missMap, missRates } from './misses'
 import { parseRating } from './rate'
+import type { RunLine } from './report'
 import { report } from './register'
 
 const rating = (over: Partial<Rating>): Rating => ({
@@ -273,8 +275,45 @@ test('a review on Fable is never handed below Opus, and Opus runs it at high or 
 })
 
 test('other work on Sonnet still stays on Sonnet when the rating says it fits', async () => {
-  const p = plan(rating({ type: 'debug', level: 'high', fit: { haiku: null, sonnet: 'high', opus: 'medium' }, read: 30_000, write: 2000, steps: 10 }), sonnetSession, 'low')
+  const p = plan(rating({ type: 'feature', level: 'high', fit: { haiku: null, sonnet: 'high', opus: 'medium' }, read: 30_000, write: 2000, steps: 10 }), sonnetSession, 'low')
   expect(p).toMatchObject({ kind: 'effort', dir: 'raise', level: 'high' })
+})
+
+test('on a Sonnet session a rated raise for debugging is not taken: the level stays, and stuck detection does the raising', async () => {
+  const debug = rating({ type: 'debug', level: 'high', fit: { haiku: null, sonnet: 'high', opus: 'medium' }, read: 30_000, write: 2000, steps: 10 })
+  expect(plan(debug, sonnetSession, 'low')).toMatchObject({ kind: 'none' })
+  expect(effortPlan(debug, sonnetSession, 'low'), 'the effort-only plan holds too').toMatchObject({ kind: 'none' })
+  // A rating that fits at the level in use, or lower, is as before: a lowering still goes through.
+  const easy = rating({ type: 'debug', level: 'low', fit: { haiku: null, sonnet: 'low', opus: 'low' }, read: 100_000, write: 5000, steps: 30 })
+  expect(effortPlan(easy, { ...sonnetSession, level: 'high', cal: freeSwitches }, 'low')).toMatchObject({ kind: 'effort', dir: 'lower', level: 'low' })
+  // Sonnet would struggle: the hand-up is not held back.
+  expect(plan(rating({ type: 'debug', level: 'high', fit: { haiku: null, sonnet: null, opus: 'high' }, read: 30_000, write: 2000, steps: 10 }), sonnetSession, 'low').kind).toBe('delegate')
+  // Another session model, or another task type, raises as the rating says.
+  expect(plan(rating({ type: 'debug', level: 'high', fit: { opus: 'high' }, read: 30_000, write: 2000, steps: 10 }), opus, 'low')).toMatchObject({ kind: 'effort', dir: 'raise', level: 'high' })
+})
+
+// ---- cold-start priors: Haiku on review and writing ----
+
+const lines = (n: number, miss: boolean, type: string): RunLine[] =>
+  Array.from({ length: n }, () => ({ at: new Date().toISOString(), kind: 'run' as const, type, route: 'delegate:haiku', tier: 'opus', change: 'delegate-down' as const, agentCalls: miss ? 2 : 1 }))
+const misses = (ls: RunLine[]) => missMap(missRates(ls))
+const bulkyWriting = rating({ type: 'writing', level: 'low', fit: { haiku: 'low', sonnet: 'low', opus: 'low' }, read: 150_000, write: 3000, steps: 30 })
+
+test("Haiku's fit on writing is not acted on with no outcomes yet, and is once the person's own outcomes are good", async () => {
+  const control = plan({ ...bulkyWriting, type: 'search' }, { ...opus, misses: misses([]) }, 'low')
+  expect(control, 'the same work as a search is handed down').toMatchObject({ kind: 'delegate', dir: 'down', tier: 'haiku' })
+  expect(plan(bulkyWriting, { ...opus, misses: misses([]) }, 'low').kind, 'no outcomes: the prior holds it back').not.toBe('delegate')
+  expect(plan(bulkyWriting, { ...opus, misses: misses(lines(2, false, 'writing')) }, 'low').kind, 'two good outcomes do not clear it').not.toBe('delegate')
+  expect(plan(bulkyWriting, { ...opus, misses: misses(lines(5, false, 'writing')) }, 'low')).toMatchObject({ kind: 'delegate', dir: 'down', tier: 'haiku' })
+  expect(plan(bulkyWriting, { ...opus, misses: misses(lines(5, true, 'writing')) }, 'low').kind, 'five bad ones keep it held').not.toBe('delegate')
+  expect(plan(bulkyWriting, { ...opus, misses: misses([]), missBlock: null }, 'low'), 'Pause after misses off: the prior pauses nothing').toMatchObject({ kind: 'delegate', dir: 'down' })
+})
+
+test("Haiku's fit on a review is not acted on as a subagent with no outcomes yet, and is once the outcomes are good", async () => {
+  const r = rating({ type: 'review', level: 'low', fit: { haiku: 'low', sonnet: 'low', opus: 'low' }, read: 60_000, write: 2000, steps: 20 })
+  expect(sizeSubagent(r, { ...opus, misses: misses([]) }, 'opus', 'low')?.tier, 'held by the prior: Sonnet, not Haiku').toBe('sonnet')
+  expect(sizeSubagent(r, { ...opus, misses: misses(lines(5, false, 'review')) }, 'opus', 'low')?.tier).toBe('haiku')
+  expect(sizeSubagent({ ...r, type: 'search' }, { ...opus, misses: misses([]) }, 'opus', 'low')?.tier, 'search has no prior').toBe('haiku')
 })
 
 test('calibration moves estimates toward what runs really cost', async () => {

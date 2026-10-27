@@ -78,7 +78,7 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
     /** Percent each main request adds to every rate-limit window. */
     windowStep: 0,
     ratingUsage: {} as Record<string, number>,
-    /** Every model.complete call's model, in order: the rater is haiku, the spot-check sonnet. */
+    /** Every model.complete call's model, in order: the rater is sonnet (haiku as the fallback or when Rater says so), the spot-check sonnet. */
     completions: [] as string[],
     /** What the spot-check answers; the rating's own reply when unset. */
     checkRating: undefined as string | undefined,
@@ -190,7 +190,8 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
   on('model.complete', async (_$, e) => {
     const model = String((e as { model?: unknown }).model ?? '')
     h.completions.push(model)
-    if (model === 'sonnet') {
+    // The spot-check is the only call with a 15 s timeout; a Sonnet rating call has 10 s, like Haiku's.
+    if (model === 'sonnet' && (e as { timeoutMs?: number }).timeoutMs === 15_000) {
       if (h.checkHold) await h.checkHold
       if (h.ledger !== undefined) h.ledger += h.checkCost
       return { value: { isAnswered: true, text: h.checkRating ?? h.rating, usage: h.checkUsage } } as never
@@ -1776,7 +1777,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(first?.kind).toBe('run')
     expect(first?.session).toBe('sess-1')
     expect(first?.change).toBe('none')
-    expect(first?.overhead, '1000 in and 100 out on Haiku').toBe(0.00015)
+    expect(first?.overhead, '1000 in and 100 out on Sonnet, the rater').toBe(0.003)
     expect((first as { normal?: string; context?: number })?.normal, 'the session level, for the starting-point check').toBe('medium')
     expect(typeof (first as { context?: number })?.context).toBe('number')
     expect(first?.before).toEqual({ five_hour: 11 })
@@ -1795,7 +1796,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.rating = 'no json here'
     await d.submit(LOOKUP)
     expect(last(runs())?.kind).toBe('unrated')
-    expect(last(runs())?.overhead, 'both rating calls, 1000 in and 100 out each').toBe(0.0003)
+    expect(last(runs())?.overhead, 'Sonnet\'s call and the Haiku fallback\'s, 1000 in and 100 out each').toBe(0.00315)
 
     const report = (await d.command('report')).text ?? ''
     expect(cellsOf(report, 'Prompts rated')).toEqual(['2', '2', '2'])
@@ -1910,8 +1911,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
       .map(l => JSON.parse(l) as Record<string, unknown>)
   const SONNET_USAGE = { input_tokens: 1_000_000, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
 
-  test(`the 50th rated prompt gets Sonnet's second opinion in the background, logged as a check line (${surface})`, { timeoutMs: 60000 }, async ($, on) => {
-    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES } })
+  test(`the 50th Haiku-rated prompt gets Sonnet's second opinion in the background, logged as a check line (${surface})`, { timeoutMs: 60000, options: { rater: 'haiku' } }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES }, stored: { rater: 'haiku' } })
     const d = drive($, h)
     h.now = Date.now()
     await d.start(surface)
@@ -1952,8 +1953,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(report, 'a check line is not a prompt').toContain('Nothing rated yet.')
   })
 
-  test(`a check that lands during a turn is left out of that turn's cost (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES, spotChecks: 49 } })
+  test(`a check that lands during a turn is left out of that turn's cost (${surface})`, { timeoutMs: 30000, options: { rater: 'haiku' } }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES, spotChecks: 49 }, stored: { rater: 'haiku' } })
     const d = drive($, h)
     h.now = Date.now()
     await d.start(surface)
@@ -1975,8 +1976,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect((lines.find(l => l.kind === 'run') as { actual: number }).actual, "the turn's own cost: one step").toBe(0.01)
   })
 
-  test(`Rater check off in /config: no second opinion, and the count does not move (${surface})`, { timeoutMs: 30000, options: { raterCheck: 'off' } }, async ($, on) => {
-    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { spotChecks: 49 }, stored: { raterCheck: 'off' } })
+  test(`Rater check off in /config: no second opinion, and the count does not move (${surface})`, { timeoutMs: 30000, options: { raterCheck: 'off', rater: 'haiku' } }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { spotChecks: 49 }, stored: { raterCheck: 'off', rater: 'haiku' } })
     const d = drive($, h)
     await d.start(surface)
     h.rating = FIT_NO
@@ -1993,8 +1994,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect((await d.command('')).text ?? '').toContain('Rater check: every 50')
   })
 
-  test(`Rater check turned off in /config stops the second opinions (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { spotChecks: 49 } })
+  test(`Rater check turned off in /config stops the second opinions (${surface})`, { timeoutMs: 30000, options: { rater: 'haiku' } }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { spotChecks: 49 }, stored: { rater: 'haiku' } })
     const d = drive($, h)
     await d.start(surface)
     h.rating = FIT_NO
@@ -2003,8 +2004,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.completions.filter(m => m === 'sonnet')).toEqual([])
   })
 
-  test(`a check that fails or cannot be read adds no check line, only its cost (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { spotChecks: 49 } })
+  test(`a check that fails or cannot be read adds no check line, only its cost (${surface})`, { timeoutMs: 30000, options: { rater: 'haiku' } }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { spotChecks: 49 }, stored: { rater: 'haiku' } })
     const d = drive($, h)
     await d.start(surface)
     h.rating = FIT_NO
@@ -2014,6 +2015,99 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await flush()
     expect(runLines(h).map(l => l.kind)).toEqual(['overhead'])
     expect((runLines(h)[0] as { overhead: number }).overhead).toBe(2)
+  })
+
+  test(`Sonnet rates first; a Sonnet rating is not spot-checked and does not count toward the check (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { spotChecks: 49 } })
+    const d = drive($, h)
+    h.now = Date.now()
+    await d.start(surface)
+    h.rating = FIT_NO
+    await d.submit(LOOKUP)
+    await flush()
+    expect(h.completions, 'one call, to Sonnet: no Haiku, and no check').toEqual(['sonnet'])
+    expect(h.store.spotChecks, 'not counted').toBe(49)
+    await d.step('t1')
+    await d.complete('t1')
+    expect(runLines(h).find(l => l.kind === 'run')?.rater, 'the run line says who rated').toBe('sonnet')
+  })
+
+  test(`a Sonnet rating that times out, is refused or is unreadable falls back to Haiku once; both failing logs the prompt unrated (${surface})`, { timeoutMs: 60000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    const d = drive($, h)
+    h.now = Date.now()
+    // Sonnet and Haiku are priced apart: 1M input tokens each.
+    h.ratingUsage = SONNET_USAGE
+    await d.start(surface)
+    h.rating = FIT_NO
+    for (const [n, queue] of [['timeout', ['timeout']], ['refused', ['unavailable']], ['unreadable', ['no json']]] as const) {
+      h.completions = []
+      h.ratingQueue = [...queue]
+      await d.submit(`${LOOKUP} ${n}`)
+      expect(h.completions, `${n}: Sonnet, then Haiku once`).toEqual(['sonnet', 'haiku'])
+      expect(h.ratingQueue).toEqual([])
+      const t = `t-${n}`
+      await d.step(t)
+      await d.complete(t)
+      const run = last(runLines(h).filter(l => l.kind === 'run')) as { rater: string; overhead: number }
+      expect(run.rater, `${n}: Haiku rated`).toBe('haiku')
+      expect(run.overhead, `${n}: each call priced with its own model: 1M tokens on Sonnet plus 1M on Haiku`).toBe(2.1)
+    }
+    expect(runLines(h).some(l => l.kind === 'unrated')).toBe(false)
+
+    // Both fail: unrated, the session as it was, no third call.
+    h.completions = []
+    h.ratingQueue = ['timeout', 'no json']
+    await d.submit(`${LOOKUP} both`)
+    expect(h.completions).toEqual(['sonnet', 'haiku'])
+    const unrated = runLines(h).filter(l => l.kind === 'unrated')
+    expect(unrated).toEqual([{ at: expect.any(String), kind: 'unrated', session: 'sess-1', reason: 'rating unreadable', rater: 'haiku', overhead: 2.1 }])
+    expect(h.files[LOG_FILE] ?? '').toContain('prompt not rated (rating unreadable)')
+    expect(h.files[LOG_FILE] ?? '').toContain('rating by sonnet failed (rating call timed out): trying haiku')
+  })
+
+  test(`a Haiku rating after a Sonnet failure counts toward the spot-check, and one check is asked (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { spotChecks: 49 } })
+    const d = drive($, h)
+    h.now = Date.now()
+    await d.start(surface)
+    h.rating = FIT_NO
+    h.checkRating = CHECK_NO
+    h.ratingQueue = ['timeout']
+    await d.submit(LOOKUP)
+    await flush()
+    expect(h.completions, 'Sonnet failed, Haiku rated, Sonnet checked').toEqual(['sonnet', 'haiku', 'sonnet'])
+    expect(h.store.spotChecks).toBe(50)
+    expect(runLines(h).some(l => l.kind === 'check')).toBe(true)
+  })
+
+  test(`Rater set to haiku rates with Haiku, retries a timeout once on Haiku, and never calls Sonnet to rate (${surface})`, { timeoutMs: 30000, options: { rater: 'haiku' } }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', stored: { rater: 'haiku' } })
+    const d = drive($, h)
+    await d.start(surface)
+    h.rating = FIT_NO
+    h.ratingQueue = ['timeout']
+    await d.submit(LOOKUP)
+    expect(h.completions).toEqual(['haiku', 'haiku'])
+    h.completions = []
+    h.ratingQueue = ['unavailable']
+    await d.submit(LOOKUP)
+    expect(h.completions, 'a refused rater is not asked again').toEqual(['haiku'])
+    expect((await d.command('')).text ?? '').toContain('Rater: haiku')
+  })
+
+  test(`on a Sonnet session a debug rating at high does not raise effort, and stuck detection still can (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-sonnet-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES, ...AUTO_RAISE } })
+    const d = drive($, h)
+    await d.start(surface)
+    h.rating = '{"fit":{"haiku":"no","sonnet":"high","opus":"medium","fable":"medium"},"type":"debug","read":20000,"write":3000,"steps":8,"reason":"unknown cause"}'
+    await d.submit(DEBUG)
+    await d.step('t1', 0)
+    expect(last(h.sent)?.effort, 'the rating alone does not raise').toBe('medium')
+    await d.bash('fail npm test')
+    await d.bash('fail npm test')
+    await d.step('t1', 1)
+    expect(last(h.sent)?.effort, 'the same call failing twice raises it').toBe('high')
   })
 
   // 👍 and 👎: a hand-off's result and an automatic lowering can be marked, on this machine only.
@@ -2362,10 +2456,24 @@ for (const surface of ['desktop', 'terminal'] as const) {
       def: 0,
     },
     {
+      key: 'rater',
+      value: 'haiku',
+      start: OPUS,
+      see: async c => {
+        c.h.rating = NO_CHANGE
+        await c.d.submit(LOOKUP)
+        return c.h.completions[0]
+      },
+      set: 'haiku',
+      def: 'sonnet',
+    },
+    {
       key: 'raterCheck',
       value: 'every 25',
       start: { ...OPUS, store: { spotChecks: 24 } },
       see: async c => {
+        // Only Haiku's ratings are checked.
+        await c.d.config('rater', 'haiku')
         c.h.rating = FIT_NO
         await c.d.submit(LOOKUP)
         await flush()
@@ -2975,14 +3083,14 @@ for (const surface of ['desktop', 'terminal'] as const) {
     })
   }
 
-  test(`Use Haiku off: no hand-off and no resized subagent goes to Haiku, and Haiku still rates the prompts (${surface})`, { timeoutMs: 30000, options: { useHaiku: 'off' } }, async ($, on) => {
+  test(`Use Haiku off: no hand-off and no resized subagent goes to Haiku, and the rater is not a worker (${surface})`, { timeoutMs: 30000, options: { useHaiku: 'off' } }, async ($, on) => {
     const h = engine(on, { ...OPUS, stored: { useHaiku: 'off' } })
     const d = drive($, h)
     await d.start(surface)
     h.rating = NO_CHANGE
     await d.submit(SEARCH)
     await d.step('t1', 0)
-    expect(h.completions, 'the rater is Haiku, not a worker').toContain('haiku')
+    expect(h.completions, 'the rater is Sonnet, not a worker').toEqual(['sonnet'])
     h.rating = LISTING
     await d.spawn('lister')
     expect(h.spawned[0]?.model, "Claude's subagent goes to Sonnet instead").toBe('sonnet')
@@ -3785,7 +3893,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect((await firstPrompt(h, d, 't1'))?.context, 'a fresh session').toBe(20_000)
   })
 
-  test(`a rating that times out is tried once more; if it still fails the prompt is logged as unrated and the session is left as it was (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`a rating that times out falls back to Haiku; if that fails too the prompt is logged as unrated and the session is left as it was (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
     const d = drive($, h)
     h.ratingUsage = { input_tokens: 1000, output_tokens: 100, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
@@ -3817,7 +3925,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(last(h.sent)?.model, 'model as the session has it').toBe('claude-opus-5-5')
     await d.complete('t2')
     const unrated = runLines(h).filter(l => l.kind === 'unrated')
-    expect(unrated).toEqual([{ at: expect.any(String), kind: 'unrated', session: 'sess-1', reason: 'rating call timed out', overhead: 0.0003 }])
+    expect(unrated).toEqual([{ at: expect.any(String), kind: 'unrated', session: 'sess-1', reason: 'rating call timed out', rater: 'haiku', overhead: 0.00315 }])
     expect(h.files[LOG_FILE] ?? '').toContain('prompt not rated (rating call timed out)')
 
     // An answer that cannot be read is tried again the same way.
@@ -3829,11 +3937,11 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t3')
     await d.complete('t3')
 
-    // A rater that is not available is not asked again.
-    h.ratingQueue = ['unavailable']
+    // A rater that is not available is not asked again by itself; Sonnet's refusal still tries Haiku once.
+    h.ratingQueue = ['unavailable', 'unavailable']
     const asked = h.ratings
     await d.submit(LOOKUP)
-    expect(h.ratings - asked, 'one call').toBe(1)
+    expect(h.ratings - asked, 'Sonnet, then Haiku').toBe(2)
     expect(runLines(h).filter(l => l.kind === 'unrated').at(-1)?.reason).toBe('rating call failed (status 401)')
 
     // The report counts them as not counted, with a plain reason.

@@ -60,7 +60,7 @@ import {
   CAL_STORE,
 } from './cost'
 import { PRICING_URL, applyPrices, diffPrices, isDue, parsePricingPage } from './prices'
-import { missCounts, missMap, missRates } from './misses'
+import { missCounts, missMap, pauseRates } from './misses'
 import { SHARE_ASK_AFTER, SHARE_EVERY_MS, SHARE_URL, newInstall, nextBatch } from './share'
 import { START_CHECK_DAYS, START_SNOOZE_DAYS, adviseStart, startBlock, startKey, startTip } from './start'
 import {
@@ -593,15 +593,34 @@ async function pruneSessions($: EngineInterface) {
   }
 }
 
-// Scores the rater again from the last 30 days of the run log (misses.ts).
-async function refreshMisses($: EngineInterface) {
+// The routes whose first automatic miss was forgiven, across sessions (misses.ts pauseRates): each is forgiven once, ever.
+const FORGIVEN_STORE = 'forgivenRoutes'
+
+async function forgivenSeen($: EngineInterface): Promise<string[]> {
+  const v = await $.store.get(FORGIVEN_STORE).catch(() => undefined)
+  return Array.isArray(v) && v.every(x => typeof x === 'string') ? v : []
+}
+
+// Scores the rater again from the last 30 days of the run log (misses.ts). With `announce`, a forgiven miss
+// also shows in the band: the turn that had it is the one that just ended.
+async function refreshMisses($: EngineInterface, announce = false) {
   try {
     const now = await $.clock.now()
     runLog = runLog.filter(l => now - Date.parse(l.at) <= MISS_WINDOW_DAYS * 24 * 60 * 60_000)
     // Lines from before Cost measurement was restarted teach nothing.
     const measured = runLog.filter(l => Date.parse(l.at) >= measureFrom)
-    misses = missMap(missRates(measured))
+    const { rates, forgiven } = pauseRates(measured, new Set(await forgivenSeen($)))
+    misses = missMap(rates)
     counts = missCounts(measured)
+    if (!forgiven.length) return
+    // Read again just before writing, so the routes another session forgave are kept.
+    await $.store.set(FORGIVEN_STORE, [...new Set([...(await forgivenSeen($)), ...forgiven])]).catch(() => undefined)
+    const routes = forgiven.map(key => key.split(':') as [TaskType, Tier])
+    for (const [type, tier] of routes) await log($, `forgave the first miss on ${type} on ${TIER_NAME[tier]}: the next miss counts`)
+    if (announce) {
+      bandNote = routes.map(([type, tier]) => `${TIER_NAME[tier]} missed once on ${type} work; that one is forgiven, and the next miss pauses it.`).join(' ')
+      await setBand($, { text: bandNote, acted: true })
+    }
   } catch {
     // The old rates stand.
   }
@@ -611,7 +630,7 @@ async function refreshMisses($: EngineInterface) {
 async function appendRun($: EngineInterface, line: RunLine) {
   await append($, 'runs.jsonl', JSON.stringify(line), RUNS_LOG_MAX)
   runLog.push(line)
-  await refreshMisses($)
+  await refreshMisses($, true)
 }
 
 // ---- Prices ----------------------------------------------------------------
@@ -1286,7 +1305,10 @@ const BAND_MODE = { plugin: 'rightsize', key: 'bandMode' } as const
 
 const isBandMode = (v: unknown): v is BandMode => v === 'when it acts' || v === 'always' || v === 'off'
 
-const setBand = ($: EngineInterface, band: Band | null) => $.state.set(BAND, band).catch(() => undefined)
+/** A line every band of this turn carries, so a later band (a hand-off's result) does not hide it: a miss just forgiven. */
+let bandNote: string | null = null
+const setBand = ($: EngineInterface, band: Band | null) =>
+  $.state.set(BAND, band && bandNote && !band.text.includes(bandNote) ? { ...band, text: `${band.text} ${bandNote}` } : band).catch(() => undefined)
 
 async function setBandMode($: EngineInterface, v: BandMode) {
   bandMode = v
@@ -2444,6 +2466,7 @@ export const register: Register = (on, options) => {
   on('prompt.submit', async ($, e, next) => {
     if (off || !fromPerson(e) || e.command || e.isMeta) return next(e)
     // A new prompt replaces the last one's band.
+    bandNote = null
     await setBand($, null)
     const text = e.text.trim()
     if (skipOnce !== null && text === skipOnce) {

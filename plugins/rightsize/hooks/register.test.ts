@@ -3137,7 +3137,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
   for (const row of [
     { name: 'Pause after misses off: 50% wrong pauses nothing, and the report says no pause', pause: 'off', steppedUp: 3, effort: 'low', paused: false },
-    { name: 'at 50%: exactly 50% wrong pauses, and the report says so', pause: '50%', steppedUp: 3, effort: 'medium', paused: true },
+    { name: 'at 50%: 4 of 6 wrong pauses (the first miss forgiven: 3 of 5, 60%), and the report says so', pause: '50%', steppedUp: 4, effort: 'medium', paused: true },
     { name: 'at 50%: 33% wrong does not pause', pause: '50%', steppedUp: 2, effort: 'low', paused: false },
     { name: 'at 20%: 33% wrong pauses', pause: '20%', steppedUp: 2, effort: 'medium', paused: true },
   ]) {
@@ -4892,10 +4892,10 @@ for (const surface of ['desktop', 'terminal'] as const) {
   // prior worth 10 tasks at 0% misses; each logged task takes the place of one of them.
   for (const [what, n, missed, to] of [
     ['9 logged tasks, none missed: allowed, the research prior fills the tenth', 9, 0, 'haiku'],
-    ['5 logged tasks, 1 missed (10% with the prior): refused', 5, 1, undefined],
+    ['5 logged tasks, 2 missed (the first forgiven: 1 in 4, 10% with the prior): refused', 5, 2, undefined],
     ['10 logged tasks, none missed: allowed', 10, 0, 'haiku'],
-    ['10 logged tasks, 1 missed (10%): refused', 10, 1, undefined],
-    ['11 logged tasks, 1 missed (9%): allowed', 11, 1, 'haiku'],
+    ['10 logged tasks, 2 missed (the first forgiven: 1 in 9, 10%): refused', 10, 2, undefined],
+    ['11 logged tasks, 1 missed, forgiven: allowed', 11, 1, 'haiku'],
   ] as const) {
     test(`Quality, ${what} (${surface})`, { timeoutMs: 30000, options: inProfile('Quality', { handOff: '90%' }).options }, async ($, on) => {
       const h = engine(on, { ...OPUS, store: SEND, stored: inProfile('Quality', { handOff: '90%' }).stored })
@@ -4909,24 +4909,66 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await nearHandOff($, h, drive($, h))).toBe('haiku')
   })
 
+  // The first automatic miss on a route is forgiven once, ever: 1 miss in 5 counts as 0 of 4, and the log says so.
+  test(`Quality forgives the first miss on search: 1 miss in 5 still hands search to Haiku, and the log says so (${surface})`, { timeoutMs: 30000, options: inProfile('Quality', { handOff: '90%' }).options }, async ($, on) => {
+    const h = engine(on, { ...OPUS, store: SEND, stored: inProfile('Quality', { handOff: '90%' }).stored })
+    h.files[RUNS] = haikuLog(h, 5, 1)
+    expect(await nearHandOff($, h, drive($, h))).toBe('haiku')
+    expect(h.files[LOG_PATH] ?? '', 'the log says the first miss was forgiven').toContain('forgave the first miss on search')
+  })
+
+  test(`a miss forgiven on a hand-off turn is shown on the band beside the hand-off's result (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: HELPERS })
+    const d = drive($, h)
+    // The log's times are the wall clock's: the 30-day window counts from now.
+    h.now = Date.now()
+    await d.start(surface)
+    await warm(d, h)
+    h.rating = HAND_OFF()
+    await startHelper(d, h, 't1', 'helper')
+    // The main chat starts a second subagent on Haiku: rework, so the hand-down was a miss.
+    await d.agent('haiku')
+    await d.complete('t1')
+    const text = await bandText($, surface)
+    expect(text, 'the hand-off result').toContain('Sent to Haiku')
+    expect(text, 'and the forgiven miss').toContain('Haiku missed once on search work; that one is forgiven, and the next miss pauses it.')
+    // The next prompt's band starts clean.
+    h.rating = NO_CHANGE
+    await d.submit(LOOKUP)
+    expect(await bandText($, surface)).not.toContain('missed once')
+  })
+
+  test(`Quality: 2 misses in 5 pauses search, the first of them forgiven (${surface})`, { timeoutMs: 30000, options: inProfile('Quality', { handOff: '90%' }).options }, async ($, on) => {
+    const h = engine(on, { ...OPUS, store: SEND, stored: inProfile('Quality', { handOff: '90%' }).stored })
+    h.files[RUNS] = haikuLog(h, 5, 2)
+    expect(await nearHandOff($, h, drive($, h))).toBeUndefined()
+  })
+
+  test(`Quality: a route that already used its forgiveness pauses on its first miss (${surface})`, { timeoutMs: 30000, options: inProfile('Quality', { handOff: '90%' }).options }, async ($, on) => {
+    const h = engine(on, { ...OPUS, store: { ...SEND, forgivenRoutes: ['search:haiku'] }, stored: inProfile('Quality', { handOff: '90%' }).stored })
+    h.files[RUNS] = haikuLog(h, 5, 1)
+    expect(await nearHandOff($, h, drive($, h))).toBeUndefined()
+    expect(h.files[LOG_PATH] ?? '', 'nothing is forgiven again').not.toContain('forgave the first miss')
+  })
+
   test(`Pause after misses you set replaces the whole evidence rule, Quality's 10 logged tasks too (${surface})`, { timeoutMs: 30000, options: inProfile('Quality', { handOff: '90%', missPause: '50%' }).options }, async ($, on) => {
     const h = engine(on, { ...OPUS, store: SEND, stored: inProfile('Quality', { handOff: '90%', missPause: '50%' }).stored })
     expect(await nearHandOff($, h, drive($, h)), 'no tasks logged, and the row says 50%').toBe('haiku')
   })
 
   // The miss pause: Balanced pauses a kind of work at 20% misses, Economy at 30%. With 10 logged tasks the research
-  // prior is gone, so 2 misses in 10 is 20%.
+  // prior is gone. The first miss is forgiven, so 3 misses in 10 is 2 in 9: 20%.
   for (const [profile, to] of [['Balanced', undefined], ['Economy', 'haiku']] as const) {
     test(`${profile} at 20% misses hands off to ${to ?? 'no one'} (${surface})`, { timeoutMs: 30000, options: inProfile(profile, profile === 'Balanced' ? { handOff: '90%' } : {}).options }, async ($, on) => {
       const h = engine(on, { ...OPUS, store: SEND, stored: inProfile(profile, profile === 'Balanced' ? { handOff: '90%' } : {}).stored })
-      h.files[RUNS] = haikuLog(h, 10, 2)
+      h.files[RUNS] = haikuLog(h, 10, 3)
       expect(await nearHandOff($, h, drive($, h))).toBe(to)
     })
   }
 
-  test(`Economy pauses at 30% misses: 3 in 10 is paused, and early misses are softened by the prior (${surface})`, { timeoutMs: 30000, options: inProfile('Economy').options }, async ($, on) => {
+  test(`Economy pauses at 30% misses: 4 in 10 (the first forgiven: 3 in 9) is paused, and early misses are softened by the prior (${surface})`, { timeoutMs: 30000, options: inProfile('Economy').options }, async ($, on) => {
     const h = engine(on, { ...OPUS, store: SEND, stored: inProfile('Economy').stored })
-    h.files[RUNS] = haikuLog(h, 10, 3)
+    h.files[RUNS] = haikuLog(h, 10, 4)
     expect(await nearHandOff($, h, drive($, h))).toBeUndefined()
   })
 

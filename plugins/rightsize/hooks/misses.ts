@@ -48,8 +48,8 @@ const delegateTier = (l: RunLine) => {
 }
 
 type Outcome = { type: TaskType; tier: Tier; miss: boolean }
-/** An outcome and the task it belongs to: a run's task (its own id before 0.8), a feedback's run's; a check is a task of its own. */
-type Counted = [Outcome, string]
+/** An outcome, the task it belongs to (a run's task, its own id before 0.8; a feedback's run's; a check is a task of its own), and where it came from. */
+type Counted = [Outcome, string, 'auto' | 'verdict']
 
 /** The model a run's work ran on: a hand-off's subagent, else the main chat. */
 const workedOn = (l: RunLine) => delegateTier(l) ?? (isTier(l.tier) ? l.tier : undefined)
@@ -107,19 +107,19 @@ function counted(lines: readonly RunLine[]): Counted[] {
     const kind = l.kind ?? 'run'
     if (kind === 'run') {
       const o = ofRun(l)
-      if (o) out.push([o, taskOf(l, i)])
+      if (o) out.push([o, taskOf(l, i), 'auto'])
       if (l.id) runs.set(l.id, l)
     } else if (kind === 'feedback') {
       // A person who changed their mind is counted once, on the last verdict.
       if (l.ref && (l.value === 'up' || l.value === 'down')) verdicts.set(l.ref, l.value)
     } else if (kind === 'check') {
-      for (const o of ofCheck(l)) out.push([o, `check ${i}`])
+      for (const o of ofCheck(l)) out.push([o, `check ${i}`, 'auto'])
     }
   })
   for (const [ref, value] of verdicts) {
     const run = runs.get(ref)
     const tier = run ? workedOn(run) : undefined
-    if (run && tier && isTaskType(run.type)) out.push([{ type: run.type, tier, miss: value === 'down' }, run.task ?? ref])
+    if (run && tier && isTaskType(run.type)) out.push([{ type: run.type, tier, miss: value === 'down' }, run.task ?? ref, 'verdict'])
   }
   return out
 }
@@ -136,6 +136,26 @@ export function missRates(lines: readonly RunLine[]): Rates {
     if (o.miss) e.misses += 1
   }
   return rates
+}
+
+/**
+ * The rates the pause decision uses: as missRates, but the first automatic miss on each route not in `used` is
+ * forgiven (left out). A person's 👎 is never forgiven. `forgiven` lists the routes whose forgiveness this call used.
+ */
+export function pauseRates(lines: readonly RunLine[], used: ReadonlySet<string>): { rates: Rates; forgiven: string[] } {
+  const rates: Rates = {}
+  const forgiven: string[] = []
+  for (const [o, , source] of counted(lines)) {
+    const key = missKey(o.type, o.tier)
+    if (o.miss && source === 'auto' && !used.has(key) && !forgiven.includes(key)) {
+      forgiven.push(key)
+      continue
+    }
+    const e = (rates[key] ??= { n: 0, misses: 0 })
+    e.n += 1
+    if (o.miss) e.misses += 1
+  }
+  return { rates, forgiven }
 }
 
 /**

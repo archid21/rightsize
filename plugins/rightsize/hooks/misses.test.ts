@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import { MISS_BLOCK } from './cost'
-import { MISS_MIN, PRIOR_N, RESEARCH_PRIORS, checkTotals, missCounts, missMap, missRate, missRates, missTotals, outcomes } from './misses'
+import { MISS_MIN, PRIOR_N, RESEARCH_PRIORS, checkTotals, missCounts, missMap, missRate, missRates, missTotals, outcomes, pauseRates } from './misses'
 import type { RunLine } from './report'
 
 const at = new Date(Date.parse('2026-10-23T18:00:00.000Z')).toISOString()
@@ -132,4 +132,24 @@ test('tasks are counted once each, and a research prior counts as ten', async ()
   ]
   expect(missCounts(lines)['extract:haiku'], 'two tasks, four outcomes').toBe(2)
   expect(missCounts(Array.from({ length: 12 }, (_, i) => handDown({ id: `r${i}`, task: `t${i}` })))['search:haiku'], 'real tasks past the prior').toBe(12)
+})
+
+test('the first automatic miss on a route is forgiven once; a 👎 never is', async () => {
+  const rework = (x: Partial<RunLine> = {}) => handDown({ type: 'extract', ...x })
+  const hit = () => rework()
+  const none = new Set<string>()
+  const one = [rework({ agentCalls: 2 }), hit(), hit(), hit(), hit()]
+  expect(pauseRates(one, none).rates['extract:haiku'], 'one rework miss in 5: the miss is forgiven').toEqual({ n: 4, misses: 0 })
+  expect(pauseRates(one, none).forgiven).toEqual(['extract:haiku'])
+  const two = [rework({ agentCalls: 2 }), rework({ agentCalls: 2 }), hit(), hit(), hit(), hit()]
+  expect(pauseRates(two, none).rates['extract:haiku'], 'two rework misses: the second counts').toEqual({ n: 5, misses: 1 })
+  expect(pauseRates(two, none).forgiven).toEqual(['extract:haiku'])
+  expect(pauseRates(one, new Set(['extract:haiku'])).rates['extract:haiku'], 'forgiven before: nothing is forgiven now').toEqual({ n: 5, misses: 1 })
+  expect(pauseRates(one, new Set(['extract:haiku'])).forgiven).toEqual([])
+  const down = [rework({ id: 'r1' }), { at, kind: 'feedback', ref: 'r1', value: 'down' } as RunLine]
+  expect(pauseRates(down, none).rates['extract:haiku'], 'a 👎 on a run with no automatic miss counts').toEqual({ n: 2, misses: 1 })
+  expect(pauseRates(down, none).forgiven).toEqual([])
+  const both = [rework({ agentCalls: 2, id: 'r2' }), { at, kind: 'feedback', ref: 'r2', value: 'down' } as RunLine]
+  expect(pauseRates(both, none).rates['extract:haiku'], 'the automatic miss is forgiven, the 👎 on the same run is not').toEqual({ n: 1, misses: 1 })
+  expect(missRates(two)['extract:haiku'], 'missRates still counts every miss').toEqual({ n: 6, misses: 2 })
 })

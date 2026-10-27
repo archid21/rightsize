@@ -4,15 +4,16 @@ import { LEVELS, levelRank } from './cost'
 // Signs, inside one turn, that the main chat is struggling at the effort it runs
 // at: tool calls failing, the same call failing again, the same call going round,
 // or a turn running far past the rating's step guess. An error that comes from the
-// environment (blockedError) is not one of them. Each kind can raise effort
+// environment (blockedError) is not one of them, and a failing test run is often an
+// expected red (isTestCommand), so it counts less. Each kind can raise effort
 // once a turn. How soon each sign counts is the Stuck sensitivity setting (LIMITS).
 // Pure functions, no engine calls.
 
 /** What the turn's tool calls have shown so far. */
 export type Signals = {
   errors: number
-  /** Per call (tool and arguments), how often it ran and how often it failed. */
-  calls: Record<string, { n: number; errors: number }>
+  /** Per call (tool and arguments), how often it ran and how often it failed; `test` marks a test-runner command. */
+  calls: Record<string, { n: number; errors: number; test?: true }>
   /** Kinds that have already raised effort this turn. */
   fired: Kind[]
 }
@@ -91,23 +92,46 @@ export function callKey(tool: string, input: Record<string, unknown>) {
   return `${tool} ${JSON.stringify(args)}`
 }
 
-export function noteCall(s: Signals, key: string, isError: boolean): Signals {
+/**
+ * Whether a tool call runs a test suite. A failing test run is often an expected red (a test written
+ * before the code, a fix half done), so it is not an error of the work: it adds nothing to `errors`
+ * and needs one more repeat before it counts. A runner counts only where a command starts (after
+ * `&&`, `;`, `|`, or a `cd`), so a word like "npm test" inside an argument is not one.
+ */
+const TEST_RUNNER =
+  /(?:^|[;&|(\n])\s*(?:\w+=\S*\s+)*(?:(?:time|npx|bunx|uv run|poetry run|pnpm exec|pnpm dlx)\s+)?(?:npm (?:run )?test|pnpm (?:run )?test|yarn (?:run )?test|bun (?:run )?test|vitest|jest|pytest|python3? -m (?:pytest|unittest)|go test|cargo test|claude plugin test|mvn test|gradle test|rspec|make test)(?![\w-])/
+export function isTestCommand(tool: string, input: Record<string, unknown>): boolean {
+  return tool === 'Bash' && typeof input.command === 'string' && TEST_RUNNER.test(input.command)
+}
+
+/** A test run that fails does not add to `errors`, but its repeats are still counted, one more allowed. */
+export function noteCall(s: Signals, key: string, isError: boolean, test = false): Signals {
   const c = s.calls[key] ?? { n: 0, errors: 0 }
   return {
     ...s,
-    errors: s.errors + (isError ? 1 : 0),
-    calls: { ...s.calls, [key]: { n: c.n + 1, errors: c.errors + (isError ? 1 : 0) } },
+    errors: s.errors + (isError && !test ? 1 : 0),
+    calls: { ...s.calls, [key]: { n: c.n + 1, errors: c.errors + (isError ? 1 : 0), ...(test || c.test ? { test: true as const } : {}) } },
   }
 }
 
-/** The first sign that has not raised effort yet, at the step about to go out; undefined when none. */
-export function struggle(s: Signals, step: number, ratedSteps: number, limits: Limits = LIMITS.normal): Struggle | undefined {
-  if (s.fired.length >= MAX_RAISES) return undefined
+/**
+ * The first sign that has not raised effort yet, at the step about to go out; undefined when none.
+ * `maxRaises` is the turn's cap on raises: a helper's cap is the task's retry budget, not this one.
+ */
+export function struggle(s: Signals, step: number, ratedSteps: number, limits: Limits = LIMITS.normal, maxRaises = MAX_RAISES): Struggle | undefined {
+  if (s.fired.length >= maxRaises) return undefined
   const calls = Object.values(s.calls)
   const found: Struggle[] = []
-  if (calls.some(c => c.errors >= limits.repeat)) found.push({ kind: 'repeat-fail', why: `the same tool call failed ${limits.repeat === 2 ? 'twice' : `${limits.repeat} times`}` })
+  // A failing test run needs one more repeat than any other call.
+  const again = (c: { test?: true }) => limits.repeat + (c.test ? 1 : 0)
+  const repeated = calls.find(c => c.errors >= again(c))
+  if (repeated) {
+    const n = again(repeated)
+    found.push({ kind: 'repeat-fail', why: `the same ${repeated.test ? 'test run' : 'tool call'} failed ${n === 2 ? 'twice' : `${n} times`}` })
+  }
   if (s.errors >= limits.errors) found.push({ kind: 'errors', why: `${s.errors} tool calls failed` })
-  if (calls.some(c => c.n >= limits.loop)) found.push({ kind: 'loop', why: `the same tool call ran ${limits.loop} times` })
+  // Running the tests again after each change is the normal way to work, not going round.
+  if (calls.some(c => !c.test && c.n >= limits.loop)) found.push({ kind: 'loop', why: `the same tool call ran ${limits.loop} times` })
   const long = Math.max(limits.longMin, limits.longX * Math.max(1, ratedSteps))
   if (step >= long) found.push({ kind: 'long', why: `the turn passed ${long} steps, ${limits.longX}x the estimate` })
   return found.find(f => !s.fired.includes(f.kind))

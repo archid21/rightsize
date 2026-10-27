@@ -71,6 +71,18 @@ export type RunLine = {
   resized?: { tie?: Tie }[]
   /** Main-chat requests in the turn. */
   requests?: number
+  /** A run line: each helper of the run that was watched (`agent` is its id, `kind` how it came to be one). */
+  helpers?: (HelperLine & { agent: string; kind: 'handoff' | 'moved' })[]
+  /** A run line: the task's retry budget used so far (helper raises and hand-off rework rounds); absent when none. */
+  retries?: number
+  /** A subagent line, when it was watched: the same fields as one entry of a run line's `helpers`. A run line's `steps` is the rater's guess; `errors` and `blocked` there are the main chat's. */
+  steps?: number
+  ms?: number
+  errors?: number
+  blocked?: number
+  stall?: HelperLine['stall']
+  raises?: HelperLine['raises']
+  returned?: true
   /** Tokens every request carried that the person can trim (MCP tools, memory, agents, skills), and what re-reading them cost. */
   fixed?: { tokens: number; mcp: number; memory: number; agents: number; skills: number; cost: number; servers?: Record<string, number> }
   before?: Windows
@@ -88,6 +100,27 @@ export type RunLine = {
 }
 
 type Tie = { by?: string; over?: string }
+
+/**
+ * What watching one helper showed: the hand-off's subagent, or one of Claude's subagents moved to a cheaper model.
+ * A helper that shows `stall: 'struggling'` and ended `returned` is the only kind of miss; 'blocked' is the environment's fault.
+ */
+export type HelperLine = {
+  /** Requests it made. */
+  steps: number
+  /** How long it ran, in ms: from its start to its answer, or to the end of the run if it had not answered. */
+  ms: number
+  /** Tool calls of its own that failed, test runs included; blocked errors are counted apart. */
+  errors: number
+  /** Tool errors that came from the environment (no network, no login, a denied sandbox): more effort would not fix them. */
+  blocked: number
+  /** What it was stuck on: 'struggling' (raised or returned) or 'blocked' (the environment); absent when neither. */
+  stall?: 'struggling' | 'blocked'
+  /** Each raise of its effort, from the task's retry budget. */
+  raises?: { step: number; from: string; to: string; why: string }[]
+  /** Stopped and sent back to the main chat: the task's retry budget was used up while it was still stuck. */
+  returned?: true
+}
 
 export type SwitchLine = { at: string; kept?: boolean }
 

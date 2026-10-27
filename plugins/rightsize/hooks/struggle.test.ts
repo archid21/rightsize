@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { ERRORS, LIMITS, LONG_MIN, LONG_X, LOOP, REPEAT, blockedError, callKey, isSensitivity, noSignals, noteCall, oneUp, struggle } from './struggle'
+import { ERRORS, LIMITS, LONG_MIN, LONG_X, LOOP, REPEAT, blockedError, callKey, isSensitivity, isTestCommand, noSignals, noteCall, oneUp, struggle } from './struggle'
 
 // Claude labels each Bash call afresh, so the description differs between runs of one command.
 const bash = (command: string) => callKey('Bash', { tool: 'Bash', tool_use_id: Math.random().toString(), command, description: `run ${command} (${Math.random()})` })
@@ -141,4 +141,77 @@ test('blockedError: the work failing, or a file the model got wrong, is not bloc
     '',
   ]
   for (const text of ordinary) expect(blockedError(text), JSON.stringify(text)).toBe(false)
+})
+
+test('isTestCommand: a Bash call that starts a test runner', async () => {
+  for (const command of [
+    'npm test',
+    'npm run test -- --watch=false',
+    'pnpm test',
+    'yarn test',
+    'bun test',
+    'npx vitest run',
+    'vitest',
+    'jest --ci',
+    'pytest -x',
+    'python -m pytest tests/',
+    'python3 -m unittest',
+    'go test ./...',
+    'cargo test',
+    'claude plugin test plugins/rightsize',
+    'mvn test',
+    'gradle test',
+    'rspec spec/',
+    'make test',
+    'cd app && npm test',
+    'CI=1 npm test',
+    'npm run build; pytest',
+    'uv run pytest',
+  ]) expect(isTestCommand('Bash', { command }), command).toBe(true)
+  for (const command of ['npm install', 'npm run build', 'ls tests', 'echo npm test', 'fail npm test', 'git commit -m "npm test"', 'cat jest.config.js', 'make testdata', 'pytest-cov --help'])
+    expect(isTestCommand('Bash', { command }), command).toBe(false)
+  expect(isTestCommand('Read', { command: 'npm test' }), 'only a Bash call').toBe(false)
+  expect(isTestCommand('Bash', {}), 'no command').toBe(false)
+})
+
+test('a failing test run adds nothing to errors, however many different ones fail', async () => {
+  let s = noSignals()
+  for (const c of ['npm test -- a', 'npm test -- b', 'pytest c', 'go test d']) s = noteCall(s, bash(c), true, true)
+  expect(s.errors).toBe(0)
+  expect(struggle(s, 5, 5), 'four red test runs, none the same: not several tool calls failing').toBeUndefined()
+  // Any other call still counts, test runs around it or not.
+  s = noteCall(s, bash('ls x'), true)
+  expect(s.errors).toBe(1)
+})
+
+test('a failing test run needs one more repeat before the same call counts as failing again', async () => {
+  const test = bash('npm test')
+  let s = noteCall(noSignals(), test, true, true)
+  s = noteCall(s, test, true, true)
+  expect(struggle(s, 3, 5), 'twice is an expected red').toBeUndefined()
+  expect(struggle(s, 3, 5, LIMITS.sensitive)?.kind, 'sensitive: still one more than a plain call').not.toBe('repeat-fail')
+  s = noteCall(s, test, true, true)
+  expect(struggle(s, 4, 5)?.kind, 'the third time').toBe('repeat-fail')
+  expect(struggle(s, 4, 5)?.why).toBe('the same test run failed 3 times')
+  expect(struggle(s, 4, 5, LIMITS.relaxed), 'relaxed waits for 4').toBeUndefined()
+  // The call is the same call, run or not: a plain call keeps the old limit.
+  const plain = noteCall(noteCall(noSignals(), bash('make'), true), bash('make'), true)
+  expect(struggle(plain, 3, 5)?.why).toBe('the same tool call failed twice')
+})
+
+test('running the same test command again is not going round: red, red, green is the normal cycle', async () => {
+  const test = bash('npm test')
+  let s = noteCall(noteCall(noSignals(), test, true, true), test, true, true)
+  s = noteCall(s, test, false, true)
+  expect(struggle(s, 4, 5), 'two reds, then green').toBeUndefined()
+  for (let i = 0; i < 5; i++) s = noteCall(s, test, false, true)
+  expect(struggle(s, 9, 5), 'any number of green runs').toBeUndefined()
+  const plain = noteCall(noteCall(noteCall(noSignals(), bash('ls'), false), bash('ls'), false), bash('ls'), false)
+  expect(struggle(plain, 4, 5)?.kind, 'a plain call three times still goes round').toBe('loop')
+})
+
+test('struggle takes the turn\'s cap on raises: a helper\'s cap is the task\'s budget, so it passes none', async () => {
+  const s = { ...noteCall(noteCall(noSignals(), bash('a'), true), bash('a'), true), fired: ['errors', 'loop'] as const }
+  expect(struggle({ ...s, fired: [...s.fired] }, 3, 5), 'two raised: the turn is done').toBeUndefined()
+  expect(struggle({ ...s, fired: [...s.fired] }, 3, 5, LIMITS.normal, Infinity)?.kind).toBe('repeat-fail')
 })

@@ -54,6 +54,8 @@ declare module 'claude-code' {
       seenModel: string | null
       /** The task in progress, from the last rating that started one; null before the first. A prompt that continues it is planned as its type and carries its id. */
       task: { id: string; type: RightsizeTaskType } | null
+      /** The task's retry budget: how many of its chances are used, by a helper raised a level or a rework round on a hand-off. Resets when a new task starts; null before the first. */
+      retries: { task: string; used: number } | null
       /** Tokens in the main conversation's last request. */
       context: number
       /** Answers to Q1-Q4 for this session. */

@@ -89,8 +89,8 @@ import {
 } from './settings'
 import { parseRating, ratingPrompt, ratingSystem } from './rate'
 import { isApprovalStep } from './approval'
-import { LIMITS, type Limits, type Signals, type Struggle, blockedError, callKey, isSensitivity, noSignals, noteCall, oneUp, struggle } from './struggle'
-import { type Change, type RunLine, type SwitchLine, type Windows, buildReport, parseLines, shareMessage, windowRates } from './report'
+import { LIMITS, type Limits, type Signals, type Struggle, blockedError, callKey, isSensitivity, isTestCommand, noSignals, noteCall, oneUp, struggle } from './struggle'
+import { type Change, type HelperLine, type RunLine, type SwitchLine, type Windows, buildReport, parseLines, shareMessage, windowRates } from './report'
 
 // Before a prompt is sent, a quick Haiku call rates the effort, the model and
 // the work needs on each model, and the cost model prices each route that fits. The first time
@@ -105,7 +105,9 @@ import { type Change, type RunLine, type SwitchLine, type Windows, buildReport, 
 // real cost is read off the session's cost ledger (/cost) and fed back into the
 // estimates. When a turn shows it is struggling (tools failing, the same call
 // failing again or going round, far more steps than rated), effort goes up a
-// level for the rest of the turn (tool.call, turn.step). Billing (API or subscription) is read off the rate limits each
+// level for the rest of the turn (tool.call, turn.step). The cheaper helpers are
+// watched the same way: a struggling one is raised a level from the task's retry budget, or
+// sent back to the main chat when none is left (watches, escalateHelper). Billing (API or subscription) is read off the rate limits each
 // response carries; the person is asked only when they say nothing. A band
 // above the prompt shows what it did, with buttons to undo it or change the rule.
 // Your setting wins: every row in /config is a setting (settings.ts), and a value the
@@ -124,6 +126,12 @@ const DEFAULT_CONTEXT = 20_000
 /** About 30 days of heavy use, for /rightsize report. */
 const RUNS_LOG_MAX = 1_000_000
 const SPOT_CHECKER = 'sonnet'
+/**
+ * Chances a task has to retry: a helper raised a level, or the main chat reworking a hand-off. It is
+ * Balanced's value; the profiles in phase 3 set Quality 1, Balanced 2, Economy 3. When they are used up,
+ * the helper goes back to the main chat and the main chat finishes the task itself.
+ */
+const CHANCES = 2
 const MISS_WINDOW_DAYS = 30
 
 type Lower = NonNullable<Choices['lower']>
@@ -132,7 +140,7 @@ type Route = NonNullable<Choices['up']>
 type Billing = 'api' | 'subscription'
 type Resized = { from: Tier; tier: Tier; level: Level; type: Rating['type']; tie?: Tie }
 /** A moved subagent: its estimates on the model it runs on and on its parent's, and what its own requests cost so far. */
-type Measured = Resized & { raw: number; parentRaw: number; spend: number; inWorkflow?: boolean; task?: string; run?: string }
+type Measured = Resized & { raw: number; parentRaw: number; spend: number; inWorkflow?: boolean; task?: string; run?: string; /** The rating's guess of its tool calls: what a long run is measured against. */ steps?: number }
 /** A spawn the engine is starting: its first step can come before its id does. */
 type Spawning = { description: string; type: string; run?: Run; size?: Omit<Measured, 'spend'>; id?: string }
 type SubagentMode = 'cheaper when it fits' | 'off'
@@ -394,6 +402,36 @@ let idleWarnedFor = 0
 /** Claude's own subagents moved to a cheaper model, by id: the level their steps run at, past the turn that started them. */
 const resizedRuns = new Map<string, Measured>()
 const spawning: Spawning[] = []
+
+/** What rightsize has seen of one helper (the hand-off's subagent, or a moved one): its signs, steps and time, and what it did about them. */
+type Watch = {
+  kind: 'handoff' | 'moved'
+  /** The run whose turn started it: that run's log line lists it. */
+  run?: string
+  /** The task whose retry budget it draws on. */
+  task: string
+  /** The level it was sent at, and the level of its later steps after a raise. */
+  level: Level
+  raisedTo?: Level
+  /** The rating's guess of its tool calls. */
+  rated: number
+  signals: Signals
+  steps: number
+  startedAt: number
+  /** When it answered; undefined while it runs. */
+  ms?: number
+  blocked: number
+  raises: { step: number; from: Level; to: Level; why: string }[]
+  stall?: 'struggling' | 'blocked'
+  /** Stopped and sent back: its tool calls are refused from here on. */
+  returned?: true
+  /** The can't-tell and blocked cases are logged once. */
+  said?: boolean
+}
+/** Every helper watched this session, by agent id. */
+const watches = new Map<string, Watch>()
+/** One spend of the retry budget at a time: two helpers asking together never both take the last chance. */
+let spending: Promise<unknown> = Promise.resolve()
 
 const words = (text: string) => text.trim().split(/\s+/).filter(Boolean).length
 const fromPerson = (e: PromptSubmitInput) => e.origin.kind === 'composer' || e.origin.kind === 'bridge'
@@ -949,7 +987,7 @@ async function sizeSpawn($: EngineInterface, e: AgentSpawnInput, run: Run | null
   const fit = TIERS.map(t => `${t[0]}:${r.fit[t] ?? (r.fit[t] === null ? 'no' : '?')}`).join(' ')
   await log($, `subagent "${e.description}" on ${parent}: rated ${fit}, ${size ? `sent to ${size.tier}/${size.level}${size.tie ? `, tie ${size.tie.by} over ${size.tie.over}` : ''}` : 'kept'}`)
   return size
-    ? { from: parent, tier: size.tier, level: size.level, type: r.type, raw: size.raw, parentRaw: size.parentRaw, ...(size.tie ? { tie: size.tie } : {}), ...(e.workflow ? { inWorkflow: true } : {}) }
+    ? { from: parent, tier: size.tier, level: size.level, type: r.type, steps: r.steps, raw: size.raw, parentRaw: size.parentRaw, ...(size.tie ? { tie: size.tie } : {}), ...(e.workflow ? { inWorkflow: true } : {}) }
     : undefined
 }
 
@@ -1290,6 +1328,9 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
   // Every rated turn is logged, changed or not and stopped or not, for /rightsize report.
   if (actual > 0 || run.overhead > 0) {
     const fixed = await fixedContext($)
+    const now = await $.clock.now()
+    const helpers = [...watches].filter(([, w]) => w.run === run.id).map(([agent, w]) => ({ agent, kind: w.kind, ...helperLine(w, now) }))
+    const retries = await retriesUsed($, run.task)
     const line: RunLine & Record<string, unknown> = {
       at: new Date().toISOString(),
       kind: 'run',
@@ -1334,6 +1375,8 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
       agentCalls: run.agentCalls,
       ...(run.approvalSteps ? { approvalSteps: run.approvalSteps } : {}),
       ...(run.blocked ? { blocked: run.blocked } : {}),
+      ...(helpers.length ? { helpers } : {}),
+      ...(retries > 0 ? { retries } : {}),
       requests: run.requests,
       // Each request reads the fixed context from the cache, at least.
       ...(fixed ? { fixed: { ...fixed, cost: round((run.requests * fixed.tokens * prices[run.switchTo?.tier ?? run.tier].cacheRead) / 1e6) } } : {}),
@@ -1395,6 +1438,45 @@ async function escalate($: EngineInterface, run: Run, sign: Struggle, from: Leve
   await setBand($, { text: `Effort raised mid-turn: ${cur} → ${to} (${sign.why}).`, acted: true, rule: 'raise' })
   await showStatus($)
   await log($, `raised mid-turn ${cur} → ${to} at step ${step}: ${sign.why}`)
+}
+
+// A helper is struggling: only more effort for struggling helps, and only from the task's retry
+// budget. The person is not asked mid-helper: a helper is raised only when Raising is automatic. When
+// no chance is left, no level is left, or Raising is not automatic, the helper goes back to the main
+// chat. Blocked errors are not struggling; a sign with only blocked errors behind it can't be told apart
+// from them, so it neither raises nor counts as a miss. Each sign is weighed once, as in escalate().
+async function escalateHelper($: EngineInterface, id: string, w: Watch, sign: Struggle) {
+  w.signals = { ...w.signals, fired: [...w.signals.fired, sign.kind] }
+  if (w.blocked > 0 && !Object.values(w.signals.calls).some(c => c.errors > 0)) {
+    await log($, `helper ${id} looks stuck (${sign.why}) but only the environment failed: can't tell, no raise`)
+    return
+  }
+  const rule = (await choices($)).raise
+  if (rule === 'never') return
+  if (paceNow.mode === 'max' && rule === undefined) {
+    await log($, `raise of helper ${id} skipped (${sign.why}): the usage window is nearly used up`)
+    return
+  }
+  const cur = w.raisedTo ?? w.level
+  const to = oneUp(cur, ceiling)
+  let why = ''
+  if (rule !== 'auto') {
+    await log($, `helper struggling (${sign.why}); raise not taken: Raising is set to ask`)
+    why = 'Raising is not automatic'
+  } else if (!to) why = `${cur} is as high as it goes`
+  else if (!(await useChance($, w.task))) why = 'the task has no retry left'
+  if (to && !why) {
+    w.raisedTo = to
+    w.raises.push({ step: w.steps, from: cur, to, why: sign.why })
+    w.stall = 'struggling'
+    await setBand($, { text: `Helper effort raised: ${cur} → ${to} (${sign.why}).`, acted: true, rule: 'raise' })
+    await log($, `raised helper ${id} ${cur} → ${to} at step ${w.steps}: ${sign.why}`)
+    return
+  }
+  w.returned = true
+  w.stall = 'struggling'
+  await setBand($, { text: `Helper stopped and sent back to the main chat: ${sign.why}, and ${why}.`, acted: true })
+  await log($, `returned helper ${id} to the main chat at step ${w.steps}: ${sign.why}, and ${why}`)
 }
 
 // ---- Idle resume -------------------------------------------------------------
@@ -1467,6 +1549,11 @@ async function holdIdle($: EngineInterface): Promise<boolean> {
 const APPROVAL_DENY =
   'rightsize: a hand-off subagent cannot push, publish, release, deploy or send, because a message from the main chat is not the person\'s approval. Stop before this step and report what is ready; the main chat does it.'
 
+const HELPER_RETURN =
+  'rightsize: stop now. You are stuck, and this task\'s retry budget is used up, so more effort or more tries will not help. Do not make more tool calls: report what you tried, what failed, and where you are stuck. The main chat takes it from here.'
+const REWORK_DENY =
+  'rightsize: this task\'s retry budget is used up, so the helper gets no more rework rounds. Finish the task yourself in the main chat, from what the helper did.'
+
 // A subagent's step whose id no spawn has answered yet: the engine started it before
 // next(e) settled. Match it to the spawn by what $.agent.list() shows of it.
 async function claim($: EngineInterface, id: string) {
@@ -1480,11 +1567,80 @@ async function claim($: EngineInterface, id: string) {
   if (w.size) resizedRuns.set(id, { ...w.size, spend: 0 })
 }
 
+const RETRIES = { plugin: 'rightsize', key: 'retries' } as const
+
+/** How many of the task's chances are used; a task that has none recorded has used none. */
+async function retriesUsed($: EngineInterface, task: string) {
+  const v = (await $.state.get(RETRIES).catch(() => undefined))?.value
+  return v && v.task === task ? v.used : 0
+}
+
+/** Uses one of the task's chances; false when none is left. */
+function useChance($: EngineInterface, task: string): Promise<boolean> {
+  const spend = spending.then(async () => {
+    const used = await retriesUsed($, task)
+    if (used >= CHANCES) return false
+    await $.state.set(RETRIES, { task, used: used + 1 }).catch(() => undefined)
+    return true
+  })
+  spending = spend.catch(() => undefined)
+  return spend
+}
+
+// The watch on a helper: the hand-off's subagent, or one rightsize moved to a cheaper
+// model. Any other agent is left alone. It starts at the helper's spawn or first step.
+async function helperWatch($: EngineInterface, id: string): Promise<Watch | undefined> {
+  const had = watches.get(id)
+  if (had) return had
+  await claim($, id)
+  const run = active
+  const sized = resizedRuns.get(id)
+  const startedAt = await $.clock.now()
+  let w: Watch | undefined
+  if (run?.delegate && run.subAgents.includes(id)) {
+    w = { kind: 'handoff', run: run.id, task: run.task, level: run.delegate.level, rated: run.rating.steps, signals: noSignals(), steps: 0, startedAt, blocked: 0, raises: [] }
+  } else if (sized) {
+    const task = sized.task ?? (await currentTask($))?.id ?? sessionId
+    w = { kind: 'moved', ...(sized.run ? { run: sized.run } : {}), task, level: sized.level, rated: sized.steps ?? 5, signals: noSignals(), steps: 0, startedAt, blocked: 0, raises: [] }
+  }
+  const raced = watches.get(id)
+  if (raced) return raced
+  if (w) watches.set(id, w)
+  return w
+}
+
+/** What the log keeps of a watched helper. `ms` runs to its answer, or to now while it has not answered. */
+const helperLine = (w: Watch, now: number): HelperLine => ({
+  steps: w.steps,
+  ms: w.ms ?? Math.max(0, now - w.startedAt),
+  errors: Object.values(w.signals.calls).reduce((n, c) => n + c.errors, 0),
+  blocked: w.blocked,
+  ...(w.stall ? { stall: w.stall } : {}),
+  ...(w.raises.length ? { raises: w.raises } : {}),
+  ...(w.returned ? { returned: true as const } : {}),
+})
+
+// A helper's tool call, after it ran. An error from the environment is a Blocked stall: more effort
+// would not fix it, so it is counted apart and is not a sign. A refused call says nothing about the work.
+async function noteHelperCall($: EngineInterface, id: string, w: Watch, e: Record<string, unknown>, result: unknown) {
+  const r = result as { deny?: string; isError?: boolean }
+  if (r.deny) return
+  const isError = r.isError === true
+  if (isError && blockedError(errorText(result))) {
+    w.blocked += 1
+    if (w.stall !== 'struggling') w.stall = 'blocked'
+    if (w.blocked === 1) await log($, `helper ${id} blocked by the environment: more effort will not help`)
+    return
+  }
+  const tool = String(e.tool)
+  w.signals = noteCall(w.signals, callKey(tool, e), isError, isTestCommand(tool, e))
+}
+
 // A moved subagent's answer: what its own requests cost teaches the estimate for its
 // model and level, and the log keeps it for the report. A background one often
 // answers after the turn that started it ended, so this is its own line. A
 // resumed subagent starts counting again.
-async function finishSubagent($: EngineInterface, m: Measured, aborted: boolean) {
+async function finishSubagent($: EngineInterface, m: Measured, aborted: boolean, w?: Watch) {
   const spend = m.spend
   m.spend = 0
   if (spend <= 0) return
@@ -1509,6 +1665,7 @@ async function finishSubagent($: EngineInterface, m: Measured, aborted: boolean)
     parentEstimate: round(m.parentRaw),
     actual: round(spend),
     aborted,
+    ...(w ? helperLine(w, await $.clock.now()) : {}),
   }
   await append($, 'rightsize-runs.jsonl', JSON.stringify(line), RUNS_LOG_MAX)
 }
@@ -1956,6 +2113,8 @@ export const register: Register = (on, options) => {
     pending = null
     active = null
     await $.state.set({ plugin: 'rightsize', key: 'task' }, null).catch(() => undefined)
+    await $.state.set(RETRIES, null).catch(() => undefined)
+    watches.clear()
     lastApplied = undefined
     lastSwitched = false
     lastContext = 0
@@ -2181,7 +2340,16 @@ export const register: Register = (on, options) => {
       const run = active
       const ours = run?.delegate && run.subAgents.includes(e.agentId) ? run.delegate : undefined
       const sized = resizedRuns.get(e.agentId)
-      const level = ours?.level ?? sized?.level
+      // A helper that shows the signs of struggling is raised from the task's budget, or sent back.
+      const watch = await helperWatch($, e.agentId)
+      if (watch) {
+        watch.steps += 1
+        if (escalation && !off && !watch.returned) {
+          const sign = struggle(watch.signals, watch.steps, watch.rated, limits, Infinity)
+          if (sign) await escalateHelper($, e.agentId, watch, sign)
+        }
+      }
+      const level = watch?.raisedTo ?? ours?.level ?? sized?.level
       const send = level && e.effort !== undefined ? { ...e, effort: level } : e
       if (run && ours && isLevel(send.effort)) run.subLevel = send.effort
       const out = yield* next(send)
@@ -2285,7 +2453,23 @@ export const register: Register = (on, options) => {
         return { deny: APPROVAL_DENY }
       }
     }
+    // A helper that was sent back stays stopped, so that it reports instead of trying again.
+    const helper = e.agentId === undefined ? undefined : await helperWatch($, e.agentId)
+    if (helper?.returned) return { deny: HELPER_RETURN }
+    // The main chat reworking a hand-off (a message to the subagent, or a second one started on its model) uses a chance of the task's budget.
+    if (active?.delegate && e.agentId === undefined) {
+      const model = (e as { model?: unknown }).model
+      const again = String(e.tool) === 'Agent' && active.delegated && tierOf(typeof model === 'string' ? model : undefined) === active.delegate.tier
+      if (String(e.tool) === 'SendMessage' || again) {
+        if (!(await useChance($, active.task))) {
+          await log($, `rework refused: the task's retry budget is used up, so the main chat finishes it`)
+          return { deny: REWORK_DENY }
+        }
+        await log($, `rework round: used one of the task's ${CHANCES} retries`)
+      }
+    }
     const result = await next(e)
+    if (helper && e.agentId !== undefined) await noteHelperCall($, e.agentId, helper, e as Record<string, unknown>, result)
     if (String(e.tool) === 'Workflow') {
       workflowSeen = true
       if (active) active.workflows += 1
@@ -2302,7 +2486,7 @@ export const register: Register = (on, options) => {
       else if (isError) active.errors += 1
       if (!(result as { deny?: string }).deny && isApprovalStep(String(e.tool), e as Record<string, unknown>)) active.approvalSteps += 1
       // A refused call (a denied permission) says nothing about the work.
-      if (!(result as { deny?: string }).deny && !blocked) active.signals = noteCall(active.signals, callKey(String(e.tool), e as Record<string, unknown>), isError)
+      if (!(result as { deny?: string }).deny && !blocked) active.signals = noteCall(active.signals, callKey(String(e.tool), e as Record<string, unknown>), isError, isTestCommand(String(e.tool), e as Record<string, unknown>))
     }
     return result
   }).catch(($, e, next) => next(e))
@@ -2328,6 +2512,8 @@ export const register: Register = (on, options) => {
       if (!resizedRuns.has(id)) resizedRuns.set(id, { ...size, spend: 0, ...(run ? { task: run.task, run: run.id } : {}) })
       run?.resized.push({ from: size.from, tier: size.tier, level: size.level, type: size.type, ...(size.tie ? { tie: size.tie } : {}) })
     } else if (id) resizedRuns.delete(id)
+    // Its watch starts at its spawn.
+    if (id && (ours || size)) await helperWatch($, id)
     return result
   }).catch(($, e, next) => next(e))
 
@@ -2377,7 +2563,9 @@ export const register: Register = (on, options) => {
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)
     const sized = e.agentId === undefined ? undefined : resizedRuns.get(e.agentId)
-    if (sized) await finishSubagent($, sized, e.isAborted)
+    const watched = e.agentId === undefined ? undefined : watches.get(e.agentId)
+    if (watched) watched.ms = Math.max(0, (await $.clock.now()) - watched.startedAt)
+    if (sized) await finishSubagent($, sized, e.isAborted, watched)
     if (e.agentId === undefined) {
       await knowBilling($, false)
       await rememberTurn($)

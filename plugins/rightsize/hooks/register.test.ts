@@ -214,17 +214,18 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
     return { result: { questions: e.questions, answers: { [q?.question ?? '']: answer } } }
   })
   ;(on as unknown as LooseOn)('tool.call', { tool: 'Agent' }, async () => ({ result: { content: 'done' } }))
+  ;(on as unknown as LooseOn)('tool.call', { tool: 'SendMessage' }, async () => ({ result: { content: 'sent' } }))
   ;(on as unknown as LooseOn)('tool.call', { tool: 'Workflow' }, async () => {
     h.events.push('workflow')
     return { result: { content: 'started in the background' } }
   })
-  // A command starting "fail" fails; one starting "denied" is refused, as a denied permission is; one starting "env:" fails with the text after it.
+  // A command starting "fail" fails, and so does one ending " --red" (a test run that is red); one starting "denied" is refused, as a denied permission is; one starting "env:" fails with the text after it.
   ;(on as unknown as LooseOn)('tool.call', { tool: 'Bash' }, async (_$, e) => {
     const command = String((e as unknown as { command: string }).command)
     if (command.startsWith('denied')) return { deny: 'permission denied' }
     // "env:<text>" fails with that text, as the environment does (no network, a missing program); the text is part of the call.
     if (command.startsWith('env:')) return { result: command.slice(4), text: command.slice(4), isError: true }
-    return command.startsWith('fail') ? { result: { stdout: '', stderr: 'boom' }, text: 'boom', isError: true } : { result: { stdout: 'ok', stderr: '' }, text: 'ok' }
+    return command.startsWith('fail') || command.endsWith(' --red') ? { result: { stdout: '', stderr: 'boom' }, text: 'boom', isError: true } : { result: { stdout: 'ok', stderr: '' }, text: 'ok' }
   })
   on('agent.spawn', async ($, e) => {
     h.spawned.push({ description: e.description, model: e.model })
@@ -264,6 +265,7 @@ const drive = ($: unknown, h: ReturnType<typeof engine>) => {
     // A subagent's own answer, in its own loop.
     answer: (agentId: string, isAborted = false) => e.turn.complete({ turnId: `${agentId}-turn`, agentId, answer: '', durationMs: 1, isAborted, reason: isAborted ? 'aborted' : 'answer' }),
     agent: (model: string) => e.tool.call({ tool: 'Agent', description: 'x', prompt: 'brief', model }),
+    send: () => e.tool.call({ tool: 'SendMessage', to: 'agent-helper', message: 'fix the failing test' }),
     workflow: (id?: string) => e.tool.call({ tool: 'Workflow', script: 'export const meta = {}', ...(id ? { tool_use_id: id } : {}) }),
     bash: (command: string, agentId?: string) => e.tool.call({ tool: 'Bash', command, description: `try ${command} ${h.sent.length}`, ...(agentId ? { agentId } : {}) }),
     // The engine starting a subagent from the main chat's Agent call; its steps carry `agent-<description>`.
@@ -3957,6 +3959,289 @@ for (const surface of ['desktop', 'terminal'] as const) {
     // The report counts them as not counted, with a plain reason.
     const report = (await d.command('report')).text ?? ''
     expect(report).toMatch(/3 prompts +not rated \(the rating failed or could not be read\), so the session was left as it was/)
+  })
+
+
+  // ---- Watching the cheaper helpers, with one retry budget per task ----
+
+  const HELPERS = { remember: true, choices: { raise: 'auto', down: 'auto' } }
+  const HAND_OFF = (continues = false) => `{"fit":{"haiku":"low","sonnet":"low","opus":"low","fable":"low"},"type":"search","read":150000,"write":3000,"steps":30,"continues":${continues},"reason":"repo-wide search"}`
+  const HELPER_LOG = '/home/test/.claude/mods-logs/rightsize.log'
+  const helperLog = (h: ReturnType<typeof engine>) => h.files[HELPER_LOG] ?? ''
+  type Drive = ReturnType<typeof drive>
+  // The main chat hands the work to a Haiku subagent called `helper`, which takes its first step (at low effort).
+  async function startHelper(d: Drive, h: ReturnType<typeof engine>, turn: string, helper: string, text = SEARCH) {
+    await d.submit(text)
+    await d.step(turn, 0)
+    await d.agent('haiku')
+    await d.spawn(helper, 'haiku')
+    await d.step(turn, 0, `agent-${helper}`)
+    expect(last(h.sent)?.effort).toBe('low')
+  }
+  async function warm(d: Drive, h: ReturnType<typeof engine>) {
+    h.subModel = 'claude-haiku-5-5'
+    await d.step('t0')
+    await d.complete('t0')
+  }
+  type HelperEntry = { agent: string; kind: string; steps: number; ms: number; errors: number; blocked: number; stall?: string; raises?: { step: number; from: string; to: string; why: string }[]; returned?: boolean }
+
+  test(`a struggling hand-off helper is raised one level, and its later steps go out at it (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: HELPERS })
+    const d = drive($, h)
+    await d.start(surface)
+    await warm(d, h)
+    h.rating = HAND_OFF()
+    await startHelper(d, h, 't1', 'helper')
+    await d.bash('fail make', 'agent-helper')
+    await d.step('t1', 1, 'agent-helper')
+    expect(last(h.sent)?.effort, 'one failure is ordinary').toBe('low')
+    await d.bash('fail make', 'agent-helper')
+    await d.step('t1', 2, 'agent-helper')
+    expect(last(h.sent)?.effort, 'the same call failed twice: one level up').toBe('medium')
+    expect(helperLog(h)).toContain('raised helper agent-helper low → medium at step 3: the same tool call failed twice')
+    await d.step('t1', 3, 'agent-helper')
+    expect(last(h.sent)?.effort, 'and it stays there').toBe('medium')
+    expect(h.asked.length, 'nobody is asked mid-helper').toBe(0)
+    expect(await bandText($, surface)).toBe('rightsize: Helper effort raised: low → medium (the same tool call failed twice).')
+    await d.step('t1', 1)
+    await d.complete('t1')
+    const run = readRuns(h).find(l => l.kind === 'run') as { helpers?: HelperEntry[]; retries?: number }
+    expect(run.retries, 'one chance used').toBe(1)
+    expect(run.helpers).toEqual([
+      { agent: 'agent-helper', kind: 'handoff', steps: 4, ms: 0, errors: 2, blocked: 0, stall: 'struggling', raises: [{ step: 3, from: 'low', to: 'medium', why: 'the same tool call failed twice' }] },
+    ])
+  })
+
+  test(`a blocked helper is not raised, and a sign with only blocked errors behind it is not either (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: HELPERS })
+    const d = drive($, h)
+    await d.start(surface)
+    await warm(d, h)
+    h.rating = HAND_OFF()
+    await startHelper(d, h, 't1', 'helper')
+    for (let i = 0; i < 3; i++) await d.bash('env:curl: (6) Could not resolve host: registry.example.com', 'agent-helper')
+    await d.step('t1', 1, 'agent-helper')
+    expect(last(h.sent)?.effort, 'the network is down: effort would not help').toBe('low')
+    // The same successful call three times is a loop, but only blocked errors stand behind it: can't tell.
+    for (let i = 0; i < 3; i++) await d.bash('ls', 'agent-helper')
+    await d.step('t1', 2, 'agent-helper')
+    expect(last(h.sent)?.effort).toBe('low')
+    expect(helperLog(h).match(/helper agent-helper blocked by the environment: more effort will not help/g)?.length, 'logged once').toBe(1)
+    expect(helperLog(h)).toContain("can't tell, no raise")
+    const after = (await d.bash('ls', 'agent-helper')) as { deny?: string }
+    expect(after.deny, 'not returned either').toBeUndefined()
+    await d.complete('t1')
+    const run = readRuns(h).find(l => l.kind === 'run') as { helpers?: HelperEntry[]; retries?: number }
+    expect(run.helpers?.map(x => [x.stall, x.blocked, x.returned, x.raises])).toEqual([['blocked', 3, undefined, undefined]])
+    expect('retries' in run, 'no chance used').toBe(false)
+  })
+
+  test(`the third struggle of a task with two chances used sends the helper back: every tool call after is refused (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: HELPERS })
+    const d = drive($, h)
+    await d.start(surface)
+    await warm(d, h)
+    h.rating = HAND_OFF()
+    await startHelper(d, h, 't1', 'helper')
+    await d.bash('fail a', 'agent-helper')
+    await d.bash('fail a', 'agent-helper')
+    await d.step('t1', 1, 'agent-helper')
+    expect(last(h.sent)?.effort, 'first chance').toBe('medium')
+    await d.bash('fail b', 'agent-helper')
+    await d.step('t1', 2, 'agent-helper')
+    expect(last(h.sent)?.effort, 'second chance').toBe('high')
+    for (let i = 0; i < 3; i++) await d.bash('ls', 'agent-helper')
+    await d.step('t1', 3, 'agent-helper')
+    expect(last(h.sent)?.effort, 'no third raise').toBe('high')
+    expect(helperLog(h)).toContain('returned helper agent-helper to the main chat at step 4: the same tool call ran 3 times, and the task has no retry left')
+    for (let i = 0; i < 2; i++) {
+      const denied = (await d.bash('ls', 'agent-helper')) as { deny?: string }
+      expect(denied.deny, 'stopped: report back').toContain('stuck')
+      expect(denied.deny).toContain('retry budget is used up')
+    }
+    expect(((await d.bash('ls')) as { deny?: string }).deny, 'the main chat is not stopped').toBeUndefined()
+    await d.answer('agent-helper')
+    await d.complete('t1')
+    const run = readRuns(h).find(l => l.kind === 'run') as { helpers?: HelperEntry[]; retries?: number }
+    expect(run.retries).toBe(2)
+    expect(run.helpers?.map(x => [x.stall, x.returned, x.raises?.map(r => `${r.from}>${r.to}`)])).toEqual([['struggling', true, ['low>medium', 'medium>high']]])
+  })
+
+  test(`a helper is sent back, not asked about, when Raising is not automatic (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: { remember: true, choices: { down: 'auto' } } })
+    const d = drive($, h)
+    await d.start(surface)
+    await warm(d, h)
+    h.rating = HAND_OFF()
+    await startHelper(d, h, 't1', 'helper')
+    await d.bash('fail a', 'agent-helper')
+    await d.bash('fail a', 'agent-helper')
+    await d.step('t1', 1, 'agent-helper')
+    expect(last(h.sent)?.effort).toBe('low')
+    expect(h.asked.length, 'no question mid-helper').toBe(0)
+    expect(helperLog(h)).toContain('helper struggling (the same tool call failed twice); raise not taken: Raising is set to ask')
+    expect(((await d.bash('ls', 'agent-helper')) as { deny?: string }).deny).toContain('stuck')
+    await d.complete('t1')
+  })
+
+  test(`Raising set to never leaves a struggling helper alone: not raised, not sent back (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: { remember: true, choices: { down: 'auto', raise: 'never' } } })
+    const d = drive($, h)
+    await d.start(surface)
+    await warm(d, h)
+    h.rating = HAND_OFF()
+    await startHelper(d, h, 't1', 'helper')
+    await d.bash('fail a', 'agent-helper')
+    await d.bash('fail a', 'agent-helper')
+    await d.step('t1', 1, 'agent-helper')
+    expect(last(h.sent)?.effort).toBe('low')
+    expect(((await d.bash('ls', 'agent-helper')) as { deny?: string }).deny, 'left alone').toBeUndefined()
+  })
+
+  test(`a failing test run in a helper is not an error of the work, and needs one more repeat (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: HELPERS })
+    const d = drive($, h)
+    await d.start(surface)
+    await warm(d, h)
+    h.rating = HAND_OFF()
+    await startHelper(d, h, 't1', 'helper')
+    for (let i = 0; i < 2; i++) await d.bash('npm test --red', 'agent-helper')
+    // Other test runs failing do not add up to "several tool calls failed" either.
+    await d.bash('pytest -x --red', 'agent-helper')
+    await d.bash('cargo test --red', 'agent-helper')
+    await d.step('t1', 1, 'agent-helper')
+    expect(last(h.sent)?.effort, 'red test runs: expected reds, not struggling').toBe('low')
+    await d.bash('npm test --red', 'agent-helper')
+    await d.step('t1', 2, 'agent-helper')
+    expect(last(h.sent)?.effort, 'the same one a third time: stuck').toBe('medium')
+    expect(helperLog(h)).toContain('the same test run failed 3 times')
+    await d.complete('t1')
+  })
+
+  test(`a failing test run in the main chat is not an error of the work either (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: AUTO_RAISE })
+    const d = drive($, h)
+    await d.start(surface)
+    h.rating = NO_CHANGE
+    await d.submit(LOOKUP)
+    await d.step('m1', 0)
+    for (let i = 0; i < 2; i++) await d.bash('npm test --red')
+    await d.bash('pytest --red')
+    await d.bash('go test --red')
+    await d.step('m1', 1)
+    expect(last(h.sent)?.effort, 'four red test runs: not four errors').toBe('medium')
+    await d.bash('npm test --red')
+    await d.step('m1', 2)
+    expect(last(h.sent)?.effort, 'the same one a third time').toBe('high')
+  })
+
+  test(`the main chat's rework of a hand-off uses the task's chances, and is refused once they are used up (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: HELPERS })
+    const d = drive($, h)
+    await d.start(surface)
+    await warm(d, h)
+    h.rating = HAND_OFF()
+    await startHelper(d, h, 't1', 'helper')
+    expect(((await d.agent('haiku')) as { deny?: string }).deny, 'a second subagent on its model: rework, one chance').toBeUndefined()
+    expect(((await d.send()) as { deny?: string }).deny, 'a message to the subagent: rework, the second chance').toBeUndefined()
+    const refused = (await d.send()) as { deny?: string }
+    expect(refused.deny).toContain('retry budget is used up')
+    expect(refused.deny).toContain('Finish the task yourself')
+    expect(((await d.agent('haiku')) as { deny?: string }).deny, 'a third subagent too').toContain('retry budget is used up')
+    expect(helperLog(h)).toContain("rework refused: the task's retry budget is used up")
+    // A helper's raise would find no chance left either.
+    await d.bash('fail a', 'agent-helper')
+    await d.bash('fail a', 'agent-helper')
+    await d.step('t1', 1, 'agent-helper')
+    expect(((await d.bash('ls', 'agent-helper')) as { deny?: string }).deny, 'sent back').toContain('stuck')
+    await d.complete('t1')
+    expect((readRuns(h).find(l => l.kind === 'run') as { retries?: number }).retries).toBe(2)
+  })
+
+  test(`a follow-up shares its task's retry budget; a new task starts a fresh one (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: HELPERS })
+    const d = drive($, h)
+    await d.start(surface)
+    await warm(d, h)
+    h.rating = HAND_OFF()
+    await startHelper(d, h, 't1', 'helper')
+    await d.bash('fail a', 'agent-helper')
+    await d.bash('fail a', 'agent-helper')
+    await d.step('t1', 1, 'agent-helper')
+    expect(last(h.sent)?.effort, 'a raise: one chance used').toBe('medium')
+    await d.complete('t1')
+
+    // The follow-up continues the task: one chance left, then none.
+    h.rating = HAND_OFF(true)
+    await d.submit(FOLLOW_UP)
+    await d.step('t2', 0)
+    await d.agent('haiku')
+    expect(((await d.send()) as { deny?: string }).deny, 'the second chance').toBeUndefined()
+    expect(((await d.send()) as { deny?: string }).deny, 'none left').toContain('retry budget is used up')
+    await d.complete('t2')
+
+    // A new goal is a new task.
+    h.rating = HAND_OFF(false)
+    await d.submit('now list every call site of the new logger across the repo')
+    await d.step('t3', 0)
+    await d.agent('haiku')
+    expect(((await d.send()) as { deny?: string }).deny, 'a fresh budget').toBeUndefined()
+    await d.complete('t3')
+
+    const runs = readRuns(h).filter(l => l.kind === 'run')
+    expect(runs.map(r => r.retries)).toEqual([1, 2, 1])
+    expect(runs[1]?.task, 'one task').toBe(runs[0]?.task)
+    expect(runs[2]?.task, 'another').not.toBe(runs[0]?.task)
+  })
+
+  test(`a moved subagent is watched too: raised from the budget, and its own line carries what the watch saw (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: AUTO_RAISE })
+    const d = drive($, h)
+    await d.start(surface)
+    h.rating = NO_CHANGE
+    await d.submit(SEARCH)
+    await d.step('t1', 0)
+    h.rating = LISTING
+    await d.spawn('lister')
+    h.now += 1000
+    await d.step('l1', 0, 'agent-lister')
+    expect(last(h.sent)?.effort).toBe('low')
+    await d.bash('fail make', 'agent-lister')
+    await d.bash('fail make', 'agent-lister')
+    h.now += 4000
+    await d.step('l1', 1, 'agent-lister')
+    expect(last(h.sent)?.effort, 'raised one level').toBe('medium')
+    expect(helperLog(h)).toContain('raised helper agent-lister low → medium at step 2')
+    await d.step('l1', 2, 'agent-lister')
+    expect(last(h.sent)?.effort).toBe('medium')
+    await d.answer('agent-lister')
+    await d.complete('t1')
+    const runs = readRuns(h)
+    const sub = runs.find(l => l.kind === 'subagent') as Record<string, unknown>
+    expect([sub.steps, sub.ms, sub.errors, sub.blocked, sub.stall, sub.raises]).toEqual([3, 5000, 2, 0, 'struggling', [{ step: 2, from: 'low', to: 'medium', why: 'the same tool call failed twice' }]])
+    expect('returned' in sub).toBe(false)
+    const run = runs.find(l => l.kind === 'run') as { helpers?: HelperEntry[]; retries?: number }
+    expect(run.helpers?.map(x => [x.agent, x.kind, x.steps, x.ms])).toEqual([['agent-lister', 'moved', 3, 5000]])
+    expect(run.retries).toBe(1)
+  })
+
+  test(`a new session starts with a fresh retry budget and no helpers watched (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: HELPERS })
+    const d = drive($, h)
+    await d.start(surface)
+    await warm(d, h)
+    h.rating = HAND_OFF()
+    await startHelper(d, h, 't1', 'helper')
+    await d.agent('haiku')
+    await d.send()
+    await d.send()
+    expect(((await d.send()) as { deny?: string }).deny).toContain('retry budget is used up')
+    await d.complete('t1')
+    await d.start(surface)
+    await warm(d, h)
+    h.rating = HAND_OFF()
+    await startHelper(d, h, 't2', 'helper')
+    expect(((await d.send()) as { deny?: string }).deny, 'a fresh budget').toBeUndefined()
   })
 
 }

@@ -52,6 +52,7 @@ export const SETTINGS = {
   raterCheck: { title: 'Advanced · Rater check', options: ['every 25', 'every 50', 'every 100', 'off'], default: 'every 50' },
   startTips: { title: 'Advanced · Start suggestions', options: ['weekly', 'monthly', 'off'], default: 'weekly' },
   idleWarning: { title: 'Advanced · Idle warning', options: ['over $0.10', 'over $0.50', 'over $1', 'off'], default: 'over $0.10' },
+  beforeCold: { title: 'Advanced · Before the cache goes cold', options: ['ask', 'keep warm 2 h', 'keep warm 8 h', 'save a handoff', 'compact', 'off'], default: 'ask' },
   billing: { title: 'Advanced · Reports', options: ['api', 'subscription'], default: 'api' },
   band: { title: 'Advanced · Band', options: ['when it acts', 'always', 'off'], default: 'when it acts' },
   share: { title: 'Advanced · Share anonymous feedback', options: ['off', 'on'], default: 'off' },
@@ -238,6 +239,8 @@ export type ProfileValues = {
   /** Chances a task has to retry: a helper raised a level, or the main chat reworking a hand-off. */
   chances: number
   answers: Answers
+  /** What a big session does before its cache goes cold, while Before the cache goes cold is not yours. Economy never keeps warm. */
+  beforeCold: 'ask' | 'keep warm 8 h' | 'save a handoff'
 }
 
 // What each profile stands for. The Quality and Balanced values are starting points, to be recalibrated
@@ -250,6 +253,7 @@ export const PROFILES: Record<Profile, ProfileValues> = {
     raterEvery: 10,
     chances: 1,
     answers: { lower: 'ask', raise: 'auto', up: 'auto', down: 'ask' },
+    beforeCold: 'keep warm 8 h',
   },
   Balanced: {
     evidence: { minTasks: 0, maxMiss: 0.2 },
@@ -257,6 +261,7 @@ export const PROFILES: Record<Profile, ProfileValues> = {
     raterEvery: 20,
     chances: 2,
     answers: { lower: 'auto', raise: 'auto', up: 'auto', down: 'auto' },
+    beforeCold: 'ask',
   },
   Economy: {
     evidence: { minTasks: 0, maxMiss: 0.3 },
@@ -264,6 +269,7 @@ export const PROFILES: Record<Profile, ProfileValues> = {
     raterEvery: 30,
     chances: 3,
     answers: { lower: 'auto', raise: 'auto', up: 'stay', down: 'auto' },
+    beforeCold: 'save a handoff',
   },
 }
 
@@ -271,12 +277,13 @@ export const PROFILES: Record<Profile, ProfileValues> = {
 export const profileOf = (v: unknown): Profile => (isProfile(v) ? v : 'Balanced')
 
 /** What the profile governs, as it applies now. */
-export type InUse = { handOff: number; minTasks: number; maxMiss: number | null; raterEvery: number | null; chances: number; answers: Answers }
+export type InUse = { handOff: number; minTasks: number; maxMiss: number | null; raterEvery: number | null; chances: number; answers: Answers; beforeCold: string }
 
 /**
  * The profile's values, each replaced by its row where the row is yours: your setting wins. The evidence rule
  * is one value held by the Pause after misses row, so a row you set replaces all of it, the minimum of logged
  * tasks too (Pause after misses "off" has to mean off). Chances and the questions' first options have no row.
+ * Before the cache goes cold is one value: the row you set, else the profile's.
  */
 export function inUse(profile: Profile, values: Readonly<Record<string, string>>, yours: ReadonlySet<SettingKey>): InUse {
   const p = PROFILES[profile]
@@ -288,5 +295,6 @@ export function inUse(profile: Profile, values: Readonly<Record<string, string>>
     raterEvery: yours.has('raterCheck') ? raterEvery(values.raterCheck ?? '') : p.raterEvery,
     chances: p.chances,
     answers: p.answers,
+    beforeCold: yours.has('beforeCold') ? (values.beforeCold ?? p.beforeCold) : p.beforeCold,
   }
 }

@@ -43,6 +43,8 @@ export type RightsizeBand = {
   tip?: string
   /** The id of the run this band is about: the band offers 👍 and 👎, which tune rightsize on this machine only. */
   rate?: string
+  /** Before the cache goes cold: the buttons of the offer (`id` says what pressing it does), or the Stop of a keep-warm run. */
+  cold?: { id: string; label: string }[]
 }
 
 declare module 'claude-code' {

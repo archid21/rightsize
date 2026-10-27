@@ -1,4 +1,4 @@
-import type { AgentSpawnInput, ConfigSetResult, EngineInterface, PromptSubmitInput, Register } from 'claude-code'
+import type { AgentSpawnInput, ConfigSetResult, EngineInterface, PromptSubmitInput, Register, Timer } from 'claude-code'
 import type {
   RightsizeBand as Band,
   RightsizeBandMode as BandMode,
@@ -92,7 +92,8 @@ import {
 import { BRIEF_MAX, cutRequest, parseRating, ratingPrompt, ratingSystem } from './rate'
 import { isApprovalStep } from './approval'
 import { LIMITS, type Limits, type Signals, type Struggle, blockedError, callKey, isSensitivity, isTestCommand, noSignals, noteCall, oneUp, struggle } from './struggle'
-import { type Change, type HelperLine, type RunLine, type SwitchLine, type Windows, SESSION_TOTAL, buildReport, parseLines, sessionTotal, shareMessage, windowCostText, windowRates } from './report'
+import { type Change, type HelperLine, type RunLine, type SwitchLine, type Windows, SESSION_TOTAL, buildReport, costTag, parseLines, sessionTotal, shareMessage, windowCostText, windowRates } from './report'
+import { COLD_MIN, PING_PROMPT, WRAP_UP, breakEvenMs, clockText, coldPlan, isCacheClock, isGroundwork, keepWarmChoices, leadMs, offerText, pingCost, pingEvery, usualStart, warmPlan, warmingText } from './warm'
 
 // Before a prompt is sent, a quick Haiku call rates the effort, the model and
 // the work needs on each model, and the cost model prices each route that fits. The first time
@@ -455,6 +456,8 @@ let runSeq = 0
 /** Warn before sending into an expired cache when that costs over this many dollars; null: off. */
 let idleWarning: number | null = 0.1
 let cacheTtl = 60 * 60_000
+/** What a big session does before its cache goes cold (Before the cache goes cold, or the profile's value while that row is not yours). */
+let coldMode: string = PROFILES.Balanced.beforeCold
 /** When this session's last main turn ended, in this process; 0 before one did (a resume reads the store). */
 let lastTurnAt = 0
 /** The idle gap already warned about: the person's answer stands for it. */
@@ -895,6 +898,7 @@ function writeSetting($: EngineInterface, key: SettingKey, value: string): Promi
     case 'raterCheck': return $.config.set({ key: 'rightsize.raterCheck', value: value })
     case 'startTips': return $.config.set({ key: 'rightsize.startTips', value: value })
     case 'idleWarning': return $.config.set({ key: 'rightsize.idleWarning', value: value })
+    case 'beforeCold': return $.config.set({ key: 'rightsize.beforeCold', value: value })
     case 'billing': return $.config.set({ key: 'rightsize.billing', value: value })
     case 'band': return $.config.set({ key: 'rightsize.band', value: value })
     case 'share': return $.config.set({ key: 'rightsize.share', value: value })
@@ -1822,7 +1826,8 @@ async function holdIdle($: EngineInterface): Promise<boolean> {
   if (idleWarning === null || billingBy === null) return false
   const last: LastTurn | undefined = lastTurnAt ? { at: lastTurnAt, context: lastContext } : (await lastTurns($))[sessionId]
   if (!last || last.at === idleWarnedFor) return false
-  const idle = (await $.clock.now()) - last.at
+  // Keep-warm requests refreshed the cache after the turn ended: it went cold an hour after the last of them.
+  const idle = (await $.clock.now()) - Math.max(last.at, lastWarmAt)
   const context = lastContext || last.context
   if (idle < cacheTtl || !context || context >= IDLE_MAX_CONTEXT) return false
   const s = await situation($)
@@ -1854,6 +1859,333 @@ async function holdIdle($: EngineInterface): Promise<boolean> {
   if (shown) await setBand($, null)
   await log($, `idle ${idleFor(idle)} with ${context} tokens: ${a ? 'held' : 'sent'}`)
   return a === true
+}
+
+// ---- Before the cache goes cold ----------------------------------------------
+
+// A session whose conversation is big enough that coming back after its cache expired would cost $0.50 or more
+// (API-equivalent dollars, on a subscription too) gets one of these at the end of a main-chat turn, by the row:
+// an offer in the band (ask), keep-warm requests until a chosen time, a Groundwork handoff, a compaction, or nothing.
+// It is rightsize's own: the prices and the cache's life are cost.ts and prices.json, the cost the report counts as
+// overhead (a `warm` line), the words the band's. A session has one timer, a `$.clock.after` that waits for the next
+// thing to do (the expiry action, or the next ping, which schedules the one after it). A newer turn's end replaces it,
+// and a prompt from the person, Stop, turning rightsize off or the row changing cancels it; `coldGen` is the second
+// guard, for a callback already on its way. Nothing fires during a turn. rightsize never writes Groundwork's files: it
+// sends the prompt its skill answers.
+
+/** Every cancel and every new turn bumps this: a callback that wakes up under an older number does nothing. */
+let coldGen = 0
+/** The one pending timer: the expiry action, or the next ping. Cancelled with `cancelCold`. */
+let coldTimer: Timer | null = null
+/** The big turn the offer or the keep-warm run is about: what its buttons act on. */
+type ColdTurn = {
+  endedAt: number
+  context: number
+  tier: Tier
+  /** What coming back cold would cost: the conversation written to the cache again, less a read. */
+  cold: number
+  groundwork: boolean
+  /** Where each offered keep-warm choice ends, by its id. */
+  ends: Record<string, number>
+  /** The band the turn ended with: an offer or a keep-warm line shows after it, so a lowering's Retry and 👍 👎 stay. */
+  base: Band | null
+}
+let coldTurn: ColdTurn | null = null
+type Warming = { until: number; pings: number; spent: number; rates: Awaited<ReturnType<typeof windowPerDollar>> }
+let warming: Warming | null = null
+/** A handoff or a compaction ran since the person's last prompt: the turn it caused does not start another round. */
+let coldDone = false
+/** The prompt rightsize itself is submitting: its own prompt.submit hook lets it through unrated. */
+let coldPrompt: string | null = null
+/** A main-chat turn is running: nothing here fires meanwhile. */
+let mainBusy = false
+/** When the last keep-warm request was answered: the cache is warm from then, whatever the last turn's end says. */
+let lastWarmAt = 0
+
+const pingsText = (n: number) => `${n} ping${n === 1 ? '' : 's'}`
+
+/** Cancels the pending timer. */
+function stopColdTimer() {
+  coldTimer?.cancel()
+  coldTimer = null
+}
+
+/** Cancels what waits or pings: the pending timer, and a callback already on its way (`coldGen`). */
+function cancelCold($: EngineInterface, why: string) {
+  coldGen += 1
+  stopColdTimer()
+  const w = warming
+  warming = null
+  if (w) void log($, `keep warm stopped (${why}): ${pingsText(w.pings)}, ${money(w.spent)}`)
+}
+
+/** The band for this turn's offer or keep-warm line. With `join`, after what the turn's own band said. */
+async function showCold($: EngineInterface, text: string, cold?: { id: string; label: string }[], join = false) {
+  if (bandMode === 'off') return
+  const base = join ? coldTurn?.base ?? null : null
+  const lead = base && (base.acted || bandMode === 'always') ? { ...base, text: `${base.text} ${text}` } : { text }
+  await setBand($, { ...lead, acted: true, ...(cold?.length ? { cold } : {}) })
+}
+
+/** The other plugins that matter: Groundwork writes the handoff, Cache Clock keeps a cache warm itself. A listing that fails says neither. */
+async function neighbours($: EngineInterface) {
+  try {
+    const list = await $.command.list()
+    return { groundwork: list.some(c => isGroundwork(c.plugin)), cacheClock: list.some(c => isCacheClock(c.plugin)) }
+  } catch (err) {
+    await log($, `before the cache goes cold: could not list the commands (${err instanceof Error ? err.message : String(err)}); Groundwork and Cache Clock taken as not installed`)
+    return { groundwork: false, cacheClock: false }
+  }
+}
+
+// Arms the session's one timer for `at` (ms): `fn` runs then, unless the timer was cancelled, a newer round began or
+// rightsize is off. `$.clock.after` is the engine's API for a long wait: its callback is kept in the plugin's
+// environment, so it does not hang on the budget of the hook that scheduled it. An earlier timer is replaced.
+async function armCold($: EngineInterface, gen: number, at: number, fn: () => Promise<void>) {
+  const wait = Math.max(0, at - (await $.clock.now()))
+  if (gen !== coldGen) return
+  stopColdTimer()
+  coldTimer = $.clock.after(wait, () => {
+    coldTimer = null
+    if (gen !== coldGen || off) return
+    void fn().catch(err => log($, `before the cache goes cold failed: ${err instanceof Error ? err.message : String(err)}`))
+  })
+}
+
+// At a main turn's end, in the session's own model's prices. Skipped: rightsize off, the row off, no conversation
+// to speak of (a cold return under $0.50), one over 200K tokens (Claude Code compacts those itself), Cache Clock
+// installed, and a round already done after the person's last prompt.
+async function coldCheck($: EngineInterface) {
+  cancelCold($, 'a newer turn ended')
+  coldTurn = null
+  // An offer for an earlier turn is stale now: this turn gets its own, or none.
+  if ((await $.state.get(BAND).catch(() => undefined))?.value?.cold) await setBand($, null)
+  if (off || coldDone || coldMode === 'off') return
+  const context = lastContext
+  if (!context || context > IDLE_MAX_CONTEXT) return
+  const tier = (await situation($)).tier
+  const cold = idleCost(prices[tier], context).resend
+  if (cold < COLD_MIN) return
+  const { groundwork, cacheClock } = await neighbours($)
+  if (cacheClock) {
+    await log($, `before the cache goes cold: skipped, Cache Clock is installed and keeps the cache warm (${money(cold)} cold, ${Math.round(context / 1000)}K tokens)`)
+    return
+  }
+  const plan = coldPlan(coldMode, groundwork)
+  const prev = (await $.state.get(BAND).catch(() => undefined))?.value
+  const turn: ColdTurn = { endedAt: lastTurnAt || (await $.clock.now()), context, tier, cold, groundwork, ends: {}, base: prev && !prev.cold ? prev : null }
+  coldTurn = turn
+  const gen = coldGen
+  if (plan.action === 'warm') {
+    await startWarm($, turn, (plan.hours ?? 8) * 60 * 60_000, coldMode)
+  } else if (plan.action === 'handoff' || plan.action === 'compact') {
+    await log($, `before the cache goes cold: ${plan.action} ${Math.round(leadMs(cacheTtl) / 60_000)} min before it expires (${money(cold)} cold, ${Math.round(context / 1000)}K tokens on ${TIER_NAME[tier]})`)
+    await armCold($, gen, turn.endedAt + cacheTtl - leadMs(cacheTtl), () => atCold($, turn, plan.action as 'handoff' | 'compact'))
+  } else if (plan.action === 'ask') await offerCold($, turn)
+}
+
+// The offer: one button per priced keep-warm choice, the handoff or the compaction, "Let it go cold" and "Turn this off".
+// Nobody presses a button: nothing happens, and the cache goes cold.
+async function offerCold($: EngineInterface, turn: ColdTurn) {
+  if (bandMode === 'off') {
+    await log($, 'before the cache goes cold: no offer, the band is off')
+    return
+  }
+  const rates = billing === 'subscription' ? await windowPerDollar($) : undefined
+  const ping = pingCost(prices[turn.tier], turn.context)
+  const usual = usualStart(runLog, await $.clock.now())
+  const choices = keepWarmChoices({ ttl: cacheTtl, endedAt: turn.endedAt, cold: turn.cold, ping, startMinutes: usual.minutes, tag: d => costTag(d, billing === 'subscription', rates) })
+  for (const c of choices) if (c.endsAt !== undefined) turn.ends[c.id] = c.endsAt
+  const text = offerText({ ttl: cacheTtl, context: turn.context, model: TIER_NAME[turn.tier], coldText: usageCostText(turn.cold, rates), breakEven: breakEvenMs(turn.cold, ping, cacheTtl) })
+  await showCold(
+    $,
+    text,
+    [
+      ...choices.map(c => ({ id: c.id, label: c.label })),
+      turn.groundwork ? { id: 'handoff', label: 'Save a handoff' } : { id: 'compact', label: 'Compact now' },
+      { id: 'let-go', label: 'Let it go cold' },
+      { id: 'off', label: 'Turn this off' },
+    ],
+    true,
+  )
+  await log($, `before the cache goes cold: offered ${choices.map(c => c.id).join(', ') || 'no keep-warm time'} (${money(turn.cold)} cold, ${Math.round(turn.context / 1000)}K tokens on ${TIER_NAME[turn.tier]}${usual.fallback ? `, usual start 9:00 by default, ${usual.days} days of runs` : ''})`)
+}
+
+const spentText = (w: Warming) => (billing === 'api' ? money(w.spent) : windowCostText(w.spent, w.rates))
+
+const showWarming = ($: EngineInterface, w: Warming) => showCold($, warmingText({ until: w.until, pings: w.pings, spentText: spentText(w) }), [{ id: 'stop', label: 'Stop' }], true)
+
+/** The keep-warm run ends: `text` is the band's last word on it. */
+async function endWarm($: EngineInterface, w: Warming, text: string) {
+  if (warming === w) {
+    warming = null
+    stopColdTimer()
+  }
+  await showCold($, `${text} ${pingsText(w.pings)}, ${spentText(w)}.`)
+}
+
+/** Writes one `warm` line to the run log: the report counts its cost as rightsize's own, so it lowers Total saved. */
+async function logWarm($: EngineInterface, c: ColdTurn, cost: number) {
+  const line: RunLine = { at: new Date().toISOString(), kind: 'warm', session: sessionId, tier: c.tier, context: c.context, overhead: round(cost) }
+  await append($, 'runs.jsonl', JSON.stringify(line), RUNS_LOG_MAX)
+  runLog.push(line)
+}
+
+// Keeps the cache warm for `ms` after the turn ended: one request through $.model.fork each (cache life - lead), which
+// re-reads the conversation from the cache and so refreshes it. Never past the point where the requests cost more than
+// coming back cold.
+async function startWarm($: EngineInterface, c: ColdTurn, ms: number, how: string) {
+  const ping = pingCost(prices[c.tier], c.context)
+  const plan = warmPlan({ ms, ttl: cacheTtl, cold: c.cold, ping, endedAt: c.endedAt })
+  if (plan.capped) await log($, `keep warm capped at ${plan.pings} ping${plan.pings === 1 ? '' : 's'}: more would cost more than coming back cold (${money(c.cold)})`)
+  if (plan.pings < 1) {
+    await log($, `keep warm not started: one request costs more than coming back cold (${money(ping)} against ${money(c.cold)})`)
+    return
+  }
+  const gen = ++coldGen
+  const w: Warming = { until: plan.endsAt, pings: 0, spent: 0, rates: billing === 'subscription' ? await windowPerDollar($) : undefined }
+  warming = w
+  await log($, `keeping warm until ${clockText(plan.endsAt)} (${how}): ${plan.pings} request${plan.pings === 1 ? '' : 's'} planned, about ${money(plan.cost)}, one every ${Math.round(pingEvery(cacheTtl) / 60_000)} min`)
+  await showWarming($, w)
+  await armPing($, gen, c, w, 1, plan.pings)
+}
+
+/** Arms the timer for ping `k` of `count`: the first is one cache life less the lead after the turn ended, and each one arms the next. */
+const armPing = ($: EngineInterface, gen: number, c: ColdTurn, w: Warming, k: number, count: number) =>
+  armCold($, gen, c.endedAt + k * pingEvery(cacheTtl), () => sendPing($, gen, c, w, k, count))
+
+// Ping `k` of `count`, when its timer fires. A turn running keeps the cache warm itself, and its end starts the next round.
+async function sendPing($: EngineInterface, gen: number, c: ColdTurn, w: Warming, k: number, count: number) {
+  try {
+    if (mainBusy) {
+      await log($, 'keep warm skipped: a turn is running')
+      if (warming === w) warming = null
+      return
+    }
+    const r = await $.model.fork({ prompt: PING_PROMPT }).catch((err: unknown) => ({ isAnswered: false as const, reason: `error: ${err instanceof Error ? err.message : String(err)}`, usage: undefined }))
+    const usage = 'usage' in r ? r.usage : undefined
+    // A request that came back with no usage still read the conversation from the cache.
+    const cost = r.isAnswered || usage ? pingCost(prices[c.tier], c.context, usage) : 0
+    w.pings += r.isAnswered ? 1 : 0
+    w.spent += cost
+    if (r.isAnswered || cost > 0) await logWarm($, c, cost)
+    if (r.isAnswered) lastWarmAt = await $.clock.now()
+    if (gen !== coldGen) return
+    if (!r.isAnswered) {
+      const why = 'status' in r ? `${r.reason}${r.status === null ? '' : ` ${r.status}`}, ${r.error}` : r.reason
+      await log($, `keep warm stopped: the request failed (${why})`)
+      await endWarm($, w, 'Stopped keeping warm: a request failed.')
+      return
+    }
+    // The planned last request may end a little over: it is the end anyway. Before it, a run that costs more than planned stops.
+    if (k < count && w.spent >= c.cold) {
+      await log($, `keep warm stopped: ${money(w.spent)} spent, as much as coming back cold`)
+      await endWarm($, w, 'Stopped keeping warm: it cost as much as coming back cold.')
+      return
+    }
+    if (k < count) {
+      await showWarming($, w)
+      await armPing($, gen, c, w, k + 1, count)
+      return
+    }
+    await log($, `keep warm ended at ${clockText(w.until)}: ${pingsText(w.pings)}, ${money(w.spent)}`)
+    await endWarm($, w, `Kept the cache warm until ${clockText(w.until)}.`)
+  } catch (err) {
+    await log($, `keep warm failed: ${err instanceof Error ? err.message : String(err)}`)
+    if (gen === coldGen && warming === w) warming = null
+  }
+}
+
+// Before expiry: the handoff or the compaction, once. Not while a turn runs.
+async function atCold($: EngineInterface, c: ColdTurn, action: 'handoff' | 'compact') {
+  try {
+    if (mainBusy) {
+      await log($, `${action} skipped: a turn is running`)
+      return
+    }
+    await (action === 'handoff' ? saveHandoff($, c) : compactNow($))
+  } catch (err) {
+    await log($, `${action} failed: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
+// Groundwork's skill answers "wrap up" with its wrap-up flow. The prompt is rightsize's own: rated by nobody, and its
+// hook lets it through. Without Groundwork it is a compaction.
+async function saveHandoff($: EngineInterface, c: ColdTurn) {
+  if (!c.groundwork) return compactNow($)
+  coldDone = true
+  coldPrompt = WRAP_UP
+  try {
+    const sent = await $.prompt.submit({ text: WRAP_UP })
+    if (sent.drop !== undefined) {
+      await log($, `handoff: "${WRAP_UP}" was refused (${sent.drop})`)
+      return
+    }
+    await log($, `handoff: submitted "${WRAP_UP}" to Groundwork before the cache went cold`)
+    await showCold($, 'Saved a handoff with Groundwork before the cache went cold.')
+  } catch (err) {
+    await log($, `handoff failed: ${err instanceof Error ? err.message : String(err)}`)
+  } finally {
+    coldPrompt = null
+  }
+}
+
+async function compactNow($: EngineInterface) {
+  coldDone = true
+  try {
+    const r = await $.session.compact()
+    if (r.skip !== undefined) {
+      await log($, `compact skipped: ${r.skip}`)
+      return
+    }
+    // The conversation is small now: the idle question would quote the old size.
+    idleWarnedFor = lastTurnAt
+    await log($, 'compact: compacted before the cache went cold')
+    await showCold($, 'Compacted while the cache was warm.')
+  } catch (err) {
+    await log($, `compact failed: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
+// A band button. Offer buttons act on the turn that ended; the cache is still warm, so a handoff or a compaction runs
+// right away, and a keep-warm time counts from the turn's end.
+async function pressCold($: EngineInterface, id: string) {
+  if (id === 'stop') {
+    const w = warming
+    cancelCold($, 'Stop pressed')
+    if (w) await showCold($, `Stopped keeping warm. ${pingsText(w.pings)}, ${spentText(w)}.`)
+    return
+  }
+  if (id === 'off') {
+    cancelCold($, 'turned off')
+    await putConfig($, 'beforeCold', 'off')
+    await setBand($, null)
+    $.ui.toast('Rightsize: Before the cache goes cold is now "off". It is the row in /config; set it back any time.')
+    await log($, 'before the cache goes cold: turned off from the band; saved as your setting')
+    return
+  }
+  if (id === 'let-go') {
+    cancelCold($, 'let it go cold')
+    await setBand($, null)
+    await log($, 'before the cache goes cold: let it go cold')
+    return
+  }
+  const c = coldTurn
+  if (!c) return
+  cancelCold($, 'a new choice')
+  if (id === 'handoff' || id === 'compact') {
+    await setBand($, null)
+    await (id === 'handoff' ? saveHandoff($, c) : compactNow($))
+    return
+  }
+  const end = c.ends[id]
+  if (end === undefined) return
+  if ((await $.clock.now()) - c.endedAt >= cacheTtl) {
+    $.ui.toast('Rightsize: the cache already went cold, so there is nothing to keep warm.')
+    await setBand($, null)
+    return
+  }
+  await startWarm($, c, end - c.endedAt, `button ${id}`)
 }
 
 const APPROVAL_DENY =
@@ -2285,6 +2617,7 @@ function applyProfile() {
   spotEvery = u.raterEvery
   chances = u.chances
   answers = u.answers
+  coldMode = u.beforeCold
 }
 
 // Sets the module's variable for one row from `cfg`: at load, when /config changes it, and when rightsize writes it itself.
@@ -2311,6 +2644,7 @@ function applyOption(key: SettingKey) {
     case 'lowering':
     case 'missPause':
     case 'raterCheck':
+    case 'beforeCold':
       applyProfile()
       return
     case 'useHaiku':
@@ -2371,6 +2705,11 @@ async function followRow($: EngineInterface, key: SettingKey, value: string) {
       return
     case 'share':
       await setShare($, value === 'on')
+      return
+    case 'beforeCold':
+      // The row changed: what was waiting or pinging under the old value stops. The next big turn's end follows the new one.
+      cancelCold($, 'Before the cache goes cold changed')
+      coldTurn = null
       return
     case 'billing':
       // Reports set in /config by the person counts as the answer to the billing question.
@@ -2473,6 +2812,12 @@ export const register: Register = (on, options) => {
     spawning.length = 0
     lastTurnAt = 0
     idleWarnedFor = 0
+    cancelCold($, 'a session started')
+    coldTurn = null
+    coldDone = false
+    coldPrompt = null
+    mainBusy = false
+    lastWarmAt = 0
     await $.command.register({ name: CMD, description: 'Rightsize: status, report, share, settings, retry or clear' })
     // Claude Code hands over every value with its default filled in; only settings.json tells which ones are yours.
     const configs = await $.settings.read({ key: 'pluginConfigs' }).catch(() => undefined)
@@ -2541,6 +2886,10 @@ export const register: Register = (on, options) => {
     $.clock.every(3000, () => {
       void readSwitches($).then(json => {
         off = json[NAME] === false
+        if (off && (warming || coldTurn)) {
+          cancelCold($, 'rightsize was turned off')
+          coldTurn = null
+        }
       })
     })
     await showStatus($)
@@ -2593,6 +2942,16 @@ export const register: Register = (on, options) => {
   })
 
   on('prompt.submit', async ($, e, next) => {
+    // rightsize's own prompt (the handoff's "wrap up"): not rated, and it does not count as the person coming back.
+    if (coldPrompt !== null && e.text.trim() === coldPrompt) {
+      coldPrompt = null
+      return next(e)
+    }
+    // The person is back: keep-warm requests and a waiting handoff stop, and the next big turn's end starts afresh.
+    if (!off && fromPerson(e) && !e.command && !e.isMeta) {
+      coldDone = false
+      cancelCold($, 'a prompt was submitted')
+    }
     if (off || !fromPerson(e) || e.command || e.isMeta) return next(e)
     // A new prompt replaces the last one's band.
     bandNote = null
@@ -2737,6 +3096,7 @@ export const register: Register = (on, options) => {
   // that starts for one carries its text, so each run is bound to its own turn, not to whichever starts next.
   on('turn.start', async ($, e, next) => {
     if (e.agentId !== undefined) return next(e)
+    mainBusy = true
     const text = e.text.trim()
     // A plugin beneath may have rewritten the text. The engine starts a prompt's turn before its submit answers,
     // so a turn starting while exactly one prompt from an idle session is still entering is that prompt's.
@@ -2970,6 +3330,7 @@ export const register: Register = (on, options) => {
         if (value !== have) buttons.push({ key: `rule-${value}`, label, press: () => setRule($, rule, value) })
       }
     }
+    for (const c of band.cold ?? []) buttons.push({ key: `cold-${c.id}`, label: c.label, press: () => pressCold($, c.id) })
     const { Box, Button, Text } = $.ui.resolve(e)
     return (
       <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
@@ -2978,7 +3339,7 @@ export const register: Register = (on, options) => {
           {band.text}
         </Text>
         {buttons.map((b, i) => (
-          <Button key={b.key} label={b.label} hotkey={String(i + 1)} onPress={() => void b.press()} />
+          <Button key={b.key} label={b.label} {...(i < 9 ? { hotkey: String(i + 1) } : {})} onPress={() => void b.press()} />
         ))}
         <Button key="mode" label="⋯" onPress={() => void chooseBandMode($)} />
         <Button key="close" label="×" role="dismiss" onPress={() => void setBand($, null)} />
@@ -2993,6 +3354,7 @@ export const register: Register = (on, options) => {
     if (watched) watched.ms = Math.max(0, (await $.clock.now()) - watched.startedAt)
     if (sized) await finishSubagent($, sized, e.isAborted, watched)
     if (e.agentId === undefined) {
+      mainBusy = false
       completed.add(e.turnId)
       await knowBilling($, false)
       await rememberTurn($)
@@ -3004,6 +3366,8 @@ export const register: Register = (on, options) => {
       await askShare($).catch(() => undefined)
     }
     if (e.agentId === undefined) void sendShare($)
+    // A person who interrupted is at the keyboard: no offer for an aborted turn.
+    if (e.agentId === undefined && !e.isAborted) await coldCheck($).catch(err => log($, `before the cache goes cold failed: ${err instanceof Error ? err.message : String(err)}`))
     return result
   })
 }

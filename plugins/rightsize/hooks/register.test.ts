@@ -37,6 +37,8 @@ const SEARCH = 'find every call site of the old logger across the whole repo and
 const REVIEW = '{"level":"high","model":"opus","size":"small","type":"review","read":30000,"write":3000,"steps":10,"reason":"subtle bug hunt"}'
 const NO_CHANGE = '{"level":"medium","model":"same","size":"small","type":"lookup","read":2000,"write":300,"steps":1}'
 const FREE_SWITCHES = { 'cache:effort-switch': { n: 20, ratio: 0 } }
+/** A main request that read 80,500 tokens: on Opus a cold return costs $0.63, over the $0.50 bar for Before the cache goes cold. */
+const BIG_TURN = { input_tokens: 200, output_tokens: 400, cache_read_input_tokens: 80_000, cache_creation_input_tokens: 300 }
 // A report table row's cells (session, 7 days, 30 days), by its label.
 const cellsOf = (text: string, label: string) => text.split('\n').find(l => l.startsWith(`  ${label}`))?.slice(2 + label.length).trim().split(/ {2,}/)
 
@@ -141,6 +143,43 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
     sleepEnds: false,
     /** A header's question answers only once its promise settles: an answer that comes after the wait. */
     answerGate: {} as Record<string, Promise<void>>,
+    /** What a main request's usage says (stepUsage): the conversation's size is the sum of the input fields. */
+    stepUsage: { input_tokens: 200, output_tokens: 400, cache_read_input_tokens: 20_000, cache_creation_input_tokens: 300 },
+    /** What $.command.list() answers: the commands other plugins add. */
+    commands: [] as { name: string; description: string; source: string; plugin?: string }[],
+    /** True: $.command.list() throws. */
+    commandsFail: false,
+    /** Every prompt $.model.fork was given, in order (the keep-warm requests). */
+    forks: [] as string[],
+    /** Replies for the next forks, in order; when none is left a fork answers with `forkUsage`. */
+    forkReplies: [] as unknown[],
+    /** What an answered fork's usage says: it read the whole conversation from the cache. */
+    forkUsage: { input_tokens: 12, output_tokens: 4, cache_read_input_tokens: 80_000, cache_creation_input_tokens: 0 } as Record<string, number> | undefined,
+    /** How many times $.session.compact() ran, and what it answers: a reason to skip, or the compaction. */
+    compactions: 0,
+    compactSkip: undefined as string | undefined,
+    /** True: sleeps are on a virtual clock. They end only when `advance` reaches them, and the clock moves to each one's time. */
+    virtual: false,
+    sleepers: [] as { due: number; release: () => void }[],
+    /** Every wait the plugin asked $.clock.sleep for, and every $.clock.after, in ms: a long wait has to be an `after`, which does not hang on a hook's budget. */
+    sleeps: [] as number[],
+    afters: [] as number[],
+    /** Moves the virtual clock on by `ms`, ending each sleep that comes due on the way and letting the plugin run before the next. */
+    advance: async (ms: number) => {
+      // What the plugin has started waits for first: a sleep it is about to start counts from now, not from the time moved on to.
+      await flush()
+      const target = h.now + ms
+      for (;;) {
+        const due = h.sleepers.filter(x => x.due <= target).sort((a, b) => a.due - b.due)[0]
+        if (!due) break
+        h.sleepers.splice(h.sleepers.indexOf(due), 1)
+        h.now = Math.max(h.now, due.due)
+        due.release()
+        await flush()
+      }
+      h.now = target
+      await flush()
+    },
   }
   on('session.start', async ($, e) => {
     h.surfaces = e.surface ? [e.surface] : []
@@ -196,7 +235,20 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
     return { value: [...names].map(([name, kind]) => ({ name, kind, size: kind === 'file' ? (h.files[`${prefix}${name}`] ?? '').length : 0, mtimeMs: kind === 'file' ? (h.mtimes[`${prefix}${name}`] ?? h.now) : 0, isLink: false })) } as never
   })
   on('clock.now', async () => ({ value: h.now }) as never)
-  on('clock.sleep', async () => {
+  // A timer: the plugin keeps its callback and cancels it itself. Not on the virtual clock, it never fires.
+  on('clock.after', async (_$, e) => {
+    const ms = (e as { ms: number }).ms
+    h.afters.push(ms)
+    if (!h.virtual) await new Promise(() => {})
+    await new Promise<void>(release => h.sleepers.push({ due: h.now + ms, release }))
+    return { value: undefined } as never
+  })
+  on('clock.sleep', async (_$, e) => {
+    h.sleeps.push((e as { ms: number }).ms)
+    if (h.virtual) {
+      await new Promise<void>(release => h.sleepers.push({ due: h.now + (e as { ms: number }).ms, release }))
+      return { value: undefined } as never
+    }
     if (!h.sleepEnds) await new Promise(() => {})
     await new Promise(r => setTimeout(r, 25))
     return { value: undefined } as never
@@ -329,10 +381,24 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
     h.sent.push({ effort: e.effort, model: e.model, agentId: e.agentId, turnId: e.turnId })
     if (h.ledger !== undefined) h.ledger += h.stepCost
     if (!e.agentId && h.windowStep) h.rateLimits = h.rateLimits.map(l => ({ ...l, percentUsed: l.percentUsed + h.windowStep }))
-    const usage = { input_tokens: 200, output_tokens: 400, cache_read_input_tokens: 20_000, cache_creation_input_tokens: 300 }
+    const usage = h.stepUsage
     return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: { ...usage, model: e.agentId ? h.subModel : (e.model ?? h.model) } } as never
   })
   on('turn.complete', async () => ({ text: '' }) as never)
+  on('command.list', async () => {
+    if (h.commandsFail) throw new Error('commands could not be listed')
+    return { value: h.commands } as never
+  })
+  on('model.fork', async (_$, e) => {
+    h.forks.push((e as { prompt: string }).prompt)
+    const queued = h.forkReplies.shift()
+    if (queued !== undefined) return { value: queued } as never
+    return { value: { isAnswered: true, text: 'OK', ...(h.forkUsage ? { usage: h.forkUsage } : {}) } } as never
+  })
+  on('session.compact', async () => {
+    h.compactions += 1
+    return (h.compactSkip !== undefined ? { skip: h.compactSkip } : { messages: [{ role: 'user', text: 'Summary of the conversation.', toolUses: [] }] }) as never
+  })
   // The engine's own band above the prompt: an empty row.
   on('ui.render', ($, e) => h$($, e))
   return h
@@ -400,7 +466,7 @@ const BAND = {
 } as const
 type Mounted = {
   find: (q: object) => Promise<{ text?: string } | undefined>
-  findAll: (q: object) => Promise<{ key?: string }[]>
+  findAll: (q: object) => Promise<{ key?: string; text?: string }[]>
   press: (t: object) => Promise<unknown>
   unmount: () => Promise<void>
 }
@@ -2792,6 +2858,21 @@ for (const surface of ['desktop', 'terminal'] as const) {
         c.h.answers = { Idle: 'Send it' }
         await c.d.submit('continue')
         return c.h.asked.some(a => a.header === 'Idle')
+      },
+      set: false,
+      def: true,
+    },
+    {
+      key: 'beforeCold',
+      value: 'off',
+      start: OPUS,
+      see: async c => {
+        c.h.stepUsage = BIG_TURN
+        const t = c.turn()
+        await c.d.step(t)
+        await c.d.complete(t)
+        // The default asks, in the band, at the end of a big turn.
+        return (await bandText(c.$, c.surface)).startsWith('rightsize: Cache goes cold in ~60 min')
       },
       set: false,
       def: true,
@@ -5668,6 +5749,611 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.answers = { Confirm: 'Yes' }
     await d.command('reset handOff')
     expect(await settingsText(d), 'Economy\'s 85% again').toContain('hand-off threshold 85%')
+  })
+
+
+  // ---- Before the cache goes cold ------------------------------------------------------------------------------
+  //
+  // A big session (a cold return would cost $0.50 or more) gets, at the end of a main turn, an offer, keep-warm
+  // requests, a handoff or a compaction, by the row. These run on a virtual clock: a sleep ends when `advance` reaches it.
+
+  /** 18:00 local: the next 9:00 is 15 hours away. */
+  const EVENING = new Date(2027, 0, 15, 18, 0, 0, 0).getTime()
+  const GROUNDWORK = [{ name: 'groundwork:groundwork', description: 'Groundwork', source: 'plugin', plugin: 'groundwork' }]
+  const CACHE_CLOCK = [{ name: 'cache-clock:status', description: 'Cache Clock', source: 'plugin', plugin: 'cache-clock' }]
+  type ColdOver = {
+    stored?: Record<string, string>
+    commands?: typeof GROUNDWORK
+    prices?: string
+    usage?: typeof BIG_TURN
+    fork?: Record<string, number> | undefined
+    model?: string
+    store?: Record<string, unknown>
+    rateLimits?: { kind: string; percentUsed: number }[]
+  }
+  // Opus: 80,500 tokens in the conversation, $0.63 to come back cold.
+  const coldSession = async ($: unknown, on: Parameters<TestBody>[1], over: ColdOver = {}) => {
+    const h = engine(on, { model: over.model ?? 'claude-opus-5-5', effort: 'medium', ...(over.stored ? { stored: over.stored } : {}), ...(over.store ? { store: over.store } : {}) })
+    if (over.rateLimits) h.rateLimits = over.rateLimits
+    h.now = EVENING
+    h.virtual = true
+    h.stepUsage = over.usage ?? BIG_TURN
+    h.commands = over.commands ?? []
+    if ('fork' in over) h.forkUsage = over.fork
+    if (over.prices) h.pricesFile = over.prices
+    const d = drive($, h)
+    await d.start(surface)
+    return { h, d }
+  }
+  const coldTurn = async (d: ReturnType<typeof drive>, id: string) => {
+    await d.step(id)
+    await d.complete(id)
+  }
+  const bandButtons = async ($: unknown) => {
+    const ui = await mount($, surface)
+    const found = await ui.findAll({ type: 'Button' })
+    await ui.unmount()
+    return found.map(b => [b.key, b.text])
+  }
+  const pressBand = async ($: unknown, key: string) => {
+    const ui = await mount($, surface)
+    await ui.press({ key })
+    await ui.unmount()
+  }
+  const warmLines = (h: ReturnType<typeof engine>) =>
+    (h.files[RUNS_FILE] ?? '').split('\n').filter(Boolean).map(l => JSON.parse(l) as { kind?: string; overhead?: number; session?: string; tier?: string; context?: number }).filter(l => l.kind === 'warm')
+  const coldLog = (h: ReturnType<typeof engine>) => h.files[LOG_PATH] ?? ''
+  const NOTHING_DONE = (h: ReturnType<typeof engine>) => ({ forks: h.forks.length, submitted: h.submitted.length, compactions: h.compactions })
+  const NONE = { forks: 0, submitted: 0, compactions: 0 }
+  const ZERO = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+
+  test(`ask: a big Opus session's turn end offers each keep-warm time with its price, a compaction, Let it go cold and Turn this off; nobody presses, nothing happens (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const { h, d } = await coldSession($, on)
+    await coldTurn(d, 't1')
+    expect(await bandText($, surface)).toBe('rightsize: Cache goes cold in ~60 min (81K tokens on Opus). Coming back cold: about $0.63.')
+    expect(await bandButtons($)).toEqual([
+      ['cold-2h', 'Keep warm 2 h · $0.03'],
+      ['cold-8h', 'Keep warm 8 h · $0.13'],
+      ['cold-start', 'Until 9:00 tomorrow · $0.24'],
+      ['cold-compact', 'Compact now'],
+      ['cold-let-go', 'Let it go cold'],
+      ['cold-off', 'Turn this off'],
+      ['mode', '⋯'],
+      ['close', '×'],
+    ])
+    await h.advance(3 * HOUR)
+    expect(NOTHING_DONE(h), 'the cache goes cold').toEqual(NONE)
+    expect(h.sleepers.length, 'no timer waits').toBe(0)
+  })
+
+  test(`ask: with Groundwork installed the offer says Save a handoff, and the usual start time comes from the run log (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const { h, d } = await coldSession($, on, { commands: GROUNDWORK })
+    // Six days whose first prompt was at 8:21, 8:22 ... 8:26: the median, 8:23.5, rounds to 8:30.
+    const day = (n: number) => JSON.stringify({ at: new Date(2027, 0, 15 - n, 9, 30).toISOString(), submittedAt: new Date(2027, 0, 15 - n, 8, 20 + n).toISOString(), kind: 'run' })
+    h.files[LEGACY_RUNS] = `${[1, 2, 3, 4, 5, 6].map(day).join('\n')}\n`
+    await d.start(surface)
+    await coldTurn(d, 't1')
+    expect((await bandButtons($)).map(b => b[1])).toEqual(['Keep warm 2 h · $0.03', 'Keep warm 8 h · $0.13', 'Until 8:30 tomorrow · $0.24', 'Save a handoff', 'Let it go cold', 'Turn this off', '⋯', '×'])
+    expect(coldLog(h)).toContain('offered 2h, 8h, start')
+  })
+
+  test(`ask: nothing for a small conversation, for Haiku, or past 200K tokens; Sonnet needs about 128K (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const { h, d } = await coldSession($, on, { usage: { ...BIG_TURN, cache_read_input_tokens: 20_000 } })
+    await coldTurn(d, 't1')
+    expect(await bandText($, surface), '20K tokens on Opus: $0.16 cold').toBe('')
+    // Haiku with a big conversation: a cold return costs about a cent and a half.
+    h.stepUsage = BIG_TURN
+    h.model = 'claude-haiku-5-5'
+    await coldTurn(d, 't2')
+    expect(await bandText($, surface), 'Haiku never').toBe('')
+    // Sonnet at 100K tokens: $0.39 cold, under the bar; at 140K: $0.55.
+    h.model = 'claude-sonnet-5-5'
+    h.stepUsage = { ...BIG_TURN, cache_read_input_tokens: 99_500 }
+    await coldTurn(d, 't3')
+    expect(await bandText($, surface)).toBe('')
+    h.stepUsage = { ...BIG_TURN, cache_read_input_tokens: 139_500 }
+    await coldTurn(d, 't4')
+    expect(await bandText($, surface)).toBe('rightsize: Cache goes cold in ~60 min (140K tokens on Sonnet). Coming back cold: about $0.55.')
+    // Opus at exactly 200K tokens is offered; one token more is Claude Code's to compact.
+    h.model = 'claude-opus-5-5'
+    h.stepUsage = { ...BIG_TURN, cache_read_input_tokens: 199_500 }
+    await coldTurn(d, 't5')
+    expect(await bandText($, surface)).toContain('(200K tokens on Opus)')
+    h.stepUsage = { ...BIG_TURN, cache_read_input_tokens: 199_501 }
+    await coldTurn(d, 't6')
+    expect(await bandText($, surface), 'over IDLE_MAX_CONTEXT').toBe('')
+  })
+
+  test(`ask: an aborted turn gets no offer: the person is at the keyboard (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const { d } = await coldSession($, on)
+    await d.step('t1')
+    await ($ as Engine).turn.complete({ turnId: 't1', answer: '', durationMs: 1, isAborted: true, reason: 'aborted' })
+    expect(await bandText($, surface)).toBe('')
+  })
+
+  test(`ask: a lowering's band keeps its buttons when the offer follows it (${surface})`, { timeoutMs: 30000, options: { lowerRule: 'lower automatically' } }, async ($, on) => {
+    const { h, d } = await coldSession($, on, { stored: { lowerRule: 'lower automatically' }, store: { [CAL_STORE]: FREE_SWITCHES } })
+    await coldTurn(d, 't0')
+    h.rating = LOWER
+    await d.submit(LOOKUP)
+    await d.step('t1')
+    await d.complete('t1')
+    const text = await bandText($, surface)
+    expect(text).toMatch(/^rightsize: Effort lowered: medium → low for this prompt \(automatically\)\..* Cache goes cold in ~60 min \(81K tokens on Opus\)\. Coming back cold: about \$0\.63\./)
+    const keys = (await bandButtons($)).map(b => b[0])
+    expect(keys.slice(0, 3), 'Retry and the marks stay').toEqual(['retry', 'good', 'bad'])
+    expect(keys).toContain('cold-off')
+  })
+
+  test(`Turn this off saves the row as yours, says where it is, and no profile offers again (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const { h, d } = await coldSession($, on)
+    await coldTurn(d, 't1')
+    await pressBand($, 'cold-off')
+    expect(last(h.sets)).toMatchObject({ key: 'rightsize.beforeCold', value: 'off' })
+    expect(h.stored.beforeCold, 'written to settings.json as the person\'s own').toBe('off')
+    expect(last(h.toasts)).toBe('Rightsize: Before the cache goes cold is now "off". It is the row in /config; set it back any time.')
+    expect(await settingsText(d), 'yours now').toContain('Before the cache goes cold: off')
+    expect(await bandText($, surface), 'the offer closes').toBe('')
+    await coldTurn(d, 't2')
+    expect(await bandText($, surface), 'and does not come back').toBe('')
+    // Not for Quality either, which would keep warm by default, and not in the next session.
+    await d.config('profile', 'Quality')
+    await coldTurn(d, 't3')
+    await d.start(surface)
+    await coldTurn(d, 't4')
+    await h.advance(3 * HOUR)
+    expect(NOTHING_DONE(h)).toEqual(NONE)
+    expect(await bandText($, surface)).toBe('')
+  })
+
+  test(`Let it go cold closes the offer and does nothing; Compact now runs at once, while the cache is warm (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const { h, d } = await coldSession($, on)
+    await coldTurn(d, 't1')
+    await pressBand($, 'cold-let-go')
+    expect(await bandText($, surface)).toBe('')
+    expect(NOTHING_DONE(h)).toEqual(NONE)
+    expect(coldLog(h)).toContain('let it go cold')
+    await coldTurn(d, 't2')
+    await pressBand($, 'cold-compact')
+    expect(h.compactions, 'right away').toBe(1)
+    expect(await bandText($, surface)).toBe('rightsize: Compacted while the cache was warm.')
+    await h.advance(3 * HOUR)
+    expect(h.compactions, 'once').toBe(1)
+  })
+
+  test(`Save a handoff from the offer submits "wrap up" at once, and the turn it starts does not bring the offer back (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const { h, d } = await coldSession($, on, { commands: GROUNDWORK })
+    await coldTurn(d, 't1')
+    await pressBand($, 'cold-handoff')
+    expect(h.submitted.map(s => s.text)).toEqual(['wrap up'])
+    expect(await bandText($, surface)).toBe('rightsize: Saved a handoff with Groundwork before the cache went cold.')
+    expect(h.ratings, 'rightsize\'s own prompt is not rated').toBe(0)
+    // Groundwork's wrap-up is a turn of its own.
+    await d.turnStart('t2', 'wrap up')
+    await coldTurn(d, 't2')
+    expect(await bandText($, surface), 'no second offer after a handoff').toBe('rightsize: Saved a handoff with Groundwork before the cache went cold.')
+    await h.advance(3 * HOUR)
+    expect(h.submitted.length).toBe(1)
+    // The person comes back and works: it starts afresh.
+    h.rating = NO_CHANGE
+    await d.submit('continue')
+    await coldTurn(d, 't3')
+    expect(await bandText($, surface)).toContain('Cache goes cold in ~60 min')
+  })
+
+  test(`an offered keep-warm time starts at once and counts from the turn's end (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const { h, d } = await coldSession($, on)
+    await coldTurn(d, 't1')
+    await h.advance(10 * MIN)
+    await pressBand($, 'cold-2h')
+    expect(await bandText($, surface)).toBe('rightsize: Keeping warm until 20:00 · no pings yet')
+    expect((await bandButtons($)).map(b => b[0])).toEqual(['cold-stop', 'mode', 'close'])
+    await h.advance(46 * MIN)
+    expect(h.forks.length, '56 minutes after the turn ended').toBe(0)
+    await h.advance(MIN)
+    expect(h.forks, 'at 57').toEqual(['Reply with the single word OK.'])
+    await h.advance(HOUR)
+    expect(h.forks.length, 'and at 114: two for 2 hours').toBe(2)
+    await h.advance(4 * HOUR)
+    expect(h.forks.length).toBe(2)
+    expect(await bandText($, surface)).toBe('rightsize: Kept the cache warm until 20:00. 2 pings, $0.03. · Session: ~$0.03 more')
+  })
+
+  test(`an offered time on a cache that already went cold says so and keeps nothing warm (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const { h, d } = await coldSession($, on)
+    await coldTurn(d, 't1')
+    await h.advance(61 * MIN)
+    await pressBand($, 'cold-2h')
+    expect(last(h.toasts)).toBe('Rightsize: the cache already went cold, so there is nothing to keep warm.')
+    await h.advance(3 * HOUR)
+    expect(h.forks.length).toBe(0)
+  })
+
+  const WARM8 = inProfile('Balanced', { beforeCold: 'keep warm 8 h' })
+  test(`keep warm 8 h: starts at the turn's end with no question, pings through $0.model.fork each 57 minutes, and each ping is a warm line of overhead (${surface})`, { timeoutMs: 30000, options: WARM8.options }, async ($, on) => {
+    const { h, d } = await coldSession($, on, { stored: WARM8.stored })
+    await coldTurn(d, 't1')
+    expect(h.asked.length, 'no question').toBe(0)
+    expect(await bandText($, surface)).toBe('rightsize: Keeping warm until 2:00 · no pings yet')
+    expect((await bandButtons($)).map(b => b[0])).toEqual(['cold-stop', 'mode', 'close'])
+    expect(h.afters, 'one timer, for the first ping: a long wait is an after, not a sleep').toEqual([57 * MIN])
+    await h.advance(56 * MIN)
+    expect(h.forks.length).toBe(0)
+    await h.advance(MIN)
+    expect(h.forks.length, 'the first at 57 minutes: 3 before the cache expires').toBe(1)
+    expect(h.afters, 'the first ping armed the second').toEqual([57 * MIN, 57 * MIN])
+    expect(await bandText($, surface)).toBe('rightsize: Keeping warm until 2:00 · 1 ping, $0.02 so far · Session: ~$0.02 more')
+    expect(warmLines(h).length).toBe(1)
+    expect(warmLines(h)[0]).toMatchObject({ kind: 'warm', session: 'sess-1', tier: 'opus', context: 80_500, overhead: 0.01613 })
+    await h.advance(7 * HOUR)
+    expect(h.forks.length, 'eight in eight hours').toBe(8)
+    expect(h.forks.every(f => f === 'Reply with the single word OK.')).toBe(true)
+    expect(warmLines(h).length).toBe(8)
+    expect(h.afters.length, 'one timer per ping, and none after the last').toBe(8)
+    expect(h.sleeps.every(ms => ms <= 120_000), 'no long sleep').toBe(true)
+    expect(await bandText($, surface)).toBe('rightsize: Kept the cache warm until 2:00. 8 pings, $0.13. · Session: ~$0.13 more')
+    // Nearly 8 hours after the turn ended, but 21 minutes after the last ping: coming back is not an idle return.
+    h.rating = NO_CHANGE
+    await d.submit('continue')
+    expect(h.asked.length, 'no idle question: the pings kept the cache warm').toBe(0)
+    await h.advance(3 * HOUR)
+    expect(h.forks.length, 'and no more').toBe(8)
+  })
+
+  test(`the pings count against rightsize in the report: Total saved is lower by what they cost (${surface})`, { timeoutMs: 30000, options: WARM8.options }, async ($, on) => {
+    const { h, d } = await coldSession($, on, { stored: WARM8.stored })
+    await coldTurn(d, 't1')
+    await h.advance(8 * HOUR)
+    expect(warmLines(h).length).toBe(8)
+    h.now = Date.now()
+    const only = (await d.command('report')).text ?? ''
+    expect(only.split('\n')[1]).toBe('Cost ~$0.13 more than it saved in the last 30 days.')
+    expect(only.replace(/\s+/g, ' ')).toContain('Total saved is after the cost of rating prompts and of keeping the cache warm ($0.13 in 30 days).')
+    // A saving of $0.30 in another session: the 30 days show it less the pings.
+    h.files[LEGACY_RUNS] = `${JSON.stringify({ at: new Date().toISOString(), kind: 'run', session: 'other', change: 'lower', offered: 'lower', stay: 0.4, taken: 0.1, actual: 0.1, overhead: 0 })}\n`
+    expect(cellsOf((await d.command('report')).text ?? '', 'Total saved')).toEqual(['-$0.13', '~$0.17', '~$0.17'])
+  })
+
+  test(`keep warm stops when the person submits a prompt (${surface})`, { timeoutMs: 30000, options: WARM8.options }, async ($, on) => {
+    const { h, d } = await coldSession($, on, { stored: WARM8.stored })
+    await coldTurn(d, 't1')
+    await h.advance(57 * MIN)
+    expect(h.forks.length).toBe(1)
+    h.rating = NO_CHANGE
+    await d.submit('continue')
+    expect(await bandText($, surface), 'the prompt closes the band').toBe('')
+    await h.advance(4 * HOUR)
+    expect(h.forks.length, 'no more').toBe(1)
+    expect(coldLog(h)).toContain('keep warm stopped (a prompt was submitted): 1 ping')
+  })
+
+  test(`keep warm stops at Stop, and the band says how much it cost (${surface})`, { timeoutMs: 30000, options: WARM8.options }, async ($, on) => {
+    const { h, d } = await coldSession($, on, { stored: WARM8.stored })
+    await coldTurn(d, 't1')
+    await h.advance(57 * MIN)
+    await pressBand($, 'cold-stop')
+    expect(await bandText($, surface)).toBe('rightsize: Stopped keeping warm. 1 ping, $0.02. · Session: ~$0.02 more')
+    expect((await bandButtons($)).map(b => b[0]), 'no Stop once stopped').toEqual(['mode', 'close'])
+    await h.advance(4 * HOUR)
+    expect(h.forks.length).toBe(1)
+    expect(coldLog(h)).toContain('keep warm stopped (Stop pressed): 1 ping')
+  })
+
+  test(`keep warm stops when a fork fails, and logs the reason (${surface})`, { timeoutMs: 30000, options: WARM8.options }, async ($, on) => {
+    const { h, d } = await coldSession($, on, { stored: WARM8.stored })
+    await coldTurn(d, 't1')
+    h.forkReplies = [{ isAnswered: false, reason: 'api-error', status: 529, error: 'overloaded', usage: ZERO }]
+    await h.advance(57 * MIN)
+    expect(h.forks.length).toBe(1)
+    expect(coldLog(h)).toContain('keep warm stopped: the request failed (api-error 529, overloaded)')
+    expect(await bandText($, surface)).toBe('rightsize: Stopped keeping warm: a request failed. 0 pings, under $0.01.')
+    await h.advance(4 * HOUR)
+    expect(h.forks.length, 'no retry').toBe(1)
+    expect(warmLines(h), 'a request that cost nothing is no line').toEqual([])
+  })
+
+  test(`keep warm stops when there is nothing to fork, and prices a ping with no usage as a cache read of the conversation (${surface})`, { timeoutMs: 30000, options: WARM8.options }, async ($, on) => {
+    const { h, d } = await coldSession($, on, { stored: WARM8.stored, fork: undefined })
+    await coldTurn(d, 't1')
+    await h.advance(57 * MIN)
+    expect(warmLines(h).map(l => l.overhead), '80,500 tokens read at $0.20 per million').toEqual([0.01610])
+    h.forkReplies = [{ isAnswered: false, reason: 'nothing-to-fork' }]
+    await h.advance(57 * MIN)
+    expect(h.forks.length).toBe(2)
+    expect(coldLog(h)).toContain('keep warm stopped: the request failed (nothing-to-fork)')
+    await h.advance(4 * HOUR)
+    expect(h.forks.length).toBe(2)
+  })
+
+  test(`keep warm stops when its row changes in /config (${surface})`, { timeoutMs: 30000, options: WARM8.options }, async ($, on) => {
+    const { h, d } = await coldSession($, on, { stored: WARM8.stored })
+    await coldTurn(d, 't1')
+    await h.advance(57 * MIN)
+    await d.config('beforeCold', 'off')
+    await h.advance(4 * HOUR)
+    expect(h.forks.length).toBe(1)
+  })
+
+  const WARM2 = inProfile('Balanced', { beforeCold: 'keep warm 2 h' })
+  test(`keep warm 2 h ends at its end time (${surface})`, { timeoutMs: 30000, options: WARM2.options }, async ($, on) => {
+    const { h, d } = await coldSession($, on, { stored: WARM2.stored })
+    await coldTurn(d, 't1')
+    expect(await bandText($, surface)).toBe('rightsize: Keeping warm until 20:00 · no pings yet')
+    await h.advance(5 * HOUR)
+    expect(h.forks.length, 'at 57 and 114 minutes; the next would be past 2 hours').toBe(2)
+    expect(await bandText($, surface)).toBe('rightsize: Kept the cache warm until 20:00. 2 pings, $0.03. · Session: ~$0.03 more')
+    expect(coldLog(h)).toContain('keep warm ended at 20:00: 2 pings')
+  })
+
+  test(`a newer turn end replaces the timer: one keep-warm run at a time (${surface})`, { timeoutMs: 30000, options: WARM2.options }, async ($, on) => {
+    const { h, d } = await coldSession($, on, { stored: WARM2.stored })
+    await coldTurn(d, 't1')
+    await h.advance(30 * MIN)
+    // A turn the person did not start (a background task reporting back) ends 30 minutes later.
+    await d.turnStart('t2', '')
+    await coldTurn(d, 't2')
+    await h.advance(HOUR)
+    expect(h.forks.length, 'the old run is gone: the first ping of the new one is at 57 minutes after t2').toBe(1)
+    await h.advance(5 * HOUR)
+    expect(h.forks.length, 'the new run sends its second and last at 144 minutes; the old one sent none').toBe(2)
+  })
+
+  const FIVE = { prices: OLD_PRICES, usage: { ...BIG_TURN, cache_read_input_tokens: 150_000 }, fork: { input_tokens: 12, output_tokens: 4, cache_read_input_tokens: 150_000, cache_creation_input_tokens: 0 } }
+  test(`break-even on a 5-minute cache: only times under it are offered, and the offer says where keeping warm stops paying (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const { d } = await coldSession($, on, FIVE)
+    await coldTurn(d, 't1')
+    expect(await bandText($, surface)).toBe(
+      'rightsize: Cache goes cold in ~5 min (151K tokens on Opus). Coming back cold: about $0.72. Keeping warm past about 96 min costs more than coming back cold.',
+    )
+    expect((await bandButtons($)).map(b => b[1])).toEqual(['Keep warm 30 min · $0.21', 'Keep warm 1 h · $0.42', 'Compact now', 'Let it go cold', 'Turn this off', '⋯', '×'])
+  })
+
+  const WARM8_5M = inProfile('Balanced', { beforeCold: 'keep warm 8 h' })
+  test(`break-even: keep warm 8 h on a 5-minute cache is capped at 24 pings, and the cap is logged (${surface})`, { timeoutMs: 30000, options: WARM8_5M.options }, async ($, on) => {
+    const { h, d } = await coldSession($, on, { ...FIVE, stored: WARM8_5M.stored })
+    await coldTurn(d, 't1')
+    expect(coldLog(h)).toContain('keep warm capped at 24 pings: more would cost more than coming back cold ($0.72)')
+    await h.advance(3 * HOUR)
+    expect(h.forks.length, 'every 4 minutes for 96 minutes').toBe(24)
+    await h.advance(5 * HOUR)
+    expect(h.forks.length).toBe(24)
+    expect(await bandText($, surface)).toMatch(/^rightsize: Kept the cache warm until 19:41\. 24 pings, \$0\.72\./)
+  })
+
+  test(`break-even: pings that cost more than planned stop the run before the cap (${surface})`, { timeoutMs: 30000, options: WARM8_5M.options }, async ($, on) => {
+    // Each ping really cost a third of a cold return (it wrote the conversation again).
+    const { h, d } = await coldSession($, on, { ...FIVE, stored: WARM8_5M.stored, fork: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 50_000 } })
+    await coldTurn(d, 't1')
+    await h.advance(HOUR)
+    expect(h.forks.length, 'three pings of $0.25 pass $0.72').toBe(3)
+    expect(coldLog(h)).toContain('keep warm stopped: $0.75 spent, as much as coming back cold')
+  })
+
+  const HANDOFF = inProfile('Balanced', { beforeCold: 'save a handoff' })
+  test(`save a handoff: with Groundwork it submits "wrap up" once, 3 minutes before expiry, unrated (${surface})`, { timeoutMs: 30000, options: HANDOFF.options }, async ($, on) => {
+    const { h, d } = await coldSession($, on, { stored: HANDOFF.stored, commands: GROUNDWORK })
+    await coldTurn(d, 't1')
+    expect(await bandText($, surface), 'nothing to show yet').toBe('')
+    expect(h.afters, 'one timer, 3 minutes before the cache expires').toEqual([57 * MIN])
+    await h.advance(56 * MIN)
+    expect(NOTHING_DONE(h)).toEqual(NONE)
+    await h.advance(MIN)
+    expect(h.submitted.map(s => s.text)).toEqual(['wrap up'])
+    expect(h.compactions).toBe(0)
+    expect(h.ratings, 'not rated').toBe(0)
+    expect(h.completions, 'no rating call at all').toEqual([])
+    expect(await bandText($, surface)).toBe('rightsize: Saved a handoff with Groundwork before the cache went cold.')
+    expect(coldLog(h)).toContain('handoff: submitted "wrap up" to Groundwork before the cache went cold')
+    // Groundwork's turn ends: no second round.
+    await d.turnStart('t2', 'wrap up')
+    await coldTurn(d, 't2')
+    await h.advance(5 * HOUR)
+    expect(h.submitted.length, 'once').toBe(1)
+  })
+
+  test(`save a handoff: with no Groundwork it compacts instead (${surface})`, { timeoutMs: 30000, options: HANDOFF.options }, async ($, on) => {
+    const { h, d } = await coldSession($, on, { stored: HANDOFF.stored })
+    await coldTurn(d, 't1')
+    await h.advance(56 * MIN)
+    expect(h.compactions).toBe(0)
+    await h.advance(MIN)
+    expect(h.compactions).toBe(1)
+    expect(h.submitted, 'no wrap-up prompt').toEqual([])
+    expect(await bandText($, surface)).toBe('rightsize: Compacted while the cache was warm.')
+    await h.advance(5 * HOUR)
+    expect(h.compactions, 'once').toBe(1)
+    // The conversation is small now: coming back is not asked about as an idle return of the old size.
+    h.rating = NO_CHANGE
+    await d.submit('continue')
+    expect(h.asked.length).toBe(0)
+  })
+
+  const COMPACT = inProfile('Balanced', { beforeCold: 'compact' })
+  test(`compact: calls $.session.compact() once before expiry, and logs a skip with its reason (${surface})`, { timeoutMs: 30000, options: COMPACT.options }, async ($, on) => {
+    const { h, d } = await coldSession($, on, { stored: COMPACT.stored, commands: GROUNDWORK })
+    await coldTurn(d, 't1')
+    await h.advance(57 * MIN)
+    expect(h.compactions).toBe(1)
+    expect(h.submitted, 'compact is not a handoff, with Groundwork or not').toEqual([])
+    expect(coldLog(h)).toContain('compact: compacted before the cache went cold')
+    await h.advance(5 * HOUR)
+    expect(h.compactions).toBe(1)
+  })
+
+  test(`compact: a compaction a hook vetoes is logged with its reason and shows nothing (${surface})`, { timeoutMs: 30000, options: COMPACT.options }, async ($, on) => {
+    const { h, d } = await coldSession($, on, { stored: COMPACT.stored })
+    h.compactSkip = 'a PreCompact hook blocked it'
+    await coldTurn(d, 't1')
+    await h.advance(57 * MIN)
+    expect(h.compactions).toBe(1)
+    expect(coldLog(h)).toContain('compact skipped: a PreCompact hook blocked it')
+    expect(await bandText($, surface)).toBe('')
+  })
+
+  test(`a prompt before expiry cancels the waiting handoff (${surface})`, { timeoutMs: 30000, options: HANDOFF.options }, async ($, on) => {
+    const { h, d } = await coldSession($, on, { stored: HANDOFF.stored, commands: GROUNDWORK })
+    await coldTurn(d, 't1')
+    await h.advance(30 * MIN)
+    h.rating = NO_CHANGE
+    await d.submit('continue')
+    await h.advance(5 * HOUR)
+    expect(NOTHING_DONE(h)).toEqual({ forks: 0, submitted: 1, compactions: 0 })
+    expect(h.submitted.map(s => s.text), 'only the person\'s own prompt').toEqual(['continue'])
+  })
+
+  test(`nothing fires while a turn is active (${surface})`, { timeoutMs: 30000, options: HANDOFF.options }, async ($, on) => {
+    const { h, d } = await coldSession($, on, { stored: HANDOFF.stored, commands: GROUNDWORK })
+    await coldTurn(d, 't1')
+    await h.advance(30 * MIN)
+    // A turn the person did not start runs when the timer is due.
+    await d.turnStart('t2', '')
+    await h.advance(HOUR)
+    expect(NOTHING_DONE(h), 'skipped: the turn keeps the cache warm itself').toEqual(NONE)
+    expect(coldLog(h)).toContain('handoff skipped: a turn is running')
+    // Its end starts a round of its own.
+    await d.step('t2')
+    await d.complete('t2')
+    await h.advance(57 * MIN)
+    expect(h.submitted.map(s => s.text)).toEqual(['wrap up'])
+  })
+
+  test(`keep warm skips a ping while a turn is active (${surface})`, { timeoutMs: 30000, options: WARM8.options }, async ($, on) => {
+    const { h, d } = await coldSession($, on, { stored: WARM8.stored })
+    await coldTurn(d, 't1')
+    await h.advance(30 * MIN)
+    await d.turnStart('t2', '')
+    await h.advance(HOUR)
+    expect(h.forks.length).toBe(0)
+    expect(coldLog(h)).toContain('keep warm skipped: a turn is running')
+  })
+
+  test(`Cache Clock installed: nothing happens, whatever the row says, and the skip is logged (${surface})`, { timeoutMs: 30000, options: WARM8.options }, async ($, on) => {
+    const { h, d } = await coldSession($, on, { stored: WARM8.stored, commands: [...GROUNDWORK, ...CACHE_CLOCK] })
+    await coldTurn(d, 't1')
+    await h.advance(3 * HOUR)
+    expect(NOTHING_DONE(h)).toEqual(NONE)
+    expect(await bandText($, surface)).toBe('')
+    expect(coldLog(h)).toContain('skipped, Cache Clock is installed and keeps the cache warm')
+    await d.config('beforeCold', 'ask')
+    await coldTurn(d, 't2')
+    expect(await bandText($, surface), 'no offer either').toBe('')
+    await d.config('beforeCold', 'save a handoff')
+    await coldTurn(d, 't3')
+    await h.advance(3 * HOUR)
+    expect(NOTHING_DONE(h)).toEqual(NONE)
+  })
+
+  test(`a command list that fails is no Cache Clock: the offer shows, and the log says what happened (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const { h, d } = await coldSession($, on)
+    h.commandsFail = true
+    await coldTurn(d, 't1')
+    expect(await bandText($, surface)).toContain('Cache goes cold in ~60 min')
+    expect(coldLog(h)).toContain('could not list the commands')
+  })
+
+  test(`rightsize off: nothing at the end of a turn (${surface})`, { timeoutMs: 30000, options: WARM8.options }, async ($, on) => {
+    const h = engine(on, { ...OPUS, stored: WARM8.stored })
+    h.files['/home/test/.claude/mods/switches.json'] = '{"rightsize": false}'
+    h.now = EVENING
+    h.virtual = true
+    h.stepUsage = BIG_TURN
+    const d = drive($, h)
+    await d.start(surface)
+    await coldTurn(d, 't1')
+    await h.advance(3 * HOUR)
+    expect(NOTHING_DONE(h)).toEqual(NONE)
+    expect(await bandText($, surface)).toBe('')
+  })
+
+  test(`profiles: Quality keeps warm for 8 hours when the row is not set (${surface})`, { timeoutMs: 30000, options: inProfile('Quality').options }, async ($, on) => {
+    const { h, d } = await coldSession($, on, { stored: inProfile('Quality').stored })
+    await coldTurn(d, 't1')
+    expect(await bandText($, surface)).toBe('rightsize: Keeping warm until 2:00 · no pings yet')
+    await h.advance(57 * MIN)
+    expect(NOTHING_DONE(h)).toEqual({ forks: 1, submitted: 0, compactions: 0 })
+  })
+
+  test(`profiles: Balanced asks when the row is not set (${surface})`, { timeoutMs: 30000, options: inProfile('Balanced').options }, async ($, on) => {
+    const { h, d } = await coldSession($, on, { stored: inProfile('Balanced').stored })
+    await coldTurn(d, 't1')
+    expect(await bandText($, surface)).toContain('Cache goes cold in ~60 min')
+    await h.advance(3 * HOUR)
+    expect(NOTHING_DONE(h)).toEqual(NONE)
+  })
+
+  test(`profiles: Economy saves a handoff with Groundwork when the row is not set, and never keeps warm (${surface})`, { timeoutMs: 30000, options: inProfile('Economy').options }, async ($, on) => {
+    const { h, d } = await coldSession($, on, { stored: inProfile('Economy').stored, commands: GROUNDWORK })
+    await coldTurn(d, 't1')
+    expect(await bandText($, surface), 'no offer, no keep-warm line').toBe('')
+    await h.advance(57 * MIN)
+    expect(NOTHING_DONE(h)).toEqual({ forks: 0, submitted: 1, compactions: 0 })
+    expect(h.submitted.map(s => s.text)).toEqual(['wrap up'])
+    await h.advance(8 * HOUR)
+    expect(h.forks.length).toBe(0)
+  })
+
+  test(`profiles: Economy compacts when Groundwork is not installed (${surface})`, { timeoutMs: 30000, options: inProfile('Economy').options }, async ($, on) => {
+    const { h, d } = await coldSession($, on, { stored: inProfile('Economy').stored })
+    await coldTurn(d, 't1')
+    await h.advance(57 * MIN)
+    expect(NOTHING_DONE(h)).toEqual({ forks: 0, submitted: 0, compactions: 1 })
+  })
+
+  test(`your setting wins: Quality compacts when you say compact (${surface})`, { timeoutMs: 30000, options: inProfile('Quality', { beforeCold: 'compact' }).options }, async ($, on) => {
+    const { h, d } = await coldSession($, on, { stored: inProfile('Quality', { beforeCold: 'compact' }).stored })
+    await coldTurn(d, 't1')
+    await h.advance(57 * MIN)
+    expect(NOTHING_DONE(h), 'not Quality\'s keep warm').toEqual({ forks: 0, submitted: 0, compactions: 1 })
+  })
+
+  test(`your setting wins: Economy keeps warm when you say keep warm 2 h (${surface})`, { timeoutMs: 30000, options: inProfile('Economy', { beforeCold: 'keep warm 2 h' }).options }, async ($, on) => {
+    const { h, d } = await coldSession($, on, { stored: inProfile('Economy', { beforeCold: 'keep warm 2 h' }).stored, commands: GROUNDWORK })
+    await coldTurn(d, 't1')
+    await h.advance(5 * HOUR)
+    expect(NOTHING_DONE(h), 'not Economy\'s handoff').toEqual({ forks: 2, submitted: 0, compactions: 0 })
+  })
+
+  test(`your setting wins: Balanced stays quiet when you say off, and Quality asks when you say ask (${surface})`, { timeoutMs: 30000, options: inProfile('Balanced', { beforeCold: 'off' }).options }, async ($, on) => {
+    const { h, d } = await coldSession($, on, { stored: inProfile('Balanced', { beforeCold: 'off' }).stored })
+    await coldTurn(d, 't1')
+    await h.advance(9 * HOUR)
+    expect(NOTHING_DONE(h)).toEqual(NONE)
+    expect(await bandText($, surface)).toBe('')
+    // The same row, set to ask (the default value, but yours), under Quality: it asks.
+    await d.config('profile', 'Quality')
+    await d.config('beforeCold', 'ask')
+    await coldTurn(d, 't2')
+    expect(await bandText($, surface)).toContain('Cache goes cold in ~60 min')
+    await h.advance(9 * HOUR)
+    expect(NOTHING_DONE(h)).toEqual(NONE)
+  })
+
+  const SUB = { rateLimits: [{ kind: 'five_hour', percentUsed: 10 }] }
+  test(`on a subscription the costs are window shares as ranges, with API-equivalent dollars (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const { h, d } = await coldSession($, on, { rateLimits: SUB.rateLimits })
+    await coldTurn(d, 't1')
+    // No run has shown the window rate yet: dollars, said to be API-equivalent.
+    expect(await bandText($, surface)).toBe('rightsize: Cache goes cold in ~60 min (81K tokens on Opus). Coming back cold: about $0.63 API-equivalent.')
+    expect((await bandButtons($)).map(b => b[1]).slice(0, 3)).toEqual(['Keep warm 2 h · $0.03 API-equivalent', 'Keep warm 8 h · $0.13 API-equivalent', 'Until 9:00 tomorrow · $0.24 API-equivalent'])
+    // 5% of the window for $1 of one turn, give or take a point: $0.63 is 2.5–3.8%.
+    h.files[LEGACY_RUNS] = `${JSON.stringify({ at: new Date(h.now).toISOString(), kind: 'run', actual: 1, before: { five_hour: 10 }, after: { five_hour: 15 } })}\n`
+    await coldTurn(d, 't2')
+    expect(await bandText($, surface)).toBe('rightsize: Cache goes cold in ~60 min (81K tokens on Opus). Coming back cold: ~2.5–3.8% of your 5-hour window ($0.63 API-equivalent).')
+    expect((await bandButtons($)).map(b => b[1]).slice(0, 3)).toEqual(['Keep warm 2 h · ~0.1–0.2% ($0.03)', 'Keep warm 8 h · ~0.5–0.8% ($0.13)', 'Until 9:00 tomorrow · ~1.0–1.4% ($0.24)'])
+    // Keeping warm says what it cost in the window too.
+    await pressBand($, 'cold-2h')
+    await h.advance(57 * MIN)
+    expect(await bandText($, surface)).toMatch(/^rightsize: Keeping warm until 20:00 · 1 ping, ~0\.1% of your 5-hour window \(\$0\.02 API-equivalent\) so far/)
+  })
+
+  test(`the usual start time is 9:00 until the run log shows five days of first prompts (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const { h, d } = await coldSession($, on)
+    const day = (n: number) => JSON.stringify({ at: new Date(2027, 0, 15 - n, 9, 30).toISOString(), submittedAt: new Date(2027, 0, 15 - n, 6, 0).toISOString(), kind: 'run' })
+    h.files[LEGACY_RUNS] = `${[1, 2, 3, 4].map(day).join('\n')}\n`
+    await d.start(surface)
+    await coldTurn(d, 't1')
+    expect((await bandButtons($)).map(b => b[1]).slice(0, 3), 'four days: 9:00, not 6:00').toEqual(['Keep warm 2 h · $0.03', 'Keep warm 8 h · $0.13', 'Until 9:00 tomorrow · $0.24'])
+    expect(coldLog(h)).toContain('usual start 9:00 by default, 4 days of runs')
   })
 
 }

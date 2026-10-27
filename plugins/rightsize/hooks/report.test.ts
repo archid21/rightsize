@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { accuracyRows, type RunLine, buildReport, counterfactual, fixedBlock, parseLines, problems, sessionTotal, shareMessage, shareText, span, tieCounts, totals, windowCostText, windowRates } from './report'
+import { accuracyRows, type RunLine, buildReport, costTag, counterfactual, fixedBlock, parseLines, problems, sessionTotal, shareMessage, shareText, span, tieCounts, totals, windowCostText, windowRates } from './report'
 import type { StartBlock } from './start'
 
 const NOW = Date.parse('2026-10-23T18:00:00.000Z')
@@ -718,4 +718,31 @@ test('share: on a subscription the number is said to be a share of API-equivalen
   expect(text).toContain('as a share of API-equivalent cost, not money')
   expect(text).not.toMatch(/\$/)
   expect(shareMessage(many(20), { now: NOW, subscription: false })).not.toContain('API-equivalent')
+})
+
+test('a keep-warm ping is rightsize\'s own cost: its overhead lowers Total saved, and the footer says so', async () => {
+  const saving = run({ change: 'lower', offered: 'lower', actual: 0.1, stay: 0.4, taken: 0.1 })
+  const warm = (cost: number): RunLine => ({ at: ago(0), kind: 'warm', session: 's1', tier: 'opus', context: 80_000, overhead: cost })
+  const lines = [saving, warm(0.04), warm(0.06)]
+  const t = totals(lines)
+  expect(Number(t.overhead.toFixed(5)), 'the pings are overhead').toBe(0.1)
+  expect(Number(t.saved.toFixed(5)), 'and no saving of their own').toBe(0.3)
+  expect(t.rated, 'a ping is no rated prompt').toBe(1)
+  expect(cells(report([saving]), 'Total saved')).toEqual(['~$0.30', '~$0.30', '~$0.30'])
+  const text = report(lines)
+  expect(cells(text, 'Total saved'), 'the same saving, less the pings').toEqual(['~$0.20', '~$0.20', '~$0.20'])
+  expect(text.replace(/\s+/g, ' ')).toContain('Total saved is after the cost of rating prompts and of keeping the cache warm ($0.10 in 30 days).')
+  expect(report([saving]).replace(/\s+/g, ' '), 'no pings, no mention').toContain('Total saved is after the cost of rating prompts (under $0.01 in 30 days).')
+  // The band's running total counts them too.
+  expect(sessionTotal(lines, 's1', false)).toBe('Session: ~$0.20 saved')
+  // Pings alone are a cost with nothing saved.
+  expect(report([warm(0.04), warm(0.06)]).split('\n')[1]).toBe('Cost ~$0.10 more than it saved in the last 30 days.')
+  expect(sessionTotal([warm(0.04)], 's1', false)).toBe('Session: ~$0.04 more')
+})
+
+test('a cost on a button: dollars on the API; on a subscription the window share as a range with the dollars after it', async () => {
+  expect(costTag(0.1288, false, undefined)).toBe('$0.13')
+  expect(costTag(0.1288, true, undefined), 'before runs show the rate').toBe('$0.13 API-equivalent')
+  expect(costTag(1, true, { low: 0.8, high: 1.6 })).toBe('~0.8–1.6% ($1.00)')
+  expect(costTag(0.001, false, undefined)).toBe('under $0.01')
 })

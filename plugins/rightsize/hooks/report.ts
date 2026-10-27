@@ -23,8 +23,10 @@ export type RunLine = {
    * 'dropped': a rated prompt that never entered because something beneath rightsize refused it; `reason` is the refusal and `overhead` what its rating cost.
    * 'unbound': a rated prompt that never got a turn of its own, because it was delivered into a running turn or cancelled before its turn started; `reason` says which and `overhead` what its rating cost.
    * 'dropped' and 'unbound' are not rated runs: the report counts only their overhead.
+   * 'warm': one keep-warm request that kept the prompt cache from expiring (Before the cache goes cold); `overhead` is what it cost, `tier` its model and `context` the conversation it re-read.
+   * `totals` adds the `overhead` of every line, so these pings count as rightsize's own cost and lower Total saved.
    */
-  kind?: 'run' | 'overhead' | 'subagent' | 'check' | 'feedback' | 'unrated' | 'dropped' | 'unbound'
+  kind?: 'run' | 'overhead' | 'subagent' | 'check' | 'feedback' | 'unrated' | 'dropped' | 'unbound' | 'warm'
   /** A run line's own id, which feedback lines name in `ref`. */
   id?: string
   /** The task the line belongs to: the id of the run that started it. Follow-ups, unrated prompts and subagents carry it. */
@@ -305,6 +307,12 @@ function minutesText(s: Share) {
 export function windowCostText(usd: number, rates: { low: number; high: number } | undefined) {
   if (rates === undefined) return `about ${money(usd)} API-equivalent`
   return `${shareText(shareOf(usd, rates))} of your 5-hour window (${money(usd)} API-equivalent)`
+}
+
+/** A cost as a short tag for a button: dollars on the API; on a subscription the 5-hour window share as a range with the dollars after it, or the API-equivalent dollars until runs show the rate. */
+export function costTag(usd: number, subscription: boolean, rates: { low: number; high: number } | undefined) {
+  if (!subscription) return money(usd)
+  return rates === undefined ? `${money(usd)} API-equivalent` : `${shareText(shareOf(usd, rates))} (${money(usd)})`
 }
 
 /** The saving as a share of what the turns would have cost, after rating calls. */
@@ -705,7 +713,7 @@ export function buildReport(
   const t = cols[2].t
   const foot = [
     'Estimated: actual cost vs staying at your own model and effort.',
-    ...(nothing ? [] : [`Total saved is after the cost of rating prompts (${money(t.overhead)}${sub ? ' API-equivalent' : ''} in 30 days).`]),
+    ...(nothing ? [] : [`Total saved is after the cost of rating prompts${month.some(l => l.kind === 'warm') ? ' and of keeping the cache warm' : ''} (${money(t.overhead)}${sub ? ' API-equivalent' : ''} in 30 days).`]),
     ...(cols.some(s => s.t.extra > 0.005)
       ? [sub ? "Extra on harder prompts: what raising effort or using a stronger model would cost on the API, for better answers. It isn't taken off Total saved." : "Extra spent on harder prompts: what raising effort or using a stronger model cost, for better answers. It isn't taken off Total saved."]
       : []),

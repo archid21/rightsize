@@ -1441,9 +1441,10 @@ async function escalate($: EngineInterface, run: Run, sign: Struggle, from: Leve
 }
 
 // A helper is struggling: only more effort for struggling helps, and only from the task's retry
-// budget. The person is not asked mid-helper: a helper is raised only when Raising is automatic. When
-// no chance is left, no level is left, or Raising is not automatic, the helper goes back to the main
-// chat. Blocked errors are not struggling; a sign with only blocked errors behind it can't be told apart
+// budget. Raising decides as it does for the main chat: automatic raises, Never leaves it alone, and
+// otherwise the person is asked; no answer in HELPER_ASK_MS sends the helper back, so a helper running
+// while nobody watches does not wait for ever. When no chance or no level is left, it goes back to the
+// main chat. Blocked errors are not struggling; a sign with only blocked errors behind it can't be told apart
 // from them, so it neither raises nor counts as a miss. Each sign is weighed once, as in escalate().
 async function escalateHelper($: EngineInterface, id: string, w: Watch, sign: Struggle) {
   w.signals = { ...w.signals, fired: [...w.signals.fired, sign.kind] }
@@ -1460,11 +1461,18 @@ async function escalateHelper($: EngineInterface, id: string, w: Watch, sign: St
   const cur = w.raisedTo ?? w.level
   const to = oneUp(cur, ceiling)
   let why = ''
-  if (rule !== 'auto') {
-    await log($, `helper struggling (${sign.why}); raise not taken: Raising is set to ask`)
-    why = 'Raising is not automatic'
-  } else if (!to) why = `${cur} is as high as it goes`
-  else if (!(await useChance($, w.task))) why = 'the task has no retry left'
+  if (!to) why = `${cur} is as high as it goes`
+  // No chance left: nothing to ask about.
+  else if ((await retriesUsed($, w.task)) >= CHANCES) why = 'the task has no retry left'
+  else if (rule !== 'auto') {
+    const a = await askHelper($, sign, cur, to)
+    if (a === 'no') {
+      await log($, `helper ${id} struggling (${sign.why}): kept at ${cur}, as you chose`)
+      return
+    }
+    if (a === 'timeout') why = `no answer in ${HELPER_ASK_MS / 60_000} minutes`
+  }
+  if (to && !why && !(await useChance($, w.task))) why = 'the task has no retry left'
   if (to && !why) {
     w.raisedTo = to
     w.raises.push({ step: w.steps, from: cur, to, why: sign.why })
@@ -1477,6 +1485,30 @@ async function escalateHelper($: EngineInterface, id: string, w: Watch, sign: St
   w.stall = 'struggling'
   await setBand($, { text: `Helper stopped and sent back to the main chat: ${sign.why}, and ${why}.`, acted: true })
   await log($, `returned helper ${id} to the main chat at step ${w.steps}: ${sign.why}, and ${why}`)
+}
+
+/** How long a struggling helper waits for the person's answer before it goes back to the main chat. */
+const HELPER_ASK_MS = 120_000
+
+// The Stuck question for a helper. A dismissed question is a no, as for the main chat. An answer
+// that comes after the wait is too late: the helper is already back with the main chat.
+async function askHelper($: EngineInterface, sign: Struggle, cur: Level, to: Level): Promise<'yes' | 'no' | 'timeout'> {
+  let late = false
+  const asked = pick($, {
+    header: 'Stuck',
+    question: `A helper looks stuck: ${sign.why}. Raise its effort from ${cur} to ${to}? It uses one of this task's ${CHANCES} retries. With no answer in ${HELPER_ASK_MS / 60_000} minutes it goes back to the main chat.`,
+    options: [
+      [`Raise to ${to}`, 'yes'],
+      [`Keep ${cur}`, 'no'],
+    ],
+  }).then(a => {
+    if (late && a === 'yes') $.ui.toast('rightsize: too late, the helper already went back to the main chat.')
+    return a === 'yes' ? ('yes' as const) : ('no' as const)
+  })
+  const waited = $.clock.sleep(HELPER_ASK_MS).then(() => 'timeout' as const, () => 'timeout' as const)
+  const a = await Promise.race([asked, waited])
+  if (a === 'timeout') late = true
+  return a
 }
 
 // ---- Idle resume -------------------------------------------------------------

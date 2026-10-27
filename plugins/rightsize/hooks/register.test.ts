@@ -19,6 +19,8 @@ type Engine = {
 
 const LOOKUP = 'what does the parseConfig function in src/config.ts return exactly'
 const DEBUG = 'find and fix the race in token refresh across the auth services please'
+/** An answer for h.answers: nobody is there, so the question is never answered. */
+const NO_ONE = '(no one answers)'
 const SEARCH = 'find every call site of the old logger across the whole repo and list them'
 const REVIEW = '{"level":"high","model":"opus","size":"small","type":"review","read":30000,"write":3000,"steps":10,"reason":"subtle bug hunt"}'
 const NO_CHANGE = '{"level":"medium","model":"same","size":"small","type":"lookup","read":2000,"write":300,"steps":1}'
@@ -101,6 +103,8 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
     contextTokens: undefined as number | undefined,
     /** Rating replies to give before `rating`, in order; a reply starting with "timeout" is a timed-out call, one starting with "unavailable" a refused one. */
     ratingQueue: [] as string[],
+    /** True: a $.clock.sleep ends at once (the wait ran out). False: it never ends, so an answer always comes first. */
+    sleepEnds: false,
   }
   on('session.start', async ($, e) => {
     h.surfaces = e.surface ? [e.surface] : []
@@ -137,6 +141,10 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
     return { value: undefined } as never
   })
   on('clock.now', async () => ({ value: h.now }) as never)
+  on('clock.sleep', async () => {
+    if (!h.sleepEnds) await new Promise(() => {})
+    return { value: undefined } as never
+  })
   on('env.get', async ($, e) => {
     const name = (e as { name: string }).name
     return { value: name === 'HOME' ? '/home/test' : h.env[name] } as never
@@ -211,6 +219,8 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
     h.events.push(`ask:${header}`)
     const answer = h.answers[header]
     if (answer === undefined) return { deny: `no answer set for ${header}` }
+    // Nobody there: the question stays open and is never answered.
+    if (answer === NO_ONE) await new Promise(() => {})
     return { result: { questions: e.questions, answers: { [q?.question ?? '']: answer } } }
   })
   ;(on as unknown as LooseOn)('tool.call', { tool: 'Agent' }, async () => ({ result: { content: 'done' } }))
@@ -4067,19 +4077,70 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(run.helpers?.map(x => [x.stall, x.returned, x.raises?.map(r => `${r.from}>${r.to}`)])).toEqual([['struggling', true, ['low>medium', 'medium>high']]])
   })
 
-  test(`a helper is sent back, not asked about, when Raising is not automatic (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`a struggling helper is asked about when Raising is not automatic: raised on yes, left alone on keep (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: { remember: true, choices: { down: 'auto' } } })
+    const d = drive($, h)
+    await d.start(surface)
+    await warm(d, h)
+    h.rating = HAND_OFF()
+    h.answers = { Stuck: 'Raise to medium' }
+    await startHelper(d, h, 't1', 'helper')
+    await d.bash('fail a', 'agent-helper')
+    await d.bash('fail a', 'agent-helper')
+    await d.step('t1', 1, 'agent-helper')
+    expect(h.asked.map(a => a.header), 'asked, as for the main chat').toEqual(['Stuck'])
+    expect(h.asked[0]?.question).toContain('It uses one of this task\'s 2 retries. With no answer in 2 minutes it goes back to the main chat.')
+    expect(last(h.sent)?.effort, 'raised on yes').toBe('medium')
+    await d.complete('t1')
+
+    // A new task, and a keep: not raised, not sent back.
+    h.asked = []
+    h.answers = { Stuck: 'Keep low' }
+    h.rating = HAND_OFF()
+    await startHelper(d, h, 't2', 'second')
+    await d.bash('fail b', 'agent-second')
+    await d.bash('fail b', 'agent-second')
+    await d.step('t2', 1, 'agent-second')
+    expect(h.asked.map(a => a.header)).toEqual(['Stuck'])
+    expect(last(h.sent)?.effort, 'kept').toBe('low')
+    expect(((await d.bash('ls', 'agent-second')) as { deny?: string }).deny, 'not sent back').toBeUndefined()
+    expect(helperLog(h)).toContain('kept at low, as you chose')
+    await d.complete('t2')
+  })
+
+  test(`a struggling helper with nobody to answer goes back to the main chat after the wait (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: { remember: true, choices: { down: 'auto' } } })
+    const d = drive($, h)
+    await d.start(surface)
+    await warm(d, h)
+    h.rating = HAND_OFF()
+    h.answers = { Stuck: NO_ONE }
+    h.sleepEnds = true
+    await startHelper(d, h, 't1', 'helper')
+    await d.bash('fail a', 'agent-helper')
+    await d.bash('fail a', 'agent-helper')
+    await d.step('t1', 1, 'agent-helper')
+    expect(h.asked.map(a => a.header)).toEqual(['Stuck'])
+    expect(last(h.sent)?.effort, 'not raised').toBe('low')
+    expect(helperLog(h)).toContain('no answer in 2 minutes')
+    expect(((await d.bash('ls', 'agent-helper')) as { deny?: string }).deny).toContain('stuck')
+    await d.complete('t1')
+  })
+
+  test(`a helper whose task has no retry left goes back without a question (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: { remember: true, choices: { down: 'auto' } } })
     const d = drive($, h)
     await d.start(surface)
     await warm(d, h)
     h.rating = HAND_OFF()
     await startHelper(d, h, 't1', 'helper')
+    // Two rework rounds from the main chat use both of the task's chances.
+    await d.send()
+    await d.send()
     await d.bash('fail a', 'agent-helper')
     await d.bash('fail a', 'agent-helper')
     await d.step('t1', 1, 'agent-helper')
-    expect(last(h.sent)?.effort).toBe('low')
-    expect(h.asked.length, 'no question mid-helper').toBe(0)
-    expect(helperLog(h)).toContain('helper struggling (the same tool call failed twice); raise not taken: Raising is set to ask')
+    expect(h.asked.length, 'nothing to ask about').toBe(0)
     expect(((await d.bash('ls', 'agent-helper')) as { deny?: string }).deny).toContain('stuck')
     await d.complete('t1')
   })

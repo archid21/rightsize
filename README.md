@@ -51,7 +51,7 @@ Not every prompt needs your strongest model thinking its hardest. "Rename this v
 ### You stay in charge
 
 - The first time each kind of change comes up, rightsize asks you what to do: do it automatically, ask each time, or never. You can also set your answer ahead of time in `/config`.
-- A small bar above the prompt tells you what it changed, with buttons to undo it or change your rule.
+- A small bar above the prompt tells you what it changed, with buttons to retry it at the original effort or change your rule.
 - Pick a profile in `/config`: Quality, Balanced (the default) or Economy. It sets how much evidence rightsize needs before it picks a cheaper route. See [Profiles](#profiles).
 - Every limit and feature can be changed or turned off in `/config`.
 - **Your setting wins.** A value you set yourself is never changed or bypassed by rightsize's automatic behavior. Its automatic adjustments, and the values your profile supplies, only act on settings you left at their default.
@@ -197,11 +197,11 @@ Where Haiku's rating of a model has been wrong for a task type (see [How it deci
 A one-row band above the prompt shows what rightsize did, with buttons to act on it:
 
 ```
-rightsize: Effort lowered: high → medium for this prompt (automatically).  [Undo] [👍] [👎] [Ask me each time] [Never lower] [⋯] [×]
+rightsize: Effort lowered: high → medium for this prompt (automatically).  [Retry at original effort] [👍] [👎] [Ask me each time] [Never lower] [⋯] [×]
 ```
 
-- **Undo** puts the prompt back in the box, to run at your normal level. **Clear** drops a session-wide switch.
-- Each route says **why** (the rater's reason, for example `Why: Simple lookup in one file.`). A lowering or a hand-off to a cheaper model also says **how sure** rightsize is: `How sure: low, from research and 4 of your tasks.` until 10 of your own tasks are logged on that route, then `high` or `medium` from how often it missed. A hand-off or a switch to another model has a **Run on <your model>** button: it puts this prompt back in the box and runs it once without rightsize, like Undo, and leaves your rules as they are.
+- **Retry at original effort** puts the prompt back in the box, to run at your normal level. It does not undo file changes the lowered turn made. **Clear** drops a session-wide switch.
+- Each route says **why** (the rater's reason, for example `Why: Simple lookup in one file.`). A lowering or a hand-off to a cheaper model also says **how sure** rightsize is: `How sure: low, from research and 4 of your tasks.` until 10 of your own tasks are logged on that route, then `high` or `medium` from how often it missed. A hand-off or a switch to another model has a **Run on <your model>** button: it puts this prompt back in the box and runs it once without rightsize, like Retry, and leaves your rules as they are.
 - The rule buttons change your answer for this case (Q1–Q4) in one press, and set the matching row in `/config` too. Your current answer is not shown.
 - **⋯** chooses when the band shows. **×** closes it until your next prompt.
 - In the CLI, focus the band (ctrl+x tab or a click) and press a button's number.
@@ -244,7 +244,7 @@ Your own setting always wins. A row you set under Advanced replaces what the pro
 
 - `/rightsize share`: prints a message you can paste anywhere (LinkedIn, Slack, a DM) to tell others about rightsize. It includes your estimated saving for the last 30 days once there are at least 20 rated prompts and the saving is 5% or more. It sends nothing, writes nothing and asks nothing, and it is unrelated to the **Share anonymous feedback** setting.
 - `/rightsize settings`: ask the four questions again, and set their rows in `/config` from your answers.
-- `/rightsize undo`: put the last auto-lowered prompt back in the box, to run at the normal level.
+- `/rightsize retry`: put the last auto-lowered prompt back in the box, to run at the normal level (it does not undo file changes). `/rightsize undo`, the old name, still works.
 - `/rightsize clear`: drop a session-wide effort switch.
 - `/rightsize prices`: check prices now.
 - `/rightsize reset`: asks what to reset (Settings, Cost measurement, Both, or Cancel), then asks you to confirm, because it can't be undone.

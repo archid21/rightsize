@@ -416,7 +416,7 @@ const setBand = ($: unknown, value: string) => ($ as { config: { set: (x: unknow
 const LOWER = '{"level":"low","model":"same","size":"small","type":"lookup","read":2000,"write":3000,"steps":1,"reason":"one function lookup"}'
 
 for (const surface of ['desktop', 'terminal'] as const) {
-  test(`asks Q1 once, lowers on its own after, steps up when the turn gets long, and undoes (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`asks Q1 once, lowers on its own after, steps up when the turn gets long, and retries at the original effort (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES } })
     const d = drive($, h)
     await d.start(surface)
@@ -441,8 +441,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(last(h.sent)?.effort).toBe('low')
     await d.complete('t2')
 
-    // Undo puts the prompt back; sending it again runs it unrated at medium.
-    const undo = await d.command('undo')
+    // Retry puts the prompt back; sending it again runs it unrated at medium.
+    const undo = await d.command('retry')
     expect(undo.text ?? '').toContain('run it at medium')
     expect(h.filled[0]).toBe(LOOKUP)
     const rated = h.ratings
@@ -1428,7 +1428,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.submit(LOOKUP)
     expect(await bandText($, surface), 'what was done, why, and how sure').toBe('rightsize: Effort lowered: medium → low for this prompt (automatically). Why: One function lookup. How sure: low, none of your tasks yet.')
     const ui = await mount($, surface)
-    expect((await ui.findAll({ type: 'Button' })).map(b => b.key), 'a lowering can be marked 👍 or 👎').toEqual(['undo', 'good', 'bad', 'rule-ask', 'rule-never', 'mode', 'close'])
+    expect((await ui.findAll({ type: 'Button' })).map(b => b.key), 'a lowering can be marked 👍 or 👎').toEqual(['retry', 'good', 'bad', 'rule-ask', 'rule-never', 'mode', 'close'])
 
     // A rule button changes the answer to Q1 in one press.
     await ui.press({ key: 'rule-ask' })
@@ -1436,10 +1436,10 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect((await d.command('')).text ?? '').toContain('Lowering: ask me')
     expect(h.stored.lowerRule, 'the button sets the /config row too').toBe('ask me')
     expect(h.sets.filter(x => x.key === 'rightsize.lowerRule').length, 'once').toBe(1)
-    expect((await ui.findAll({ type: 'Button' })).map(b => b.key), 'the new rule is not offered again').toEqual(['undo', 'good', 'bad', 'rule-auto', 'rule-never', 'mode', 'close'])
+    expect((await ui.findAll({ type: 'Button' })).map(b => b.key), 'the new rule is not offered again').toEqual(['retry', 'good', 'bad', 'rule-auto', 'rule-never', 'mode', 'close'])
 
-    // Undo puts the prompt back in the box and closes the band.
-    await ui.press({ key: 'undo' })
+    // Retry at original effort puts the prompt back in the box and closes the band.
+    await ui.press({ key: 'retry' })
     expect(h.filled[0]).toBe(LOOKUP)
     expect(last(h.toasts) ?? '').toContain('run it at medium')
     await ui.unmount()
@@ -2363,7 +2363,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.submit(LOOKUP)
     await d.step('t1')
     await d.complete('t1')
-    expect(await buttons($)).toEqual(['undo', 'good', 'bad', 'rule-ask', 'rule-never', 'mode', 'close'])
+    expect(await buttons($)).toEqual(['retry', 'good', 'bad', 'rule-ask', 'rule-never', 'mode', 'close'])
 
     const ui = await mount($, surface)
     await ui.press({ key: 'good' })
@@ -2372,14 +2372,14 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(run.change).toBe('lower')
     expect(runLines(h).filter(l => l.kind === 'feedback')).toMatchObject([{ ref: run.id, value: 'up', session: 'sess-1' }])
     expect(last(h.toasts)).toBe('Rightsize: thanks — this tunes its choices on this machine.')
-    expect((await ui.findAll({ type: 'Button' })).map(b => b.key)).toEqual(['undo', 'rule-ask', 'rule-never', 'mode', 'close'])
+    expect((await ui.findAll({ type: 'Button' })).map(b => b.key)).toEqual(['retry', 'rule-ask', 'rule-never', 'mode', 'close'])
     await ui.unmount()
     expect(await bandText($, surface), 'the session total ends the band: this run saved something').toMatch(/^rightsize: Effort lowered: medium → low for this prompt \(automatically\)\. Why: .+ How sure: .+\. · Session: ~\$\d+\.\d\d saved$/)
     // The next lowering has its own id.
     await d.submit(LOOKUP)
     await d.step('t2')
     await d.complete('t2')
-    expect(await buttons($)).toEqual(['undo', 'good', 'bad', 'rule-ask', 'rule-never', 'mode', 'close'])
+    expect(await buttons($)).toEqual(['retry', 'good', 'bad', 'rule-ask', 'rule-never', 'mode', 'close'])
     const ui2 = await mount($, surface)
     await ui2.press({ key: 'bad' })
     await flush()
@@ -4037,7 +4037,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const d = drive($, h)
     await d.start(surface)
     const text = (await d.command('help')).text ?? ''
-    for (const c of ['', 'settings', 'report', 'undo', 'clear', 'prices', 'share', 'reset', 'help']) expect(text, c).toMatch(new RegExp(`^  /rightsize${c ? ` ${c}` : ''} +\\S`, 'm'))
+    for (const c of ['', 'settings', 'report', 'retry', 'clear', 'prices', 'share', 'reset', 'help']) expect(text, c).toMatch(new RegExp(`^  /rightsize${c ? ` ${c}` : ''} +\\S`, 'm'))
     expect(text).toContain('reset <setting> resets one')
     expect(text).toContain('message you can paste to tell others')
     expect(h.asked, 'no question').toEqual([])
@@ -5125,8 +5125,9 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const out = (await d.submit(LOOKUP)) as { drop?: string }
     expect(out.drop, 'the refusal is passed up as it came').toBe('a hook refused it')
     expect(await bandText($, surface), 'the band it set is gone').toBe('')
-    const undo = await d.command('undo')
-    expect(undo.text ?? '', 'nothing of it is left to undo').toContain('Nothing to undo')
+    const undo = await d.command('retry')
+    expect(undo.text ?? '', 'nothing of it is left to retry').toContain('Nothing to retry')
+    expect((await d.command('undo')).text ?? '', 'undo, the name before 0.8, still answers').toContain('Nothing to retry')
     const runs = readRuns(h)
     expect(runs.map(l => l.kind)).toEqual(['dropped'])
     expect(runs[0]).toMatchObject({ kind: 'dropped', reason: 'a hook refused it', session: 'sess-1' })

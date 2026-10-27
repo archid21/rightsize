@@ -111,7 +111,7 @@ import { type Change, type HelperLine, type RunLine, type SwitchLine, type Windo
 // watched the same way: a struggling one is raised a level from the task's retry budget, or
 // sent back to the main chat when none is left (watches, escalateHelper). Billing (API or subscription) is read off the rate limits each
 // response carries; the person is asked only when they say nothing. A band
-// above the prompt shows what it did, with buttons to undo it or change the rule.
+// above the prompt shows what it did, with buttons to retry it at the original effort or change the rule.
 // Your setting wins: every row in /config is a setting (settings.ts), and a value the
 // person set, or answered, is never changed or bypassed by what rightsize does by itself.
 
@@ -367,7 +367,7 @@ let lastApplied: Level | undefined
 let lastSwitched = false
 let lastContext = 0
 /**
- * The last prompt's route, for the band's one-click overrides: a lowering (Undo) or a hand-off or switch-run (Run on
+ * The last prompt's route, for the band's one-click overrides: a lowering (Retry at original effort) or a hand-off or switch-run (Run on
  * the current model). `back` finishes "run it ...": where the prompt runs once the override is pressed. One slot: a
  * prompt takes one route.
  */
@@ -1384,8 +1384,8 @@ async function showStatus($: EngineInterface) {
   if (run?.switchTo) return $.ui.status(`Running this review on ${TIER_NAME[run.switchTo.tier]} at ${run.switchTo.level} effort`)
   if (run?.raisedTo) return $.ui.status(`Effort: ${run.raisedTo} (raised mid-turn)`)
   if (run?.steppedUp) return $.ui.status(`Effort: back to ${run.normal} (the task got harder)`)
-  if (run?.level) return $.ui.status(run.auto ? `Effort: ${run.level} (auto) · /rightsize undo` : `Effort: ${run.level} (this prompt)`)
-  if (!run && lastAuto?.kind === 'lower') return $.ui.status(`Last prompt ran at ${lastAuto.level} (auto) · /rightsize undo`)
+  if (run?.level) return $.ui.status(run.auto ? `Effort: ${run.level} (auto) · /rightsize retry` : `Effort: ${run.level} (this prompt)`)
+  if (!run && lastAuto?.kind === 'lower') return $.ui.status(`Last prompt ran at ${lastAuto.level} (auto) · /rightsize retry`)
   const session = await sessionEffort($)
   $.ui.status(session ? `Effort: ${session} (this session)` : undefined)
 }
@@ -1455,7 +1455,7 @@ export function bandFor(run: Pick<Run, 'id' | 'tier' | 'normal' | 'auto' | 'dele
       rule: lower ? 'lower' : 'raise',
       // A lowering can be marked right or wrong: it was a bet on the rating.
       ...(lower ? { rate: run.id } : {}),
-      ...(run.auto && d.level ? { canUndo: true } : {}),
+      ...(run.auto && d.level ? { canRetry: true } : {}),
       ...(d.session ? { canClear: true } : {}),
     }
   }
@@ -1474,7 +1474,7 @@ async function setRule($: EngineInterface, key: keyof Choices, value: string) {
 
 /**
  * Puts the last prompt back in the box and lets it run once as it would have without rightsize: not rated, not
- * changed. Undo does it for a lowering, "Run on <model>" for a hand-off or a switch-run.
+ * changed. Retry at original effort does it for a lowering, "Run on <model>" for a hand-off or a switch-run.
  */
 async function runAsIs($: EngineInterface, kind: 'lower' | 'route', none: string) {
   if (lastAuto?.kind !== kind) return none
@@ -1489,7 +1489,7 @@ async function runAsIs($: EngineInterface, kind: 'lower' | 'route', none: string
     : `Could not fill the prompt box. Send the prompt again and it runs ${back}.`
 }
 
-const undo = ($: EngineInterface) => runAsIs($, 'lower', 'Nothing to undo: the last prompt was not lowered automatically.')
+const retry = ($: EngineInterface) => runAsIs($, 'lower', 'Nothing to retry: the last prompt was not lowered automatically.')
 const runOnCurrent = ($: EngineInterface) => runAsIs($, 'route', 'Nothing to run again: the last prompt was not handed off or run on another model.')
 
 async function clearSession($: EngineInterface) {
@@ -2029,7 +2029,7 @@ const COMMANDS: readonly (readonly [string, string])[] = [
   ['', 'show your changed settings and current state'],
   ['settings', 'answer the questions again'],
   ['report', 'what it saved and what went wrong'],
-  ['undo', 're-run the last auto-lowered prompt'],
+  ['retry', 're-run the last auto-lowered prompt at the original effort'],
   ['clear', 'drop the session switch'],
   ['prices', 'check prices now'],
   ['share', 'message you can paste to tell others'],
@@ -2474,7 +2474,7 @@ export const register: Register = (on, options) => {
     spawning.length = 0
     lastTurnAt = 0
     idleWarnedFor = 0
-    await $.command.register({ name: CMD, description: 'Rightsize: status, report, share, settings, undo or clear' })
+    await $.command.register({ name: CMD, description: 'Rightsize: status, report, share, settings, retry or clear' })
     // Claude Code hands over every value with its default filled in; only settings.json tells which ones are yours.
     const configs = await $.settings.read({ key: 'pluginConfigs' }).catch(() => undefined)
     const resetBefore = resetKeys(await $.store.get('resetFields').catch(() => undefined))
@@ -2550,7 +2550,8 @@ export const register: Register = (on, options) => {
 
   on('command.run', { command: CMD }, async ($, e) => {
     const arg = e.args.trim().toLowerCase()
-    if (arg === 'undo') return { text: await undo($) }
+    // undo: the name before 0.8.
+    if (arg === 'retry' || arg === 'undo') return { text: await retry($) }
     if (arg === 'reset' || arg.startsWith('reset ')) return { text: await runReset($, e.args.trim().slice('reset'.length)) }
     if (arg === 'prices') return { text: await runCheck($, 'manual') }
     if (arg === 'report') {
@@ -2943,7 +2944,7 @@ export const register: Register = (on, options) => {
     return result
   }).catch(($, e, next) => next(e))
 
-  // One row above the prompt: what rightsize did, then buttons to undo it, change
+  // One row above the prompt: what rightsize did, then buttons to retry it at the original effort, change
   // the rule for this situation, choose when the band shows, or close it.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (off || e.props.hasSurvey) return next(e)
@@ -2953,7 +2954,7 @@ export const register: Register = (on, options) => {
     const rule = band.rule
     const have = rule ? (await choices($))[rule] : undefined
     const buttons: { key: string; label: string; press: () => Promise<unknown> }[] = []
-    if (band.canUndo) buttons.push({ key: 'undo', label: 'Undo', press: async () => $.ui.toast(await undo($)) })
+    if (band.canRetry) buttons.push({ key: 'retry', label: 'Retry at original effort', press: async () => $.ui.toast(await retry($)) })
     if (band.canStay && lastAuto?.kind === 'route') buttons.push({ key: 'stay', label: `Run on ${lastAuto.model}`, press: async () => $.ui.toast(await runOnCurrent($)) })
     if (band.canClear) buttons.push({ key: 'clear', label: 'Clear', press: async () => $.ui.toast(await clearSession($)) })
     if (band.tip) {

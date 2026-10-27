@@ -5,6 +5,7 @@ import {
   DEFAULT_RULES,
   PREFERRED,
   SWITCH_KEY,
+  SWITCH_MISS_PRIOR,
   TASK_TYPES,
   MISS_BLOCK,
   TIE_BAND,
@@ -33,6 +34,7 @@ import {
   sizeSubagent,
   subagentKeys,
   subWork,
+  switchCost,
   rawMainCost,
   tierOf,
   tieBand,
@@ -129,6 +131,28 @@ test('lowers effort once switches are measured to keep the cache', async () => {
   }
 })
 
+test('an effort switch not yet measured is charged the prior share of a cache rewrite, and a measurement replaces it', async () => {
+  const big = { ...opus, context: 100_000 }
+  const rewrite = switchCost({ ...big, cal: { [SWITCH_KEY]: { n: CAL_FULL, ratio: 1 } } }, 1)
+  expect(SWITCH_MISS_PRIOR, 'most measured switches kept the cache: the prior is well under every switch missing').toBeLessThan(0.25)
+  expect(near(switchCost(big, 2), 2 * SWITCH_MISS_PRIOR * rewrite), 'nothing measured: the prior').toBe(true)
+  expect(near(switchCost({ ...big, cal: freeSwitches }, 2), 0), 'measured to keep the cache: free').toBe(true)
+  expect(near(switchCost({ ...big, cal: { [SWITCH_KEY]: { n: CAL_FULL, ratio: 1 } } }, 2), 2 * rewrite), 'measured to miss: the whole rewrite').toBe(true)
+})
+
+test('a one-prompt lower on a long conversation is not blocked by the switch prior when nothing is measured', async () => {
+  const long = { ...opus, context: 100_000, cal: {} }
+  const r = rating({ level: 'low', fit: { opus: 'low' }, type: 'feature', read: 20_000, write: 2000, steps: 15 })
+  const p = effortPlan(r, long, 'low')
+  expect(p.kind).toBe('effort')
+  if (p.kind === 'effort') {
+    expect(p.dir).toBe('lower')
+    expect(p.saving ?? 0).toBeGreaterThan(0)
+  }
+  // The same prompt, once switches are measured to miss the cache, is kept: the prior is only a starting guess.
+  expect(effortPlan(r, { ...long, cal: { [SWITCH_KEY]: { n: CAL_FULL, ratio: 1 } } }, 'low').kind).toBe('none')
+})
+
 test('never lowers below the floor, and raises when the work needs it', async () => {
   const floored = effortPlan(rating({ level: 'low', write: 1500 }), { ...opus, cal: freeSwitches }, 'medium')
   expect(floored.kind, 'low clamped to the medium floor = the level in use').toBe('none')
@@ -168,6 +192,23 @@ test('the hand-off and lowering thresholds follow the settings, 70% and 90% by d
   const low = mainCost(small, s, 'low', 2)
   expect(effortPlan(small, { ...s, rules: { ...DEFAULT_RULES, lower: (low / keep) * 0.9 } }, 'low').kind, 'stricter: keeps medium').toBe('none')
   expect(effortPlan(small, { ...s, rules: { ...DEFAULT_RULES, lower: (low / keep) * 1.1 } }, 'low').kind).toBe('effort')
+})
+
+test('a long, mechanical task Haiku can do, on Opus, is handed down to Haiku', async () => {
+  const r = rating({ level: 'low', fit: { haiku: 'low', sonnet: 'low', opus: 'low', fable: 'low' }, type: 'bulk-edit', read: 30_000, write: 4000, steps: 25 })
+  const p = plan(r, opus, 'low')
+  expect(p.kind).toBe('delegate')
+  if (p.kind === 'delegate') {
+    expect(p.dir).toBe('down')
+    expect(p.tier).toBe('haiku')
+    expect(p.delegateCost, 'under the hand-off share of staying').toBeLessThan(p.mainCost * DEFAULT_RULES.handOff)
+  }
+})
+
+test('a short lookup on Opus stays, even when Haiku fits: the main chat still briefs, checks and answers', async () => {
+  const r = rating({ level: 'low', fit: { haiku: 'low', sonnet: 'low', opus: 'low', fable: 'low' }, type: 'lookup', read: 4000, write: 200, steps: 4 })
+  expect(plan(r, opus, 'low').kind).toBe('none')
+  expect(plan(r, { ...opus, cal: freeSwitches }, 'low').kind, 'free switches may lower effort, but never hand a short task off').not.toBe('delegate')
 })
 
 test('keeps a small task on the main model even when a cheaper one could do it', async () => {

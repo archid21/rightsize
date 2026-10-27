@@ -827,7 +827,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   // Hands off to Haiku at 78% of staying: over the 70% default, under the 85% a hot pace allows.
-  const NEAR = '{"fit":{"haiku":"medium","sonnet":"medium","opus":"medium","fable":"medium"},"size":"small","type":"search","read":25000,"write":1000,"steps":20,"reason":"list call sites"}'
+  const NEAR = '{"fit":{"haiku":"medium","sonnet":"medium","opus":"medium","fable":"medium"},"size":"small","type":"search","read":20000,"write":1000,"steps":14,"reason":"list call sites"}'
   const HOUR = 3600_000
   const at = (h: { now: number }, ms: number) => new Date(h.now + ms).toISOString()
 
@@ -2631,7 +2631,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   // Lowering saves 94% of staying: over the default 90%, under the 97% a hot window allows.
   const SMALL = '{"level":"low","model":"same","size":"small","type":"lookup","read":2000,"write":50,"steps":1}'
   // Hands off at 51% of staying: over the 50% a cool window allows, under the default 70%.
-  const BIG = '{"fit":{"haiku":"medium","sonnet":"medium","opus":"medium","fable":"medium"},"size":"small","type":"search","read":60000,"write":2000,"steps":20,"reason":"list call sites"}'
+  const BIG = '{"fit":{"haiku":"medium","sonnet":"medium","opus":"medium","fable":"medium"},"size":"small","type":"search","read":40000,"write":1000,"steps":25,"reason":"list call sites"}'
   const hot = (h: { now: number; rateLimits: unknown }) => void (h.rateLimits = hotWindows(h))
   const cool = (h: { now: number; rateLimits: unknown }) => void (h.rateLimits = [{ kind: 'seven_day', percentUsed: 30, resetsAt: at(h, 6 * HOUR) }])
   const nearlyUsed = (h: { now: number; rateLimits: unknown }) => void (h.rateLimits = [{ kind: 'five_hour', percentUsed: 93, resetsAt: at(h, 4 * HOUR) }])

@@ -149,8 +149,10 @@ export function needOn(fit: Fit, tier: Tier): Level {
 export type Calibration = Record<string, { n: number; ratio: number }>
 /** Runs per key before the measured ratio fully replaces the guess. */
 export const CAL_FULL = 20
-/** Key for the share of effort switches that cost a cache miss (prior: all of them). */
+/** Key for the share of effort switches that cost a cache miss, learned from each measured switch. */
 export const SWITCH_KEY = 'cache:effort-switch'
+/** The share assumed to miss before any switch is measured. Measured switches almost all kept the cache, so the prior is low, rounded up to stay cautious. */
+export const SWITCH_MISS_PRIOR = 0.1
 /** main: the main chat. delegate: rightsize's hand-off. subagent: a subagent Claude started, moved to a cheaper model. */
 export type CalRoute = 'main' | 'delegate' | 'subagent'
 export const calKey = (type: TaskType, route: CalRoute) => `${type}:${route}`
@@ -246,6 +248,8 @@ const PROMPT = 200
 const BRIEF = 1500
 const REPORT = 1500
 const FINAL = 800
+/** Times the main chat reads its whole conversation from cache across a hand-off (the brief, the report, the check, the answer, and their tool calls). */
+const HANDOFF_READS = 8
 /** A subagent's own system prompt and tool list, read fresh at full price. */
 const SUB_BASE = 15000
 const CHECK_CAP = 20000
@@ -297,7 +301,7 @@ export function rawMainCost(r: Rating, s: Situation, level: Level) {
 export function switchCost(s: Situation, switches: number) {
   const p = s.prices[s.tier]
   const miss = dollars(p, { cacheWrite: s.context }) - dollars(p, { cacheRead: s.context })
-  return switches * factor(s.cal, SWITCH_KEY, 1) * miss
+  return switches * factor(s.cal, SWITCH_KEY, SWITCH_MISS_PRIOR) * miss
 }
 
 export function mainCost(r: Rating, s: Situation, level: Level, switches: number) {
@@ -320,10 +324,12 @@ export function subWork(r: Rating, s: Situation, sub: Tier, subLevel: Level) {
 /** The work handed to a subagent on `sub`, before calibration: brief, work, check, likely rework. */
 export function rawDelegateCost(r: Rating, s: Situation, sub: Tier, subLevel: Level) {
   // The main chat writes the brief, reads the report, checks the result and answers.
+  // Reads and output follow measured hand-offs: more requests than the brief and the answer alone, but the text is plain output,
+  // near the model's lowest-effort multiple, not the medium-effort thinking multiple the work itself gets.
   const main = dollars(s.prices[s.tier], {
-    cacheRead: 3 * s.context,
+    cacheRead: HANDOFF_READS * s.context,
     cacheWrite: REPORT + Math.min(CHECK_CAP, r.read * 0.2) + PROMPT,
-    output: (BRIEF + FINAL) * WORK[s.tier].medium.out,
+    output: (BRIEF + FINAL) * WORK[s.tier].low.out,
   })
   return (main + subWork(r, s, sub, subLevel)) * reworkFactor(s.tier, sub)
 }

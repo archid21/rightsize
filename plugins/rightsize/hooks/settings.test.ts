@@ -13,7 +13,6 @@ import {
   isKey,
   manifestGaps,
   mark,
-  minWordsOf,
   missPauseOf,
   raterEvery,
   ruleLabel,
@@ -30,7 +29,7 @@ import {
 const set = (...keys: SettingKey[]) => new Set<SettingKey>(keys)
 
 test('every row is a picker: a title, two or more options, and a default among them', async () => {
-  expect(KEYS.length).toBe(27)
+  expect(KEYS.length).toBe(26)
   for (const k of KEYS) {
     const row = SETTINGS[k]
     expect(row.title.length, k).toBeGreaterThan(0)
@@ -149,8 +148,6 @@ test('plugin.json is checked against the table: a missing or unlisted field, or 
 })
 
 test('the rows stand for plain values', async () => {
-  expect(['3 words', '6 words', '10 words', '20 words'].map(minWordsOf)).toEqual([3, 6, 10, 20])
-  expect(minWordsOf('words')).toBe(6)
   expect(['every 25', 'every 50', 'every 100'].map(raterEvery)).toEqual([25, 50, 100])
   expect(raterEvery('off')).toBeNull()
   expect(raterEvery('on'), 'the old on is not a row value').toBeNull()

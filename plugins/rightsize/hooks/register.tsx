@@ -76,7 +76,6 @@ import {
   inOptions,
   manifestGaps,
   mark,
-  minWordsOf,
   missPauseOf,
   raterEvery,
   resetKeys,
@@ -87,7 +86,7 @@ import {
   stillReset,
   valuesOf,
 } from './settings'
-import { parseRating, ratingPrompt, ratingSystem } from './rate'
+import { BRIEF_MAX, cutRequest, parseRating, ratingPrompt, ratingSystem } from './rate'
 import { isApprovalStep } from './approval'
 import { LIMITS, type Limits, type Signals, type Struggle, blockedError, callKey, isSensitivity, isTestCommand, noSignals, noteCall, oneUp, struggle } from './struggle'
 import { type Change, type HelperLine, type RunLine, type SwitchLine, type Windows, buildReport, parseLines, shareMessage, windowRates } from './report'
@@ -118,7 +117,6 @@ const CMD = 'rightsize'
 /** The rater tried second, when the first is not available, and the one Rater row can pick first. */
 const FALLBACK_RATER = 'haiku'
 type Rater = 'sonnet' | 'haiku'
-const BRAIN_DUMP_WORDS = 120
 /** An auto-lowered turn steps back up from this step on. */
 const STEP_UP_AFTER = 5
 /** Claude Code's own system prompt and tools, before the first request is seen. */
@@ -221,6 +219,9 @@ const qRemember: Question<boolean> = {
   ],
 }
 
+/** Why the rater may have seen too little: the request was cut, or a task is in progress and Claude's last reply could not be read. */
+type Unsure = 'cut' | 'missing'
+
 /** One rated prompt, from prompt.submit until its turn completes. */
 type Run = {
   /** Unique to this run: its log line carries it, and 👍 and 👎 name it. */
@@ -272,6 +273,8 @@ type Run = {
   blocked: number
   /** The prompt continued its task: the type the rater gave it, when planning used the task's type instead. */
   ratedType?: TaskType
+  /** The rating may rest on too little context, so no lowering or hand-down was made on it. */
+  unsure?: Unsure
   steppedUp: boolean
   delegated: boolean
   change: Change
@@ -361,8 +364,6 @@ let ceiling: Level = 'max'
 let without: Tier[] = []
 /** The miss rate at which hand-downs and lowering pause; null: never. */
 let missBlock: number | null = MISS_BLOCK
-/** Prompts shorter than this many words are not rated. */
-let minWords = 6
 /** One close call in five takes the route the guide did not pick. */
 let explore = true
 /** What happens to the answers to the four questions: ask whether to keep them, keep them, or forget them at the end of the session. */
@@ -433,14 +434,8 @@ const watches = new Map<string, Watch>()
 /** One spend of the retry budget at a time: two helpers asking together never both take the last chance. */
 let spending: Promise<unknown> = Promise.resolve()
 
-const words = (text: string) => text.trim().split(/\s+/).filter(Boolean).length
 const fromPerson = (e: PromptSubmitInput) => e.origin.kind === 'composer' || e.origin.kind === 'bridge'
 const names = (tiers: readonly Tier[]) => tiers.map(t => TIER_NAME[t]).join(' or ')
-
-// A prompt brain-dump is about to offer to shape: leave it to brain-dump, and
-// rate the brief it writes instead.
-const brainDumpWillCatch = (text: string, switches: Record<string, unknown>) =>
-  switches['brain-dump'] !== false && words(text) >= BRAIN_DUMP_WORDS && !text.includes('THE JOB')
 
 // ---- Files -----------------------------------------------------------------
 
@@ -569,10 +564,13 @@ async function seenEffort($: EngineInterface) {
 
 // The task in progress, kept from the last rating that started one. A follow-up that continues the task
 // is planned as its type, so a one-line "yes, go ahead" is not typed as a new kind of work, and carries its
-// id, so the log ties the brief, the follow-ups, the repairs and the subagents to one task.
+// id, so the log ties the brief, the follow-ups, the repairs and the subagents to one task. It also keeps how the task
+// began (the first 600 characters of its prompt) and how many prompts it has had, which the rater is told so that a
+// short follow-up is read in its task. A task stored before those were kept reads as one prompt with no brief.
 async function currentTask($: EngineInterface) {
   const v = (await $.state.get({ plugin: 'rightsize', key: 'task' }).catch(() => undefined))?.value
-  return v && typeof v.id === 'string' && isTaskType(v.type) ? v : null
+  if (!v || typeof v.id !== 'string' || !isTaskType(v.type)) return null
+  return { id: v.id, type: v.type, brief: typeof v.brief === 'string' ? v.brief : '', prompts: Number.isInteger(v.prompts) && v.prompts > 0 ? v.prompts : 1 }
 }
 
 // The text of a failed tool call, as the model read it.
@@ -712,7 +710,6 @@ function writeSetting($: EngineInterface, key: SettingKey, value: string): Promi
     case 'pacing': return $.config.set({ key: 'rightsize.pacing', value: value })
     case 'escalation': return $.config.set({ key: 'rightsize.escalation', value: value })
     case 'stuck': return $.config.set({ key: 'rightsize.stuck', value: value })
-    case 'minWords': return $.config.set({ key: 'rightsize.minWords', value: value })
     case 'rater': return $.config.set({ key: 'rightsize.rater', value: value })
     case 'raterCheck': return $.config.set({ key: 'rightsize.raterCheck', value: value })
     case 'startTips': return $.config.set({ key: 'rightsize.startTips', value: value })
@@ -849,7 +846,9 @@ async function countTie($: EngineInterface) {
   await $.store.set(TIES_STORE, (await tiesSeen($)) + 1).catch(() => undefined)
 }
 
-async function rate($: EngineInterface, text: string, s: Situation): Promise<{ rating?: Rating; overhead: number; prompt: string; by: Rater; failed?: string }> {
+// `unsure` says why the rater may have seen too little: the request was cut, or a task is in progress and its last reply could not be read.
+async function rate($: EngineInterface, text: string, s: Situation): Promise<{ rating?: Rating; overhead: number; prompt: string; by: Rater; failed?: string; task: Awaited<ReturnType<typeof currentTask>>; unsure?: Unsure }> {
+  const task = await currentTask($)
   let lastReply = ''
   try {
     const rows = await $.session.messages()
@@ -863,8 +862,9 @@ async function rate($: EngineInterface, text: string, s: Situation): Promise<{ r
   } catch {
     // Rated on the prompt alone.
   }
-  const prompt = ratingPrompt(text, lastReply)
-  return { ...(await rateWithFallback($, s.tier, s.level, prompt)), prompt }
+  const prompt = ratingPrompt(text, lastReply, task)
+  const unsure: Unsure | undefined = cutRequest(text).cut ? 'cut' : task && !lastReply.trim() ? 'missing' : undefined
+  return { ...(await rateWithFallback($, s.tier, s.level, prompt)), prompt, task, ...(unsure ? { unsure } : {}) }
 }
 
 /**
@@ -1340,6 +1340,7 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
       type: r.type,
       continues: r.continues === true,
       ...(run.ratedType ? { ratedType: run.ratedType } : {}),
+      ...(run.unsure ? { unsure: run.unsure } : {}),
       route: delegated ? `delegate:${run.delegate?.tier}` : 'main',
       tier: run.tier,
       level: run.steppedUp ? run.normal : (run.level ?? run.normal),
@@ -2041,9 +2042,6 @@ function applyOption(key: SettingKey) {
     case 'stuck':
       if (isSensitivity(v)) limits = LIMITS[v]
       return
-    case 'minWords':
-      minWords = minWordsOf(v)
-      return
     case 'rater':
       rater = v === 'haiku' ? 'haiku' : 'sonnet'
       return
@@ -2286,8 +2284,6 @@ export const register: Register = (on, options) => {
       await $.prompt.fill({ text: e.text, mode: 'replace' }).catch(() => null)
       return { drop: 'rightsize held this prompt and put it back in the box. Run /clear or /compact, then send it.' }
     }
-    if (words(text) < minWords) return next(e)
-    if (brainDumpWillCatch(text, await readSwitches($))) return next(e)
 
     await knowBilling($, true)
     $.ui.status('Rating the prompt...')
@@ -2300,9 +2296,8 @@ export const register: Register = (on, options) => {
       const set = { handOff: yours.has('handOff'), lower: yours.has('lowering') }
       const movedRules = pacedRules(base.rules ?? DEFAULT_RULES, paceNow, set)
       const s: Situation = { ...base, rules: movedRules }
-      const { rating: rated, overhead, prompt, failed, by } = await rate($, text, s)
+      const { rating: rated, overhead, prompt, failed, by, task: kept, unsure } = await rate($, text, s)
       // A rating that continues the task is planned as the task's type; any other starts a task of its own type.
-      const kept = rated ? await currentTask($) : null
       const follows = rated !== undefined && rated.continues === true && kept !== null
       const ratedType = follows && kept.type !== rated.type ? rated.type : undefined
       const r = rated && follows && kept.type !== rated.type ? { ...rated, type: kept.type } : rated
@@ -2310,7 +2305,11 @@ export const register: Register = (on, options) => {
         // While Claude fans work out to workflows, a single hand-off would only cut across it. After one,
         // Workflows says whether hand-offs go on (follow my rules, right-size every agent) or wait (the default).
         const planned = plan(r, s, floor)
-        const unfanned = workflowSeen && planned.kind === 'delegate' && (workflows === 'ask' || workflows === 'pause rightsize') ? effortPlan(r, s, floor) : planned
+        const fanned = workflowSeen && planned.kind === 'delegate' && (workflows === 'ask' || workflows === 'pause rightsize') ? effortPlan(r, s, floor) : planned
+        // A request that was cut, or a task whose last reply the rater could not read, may be harder than it looks:
+        // that is no ground to lower effort or hand work to a cheaper model. Raising and stronger models are left alone.
+        const noDowngrade = unsure !== undefined && ((fanned.kind === 'effort' && fanned.dir === 'lower') || (fanned.kind === 'delegate' && fanned.dir === 'down'))
+        const unfanned: Plan = noDowngrade ? { kind: 'none', why: 'the context was cut or missing, so no downgrade' } : fanned
         // A window nearly used up: nothing that costs more than staying, unless the matching rule
         // (Raising for more effort, Stronger model for a stronger one) is yours: then it follows your rule.
         const costlier = (unfanned.kind === 'effort' && unfanned.dir === 'raise') || unfanned.kind === 'switch' || (unfanned.kind === 'delegate' && unfanned.dir === 'up')
@@ -2322,9 +2321,12 @@ export const register: Register = (on, options) => {
         if (d.session) await $.state.set({ plugin: 'rightsize', key: 'sessionEffort' }, d.session)
         if (d.delegate) out = { ...e, context: [...(e.context ?? []), delegateNote(d.delegate)] }
         run = startRun(r, s, d, p, (await seenEffort($)) ?? s.level, overhead)
-        if (follows) run.task = kept.id
-        else await $.state.set({ plugin: 'rightsize', key: 'task' }, { id: run.task, type: r.type }).catch(() => undefined)
+        if (follows) {
+          run.task = kept.id
+          await $.state.set({ plugin: 'rightsize', key: 'task' }, { ...kept, prompts: kept.prompts + 1 }).catch(() => undefined)
+        } else await $.state.set({ plugin: 'rightsize', key: 'task' }, { id: run.task, type: r.type, brief: text.slice(0, BRIEF_MAX), prompts: 1 }).catch(() => undefined)
         if (ratedType) run.ratedType = ratedType
+        if (unsure) run.unsure = unsure
         run.rater = by
         // A close call the guide broke: kept on the run for the log, and counted so every fifth explores.
         if (planned.kind === 'delegate' && planned.tie) {
@@ -2333,13 +2335,16 @@ export const register: Register = (on, options) => {
         }
         const was = base.rules ?? DEFAULT_RULES
         const note = paceNote(paceNow, skipped || movedRules.handOff !== was.handOff || movedRules.lower !== was.lower)
-        const band = p !== unfanned
+        const band = noDowngrade
+          ? { text: 'No change: the context was cut or missing, so rightsize did not lower this or hand it to a cheaper model.', acted: false }
+          : p !== unfanned
           ? { text: `Kept ${s.level} on ${TIER_NAME[s.tier]} instead of ${unfanned.kind === 'delegate' ? `a ${TIER_NAME[unfanned.tier]} subagent` : unfanned.kind === 'switch' ? `running on ${TIER_NAME[unfanned.tier]}` : `raising to ${unfanned.kind === 'effort' ? unfanned.level : ''}`}.`, acted: true }
           : bandFor(run, d, p)
         await setBand($, note ? { ...band, text: `${band.text} ${note}` } : band)
         const did = d.delegate ? `delegate ${d.delegate.tier}` : d.model ? `switch to ${d.model.tier} at ${d.model.level} for the turn` : d.level ? `${d.auto ? 'auto ' : ''}${d.level} for the prompt` : d.session ? `${d.session} for the session` : 'no change'
         const fit = TIERS.map(t => `${t[0]}:${r.fit[t] ?? (r.fit[t] === null ? 'no' : '?')}`).join(' ')
-        if (unfanned !== planned) await log($, `hand-off to ${planned.kind === 'delegate' ? planned.tier : '?'} skipped: a workflow ran this session`)
+        if (noDowngrade) await log($, `no downgrade: context ${unsure}`)
+        if (fanned !== planned) await log($, `hand-off to ${planned.kind === 'delegate' ? planned.tier : '?'} skipped: a workflow ran this session`)
         const paced = paceNow.mode === 'normal' ? '' : `, ${paceNow.mode} pace on ${paceNow.window}${paceNow.pace === undefined ? '' : ` (${paceNow.pace.toFixed(2)})`}`
         await log($, `${r.type}${ratedType ? ` (rated ${ratedType}, continues the ${r.type} task)` : ''} on ${s.tier}/${s.level}${paced}: rated ${fit}, plan ${p.kind}${'dir' in p ? ` ${p.dir}` : ''}${run.tie ? ` (tie ${run.tie.by} over ${run.tie.over})` : ''}: ${did}`)
         // Every 50th Haiku rating gets Sonnet's second opinion, in the background. A Sonnet rating is not checked
@@ -2350,8 +2355,9 @@ export const register: Register = (on, options) => {
         // what the rating calls cost; /rightsize report counts the prompt as not counted, and the cost as overhead.
         const reason = failed ?? 'no rating'
         await log($, `prompt not rated (${reason}): kept ${s.level} on ${TIER_NAME[s.tier]}`)
-        // An unrated prompt is planned as nothing, but it is still part of the task in progress.
-        const task = (await currentTask($))?.id
+        // An unrated prompt is planned as nothing, but it is still part of the task in progress, and counts as one of its prompts.
+        const task = kept?.id
+        if (kept) await $.state.set({ plugin: 'rightsize', key: 'task' }, { ...kept, prompts: kept.prompts + 1 }).catch(() => undefined)
         const line: RunLine = { at: new Date().toISOString(), kind: 'unrated', session: sessionId, ...(task ? { task } : {}), reason, rater: by, overhead: round(overhead) }
         await append($, 'rightsize-runs.jsonl', JSON.stringify(line), RUNS_LOG_MAX)
       }

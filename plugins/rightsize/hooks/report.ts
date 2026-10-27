@@ -46,6 +46,8 @@ export type RunLine = {
   rater?: 'sonnet' | 'haiku'
   /** The rating call's cost. */
   overhead?: number
+  /** A run line: why the rater may have seen too little. 'cut': the request was longer than the rater is shown, so its middle was cut. 'missing': a task was in progress but Claude's last reply could not be read. Neither lowers effort or hands work to a cheaper model. */
+  unsure?: 'cut' | 'missing'
   /** An unrated line: why the rating did not come (timeout, unreadable answer, and so on). */
   reason?: string
   /** What effort-switch cache misses cost. */

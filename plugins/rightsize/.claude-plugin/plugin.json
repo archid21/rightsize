@@ -213,18 +213,6 @@
         "sensitive"
       ]
     },
-    "minWords": {
-      "type": "string",
-      "title": "Rate prompts from",
-      "description": "Prompts shorter than this many words are sent as they are, without a rating. A lower number rates more prompts, at one Haiku call each.",
-      "default": "6 words",
-      "options": [
-        "3 words",
-        "6 words",
-        "10 words",
-        "20 words"
-      ]
-    },
     "rater": {
       "type": "string",
       "title": "Rater",

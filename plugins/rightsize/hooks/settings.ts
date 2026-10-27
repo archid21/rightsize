@@ -45,7 +45,6 @@ export const SETTINGS = {
   pacing: { title: 'Budget pacing', options: ['on', 'off'], default: 'on' },
   escalation: { title: 'Raise when stuck', options: ['on', 'off'], default: 'on' },
   stuck: { title: 'Stuck sensitivity', options: ['relaxed', 'normal', 'sensitive'], default: 'normal' },
-  minWords: { title: 'Rate prompts from', options: ['3 words', '6 words', '10 words', '20 words'], default: '6 words' },
   rater: { title: 'Rater', options: ['sonnet', 'haiku'], default: 'sonnet' },
   raterCheck: { title: 'Rater check', options: ['every 25', 'every 50', 'every 100', 'off'], default: 'every 50' },
   startTips: { title: 'Start suggestions', options: ['weekly', 'monthly', 'off'], default: 'weekly' },
@@ -194,9 +193,6 @@ export function rulesOf(values: Readonly<Record<string, string>>): Choices {
 }
 
 // ---- Values the rows stand for -------------------------------------------------
-
-/** "6 words" as 6. */
-export const minWordsOf = (v: string) => Number.parseInt(v, 10) || 6
 
 /** "every 50" as 50; "off" as null. */
 export function raterEvery(v: string): number | null {

@@ -82,6 +82,12 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
     ratingUsage: {} as Record<string, number>,
     /** Every model.complete call's model, in order: the rater is sonnet (haiku as the fallback or when Rater says so), the spot-check sonnet. */
     completions: [] as string[],
+    /** The text of every rating call (the rater's, not the spot-check's), in order. */
+    ratingPrompts: [] as string[],
+    /** The conversation as $.session.messages() reports it: Claude's last reply is what the rater is shown. */
+    messages: [{ role: 'assistant', text: 'Done: the change is in.' }] as { role: string; text: string }[],
+    /** True: $.session.messages() throws. */
+    messagesFail: false,
     /** What the spot-check answers; the rating's own reply when unset. */
     checkRating: undefined as string | undefined,
     checkUsage: {} as Record<string, number>,
@@ -118,7 +124,10 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
     if (h.settingsFail) throw new Error('settings could not be read')
     return { value: { pluginConfigs: { other: { options: { floor: 'high' } }, ...(Object.keys(h.stored).length ? { [h.configKey]: { options: h.stored } } : {}) } } } as never
   })
-  on('session.messages', async () => ({ value: [] }) as never)
+  on('session.messages', async () => {
+    if (h.messagesFail) throw new Error('messages could not be read')
+    return { value: h.messages } as never
+  })
   on('session.id', async () => ({ value: 'sess-1' }) as never)
   on('session.model', async () => ({ value: h.liveModel ?? h.model }) as never)
   on('session.usage', async ($, e) => {
@@ -205,6 +214,7 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
       return { value: { isAnswered: true, text: h.checkRating ?? h.rating, usage: h.checkUsage } } as never
     }
     h.ratings += 1
+    h.ratingPrompts.push(String((e as { prompt?: unknown }).prompt ?? ''))
     // The rating call is priced too; the turn's measured cost leaves it out.
     if (h.ledger !== undefined) h.ledger += 0.5
     const queued = h.ratingQueue.shift()
@@ -1607,11 +1617,10 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect((await d.command('')).text ?? '').not.toContain('Hand-off threshold:')
   })
 
-  test(`skips short prompts, slash commands, other senders, and when off in /mods (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`skips slash commands and other senders (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
     const d = drive($, h)
     await d.start(surface)
-    await d.submit('yes go ahead')
     await d.submit('/rightsize show me the current level please')
     await ($ as unknown as Engine).prompt.submit({ text: DEBUG, origin: { kind: 'task-notification' }, wait: false })
     expect(h.ratings).toBe(0)
@@ -2464,18 +2473,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
       def: 'medium',
     },
     {
-      key: 'minWords',
-      value: '3 words',
-      start: OPUS,
-      see: async c => {
-        c.h.rating = NO_CHANGE
-        await c.d.submit('rename this variable please')
-        return c.h.ratings
-      },
-      set: 1,
-      def: 0,
-    },
-    {
       key: 'rater',
       value: 'haiku',
       start: OPUS,
@@ -2678,8 +2675,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(disagree(h)).toBe(false)
   })
 
-  test(`a value that is not one of a row's options counts as unset: the default applies, and it is not yours (${surface})`, { timeoutMs: 30000, options: { ceiling: 'ultra', raterCheck: 'on', startTips: 'on', missPause: '35%', minWords: 'six' } }, async ($, on) => {
-    const h = engine(on, { ...OPUS, stored: { ceiling: 'ultra', raterCheck: 'on', startTips: 'on', missPause: '35%', minWords: 'six' } })
+  test(`a value that is not one of a row's options counts as unset: the default applies, and it is not yours (${surface})`, { timeoutMs: 30000, options: { ceiling: 'ultra', raterCheck: 'on', startTips: 'on', missPause: '35%' } }, async ($, on) => {
+    const h = engine(on, { ...OPUS, stored: { ceiling: 'ultra', raterCheck: 'on', startTips: 'on', missPause: '35%' } })
     const d = drive($, h)
     await d.start(surface)
     const text = await settingsText(d)
@@ -2687,11 +2684,10 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(text, 'a stored on, from before it became a list: the old on is the default').not.toContain('Rater check:')
     expect(text).not.toContain('Start suggestions:')
     expect(text).not.toContain('Pause after misses:')
-    expect(text).not.toContain('Rate prompts from:')
     expect(text).toContain('are at their defaults')
   })
 
-  const SOME = { floor: 'medium', ceiling: 'xhigh', lowerRule: 'never lower', billing: 'api', explore: 'on', minWords: '10 words' }
+  const SOME = { floor: 'medium', ceiling: 'xhigh', lowerRule: 'never lower', billing: 'api', explore: 'on', pacing: 'off' }
   test(`/rightsize lists every setting, with (yours) for those you set and (default) for the rest (${surface})`, { timeoutMs: 30000, options: SOME }, async ($, on) => {
     const set = SOME
     const h = engine(on, { ...OPUS, stored: set })
@@ -4303,6 +4299,147 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.rating = HAND_OFF()
     await startHelper(d, h, 't2', 'helper')
     expect(((await d.send()) as { deny?: string }).deny, 'a fresh budget').toBeUndefined()
+  })
+
+  // ---- Every prompt is rated, with the whole request and the task in progress ----
+
+  const LONG = (head: string) => `${head} ${'and the details go on. '.repeat(320)}but only in src/`
+  const unsureOf = (h: ReturnType<typeof engine>) => readRuns(h).filter(l => l.kind === 'run').map(l => l.unsure ?? null)
+
+  test(`every prompt is rated as entered: two words, and 150 words with brain-dump on (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { ...OPUS })
+    h.files['/home/test/.claude/mods/switches.json'] = '{"brain-dump": true}'
+    const d = drive($, h)
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+    h.rating = NO_CHANGE
+    await d.submit('yes go')
+    expect(h.ratings, 'a two-word prompt is rated').toBe(1)
+    await d.submit(Array.from({ length: 150 }, (_, i) => `word${i}`).join(' '))
+    expect(h.ratings, 'a 150-word prompt is rated though brain-dump is on').toBe(2)
+    expect(h.completions, 'one rater call each').toEqual(['sonnet', 'sonnet'])
+  })
+
+  test(`a request that is cut is not lowered, and its run line says unsure: cut (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES } })
+    const d = drive($, h)
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+    h.rating = LOWER
+    h.answers = { Lowering: 'Lower automatically', Remember: 'Just this session' }
+    await d.submit(LOOKUP)
+    await d.step('t1')
+    expect(last(h.sent)?.effort, 'the same rating lowers a request that is whole').toBe('low')
+    await d.complete('t1')
+
+    const request = LONG(LOOKUP)
+    expect(request.length).toBeGreaterThan(6000)
+    await d.submit(request)
+    const shown = last(h.ratingPrompts) ?? ''
+    expect(shown, 'the rater sees the start, a marked cut and the end').toContain(`<request>\n${request.slice(0, 4000)}\n[… ${request.length - 6000} characters cut …]\n`)
+    expect(shown.endsWith('but only in src/\n</request>')).toBe(true)
+    await d.step('t2')
+    expect(last(h.sent)?.effort, 'not lowered: the rater did not see all of it').toBe('medium')
+    expect(h.files['/home/test/.claude/mods-logs/rightsize.log'] ?? '').toContain('no downgrade: context cut')
+    expect(h.asked.map(a => a.header), 'and Lowering is not asked again').toEqual(['Lowering', 'Remember'])
+    await d.complete('t2')
+    expect(unsureOf(h)).toEqual([null, 'cut'])
+  })
+
+  test(`a task whose last reply is missing is not lowered, but a raise still happens (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES } })
+    const d = drive($, h)
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+    h.answers = { Lowering: 'Lower automatically', Raising: 'Raise automatically (Recommended)', Remember: 'Just this session' }
+    // No task yet, so no reply is missing: the first prompt of a session is lowered as ever.
+    h.messages = []
+    h.rating = LOWER
+    await d.submit(LOOKUP)
+    await d.step('t1')
+    expect(last(h.sent)?.effort).toBe('low')
+    await d.complete('t1')
+
+    // A task is in progress and the conversation holds no reply from Claude.
+    await d.submit(LOOKUP)
+    await d.step('t2')
+    expect(last(h.sent)?.effort, 'no reply to read: not lowered').toBe('medium')
+    expect(h.files['/home/test/.claude/mods-logs/rightsize.log'] ?? '').toContain('no downgrade: context missing')
+    await d.complete('t2')
+
+    // The conversation cannot be read at all.
+    h.messagesFail = true
+    await d.submit(LOOKUP)
+    await d.step('t3')
+    expect(last(h.sent)?.effort, 'unreadable: not lowered').toBe('medium')
+    await d.complete('t3')
+
+    // A raise is not held back.
+    h.rating = '{"level":"high","model":"same","type":"debug","read":20000,"write":3000,"steps":8,"reason":"unknown cause"}'
+    await d.submit(DEBUG)
+    await d.step('t4')
+    expect(last(h.sent)?.effort, 'raised').toBe('high')
+    await d.complete('t4')
+    expect(unsureOf(h)).toEqual([null, 'missing', 'missing', 'missing'])
+  })
+
+  test(`a cut request is not handed to a cheaper model (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: HELPERS })
+    const d = drive($, h)
+    await d.start(surface)
+    await warm(d, h)
+    h.rating = HAND_OFF()
+    await d.submit(SEARCH)
+    expect(last(h.submitted)?.context?.length, 'a whole request is handed down').toBe(1)
+    await d.step('t1')
+    await d.complete('t1')
+
+    await d.submit(LONG(SEARCH))
+    expect(last(h.submitted)?.context ?? [], 'a cut one stays in the main chat').toEqual([])
+    expect(helperLog(h)).toContain('no downgrade: context cut')
+    await d.step('t2')
+    await d.complete('t2')
+    expect(unsureOf(h)).toEqual([null, 'cut'])
+    expect(readRuns(h).filter(l => l.kind === 'run').map(l => [l.change, l.offered])).toEqual([['delegate-down', 'delegate-down'], ['none', 'none']])
+  })
+
+  test(`the rater is told how the task began and how many prompts it has had (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-sonnet-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES } })
+    const d = drive($, h)
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+    const first = `add a dark mode toggle to the settings page ${'and keep it in step with the OS theme. '.repeat(20)}`
+    expect(first.length).toBeGreaterThan(600)
+
+    h.rating = rated('feature', false)
+    await d.submit(first)
+    expect(h.ratingPrompts[0], 'no task yet').not.toContain('<task>')
+
+    h.rating = rated('feature', true)
+    await d.submit(FOLLOW_UP)
+    expect(h.ratingPrompts[1]).toContain(`<task>\nTask in progress: feature, 1 prompt so far. It started with:\n${first.trim().slice(0, 600)}\n</task>\n\n<last_reply>\nDone: the change is in.\n</last_reply>\n\n<request>\n${FOLLOW_UP}\n</request>`)
+    expect(h.ratingPrompts[1], 'the brief stops at 600 characters').not.toContain(first.trim().slice(0, 601))
+
+    await d.submit(FOLLOW_UP)
+    expect(h.ratingPrompts[2], 'a continuing prompt counts').toContain('Task in progress: feature, 2 prompts so far.')
+
+    // A prompt that could not be rated counts too.
+    h.ratingQueue = ['unavailable', 'unavailable']
+    await d.submit(FOLLOW_UP)
+    h.rating = rated('feature', true)
+    await d.submit(FOLLOW_UP)
+    expect(last(h.ratingPrompts)).toContain('Task in progress: feature, 4 prompts so far.')
+
+    // A new goal starts a task of its own: one prompt, and its own brief.
+    h.rating = rated('lookup', false)
+    await d.submit(LOOKUP)
+    h.rating = rated('lookup', true)
+    await d.submit(FOLLOW_UP)
+    expect(last(h.ratingPrompts)).toContain(`Task in progress: lookup, 1 prompt so far. It started with:\n${LOOKUP}\n</task>`)
   })
 
 }

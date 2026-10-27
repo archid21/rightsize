@@ -13,17 +13,31 @@ export type Rates = Record<string, { n: number; misses: number }>
 /** Outcomes a key needs before its own rate is used. */
 export const MISS_MIN = 5
 
-// Cold-start priors: before a person's own outcomes say anything, Haiku is assumed to miss on these
-// kinds of work half the time, which is at or over every Pause after misses setting. Each is counted as
-// pseudo-outcomes that fill the MISS_MIN a key needs; every real outcome pushes one out, and with MISS_MIN
-// real outcomes no prior is left. The share is a starting guess, not a measurement.
-/** Reviews hunt subtle bugs, which a Haiku-level read tends to miss. */
-export const PRIOR_REVIEW_HAIKU = 0.5
-/** Writing is judged on style, which Haiku tends not to hold. */
-export const PRIOR_WRITING_HAIKU = 0.5
-export const COLD_PRIORS: Readonly<Record<string, number>> = {
-  'review:haiku': PRIOR_REVIEW_HAIKU,
-  'writing:haiku': PRIOR_WRITING_HAIKU,
+/** The tasks a research prior stands for: the most any profile asks for, so every profile can start from it. */
+export const PRIOR_N = 10
+
+// Research priors: the share of misses each kind of work had on a cheaper model in rightsize's own research,
+// where the strongest model did the same work reliably. Every profile starts from them. A prior counts as
+// PRIOR_N pseudo-tasks; every real outcome on this machine pushes one out, and with PRIOR_N real outcomes only
+// this machine's log is left. Work with no prior waits for its own log. Opus and Fable are the reference: none.
+export const RESEARCH_PRIORS: Readonly<Record<string, number>> = {
+  'lookup:haiku': 0,
+  'search:haiku': 0,
+  'bulk-edit:haiku': 0,
+  'debug:haiku': 0,
+  'refactor:haiku': 0,
+  'feature:haiku': 0,
+  /** Reviews hunt subtle bugs, which a Haiku-level read tends to miss. */
+  'review:haiku': 0.8,
+  /** Writing is judged on style. The research could not tell models apart on it, so this is a starting guess. */
+  'writing:haiku': 0.5,
+  'lookup:sonnet': 0,
+  'search:sonnet': 0,
+  'bulk-edit:sonnet': 0,
+  'debug:sonnet': 0,
+  'refactor:sonnet': 0,
+  'feature:sonnet': 0,
+  'review:sonnet': 0.3,
 }
 
 export const missKey = (type: string, tier: string) => `${type}:${tier}`
@@ -34,6 +48,8 @@ const delegateTier = (l: RunLine) => {
 }
 
 type Outcome = { type: TaskType; tier: Tier; miss: boolean }
+/** An outcome and the task it belongs to: a run's task (its own id before 0.8), a feedback's run's; a check is a task of its own. */
+type Counted = [Outcome, string]
 
 /** The model a run's work ran on: a hand-off's subagent, else the main chat. */
 const workedOn = (l: RunLine) => delegateTier(l) ?? (isTier(l.tier) ? l.tier : undefined)
@@ -81,31 +97,35 @@ export function checkTotals(lines: readonly RunLine[]) {
   return { n, agreed }
 }
 
-/** Every outcome in the log, in order. */
-export function outcomes(lines: readonly RunLine[]): Outcome[] {
-  const out: Outcome[] = []
+// Every outcome in the log, in order, with its task.
+function counted(lines: readonly RunLine[]): Counted[] {
+  const out: Counted[] = []
   const runs = new Map<string, RunLine>()
   const verdicts = new Map<string, 'up' | 'down'>()
-  for (const l of lines) {
+  const taskOf = (l: RunLine, i: number) => l.task ?? l.id ?? `line ${i}`
+  lines.forEach((l, i) => {
     const kind = l.kind ?? 'run'
     if (kind === 'run') {
       const o = ofRun(l)
-      if (o) out.push(o)
+      if (o) out.push([o, taskOf(l, i)])
       if (l.id) runs.set(l.id, l)
     } else if (kind === 'feedback') {
       // A person who changed their mind is counted once, on the last verdict.
       if (l.ref && (l.value === 'up' || l.value === 'down')) verdicts.set(l.ref, l.value)
     } else if (kind === 'check') {
-      out.push(...ofCheck(l))
+      for (const o of ofCheck(l)) out.push([o, `check ${i}`])
     }
-  }
+  })
   for (const [ref, value] of verdicts) {
     const run = runs.get(ref)
     const tier = run ? workedOn(run) : undefined
-    if (run && tier && isTaskType(run.type)) out.push({ type: run.type, tier, miss: value === 'down' })
+    if (run && tier && isTaskType(run.type)) out.push([{ type: run.type, tier, miss: value === 'down' }, run.task ?? ref])
   }
   return out
 }
+
+/** Every outcome in the log, in order. */
+export const outcomes = (lines: readonly RunLine[]): Outcome[] => counted(lines).map(([o]) => o)
 
 /** Outcomes and misses per task type and model. */
 export function missRates(lines: readonly RunLine[]): Rates {
@@ -120,13 +140,13 @@ export function missRates(lines: readonly RunLine[]): Rates {
 
 /**
  * The share of wrong judgements for a task type on a model; with too few outcomes, the model's across all types; with too few of those, 0.
- * A key with a cold-start prior (COLD_PRIORS) and fewer than MISS_MIN own outcomes is scored on its own outcomes
- * plus enough prior pseudo-outcomes to make MISS_MIN.
+ * A key with a research prior (RESEARCH_PRIORS) and fewer than PRIOR_N own outcomes is scored on its own outcomes
+ * plus enough prior pseudo-outcomes to make PRIOR_N.
  */
 export function missRate(rates: Rates, type: string, tier: string) {
   const own = rates[missKey(type, tier)]
-  const prior = COLD_PRIORS[missKey(type, tier)]
-  if (prior !== undefined && (own?.n ?? 0) < MISS_MIN) return ((own?.misses ?? 0) + (MISS_MIN - (own?.n ?? 0)) * prior) / MISS_MIN
+  const prior = RESEARCH_PRIORS[missKey(type, tier)]
+  if (prior !== undefined && (own?.n ?? 0) < PRIOR_N) return ((own?.misses ?? 0) + (PRIOR_N - (own?.n ?? 0)) * prior) / PRIOR_N
   if (own && own.n >= MISS_MIN) return own.misses / own.n
   let n = 0
   let misses = 0
@@ -150,9 +170,22 @@ export function missMap(rates: Rates): Record<string, number> {
   return out
 }
 
-/** The outcomes logged per task type and model: what the profile's minimum of logged tasks is counted against. Cold-start priors are not counted. */
-export function missCounts(rates: Rates): Record<string, number> {
-  return Object.fromEntries(Object.entries(rates).map(([key, e]) => [key, e.n]))
+/**
+ * The tasks per task type and model: what the profile's minimum of logged tasks is counted against. A task with
+ * several outcomes (a run and its 👎) counts once. A key with a research prior counts its PRIOR_N pseudo-tasks
+ * until real tasks outnumber them.
+ */
+export function missCounts(lines: readonly RunLine[]): Record<string, number> {
+  const tasks = new Map<string, Set<string>>()
+  for (const [o, task] of counted(lines)) {
+    const key = missKey(o.type, o.tier)
+    const seen = tasks.get(key) ?? new Set<string>()
+    seen.add(task)
+    tasks.set(key, seen)
+  }
+  const out: Record<string, number> = Object.fromEntries([...tasks].map(([key, seen]) => [key, seen.size]))
+  for (const key of Object.keys(RESEARCH_PRIORS)) out[key] = Math.max(out[key] ?? 0, PRIOR_N)
+  return out
 }
 
 /** All outcomes together: how many were misses of how many. */

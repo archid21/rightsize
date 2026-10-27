@@ -1,4 +1,5 @@
 import { expect, test } from 'claude-code/testing'
+import type { RightsizeTaskType as TaskType } from '../types'
 import {
   CAL_FULL,
   DEFAULT_PRICES,
@@ -293,7 +294,7 @@ test('on a Sonnet session a rated raise for debugging is not taken: the level st
   expect(plan(rating({ type: 'debug', level: 'high', fit: { opus: 'high' }, read: 30_000, write: 2000, steps: 10 }), opus, 'low')).toMatchObject({ kind: 'effort', dir: 'raise', level: 'high' })
 })
 
-// ---- cold-start priors: Haiku on review and writing ----
+// ---- research priors: where every profile starts ----
 
 const lines = (n: number, miss: boolean, type: string): RunLine[] =>
   Array.from({ length: n }, () => ({ at: new Date().toISOString(), kind: 'run' as const, type, route: 'delegate:haiku', tier: 'opus', change: 'delegate-down' as const, agentCalls: miss ? 2 : 1 }))
@@ -312,9 +313,10 @@ test("Haiku's fit on writing is not acted on with no outcomes yet, and is once t
 
 test("Haiku's fit on a review is not acted on as a subagent with no outcomes yet, and is once the outcomes are good", async () => {
   const r = rating({ type: 'review', level: 'low', fit: { haiku: 'low', sonnet: 'low', opus: 'low' }, read: 60_000, write: 2000, steps: 20 })
-  expect(sizeSubagent(r, { ...opus, misses: misses([]) }, 'opus', 'low')?.tier, 'held by the prior: Sonnet, not Haiku').toBe('sonnet')
-  expect(sizeSubagent(r, { ...opus, misses: misses(lines(5, false, 'review')) }, 'opus', 'low')?.tier).toBe('haiku')
-  expect(sizeSubagent({ ...r, type: 'search' }, { ...opus, misses: misses([]) }, 'opus', 'low')?.tier, 'search has no prior').toBe('haiku')
+  expect(sizeSubagent(r, { ...opus, misses: misses([]) }, 'opus', 'low')?.tier, 'held by the research priors: reviews miss on Haiku and Sonnet too').toBeUndefined()
+  expect(sizeSubagent(r, { ...opus, misses: misses(lines(5, false, 'review')) }, 'opus', 'low')?.tier, 'five good outcomes leave half the prior').toBeUndefined()
+  expect(sizeSubagent(r, { ...opus, misses: misses(lines(10, false, 'review')) }, 'opus', 'low')?.tier, 'ten: only the person\'s own outcomes').toBe('haiku')
+  expect(sizeSubagent({ ...r, type: 'search' }, { ...opus, misses: misses([]) }, 'opus', 'low')?.tier, 'search starts at 0% misses').toBe('haiku')
 })
 
 test('calibration moves estimates toward what runs really cost', async () => {
@@ -816,8 +818,8 @@ const evidence = (profile: keyof typeof PROFILES, counts: Record<string, number>
   missBlock: PROFILES[profile].evidence.maxMiss,
   minTasks: PROFILES[profile].evidence.minTasks,
 })
-const cheaperTo = (s: Situation) => {
-  const r = rating({ level: 'low', fit: { haiku: 'low', sonnet: 'low', fable: 'low' }, type: 'search', read: 150_000, write: 3000, steps: 30 })
+const cheaperTo = (s: Situation, type: TaskType = 'search') => {
+  const r = rating({ level: 'low', fit: { haiku: 'low', sonnet: 'low', fable: 'low' }, type, read: 150_000, write: 3000, steps: 30 })
   const p = plan(r, s, 'low')
   return p.kind === 'delegate' && p.dir === 'down' ? p.tier : p.kind
 }
@@ -874,15 +876,18 @@ test('Balanced pauses a kind of work at 20% misses, and Economy at 30%, with no 
 
 test('the logged tasks per route come from the outcomes in the run log', async () => {
   const at = '2026-01-01T00:00:00.000Z'
+  // Work the research did not cover, so only the person's own tasks count. Each run is a task of its own.
+  let k = 0
   const hand = (n: number, agentCalls = 1): RunLine[] =>
-    Array.from({ length: n }, (_, i) => ({ at, kind: 'run', id: `r${i}`, type: 'search', tier: 'fable', route: 'delegate:haiku', change: 'delegate-down', agentCalls }) as RunLine)
-  const rates = missRates([...hand(9), ...hand(1, 2)])
-  expect(missCounts(rates)).toEqual({ 'search:haiku': 10 })
-  expect(Math.abs((missMap(rates)['search:haiku'] ?? 0) - 0.1), 'one in ten needed rework').toBeLessThan(1e-9)
+    Array.from({ length: n }, () => ({ at, kind: 'run', id: `r${k}`, task: `t${k++}`, type: 'search', tier: 'fable', route: 'delegate:haiku', change: 'delegate-down', agentCalls }) as RunLine)
+  const noPrior = (lines: RunLine[]) => lines.map(l => ({ ...l, type: 'extract' }))
+  const counted = noPrior([...hand(9), ...hand(1, 2)])
+  expect(missCounts(counted)['extract:haiku']).toBe(10)
+  expect(Math.abs((missMap(missRates(counted))['extract:haiku'] ?? 0) - 0.1), 'one in ten needed rework').toBeLessThan(1e-9)
   // 10 tasks and exactly 10% misses: Quality refuses; with 11 tasks and the same one miss, it is under 10%.
   const q = (lines: RunLine[]) => {
-    const r2 = missRates(lines)
-    return cheaperTo({ ...evidence('Quality', missCounts(r2)), misses: missMap(r2) })
+    const ls = noPrior(lines)
+    return cheaperTo({ ...evidence('Quality', missCounts(ls)), misses: missMap(missRates(ls)) }, 'extract')
   }
   expect(q([...hand(9), ...hand(1, 2)]), '1 of 10: 10%').toBe('none')
   expect(q([...hand(10), ...hand(1, 2)]), '1 of 11: under 10%').toBe('haiku')

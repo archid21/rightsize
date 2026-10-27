@@ -100,9 +100,10 @@ test('a miss rate on the start model raises its cost and hand-ups in proportion'
   expect(Math.abs(m.up - 3) < 1e-9, '3 of 10 prompts handed up').toBe(true)
   expect(replay(lines, { tier: 'opus', level: 'medium' }, { ...C, misses: rate }).cost, "Sonnet's record does not touch an Opus start").toBe(replay(lines, { tier: 'opus', level: 'medium' }, C).cost)
   const thin = replay(lines, start, { ...C, misses: { 'feature:sonnet': { n: 4, misses: 4 } } })
-  expect(thin.cost, 'under 5 outcomes: not used').toBe(base.cost)
+  // Under 10 outcomes, a type with a research prior is blended with it: Sonnet on features starts at 0%, so 4 misses in 4 is 40%.
+  expect(Math.abs(thin.cost - (0.6 * base.cost + 0.4 * wrong.cost)) < 1e-9, 'blended with the research prior').toBe(true)
   const across = replay(lines, start, { ...C, misses: { 'debug:sonnet': { n: 10, misses: 10 } } })
-  expect(across.up, "no record for this type: Sonnet's across types is used").toBe(10)
+  expect(across.up, "no record for this type, but a research prior: the prior, not Sonnet's record across types").toBe(0)
   const unable = replay(many(4, { ...easy, sonnet: null }), start, { ...C, misses: { 'feature:sonnet': { n: 10, misses: 10 } } })
   expect(unable.up, 'where the rater already said Sonnet would struggle, nothing more to blend').toBe(4)
 })

@@ -403,7 +403,8 @@ let missBlock: number | null = MISS_BLOCK
 /** The tasks a kind of work must have logged on a model before a cheaper route to it is used; 0: no minimum. */
 let minTasks = 0
 /** The outcomes logged per task type and model (misses.ts): minTasks is counted against these. */
-let counts: Record<string, number> = {}
+// Before the log is read, the research priors alone.
+let counts: Record<string, number> = missCounts([])
 /**
  * Chances a task has to retry: a helper raised a level, or the main chat reworking a hand-off. When they
  * are used up, the helper goes back to the main chat and the main chat finishes the task itself.
@@ -598,9 +599,9 @@ async function refreshMisses($: EngineInterface) {
     const now = await $.clock.now()
     runLog = runLog.filter(l => now - Date.parse(l.at) <= MISS_WINDOW_DAYS * 24 * 60 * 60_000)
     // Lines from before Cost measurement was restarted teach nothing.
-    const rates = missRates(runLog.filter(l => Date.parse(l.at) >= measureFrom))
-    misses = missMap(rates)
-    counts = missCounts(rates)
+    const measured = runLog.filter(l => Date.parse(l.at) >= measureFrom)
+    misses = missMap(missRates(measured))
+    counts = missCounts(measured)
   } catch {
     // The old rates stand.
   }

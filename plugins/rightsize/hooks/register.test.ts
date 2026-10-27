@@ -4888,9 +4888,11 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await nearHandOff($, h, drive($, h))).toBe('haiku')
   })
 
-  // Quality's evidence rule: 10 logged tasks of that kind on that route, and under 10% misses.
+  // Quality's evidence rule: 10 tasks of that kind on that route, and under 10% misses. Search on Haiku has a research
+  // prior worth 10 tasks at 0% misses; each logged task takes the place of one of them.
   for (const [what, n, missed, to] of [
-    ['9 logged tasks: refused', 9, 0, undefined],
+    ['9 logged tasks, none missed: allowed, the research prior fills the tenth', 9, 0, 'haiku'],
+    ['5 logged tasks, 1 missed (10% with the prior): refused', 5, 1, undefined],
     ['10 logged tasks, none missed: allowed', 10, 0, 'haiku'],
     ['10 logged tasks, 1 missed (10%): refused', 10, 1, undefined],
     ['11 logged tasks, 1 missed (9%): allowed', 11, 1, 'haiku'],
@@ -4902,10 +4904,9 @@ for (const surface of ['desktop', 'terminal'] as const) {
     })
   }
 
-  test(`Quality with nothing logged keeps the work on the session model, and Balanced with the same threshold hands it off (${surface})`, { timeoutMs: 30000, options: inProfile('Quality', { handOff: '90%' }).options }, async ($, on) => {
+  test(`Quality with nothing logged starts from the research prior: search work goes to Haiku (${surface})`, { timeoutMs: 30000, options: inProfile('Quality', { handOff: '90%' }).options }, async ($, on) => {
     const h = engine(on, { ...OPUS, store: SEND, stored: inProfile('Quality', { handOff: '90%' }).stored })
-    expect(await nearHandOff($, h, drive($, h))).toBeUndefined()
-    expect(h.asked.filter(a => a.header === 'Cheaper'), 'nothing to ask about: no cheaper route').toEqual([])
+    expect(await nearHandOff($, h, drive($, h))).toBe('haiku')
   })
 
   test(`Pause after misses you set replaces the whole evidence rule, Quality's 10 logged tasks too (${surface})`, { timeoutMs: 30000, options: inProfile('Quality', { handOff: '90%', missPause: '50%' }).options }, async ($, on) => {
@@ -4913,18 +4914,19 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await nearHandOff($, h, drive($, h)), 'no tasks logged, and the row says 50%').toBe('haiku')
   })
 
-  // The miss pause: Balanced pauses a kind of work at 20% misses, Economy at 30%. 1 miss in 5 is 20%.
+  // The miss pause: Balanced pauses a kind of work at 20% misses, Economy at 30%. With 10 logged tasks the research
+  // prior is gone, so 2 misses in 10 is 20%.
   for (const [profile, to] of [['Balanced', undefined], ['Economy', 'haiku']] as const) {
     test(`${profile} at 20% misses hands off to ${to ?? 'no one'} (${surface})`, { timeoutMs: 30000, options: inProfile(profile, profile === 'Balanced' ? { handOff: '90%' } : {}).options }, async ($, on) => {
       const h = engine(on, { ...OPUS, store: SEND, stored: inProfile(profile, profile === 'Balanced' ? { handOff: '90%' } : {}).stored })
-      h.files[RUNS] = haikuLog(h, 5, 1)
+      h.files[RUNS] = haikuLog(h, 10, 2)
       expect(await nearHandOff($, h, drive($, h))).toBe(to)
     })
   }
 
-  test(`Economy pauses at 30% misses: 2 in 5 is paused (${surface})`, { timeoutMs: 30000, options: inProfile('Economy').options }, async ($, on) => {
+  test(`Economy pauses at 30% misses: 3 in 10 is paused, and early misses are softened by the prior (${surface})`, { timeoutMs: 30000, options: inProfile('Economy').options }, async ($, on) => {
     const h = engine(on, { ...OPUS, store: SEND, stored: inProfile('Economy').stored })
-    h.files[RUNS] = haikuLog(h, 5, 2)
+    h.files[RUNS] = haikuLog(h, 10, 3)
     expect(await nearHandOff($, h, drive($, h))).toBeUndefined()
   })
 

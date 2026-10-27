@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import { MISS_BLOCK } from './cost'
-import { MISS_MIN, checkTotals, missMap, missRate, missRates, missTotals, outcomes } from './misses'
+import { MISS_MIN, PRIOR_N, RESEARCH_PRIORS, checkTotals, missCounts, missMap, missRate, missRates, missTotals, outcomes } from './misses'
 import type { RunLine } from './report'
 
 const at = new Date(Date.parse('2026-10-23T18:00:00.000Z')).toISOString()
@@ -94,25 +94,42 @@ test(`the rate for a type and model needs ${MISS_MIN} outcomes, else the model's
 })
 
 test('the map for plan() holds each type and model with a rate above zero, keyed type:tier', async () => {
-  const hard = Array.from({ length: 6 }, (_, i) => handDown({ agentCalls: i < 3 ? 2 : 1 }))
+  const hard = Array.from({ length: 6 }, (_, i) => handDown({ type: 'extract', agentCalls: i < 3 ? 2 : 1 }))
   const map = missMap(missRates(hard))
-  expect(map['search:haiku']).toBe(0.5)
-  expect(map['search:haiku'] ?? 0, 'over the block line').toBeGreaterThanOrEqual(MISS_BLOCK)
-  expect(map['lookup:haiku'], 'another type leans on the model across types').toBe(0.5)
+  expect(map['extract:haiku'], 'extract has no research prior: its own rate').toBe(0.5)
+  expect(map['extract:haiku'] ?? 0, 'over the block line').toBeGreaterThanOrEqual(MISS_BLOCK)
+  expect(map['summarize:haiku'], 'another type with no prior leans on the model across types').toBe(0.5)
+  expect(map['lookup:haiku'], 'a type with a prior is blended with it: 0% prior, no outcomes of its own').toBeUndefined()
   expect(map['search:opus'], 'no outcomes on Opus').toBeUndefined()
 })
 
-test('cold-start priors: Haiku on review and writing starts at the pause line, and real outcomes take the place of the pseudo-outcomes', async () => {
+test('research priors: every profile starts from them, and real outcomes take the place of the pseudo-outcomes', async () => {
   const hand = (type: string, n: number, bad = 0): RunLine[] => Array.from({ length: n }, (_, i) => handDown({ type, agentCalls: i < bad ? 2 : 1 }))
-  for (const type of ['review', 'writing']) {
-    expect(missRate({}, type, 'haiku'), `${type}: nothing seen`).toBeGreaterThanOrEqual(MISS_BLOCK)
-    expect(missRate(rates(hand(type, 1)), type, 'haiku'), `${type}: one good outcome`).toBeGreaterThanOrEqual(MISS_BLOCK)
-    expect(missRate(rates(hand(type, MISS_MIN)), type, 'haiku'), `${type}: five good outcomes, the prior is gone`).toBe(0)
-    expect(missRate(rates(hand(type, MISS_MIN, 2)), type, 'haiku'), `${type}: own rate`).toBe(0.4)
-  }
-  expect(missRate({}, 'search', 'haiku'), 'no prior for other work').toBe(0)
-  expect(missRate({}, 'review', 'opus'), 'no prior for other models').toBe(0)
-  expect(missMap({})).toEqual({ 'review:haiku': 0.5, 'writing:haiku': 0.5 })
+  expect(missRate({}, 'review', 'haiku'), 'review on Haiku starts high').toBe(RESEARCH_PRIORS['review:haiku'])
+  expect(missRate({}, 'review', 'haiku'), 'at or over the pause line').toBeGreaterThanOrEqual(MISS_BLOCK)
+  expect(missRate({}, 'search', 'haiku'), 'search on Haiku starts at 0%').toBe(0)
+  expect(Math.abs(missRate(rates(hand('review', 5)), 'review', 'haiku') - 0.4) < 1e-9, 'five good outcomes leave half the prior').toBe(true)
+  expect(missRate(rates(hand('review', PRIOR_N)), 'review', 'haiku'), `${PRIOR_N} good outcomes: the prior is gone`).toBe(0)
+  expect(Math.abs(missRate(rates(hand('search', 1, 1)), 'search', 'haiku') - 0.1) < 1e-9, 'one miss on a 0% prior is 10%').toBe(true)
+  expect(Math.abs(missRate(rates(hand('search', PRIOR_N, 3)), 'search', 'haiku') - 0.3) < 1e-9, 'own rate').toBe(true)
+  expect(missRate({}, 'review', 'opus'), 'no prior for the reference models').toBe(0)
+  expect(missRate({}, 'extract', 'haiku'), 'no prior for work the research did not cover').toBe(0)
+  expect(missMap({})).toEqual({ 'review:haiku': 0.8, 'writing:haiku': 0.5, 'review:sonnet': 0.3 })
   // The report's counts are of real outcomes only.
   expect(missRates([])).toEqual({})
+})
+
+test('tasks are counted once each, and a research prior counts as ten', async () => {
+  const counts = missCounts([])
+  expect(counts['search:haiku'], 'the prior alone').toBe(PRIOR_N)
+  expect(counts['extract:haiku'], 'no prior, nothing logged').toBeUndefined()
+  // A run and the 👎 on it are one task; two runs of one task are one task.
+  const lines: RunLine[] = [
+    handDown({ type: 'extract', id: 'r1', task: 't1' }),
+    { at, kind: 'feedback', ref: 'r1', value: 'down' } as RunLine,
+    handDown({ type: 'extract', id: 'r2', task: 't1' }),
+    handDown({ type: 'extract', id: 'r3', task: 't2' }),
+  ]
+  expect(missCounts(lines)['extract:haiku'], 'two tasks, four outcomes').toBe(2)
+  expect(missCounts(Array.from({ length: 12 }, (_, i) => handDown({ id: `r${i}`, task: `t${i}` })))['search:haiku'], 'real tasks past the prior').toBe(12)
 })

@@ -6773,6 +6773,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
       expect(p?.label, key).toBe(`${plainTitle(SETTINGS[key].title)} (default)`)
     }
     const order = await drawn(ui)
+    expect(order[0], 'the keys, above the rows').toContain('Tab: next setting · ↑↓: choose a value · Enter: set · Esc: close.')
     expect(order.indexOf('row-profile'), 'Profile first, above the heading').toBe(1)
     expect(order[2], 'the heading').toBe('Advanced')
     expect(order.filter(x => x === 'Advanced').length).toBe(1)

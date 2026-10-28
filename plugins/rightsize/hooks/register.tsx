@@ -3637,13 +3637,14 @@ export const register: Register = (on, options) => {
       )
     }
     const { Box, Select, Text } = $.ui.resolve(e)
+    // The keys come first: Tab moving between rows is the engine's, and nothing else says so.
     // The first row takes the keys when the pane opens focused.
     const row = (key: SettingKey) => (
       <Select key={`row-${key}`} label={rowLabel(key)} options={SETTINGS[key].options.map(value => ({ value }))} value={cfg[key]} {...(key === KEYS[0] ? { autoFocus: true as const } : {})} onSelect={value => void setFromMenu($, key, value)} />
     )
     return (
       <Box flexDirection="column">
-        <Text dimColor>A change takes effect at once. (default) is a row you have not set.</Text>
+        <Text dimColor>Tab: next setting · ↑↓: choose a value · Enter: set · Esc: close. A change takes effect at once. (default) is a row you have not set.</Text>
         {plain.map(row)}
         <Text bold>Advanced</Text>
         {advanced.map(row)}

@@ -6157,7 +6157,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.now = Date.now()
     const only = (await d.command('report')).text ?? ''
     expect(only.split('\n')[1]).toBe('Cost ~$0.13 more than it saved in the last 30 days.')
-    expect(only.replace(/\s+/g, ' ')).toContain('Total saved is after the cost of rating prompts and of keeping the cache warm ($0.13 in 30 days).')
+    expect(only.replace(/\s+/g, ' ')).toContain('Total saved is after the cost of rating prompts and of keeping the cache warm ($0.13 in 30 days), and counts what keeping it warm saved when you came back to a warm cache.')
     // A saving of $0.30 in another session: the 30 days show it less the pings.
     h.files[LEGACY_RUNS] = `${JSON.stringify({ at: new Date().toISOString(), kind: 'run', session: 'other', change: 'lower', offered: 'lower', stay: 0.4, taken: 0.1, actual: 0.1, overhead: 0 })}\n`
     expect(cellsOf((await d.command('report')).text ?? '', 'Total saved')).toEqual(['-$0.13', '~$0.17', '~$0.17'])
@@ -6174,6 +6174,114 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await h.advance(4 * HOUR)
     expect(h.forks.length, 'no more').toBe(1)
     expect(coldLog(h)).toContain('keep warm stopped (a prompt was submitted): 1 ping')
+  })
+
+  // ---- Keep warm savings: a `warmSaved` line, only for a return the pings earned and the first request's cache read proved ----
+  const savedLines = (h: ReturnType<typeof engine>) =>
+    (h.files[RUNS_FILE] ?? '').split('\n').filter(Boolean).map(l => JSON.parse(l) as { kind?: string; saved?: number; task?: string; tier?: string; context?: number; session?: string; overhead?: number }).filter(l => l.kind === 'warmSaved')
+  /** The person comes back and the first request of their prompt is made: `t2`. */
+  const comeBack = async (d: ReturnType<typeof drive>, h: ReturnType<typeof engine>) => {
+    h.rating = NO_CHANGE
+    await d.submit('continue')
+    await d.step('t2')
+    await d.complete('t2')
+  }
+
+  const SHOWN = inProfile('Balanced', { beforeCold: 'keep warm 8 h', band: 'always' })
+  test(`keep warm saving: a return during the run, after the cache would have gone cold, whose first request read the cache, is a warmSaved line with what a cold return would have cost (${surface})`, { timeoutMs: 30000, options: SHOWN.options }, async ($, on) => {
+    const { h, d } = await coldSession($, on, { stored: SHOWN.stored })
+    h.rating = NO_CHANGE
+    await d.submit(LOOKUP)
+    await coldTurn(d, 't1')
+    await h.advance(57 * MIN)
+    expect(h.forks.length, 'one ping so far').toBe(1)
+    await h.advance(5 * MIN)
+    h.rating = NO_CHANGE
+    await d.submit('continue')
+    await d.step('t2')
+    // The first request showed the cache held: the band's session total counts the saving at once (0.6279 less the ping's 0.01613).
+    expect(await bandText($, surface), 'the band\'s session total counts it').toContain('Session: ~$0.61 saved')
+    await d.complete('t2')
+    // 62 minutes after the turn ended: past its 60 minutes, kept warm by the ping at 57.
+    const taskId = (readRuns(h).find(l => l.kind === 'run') as { id?: string } | undefined)?.id
+    expect(taskId, 'the task is the first prompt\'s run').toBeTruthy()
+    expect(savedLines(h).map(l => ({ ...l, at: undefined }))).toEqual([{ kind: 'warmSaved', session: 'sess-1', task: taskId, tier: 'opus', context: 80_500, saved: 0.6279 }])
+    expect(warmLines(h)[0], 'the keep-warm request carries the same task').toMatchObject({ task: taskId })
+    expect(coldLog(h)).toContain('keep warm: the cache held on return (read 80000 of 80500 tokens); coming back cold would have cost $0.63')
+    // The ping stays its own cost line; the saving is a separate line, never in a cost.
+    expect(warmLines(h).length).toBe(1)
+    expect(warmLines(h)[0]?.overhead).toBe(0.01613)
+    // The saving is in the totals: 0.6279 saved less 0.01613 of pings, and the band's session total says so.
+    h.now = Date.now()
+    const text = (await d.command('report')).text ?? ''
+    expect(text.replace(/\s+/g, ' ')).toContain('Keep warm: 1 run · saved ~$0.63 on 1 return · cost ~$0.02 · net ~$0.61 saved')
+    expect(cellsOf(text, 'Total saved')?.[2]).toBe('~$0.61')
+  })
+
+  test(`keep warm saving: a run the person never returned to has no saving line, and its requests are pure cost in the report (${surface})`, { timeoutMs: 30000, options: WARM8.options }, async ($, on) => {
+    const { h, d } = await coldSession($, on, { stored: WARM8.stored })
+    await coldTurn(d, 't1')
+    await h.advance(8 * HOUR)
+    expect(warmLines(h).length).toBe(8)
+    expect(savedLines(h)).toEqual([])
+    h.now = Date.now()
+    const text = (await d.command('report')).text ?? ''
+    expect(text.replace(/\s+/g, ' ')).toContain('Keep warm: 1 run · saved nothing: no returns · cost ~$0.13 · net ~$0.13 more')
+    expect(text.split('\n')[1]).toBe('Cost ~$0.13 more than it saved in the last 30 days.')
+  })
+
+  test(`keep warm saving: a return before the cache would have gone cold saves nothing, even if its first request read the cache (${surface})`, { timeoutMs: 30000, options: WARM8.options }, async ($, on) => {
+    const { h, d } = await coldSession($, on, { stored: WARM8.stored })
+    await coldTurn(d, 't1')
+    await h.advance(57 * MIN)
+    await h.advance(2 * MIN)
+    await comeBack(d, h)
+    expect(h.forks.length).toBe(1)
+    expect(savedLines(h), '59 minutes: the cache was warm without the ping').toEqual([])
+    expect(coldLog(h)).not.toContain('the cache held on return')
+    expect(coldLog(h)).not.toContain('missed on return')
+  })
+
+  test(`keep warm saving: a return that was not first to the pings (no request answered yet) saves nothing (${surface})`, { timeoutMs: 30000, options: WARM8.options }, async ($, on) => {
+    const { h, d } = await coldSession($, on, { stored: WARM8.stored })
+    await coldTurn(d, 't1')
+    await h.advance(40 * MIN)
+    await comeBack(d, h)
+    expect(h.forks.length, 'no ping yet').toBe(0)
+    expect(savedLines(h)).toEqual([])
+  })
+
+  test(`keep warm saving: a cache miss on the return is logged, and no saving is recorded (${surface})`, { timeoutMs: 30000, options: WARM8.options }, async ($, on) => {
+    const { h, d } = await coldSession($, on, { stored: WARM8.stored })
+    await coldTurn(d, 't1')
+    await h.advance(62 * MIN)
+    expect(h.forks.length).toBe(1)
+    // The first request wrote the whole conversation again: the cache was not there.
+    h.stepUsage = { input_tokens: 200, output_tokens: 400, cache_read_input_tokens: 0, cache_creation_input_tokens: 80_300 }
+    await comeBack(d, h)
+    expect(savedLines(h)).toEqual([])
+    expect(coldLog(h)).toContain('keep warm: the cache missed on return (the first request read 0 of 80500 tokens), so no saving is counted')
+    // Under 80% is a miss too; the check is the first request's only.
+    expect(coldLog(h)).not.toContain('the cache held on return')
+  })
+
+  const WARM2_SAVING = inProfile('Balanced', { beforeCold: 'keep warm 2 h' })
+  test(`keep warm saving: a return after the run ended counts while the last request still kept the cache (${surface})`, { timeoutMs: 30000, options: WARM2_SAVING.options }, async ($, on) => {
+    const { h, d } = await coldSession($, on, { stored: WARM2_SAVING.stored })
+    await coldTurn(d, 't1')
+    await h.advance(2 * HOUR + 30 * MIN)
+    expect(h.forks.length, 'two pings, at 57 and 114 minutes').toBe(2)
+    await comeBack(d, h)
+    expect(savedLines(h).length, '150 minutes after the turn, 36 after the last ping').toBe(1)
+  })
+
+  test(`keep warm saving: a return after the last request's life, with the run over, saves nothing (${surface})`, { timeoutMs: 30000, options: WARM2_SAVING.options }, async ($, on) => {
+    const { h, d } = await coldSession($, on, { stored: WARM2_SAVING.stored })
+    await coldTurn(d, 't1')
+    await h.advance(3 * HOUR)
+    expect(h.forks.length).toBe(2)
+    await comeBack(d, h)
+    expect(savedLines(h), '180 minutes after the turn, 66 after the last ping: cold anyway').toEqual([])
   })
 
   test(`keep warm stops at Stop, and the band says how much it cost (${surface})`, { timeoutMs: 30000, options: WARM8.options }, async ($, on) => {

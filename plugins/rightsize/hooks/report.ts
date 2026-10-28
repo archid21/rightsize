@@ -26,14 +26,19 @@ export type RunLine = {
    * 'dropped' and 'unbound' are not rated runs: the report counts only their overhead.
    * 'warm': one keep-warm request that kept the prompt cache from expiring (Before the cache goes cold); `overhead` is what it cost, `tier` its model and `context` the conversation it re-read.
    * 'cold': how the person answered one offer before the cache goes cold; `choice` is the id they pressed, or 'ignored'. It carries no cost, is never shared, and is no part of any total.
+   * 'warmSaved': the person came back to a kept-warm cache after the time it would have gone cold without keep warm, and the returning prompt's first request read the cache (at least ~80% of the kept conversation); `saved` is what coming back cold would have cost. It carries no `overhead`, is never shared, and `totals` counts `saved` toward Total saved.
    * `totals` adds the `overhead` of every line, so these pings count as rightsize's own cost and lower Total saved.
    */
-  kind?: 'run' | 'overhead' | 'subagent' | 'check' | 'feedback' | 'unrated' | 'dropped' | 'unbound' | 'warm' | 'cold'
+  kind?: 'run' | 'overhead' | 'subagent' | 'check' | 'feedback' | 'unrated' | 'dropped' | 'unbound' | 'warm' | 'warmSaved' | 'cold'
+  /** A 'warmSaved' line: what coming back cold would have cost (the conversation written again, less a read), in dollars (API-equivalent on a subscription). */
+  saved?: number
+  /** A 'warm' line: the keep-warm run it belongs to, the ISO time of the turn that run kept warm. Lines of one run share it. */
+  warmRun?: string
   /** A 'cold' line: the id of the choice pressed (`2h`, `8h`, `start`, `30m`, `1h`, `handoff`, `compact`, `let-go`, `off`), or `ignored` when the offer got no answer. */
   choice?: string
   /** A run line's own id, which feedback lines name in `ref`. */
   id?: string
-  /** The task the line belongs to: the id of the run that started it. Follow-ups, unrated prompts and subagents carry it. */
+  /** The task the line belongs to: the id of the run that started it. Follow-ups, unrated prompts, subagents, the rater's checks and keep-warm lines carry it. */
   task?: string
   /** A subagent line: the id of the run whose turn started it. */
   run?: string
@@ -190,6 +195,9 @@ type Totals = {
   extra: number
   overhead: number
   spent: number
+  /** Keep-warm returns that held the cache: how many, and what they saved (already in `saved`). */
+  returns: number
+  keptSaved: number
 }
 
 export function totals(lines: readonly RunLine[]): Totals {
@@ -203,9 +211,18 @@ export function totals(lines: readonly RunLine[]): Totals {
     extra: 0,
     overhead: 0,
     spent: 0,
+    returns: 0,
+    keptSaved: 0,
   }
   for (const l of lines) {
     t.overhead += num(l.overhead)
+    // A return to a kept-warm cache: what a cold restart would have cost is saved. The pings stay their own cost lines.
+    if (l.kind === 'warmSaved') {
+      t.returns += 1
+      t.keptSaved += num(l.saved)
+      t.saved += num(l.saved)
+      continue
+    }
     if (l.kind === 'unrated') {
       t.unrated += 1
       continue
@@ -363,7 +380,7 @@ type Stats = { t: Totals; net: number; empty: boolean; kept?: Kept; ties?: { gui
 function stats(lines: readonly RunLine[], subscription: boolean, withTies = false): Stats {
   const t = totals(lines)
   const kept = subscription ? windowKept(lines, t) : undefined
-  return { t, net: t.saved - t.overhead, empty: !t.rated && !t.overhead && !t.subagents && !t.unrated, ...(kept ? { kept } : {}), ...(withTies ? { ties: tieCounts(lines) } : {}) }
+  return { t, net: t.saved - t.overhead, empty: !t.rated && !t.overhead && !t.subagents && !t.unrated && !t.returns, ...(kept ? { kept } : {}), ...(withTies ? { ties: tieCounts(lines) } : {}) }
 }
 
 const DAYS_30 = 'in the last 30 days'
@@ -677,6 +694,152 @@ export function timeRows(lines: readonly RunLine[]) {
   ]
 }
 
+// ---- Whole tasks -------------------------------------------------------------
+
+/** The lines that carry one task id: its runs, helpers, retries, keep-warm requests and the rater's calls. An empty id has none. */
+const ofTask = (lines: readonly RunLine[], task: string) => (task === '' ? [] : lines.filter(l => l.task === task))
+
+/** The prompts of a task that count toward its estimate: rated runs that ran to the end. A stopped turn was redone by a later prompt, which has its own estimate. */
+const counted = (lines: readonly RunLine[]) => lines.filter(l => isRun(l) && !l.aborted)
+
+/**
+ * ESTIMATED: what rightsize predicted, when it rated each prompt, for the route it chose: the sum of the runs' `taken`
+ * (the calibrated estimate of the route taken, the figure the band quoted and ACCURACY compares with `actual`). Stopped turns are left out.
+ */
+export function taskEstimated(lines: readonly RunLine[], task: string): number {
+  return counted(ofTask(lines, task)).reduce((n, l) => n + num(l.taken), 0)
+}
+
+/**
+ * ACTUAL: everything the task cost. Each run's `actual` (stopped turns and retries too; it already holds the helpers and
+ * Claude's subagents that ran in that turn) and the `overhead` of every line that carries the task: the rating calls (also
+ * the ones that failed), the rater's checks, and the keep-warm requests. A 'subagent' line adds nothing: its cost is in its run's.
+ */
+export function taskActual(lines: readonly RunLine[], task: string): number {
+  let usd = 0
+  for (const l of ofTask(lines, task)) {
+    usd += num(l.overhead)
+    if (isRun(l)) usd += num(l.actual)
+  }
+  return usd
+}
+
+/** STAY: what staying on the person's own model and level would have cost, the sum of each prompt's `stay` as it was rated. */
+export function taskStay(lines: readonly RunLine[], task: string): number {
+  return counted(ofTask(lines, task)).reduce((n, l) => n + num(l.stay), 0)
+}
+
+/**
+ * Where a task's cost above its estimate came from, in dollars: `retries` (stopped turns, and what a turn raised mid-turn
+ * or stepped back up cost over its estimate), `helpers` (Claude's subagents moved to a cheaper model, already inside their
+ * turns' costs), `warm` (keep-warm requests) and `other` (the rest, rating calls and a bad estimate among them). The parts
+ * add up to the extra, `actual - estimated`; when the three named ones come to more than that, they are scaled down to it. Nothing for a task at or under its estimate.
+ */
+export function taskExtra(lines: readonly RunLine[], task: string) {
+  const own = ofTask(lines, task)
+  const extra = Math.max(0, taskActual(lines, task) - taskEstimated(lines, task))
+  const stopped = own.filter(l => isRun(l) && l.aborted).reduce((n, l) => n + num(l.actual), 0)
+  const struggled = own.filter(l => isRun(l) && !l.aborted && (l.steppedUp || l.escalations?.length)).reduce((n, l) => n + Math.max(0, num(l.actual) - num(l.taken)), 0)
+  const named = { retries: stopped + struggled, helpers: own.filter(l => l.kind === 'subagent').reduce((n, l) => n + num(l.actual), 0), warm: own.filter(l => l.kind === 'warm').reduce((n, l) => n + num(l.overhead), 0) }
+  const sum = named.retries + named.helpers + named.warm
+  const scale = sum > extra && sum > 0 ? extra / sum : 1
+  const parts = { retries: named.retries * scale, helpers: named.helpers * scale, warm: named.warm * scale }
+  return { extra, ...parts, other: Math.max(0, extra - parts.retries - parts.helpers - parts.warm) }
+}
+
+/** One finished task with its three figures. */
+export type WholeTask = { task: string; type: string; estimated: number; stay: number; actual: number }
+
+/** A task with no line for this long is over, though the rater never said "new goal" after it. */
+const TASK_IDLE_MS = DAY
+
+/**
+ * The tasks of `lines` that are finished and measurable: a task started in the last 30 days, with at least one rated prompt that
+ * ran to the end, every such prompt carrying its estimate and its baseline (older logs lack them: those tasks are left out), and over:
+ * a later task began in the same session (the rater said "new goal"), or nothing was logged for it for a day. Its type is the rater's, from its first prompt.
+ */
+export function wholeTasks(lines: readonly RunLine[], now: number): WholeTask[] {
+  const groups = new Map<string, RunLine[]>()
+  for (const l of lines) if (l.task) groups.set(l.task, [...(groups.get(l.task) ?? []), l])
+  const start = (g: readonly RunLine[]) => Math.min(...g.map(l => Date.parse(l.submittedAt ?? l.at)).filter(Number.isFinite))
+  const begun = [...groups.values()].map(g => ({ g, start: start(g), session: g[0]?.session ?? '' }))
+  const out: WholeTask[] = []
+  for (const { g, start: from, session } of begun) {
+    const task = g[0]?.task ?? ''
+    const runs = counted(g)
+    if (!runs.length || !Number.isFinite(from) || now - from > 30 * DAY) continue
+    if (runs.some(l => !(num(l.taken) > 0 && num(l.stay) > 0))) continue
+    const last = Math.max(...g.map(l => Date.parse(l.at)).filter(Number.isFinite))
+    const replaced = begun.some(o => o.session === session && o.g !== g && o.start > from)
+    if (!replaced && now - last < TASK_IDLE_MS) continue
+    const first = [...g].filter(isRun).sort((a, b) => Date.parse(a.submittedAt ?? a.at) - Date.parse(b.submittedAt ?? b.at))[0]
+    out.push({ task, type: first?.type ?? 'unknown', estimated: taskEstimated(g, task), stay: taskStay(g, task), actual: taskActual(g, task) })
+  }
+  return out.filter(t => t.estimated > 0)
+}
+
+/** Finished tasks needed before the Whole tasks section shows. */
+export const WHOLE_MIN = 5
+/** A task cost more than its estimate by this factor: its extra is looked into. */
+export const OVER_ESTIMATE = 1.5
+
+/**
+ * The Whole tasks section's rows, or the one line saying how many more finished tasks it needs. Rows: the median of
+ * actual over estimated; the share of tasks that cost more than 1.5 times their estimate, and where the extra of those came
+ * from (retries and rework, helpers, keep warm, other); what the tasks saved over staying, task by task (stay less actual; labelled API-equivalent on a subscription); and
+ * the median ratio for the five task types with the most tasks. A dollar figure on a subscription is API-equivalent.
+ */
+export function wholeTaskRows(lines: readonly RunLine[], now: number, subscription: boolean): { rows: string[][] } | { need: string } {
+  const tasks = wholeTasks(lines, now)
+  if (tasks.length < WHOLE_MIN) return { need: `Whole tasks: ${plural(tasks.length, 'finished task')} so far; this section needs ${WHOLE_MIN}, ${WHOLE_MIN - tasks.length} more to go.` }
+  const ratio = (t: WholeTask) => t.actual / t.estimated
+  const over = tasks.filter(t => ratio(t) > OVER_ESTIMATE)
+  const sums = { retries: 0, helpers: 0, warm: 0, other: 0 }
+  for (const t of over) {
+    const x = taskExtra(lines, t.task)
+    sums.retries += x.retries
+    sums.helpers += x.helpers
+    sums.warm += x.warm
+    sums.other += x.other
+  }
+  const all = sums.retries + sums.helpers + sums.warm + sums.other
+  const pct = (v: number) => `${Math.round((v / all) * 100)}%`
+  const came = all > 0 ? `retries/rework ${pct(sums.retries)}, helpers ${pct(sums.helpers)}, keep warm ${pct(sums.warm)}, other ${pct(sums.other)}` : undefined
+  const saved = tasks.reduce((n, t) => n + t.stay - t.actual, 0)
+  const types = new Map<string, number[]>()
+  for (const t of tasks) types.set(t.type, [...(types.get(t.type) ?? []), ratio(t)])
+  const top = [...types.entries()].sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0])).slice(0, 5)
+  const x = (v: number) => `${v.toFixed(1)}x`
+  const rows: string[][] = [
+    ['Tasks finished', String(tasks.length)],
+    ['Cost vs estimate', `median ${x(median(tasks.map(ratio)))} of the estimate`],
+    [`Over ${OVER_ESTIMATE}x`, `${over.length} of ${plural(tasks.length, 'task')} (${Math.round((over.length / tasks.length) * 100)}%)`],
+    ...(over.length && came ? [['Extra came from', came]] : []),
+    ['Saved vs staying', `${saved >= 0.005 ? `~${money(saved)}` : saved <= -0.005 ? `-${money(-saved)}` : 'even'}${subscription ? ' (API-equivalent)' : ''}`],
+    ...top.map(([type, rs], i) => [i === 0 ? 'Median by type' : '', `${type}: ${x(median(rs))} over ${plural(rs.length, 'task')}`]),
+  ]
+  return { rows }
+}
+
+// ---- Keep warm -----------------------------------------------------------------
+
+/**
+ * The Keep warm line: how many keep-warm runs, what they saved on the returns that held the cache, what their requests cost,
+ * and the net. A run the person never came back to is pure cost. Undefined when there was no keep-warm run. A run is the
+ * requests that share `warmRun` (an older line with none counts by its session); a dollar figure on a subscription is API-equivalent.
+ */
+export function keepWarmLine(lines: readonly RunLine[], subscription: boolean): string | undefined {
+  const pings = lines.filter(l => l.kind === 'warm')
+  const t = totals(lines.filter(l => l.kind === 'warmSaved'))
+  if (!pings.length && !t.returns) return undefined
+  const runs = new Set(pings.map(l => l.warmRun ?? `session ${l.session ?? ''}`)).size
+  const cost = pings.reduce((n, l) => n + num(l.overhead), 0)
+  const net = t.keptSaved - cost
+  const result = Math.abs(net) < 0.005 ? 'net about even' : net > 0 ? `net ${tildeMoney(net)} saved` : `net ${tildeMoney(-net)} more`
+  const gain = t.returns ? `saved ${tildeMoney(t.keptSaved)} on ${plural(t.returns, 'return')}` : 'saved nothing: no returns'
+  return `Keep warm: ${plural(runs, 'run')} · ${gain} · cost ${tildeMoney(cost)} · ${result}${subscription ? ' (API-equivalent)' : ''}`
+}
+
 /** The context every request carried, by part (largest first), request-weighted, what re-reading it cost, and how to cut it. */
 export function fixedBlock(lines: readonly RunLine[], subscription = false) {
   const runs = lines.filter(l => isRun(l) && l.fixed && num(l.requests) > 0)
@@ -742,6 +905,9 @@ export function buildReport(
   const out = ['rightsize report', nothing ? 'Nothing rated yet.' : headline(cols[2], sub)]
   if (opts.measureFrom) out.push(`Cost measurement restarted on ${opts.measureFrom.slice(0, 10)}.`)
   if (!nothing) out.push('', ...indent(periodTable(cols, sub)), '', 'Everything below covers the last 30 days.')
+  // Keep warm's own line: its saving is in Total saved above, and so is the cost of its requests.
+  const kept = keepWarmLine(month, sub)
+  if (kept) out.push('', ...(md ? [kept] : wrap(kept, '', '  ')))
 
   const start = opts.start
   if (start) out.push('', `STARTING POINT  ${start.head}`, ...indent(grid(start.rows)), ...(start.note ? (md ? ['', start.note] : wrap(start.note, '  ', '  ')) : []))
@@ -754,13 +920,16 @@ export function buildReport(
   // Time is measured and reported here; it never chooses a route.
   const time = timeRows(month)
   out.push(...(time ? section('TIME', grid(time)) : ['', 'Time: not measured yet (needs prompts from rightsize 0.8).']))
+  // What a whole task cost against its estimate, from its first prompt to the rater's "new goal".
+  const whole = wholeTaskRows(lines, opts.now, sub)
+  out.push(...('rows' in whole ? section('WHOLE TASKS', grid(whole.rows)) : ['', ...(nothing ? [] : md ? [whole.need] : wrap(whole.need, '', '  '))]))
   // Actions from the sections above, in their own words: fixed context, the start, a pause.
   const next = [fixed?.fix, start?.tip, accuracy.paused].filter((n): n is string => !!n)
   if (next.length) out.push('', 'NEXT STEPS', ...(md ? next.map(n => `- ${n}`) : indent(next.flatMap(n => wrap(n, '- ', '  ', 76)))))
   const t = cols[2].t
   const foot = [
     'Estimated: actual cost vs staying at your own model and effort.',
-    ...(nothing ? [] : [`Total saved is after the cost of rating prompts${month.some(l => l.kind === 'warm') ? ' and of keeping the cache warm' : ''} (${money(t.overhead)}${sub ? ' API-equivalent' : ''} in 30 days).`]),
+    ...(nothing ? [] : [`Total saved is after the cost of rating prompts${month.some(l => l.kind === 'warm') ? ' and of keeping the cache warm' : ''} (${money(t.overhead)}${sub ? ' API-equivalent' : ''} in 30 days)${month.some(l => l.kind === 'warm' || l.kind === 'warmSaved') ? ', and counts what keeping it warm saved when you came back to a warm cache' : ''}.`]),
     ...(cols.some(s => s.t.extra > 0.005)
       ? [sub ? "Extra on harder prompts: what raising effort or using a stronger model would cost on the API, for better answers. It isn't taken off Total saved." : "Extra spent on harder prompts: what raising effort or using a stronger model cost, for better answers. It isn't taken off Total saved."]
       : []),

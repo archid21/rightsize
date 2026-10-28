@@ -99,7 +99,7 @@ import { BRIEF_MAX, cutRequest, parseRating, ratingPrompt, ratingSystem } from '
 import { isApprovalStep } from './approval'
 import { LIMITS, type Limits, type Signals, type Struggle, blockedError, callKey, isSensitivity, isTestCommand, noSignals, noteCall, oneUp, struggle } from './struggle'
 import { type Change, type HelperLine, type RunLine, type SwitchLine, type Windows, SESSION_TOTAL, bandShareText, buildReport, costTag, parseLines, sessionTotal, shareMessage, shareOf, usedTag, windowCostText, windowRates } from './report'
-import { COLD_MIN, PING_PROMPT, ROW_OF, WRAP_UP, alwaysText, breakEvenMs, clockText, coldPlan, ignoredLately, isCacheClock, isGroundwork, keepWarmChoices, leadMs, learnedChoice, offerAt, offerText, pingCost, pingEvery, standingChoice, usualStart, warmEndText, warmPlan, warmingText } from './warm'
+import { COLD_MIN, PING_PROMPT, ROW_OF, WRAP_UP, alwaysText, breakEvenMs, cacheHeld, clockText, coldPlan, ignoredLately, isCacheClock, isGroundwork, keepWarmChoices, leadMs, learnedChoice, offerAt, offerText, pingCost, pingEvery, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText } from './warm'
 
 // Before a prompt is sent, a quick Haiku call rates the effort, the model and
 // the work needs on each model, and the cost model prices each route that fits. The first time
@@ -1213,7 +1213,7 @@ async function dueCheck($: EngineInterface) {
   return n % spotEvery === 0
 }
 
-async function spotCheck($: EngineInterface, session: string, tier: Tier, level: Level, prompt: string, first: Rating) {
+async function spotCheck($: EngineInterface, session: string, task: string, tier: Tier, level: Level, prompt: string, first: Rating) {
   try {
     const r = await $.model.complete({
       model: SPOT_CHECKER,
@@ -1230,10 +1230,13 @@ async function spotCheck($: EngineInterface, session: string, tier: Tier, level:
     const second = r.isAnswered ? parseRating(r.text, tier) : undefined
     if (!second) {
       await log($, r.isAnswered ? 'rater check unreadable' : `rater check failed: ${r.reason}`)
-      if (overhead > 0) await append($, 'runs.jsonl', JSON.stringify({ at: new Date().toISOString(), kind: 'overhead', session, overhead: round(overhead) } satisfies RunLine), RUNS_LOG_MAX)
+      if (overhead > 0) {
+        const line: RunLine = { at: new Date().toISOString(), kind: 'overhead', session, task, overhead: round(overhead) }
+        await append($, 'runs.jsonl', JSON.stringify(line), RUNS_LOG_MAX)
+      }
       return
     }
-    const line: RunLine = { at: new Date().toISOString(), kind: 'check', session, type: first.type, fit: first.fit, check: { by: SPOT_CHECKER, fit: second.fit }, overhead: round(overhead) }
+    const line: RunLine = { at: new Date().toISOString(), kind: 'check', session, task, type: first.type, fit: first.fit, check: { by: SPOT_CHECKER, fit: second.fit }, overhead: round(overhead) }
     await appendRun($, line)
     const fit = (f: Rating['fit']) => TIERS.map(t => `${t[0]}:${f[t] ?? (f[t] === null ? 'no' : '?')}`).join(' ')
     await log($, `rater check on ${first.type}: haiku ${fit(first.fit)}; sonnet ${fit(second.fit)}`)
@@ -1483,6 +1486,7 @@ const isBandMode = (v: unknown): v is BandMode => v === 'when it acts' || v === 
 
 /** A line every band of this turn carries, so a later band (a hand-off's result) does not hide it: a miss just forgiven. */
 let bandNote: string | null = null
+
 const setBand = ($: EngineInterface, band: Band | null) => {
   if (!band) return $.state.set(BAND, null).catch(() => undefined)
   // A band built from an earlier band's text already carries a total: drop it, and add the current one last.
@@ -2031,6 +2035,8 @@ type ColdTurn = {
   /** What coming back cold would cost: the conversation written to the cache again, less a read. */
   cold: number
   groundwork: boolean
+  /** The task in progress when the turn ended: the keep-warm requests are counted in its total. */
+  task?: string
   /** Where each offered keep-warm choice ends, by its id. */
   ends: Record<string, number>
   /** The offer as it shows without a question: its line, its one button and the choices of the ⋯ menu. */
@@ -2054,6 +2060,8 @@ let coldPrompt: string | null = null
 let mainBusy = false
 /** When the last keep-warm request was answered: the cache is warm from then, whatever the last turn's end says. */
 let lastWarmAt = 0
+/** The keep-warm run's turn, while the person's returning prompt waits for its first request: that request shows whether the cache held (settleWarm). */
+let warmReturn: ColdTurn | null = null
 
 const pingsText = (n: number) => `${n} ping${n === 1 ? '' : 's'}`
 
@@ -2131,7 +2139,8 @@ async function coldCheck($: EngineInterface) {
     return
   }
   const plan = coldPlan(coldMode, groundwork)
-  const turn: ColdTurn = { endedAt: lastTurnAt || (await $.clock.now()), context, tier, cold, groundwork, ends: {} }
+  const task = (await currentTask($))?.id
+  const turn: ColdTurn = { endedAt: lastTurnAt || (await $.clock.now()), context, tier, cold, groundwork, ...(task ? { task } : {}), ends: {} }
   coldTurn = turn
   const gen = coldGen
   if (plan.action === 'warm') {
@@ -2246,11 +2255,39 @@ async function endWarm($: EngineInterface, w: Warming, what: string) {
   await showCold($, warmEndText(what, usedText(w)))
 }
 
-/** Writes one `warm` line to the run log: the report counts its cost as rightsize's own, so it lowers Total saved. */
+/** Writes one `warm` line to the run log: the report counts its cost as rightsize's own, so it lowers Total saved. It carries the task the cache belongs to, whose total counts it. */
 async function logWarm($: EngineInterface, c: ColdTurn, cost: number) {
-  const line: RunLine = { at: new Date().toISOString(), kind: 'warm', session: sessionId, tier: c.tier, context: c.context, overhead: round(cost) }
+  const line: RunLine = { at: new Date().toISOString(), kind: 'warm', session: sessionId, ...(c.task ? { task: c.task } : {}), warmRun: new Date(c.endedAt).toISOString(), tier: c.tier, context: c.context, overhead: round(cost) }
   await append($, 'runs.jsonl', JSON.stringify(line), RUNS_LOG_MAX)
   runLog.push(line)
+}
+
+/**
+ * The person's returning prompt arrived at `now`: when keep warm earned it (warm.ts warmReturned), the prompt's first request
+ * is checked next (settleWarm). Any other prompt clears the check. Called before the run is cancelled.
+ */
+async function noteReturn($: EngineInterface) {
+  const c = coldTurn
+  warmReturn = c && warmReturned({ now: await $.clock.now(), endedAt: c.endedAt, lastWarmAt, ttl: cacheTtl }) ? c : null
+}
+
+/**
+ * The first request of a prompt that came back to a kept-warm cache: it must have read at least ~80% of the kept conversation
+ * from the cache. Then one `warmSaved` line records what coming back cold would have cost (the requests stay their own cost
+ * lines); otherwise the log says the cache missed and nothing is saved.
+ */
+async function settleWarm($: EngineInterface, c: ColdTurn, u: Usage) {
+  if (!cacheHeld(u.cache_read_input_tokens, c.context)) {
+    await log($, `keep warm: the cache missed on return (the first request read ${u.cache_read_input_tokens} of ${c.context} tokens), so no saving is counted`)
+    return
+  }
+  const line: RunLine = { at: new Date().toISOString(), kind: 'warmSaved', session: sessionId, ...(c.task ? { task: c.task } : {}), tier: c.tier, context: c.context, saved: round(c.cold) }
+  await append($, 'runs.jsonl', JSON.stringify(line), RUNS_LOG_MAX)
+  runLog.push(line)
+  await log($, `keep warm: the cache held on return (read ${u.cache_read_input_tokens} of ${c.context} tokens); coming back cold would have cost ${money(c.cold)}`)
+  // The band's session total counts it now.
+  const band = (await $.state.get(BAND).catch(() => undefined))?.value
+  if (band) await setBand($, band)
 }
 
 // Keeps the cache warm for `ms` after the turn ended: one request through $.model.fork each (cache life - lead), which
@@ -3143,6 +3180,7 @@ export const register: Register = (on, options) => {
     coldPrompt = null
     mainBusy = false
     lastWarmAt = 0
+    warmReturn = null
     await $.command.register({ name: CMD, description: 'Rightsize: settings, status, report, share, retry or clear' })
     // Claude Code hands over every value with its default filled in; only settings.json tells which ones are yours.
     const configs = await $.settings.read({ key: 'pluginConfigs' }).catch(() => undefined)
@@ -3276,6 +3314,7 @@ export const register: Register = (on, options) => {
     if (!off && fromPerson(e) && !e.command && !e.isMeta) {
       coldDone = false
       await closeOffer($, 'ignored')
+      await noteReturn($)
       cancelCold($, 'a prompt was submitted')
     }
     // 👍 and 👎 go with the next prompt, whatever it is.
@@ -3384,7 +3423,7 @@ export const register: Register = (on, options) => {
         await log($, `${r.type}${ratedType ? ` (rated ${ratedType}, continues the ${r.type} task)` : ''} on ${s.tier}/${s.level}${paced}: rated ${fit}, plan ${p.kind}${'dir' in p ? ` ${p.dir}` : ''}${run.tie ? ` (tie ${run.tie.by} over ${run.tie.over})` : ''}: ${did}`)
         // Every 50th Haiku rating gets Sonnet's second opinion, in the background. A Sonnet rating is not checked
         // (Sonnet would only be asked to agree with itself), and does not count toward the 50.
-        if (by === 'haiku' && (await dueCheck($))) void spotCheck($, sessionId, s.tier, s.level, prompt, r)
+        if (by === 'haiku' && (await dueCheck($))) void spotCheck($, sessionId, run.task, s.tier, s.level, prompt, r)
       } else {
         // No rating, even after a second try: the session stays as it is, the safe route. The log line says so, and carries
         // what the rating calls cost; /rightsize report counts the prompt as not counted, and the cost as overhead.
@@ -3544,6 +3583,12 @@ export const register: Register = (on, options) => {
       }
       if (applied) lastApplied = applied
       lastSwitched = sw !== undefined
+      // The first request of a prompt that came back to a kept-warm cache shows whether the cache held.
+      if (warmReturn) {
+        const c = warmReturn
+        warmReturn = null
+        await settleWarm($, c, u)
+      }
       lastContext = contextOf(u)
       await $.state.set({ plugin: 'rightsize', key: 'context' }, lastContext)
       // The session's own model stays the one the next prompt is planned on.

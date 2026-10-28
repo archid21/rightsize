@@ -35,6 +35,21 @@ export function pingCost(p: Price, context: number, usage?: { input_tokens: numb
   return dollars(p, t)
 }
 
+/** The returning prompt's first request must read at least this share of the kept conversation from the cache, or keeping warm is not credited. */
+export const WARM_PROOF = 0.8
+
+/**
+ * Whether a person's prompt at `now` is a return that keeping warm earned: a request of the run was answered after the turn
+ * ended (`lastWarmAt`), the cache it refreshed was still alive (within `ttl` of that request, so the run was still going or had just
+ * ended), and the prompt came after the time the cache would have gone cold without it (`endedAt + ttl`). A prompt before that
+ * would have found a warm cache anyway, and one after the last request's life finds a cold one.
+ */
+export const warmReturned = (o: { now: number; endedAt: number; lastWarmAt: number; ttl: number }) =>
+  o.lastWarmAt > o.endedAt && o.now - o.lastWarmAt <= o.ttl && o.now > o.endedAt + o.ttl
+
+/** True when the cache read of a request is the kept conversation: at least WARM_PROOF of its tokens. */
+export const cacheHeld = (read: number, context: number) => context > 0 && read >= context * WARM_PROOF
+
 /** How many requests keep the cache warm for `ms` after the turn ended: one each `pingEvery`, while the time is before the end. */
 export const pingsFor = (ms: number, ttl: number) => Math.max(0, Math.ceil(ms / pingEvery(ttl)) - 1)
 

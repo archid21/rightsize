@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import { DEFAULT_PRICES, idleCost } from './cost'
-import { ALWAYS_AFTER, BACK_OFF_AFTER, COLD_MIN, LEARN_OVER, OFFER_AFTER_MS, DEFAULT_START, ROW_OF, breakEvenMs, breakEvenPings, clockText, coldPlan, isCacheClock, isGroundwork, alwaysText, ignoredLately, keepWarmChoices, leadMs, learnedChoice, nextStart, offerAt, offerText, pingCost, pingEvery, pingsFor, standingChoice, usualStart, warmEndText, warmPlan, warmingText } from './warm'
+import { ALWAYS_AFTER, BACK_OFF_AFTER, COLD_MIN, LEARN_OVER, OFFER_AFTER_MS, DEFAULT_START, ROW_OF, breakEvenMs, breakEvenPings, clockText, coldPlan, isCacheClock, isGroundwork, alwaysText, ignoredLately, keepWarmChoices, leadMs, learnedChoice, nextStart, offerAt, offerText, pingCost, pingEvery, pingsFor, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText, WARM_PROOF, cacheHeld } from './warm'
 
 const MIN = 60_000
 const HOUR = 60 * MIN
@@ -240,4 +240,28 @@ test('5 offers in a row with no answer make the back-off offer', async () => {
   expect(ignoredLately(answers('ignored', 'ignored', 'let-go', 'ignored', 'ignored'))).toBe(false)
   expect(ignoredLately(answers('ignored', 'ignored', 'ignored', 'ignored', 'ignored', '2h'))).toBe(false)
   expect(ignoredLately([])).toBe(false)
+})
+
+test('a return is earned by keeping warm only after the time the cache would have gone cold, and while a request still kept it alive', async () => {
+  const ended = 1_000 * HOUR
+  const ping = ended + 57 * MIN
+  const base = { endedAt: ended, lastWarmAt: ping, ttl: HOUR }
+  expect(warmReturned({ ...base, now: ended + 62 * MIN }), 'during the run, after the would-be expiry').toBe(true)
+  expect(warmReturned({ ...base, now: ping + HOUR }), 'at the last request\'s life').toBe(true)
+  expect(warmReturned({ ...base, now: ended + 60 * MIN }), 'exactly at the would-be expiry: the cache was still warm').toBe(false)
+  expect(warmReturned({ ...base, now: ended + 59 * MIN }), 'before it: it would have been warm anyway').toBe(false)
+  expect(warmReturned({ ...base, now: ping + HOUR + 1 }), 'after the last request\'s life: cold anyway').toBe(false)
+  expect(warmReturned({ endedAt: ended, lastWarmAt: 0, ttl: HOUR, now: ended + 3 * HOUR }), 'no request answered').toBe(false)
+  expect(warmReturned({ endedAt: ended, lastWarmAt: ended - MIN, ttl: HOUR, now: ended + 62 * MIN }), 'a request of an earlier turn').toBe(false)
+  // A 5-minute cache: requests every 4 minutes.
+  expect(warmReturned({ endedAt: ended, lastWarmAt: ended + 4 * MIN, ttl: 5 * MIN, now: ended + 6 * MIN })).toBe(true)
+})
+
+test('the cache held when the first request read at least 80% of the kept conversation', async () => {
+  expect(WARM_PROOF).toBe(0.8)
+  expect(cacheHeld(80_000, 80_500)).toBe(true)
+  expect(cacheHeld(64_400, 80_500), 'exactly 80%').toBe(true)
+  expect(cacheHeld(64_399, 80_500)).toBe(false)
+  expect(cacheHeld(0, 80_500), 'a whole rewrite').toBe(false)
+  expect(cacheHeld(10, 0), 'no known context').toBe(false)
 })

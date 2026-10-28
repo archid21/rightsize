@@ -69,3 +69,14 @@ test('a cold line (how an offer was answered) is never shared, and it only moves
   expect(nextBatch(lines, I, undefined), 'two runs, and nothing of the cold lines').toEqual({ events: [{ kind: 'run', at: at(0) }, { kind: 'run', at: at(2) }], upTo: at(3) })
   expect(nextBatch(cold, I, undefined), 'cold lines alone are no events').toEqual({ events: [], upTo: at(1) })
 })
+
+test('a keep-warm saving, a keep-warm request and an answered offer are never shared', async () => {
+  const lines: RunLine[] = [
+    { at: at(0), kind: 'warmSaved', session: 'sess', task: 'sess:1', tier: 'opus', context: 80_000, saved: 0.63 },
+    { at: at(1), kind: 'warm', session: 'sess', task: 'sess:1', tier: 'opus', context: 80_000, overhead: 0.02 },
+    { at: at(2), kind: 'cold', session: 'sess', choice: '2h' },
+  ]
+  for (const l of lines) expect(shareEvent(l, I), l.kind).toBeUndefined()
+  // They still move the mark, so they are not looked at again.
+  expect(nextBatch(lines, I, undefined)).toEqual({ events: [], upTo: at(2) })
+})

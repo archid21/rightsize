@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { SESSION_TOTAL, accuracyRows, type RunLine, bandShareText, buildReport, costTag, counterfactual, fixedBlock, parseLines, problems, sessionTotal, shareMessage, shareText, span, tieCounts, totals, usedTag, windowCostText, windowRates } from './report'
+import { SESSION_TOTAL, accuracyRows, type RunLine, bandShareText, buildReport, costTag, counterfactual, fixedBlock, keepWarmLine, parseLines, problems, sessionTotal, shareMessage, shareText, span, taskActual, taskEstimated, taskExtra, taskStay, tieCounts, totals, usedTag, wholeTaskRows, wholeTasks, windowCostText, windowRates } from './report'
 import type { StartBlock } from './start'
 
 const NOW = Date.parse('2026-10-23T18:00:00.000Z')
@@ -18,6 +18,9 @@ const sectionOf = (text: string, title: string) => {
   const at = out.findIndex(l => l.startsWith(title))
   return out.slice(at + 1, out.findIndex((l, i) => i > at && l === '')).map(l => l.trim())
 }
+
+/** A figure rounded to 6 decimals, so sums of cents compare. */
+const r6 = (n: number) => Number(n.toFixed(6))
 
 test('counts a saving against the frozen baseline, not one rescaled by what the turn really cost', async () => {
   expect(counterfactual(run({ change: 'lower', actual: 0.02, stay: 0.06, taken: 0.03 })), 'the baseline as it was recorded').toBe(0.06)
@@ -771,7 +774,7 @@ test('a keep-warm ping is rightsize\'s own cost: its overhead lowers Total saved
   expect(cells(report([saving]), 'Total saved')).toEqual(['~$0.30', '~$0.30', '~$0.30'])
   const text = report(lines)
   expect(cells(text, 'Total saved'), 'the same saving, less the pings').toEqual(['~$0.20', '~$0.20', '~$0.20'])
-  expect(text.replace(/\s+/g, ' ')).toContain('Total saved is after the cost of rating prompts and of keeping the cache warm ($0.10 in 30 days).')
+  expect(text.replace(/\s+/g, ' ')).toContain('Total saved is after the cost of rating prompts and of keeping the cache warm ($0.10 in 30 days), and counts what keeping it warm saved when you came back to a warm cache.')
   expect(report([saving]).replace(/\s+/g, ' '), 'no pings, no mention').toContain('Total saved is after the cost of rating prompts (under $0.01 in 30 days).')
   // The band's running total counts them too.
   expect(sessionTotal(lines, 's1', false)).toBe('Session: ~$0.20 saved')
@@ -830,4 +833,197 @@ test('the step estimates line counts scored runs while learning, then dates the 
   expect(streak.split('\n').filter(l => l.length > 80), 'the line fits 80 columns').toEqual([])
   const paused = report([...applied, learn('2026-10-22T18:00:00.000Z', false), learn('2026-10-23T17:00:00.000Z', true)])
   expect(paused).toContain('Step estimates: applied since Oct 23')
+})
+
+// ---- Whole tasks -----------------------------------------------------------------
+
+/**
+ * One task's lines: two prompts (the first stopped, then redone), a helper's line, a keep-warm request, a rater check, a failed
+ * rating, lines that cost nothing, and another task's run and keep-warm line that must stay out.
+ */
+const taskLines = (): RunLine[] => [
+  run({ id: 'a1', task: 'a1', type: 'feature', taken: 0.4, stay: 0.5, actual: 0.3, overhead: 0.02, aborted: true }),
+  run({ id: 'a2', task: 'a1', type: 'feature', taken: 0.4, stay: 0.5, actual: 0.6, overhead: 0.01, helpers: [{ agent: 'h1', kind: 'handoff', steps: 4, ms: 5000, errors: 0, blocked: 0 }] }),
+  // The helper's cost is already in its run's: this line adds nothing to ACTUAL.
+  { at: ago(0), kind: 'subagent', session: 's1', task: 'a1', run: 'a2', actual: 0.2, estimate: 0.1, parentEstimate: 0.3 },
+  { at: ago(0), kind: 'warm', session: 's1', task: 'a1', tier: 'opus', context: 80_000, overhead: 0.04 },
+  { at: ago(0), kind: 'check', session: 's1', task: 'a1', overhead: 0.01 },
+  { at: ago(0), kind: 'unrated', session: 's1', task: 'a1', reason: 'timeout', overhead: 0.03 },
+  // No cost: how an offer was answered, a thumbs-up, and a keep-warm return (its saving is in Total saved, not in the task's cost).
+  { at: ago(0), kind: 'cold', session: 's1', task: 'a1', choice: '2h' },
+  { at: ago(0), kind: 'feedback', session: 's1', task: 'a1', ref: 'a2', value: 'up' },
+  { at: ago(0), kind: 'warmSaved', session: 's1', task: 'a1', tier: 'opus', context: 80_000, saved: 0.6 },
+  // Another task, and a keep-warm line with no task: neither is a1's.
+  run({ id: 'b1', task: 'b1', type: 'debug', taken: 2, stay: 3, actual: 9, overhead: 1 }),
+  { at: ago(0), kind: 'warm', session: 's1', tier: 'opus', context: 80_000, overhead: 5 },
+]
+
+test('ESTIMATED is the sum of the route estimates (taken) of the prompts that ran to the end; a stopped one is left out; other tasks are ignored', async () => {
+  const lines = taskLines()
+  expect(taskEstimated(lines, 'a1'), 'the stopped first prompt was redone by the second, which has its own estimate').toBe(0.4)
+  expect(taskEstimated(lines, 'b1')).toBe(2)
+  expect(r6(taskEstimated([...lines, run({ id: 'a3', task: 'a1', taken: 0.25 })], 'a1')), 'a later prompt in the task adds its own').toBe(r6(0.65))
+  expect(taskEstimated(lines, 'nope')).toBe(0)
+  expect(taskEstimated(lines, ''), 'no task id').toBe(0)
+  expect(taskEstimated([], 'a1')).toBe(0)
+  expect(taskEstimated([...lines].reverse(), 'a1'), 'order does not matter').toBe(0.4)
+  expect(taskEstimated(lines.filter(l => l.task !== 'b1'), 'a1'), 'other tasks do not change it').toBe(0.4)
+})
+
+test('STAY is the sum of each finished prompt\'s estimate of staying, from its own task only', async () => {
+  const lines = taskLines()
+  expect(taskStay(lines, 'a1')).toBe(0.5)
+  expect(taskStay(lines, 'b1')).toBe(3)
+  expect(taskStay(lines, 'nope')).toBe(0)
+  expect(r6(taskStay([...lines, run({ id: 'a3', task: 'a1', stay: 0.25 })], 'a1'))).toBe(r6(0.75))
+})
+
+test('ACTUAL is everything the task cost: every run (stopped too), the rating calls, checks and keep-warm requests, and no helper twice', async () => {
+  const lines = taskLines()
+  // 0.3+0.02 stopped run, 0.6+0.01 its redo, 0.04 keep warm, 0.01 check, 0.03 failed rating.
+  expect(Number(taskActual(lines, 'a1').toFixed(5))).toBe(1.01)
+  expect(Number(taskActual(lines, 'b1').toFixed(5)), 'only its own run, and the keep-warm line with no task is not its').toBe(10)
+  // The subagent line is already inside its run's cost: with or without it the total is the same.
+  expect(taskActual(lines.filter(l => l.kind !== 'subagent'), 'a1')).toBe(taskActual(lines, 'a1'))
+  // Neither the cold line, the thumbs-up nor the saving of a keep-warm return costs anything.
+  expect(taskActual(lines.filter(l => !['cold', 'feedback', 'warmSaved'].includes(l.kind ?? '')), 'a1')).toBe(taskActual(lines, 'a1'))
+  expect(taskActual(lines, 'nope')).toBe(0)
+  expect(taskActual(lines, '')).toBe(0)
+  expect(Number(taskActual([...lines].reverse(), 'a1').toFixed(5))).toBe(1.01)
+  expect(Number(taskActual(lines.filter(l => l.task !== 'b1'), 'a1').toFixed(5))).toBe(1.01)
+})
+
+test('the extra over the estimate is split into retries and rework, helpers, keep warm and other, and adds up', async () => {
+  // ACTUAL 1.01 against ESTIMATED 0.4: an extra of 0.61. Named: stopped run 0.3, helper line 0.2, keep warm 0.04; the rest is other.
+  const x = taskExtra(taskLines(), 'a1')
+  expect(r6(x.extra)).toBe(r6(0.61))
+  expect(r6(x.retries), 'a stopped turn is rework').toBe(r6(0.3))
+  expect(r6(x.helpers)).toBe(r6(0.2))
+  expect(r6(x.warm)).toBe(r6(0.04))
+  expect(r6(x.other), 'rating calls, the check and the redo above its estimate').toBe(r6(0.07))
+  expect(r6(x.retries + x.helpers + x.warm + x.other)).toBe(r6(x.extra))
+  // A turn raised mid-turn counts what it cost over its estimate as rework.
+  const raised = [run({ id: 'r1', task: 'r1', taken: 0.1, stay: 0.1, actual: 0.35, escalations: [{ step: 3, from: 'low', to: 'high', why: 'x' }] })]
+  expect(Object.values(taskExtra(raised, 'r1')).map(r6)).toEqual([0.25, 0.25, 0, 0, 0])
+  // Named parts that come to more than the extra are scaled down to it (their cost is partly inside the estimate).
+  const big = [run({ id: 'c1', task: 'c1', taken: 0.5, stay: 0.5, actual: 0.6 }), { at: ago(0), kind: 'subagent', session: 's1', task: 'c1', run: 'c1', actual: 0.4 } as RunLine]
+  const scaled = taskExtra(big, 'c1')
+  expect(r6(scaled.extra)).toBe(r6(0.1))
+  expect(r6(scaled.helpers)).toBe(r6(0.1))
+  expect(scaled.other).toBe(0)
+  // A task at or under its estimate has no extra.
+  expect(Object.values(taskExtra([run({ id: 'd1', task: 'd1', taken: 1, actual: 0.2 })], 'd1'))).toEqual([0, 0, 0, 0, 0])
+})
+
+/** `n` finished tasks of one session, each a task of its own that the next one replaced: a task `i` has `taken` 1, `stay` 1.2 and actual `ratios[i]`. */
+const manyTasks = (ratios: number[], types: string[] = []): RunLine[] =>
+  ratios.map((r, i) => run({ id: `t${i}`, task: `t${i}`, type: types[i] ?? 'feature', taken: 1, stay: 1.2, actual: r, at: ago(10 - i * 0.1), submittedAt: ago(10 - i * 0.1) }))
+
+test('a task is finished when a later task began in its session, or after a day with no line; one with no estimate or from an old log is left out', async () => {
+  const two = manyTasks([1, 1])
+  expect(wholeTasks(two, NOW).map(t => t.task), 'the first was replaced, the second is old enough').toEqual(['t0', 't1'])
+  // The latest task of a session, active in the last day, is not finished.
+  const active = [...manyTasks([1]), run({ id: 'live', task: 'live', taken: 1, stay: 1, actual: 1 })]
+  expect(wholeTasks(active, NOW).map(t => t.task), 'a task running now').toEqual(['t0'])
+  expect(wholeTasks([run({ id: 'old', task: 'old', at: ago(40), submittedAt: ago(40) })], NOW), 'started over 30 days ago').toEqual([])
+  expect(wholeTasks([...manyTasks([1]), run({ id: 'x', task: 'x', taken: 0, stay: 1, at: ago(9), submittedAt: ago(9) })], NOW).map(t => t.task), 'no estimate').toEqual(['t0'])
+  expect(wholeTasks([run({ id: 'only', task: 'only', aborted: true, at: ago(5), submittedAt: ago(5) })], NOW), 'every prompt stopped: nothing to compare').toEqual([])
+  expect(wholeTasks([run({ id: 'n1', task: undefined })], NOW), 'a run with no task id').toEqual([])
+  // Another session's later task does not finish this one.
+  const other = [run({ id: 'p1', task: 'p1', session: 'sA', at: ago(0.1), submittedAt: ago(0.1) }), run({ id: 'p2', task: 'p2', session: 'sB', at: ago(0.05), submittedAt: ago(0.05) })]
+  expect(wholeTasks(other, NOW)).toEqual([])
+})
+
+test('Whole tasks shows with 5 finished tasks: the median ratio, the share over 1.5x and where its extra came from, tasks saved, and the median by type', async () => {
+  // Ratios actual/estimated: 0.8, 1, 1.2, 2 (a keep-warm line of 0.5 and a helper inside), 3: median 1.2; two of five are over 1.5x.
+  const lines = [
+    ...manyTasks([0.8, 1, 1.2, 2, 3], ['feature', 'feature', 'debug', 'debug', 'review']),
+    { at: ago(8), kind: 'warm', session: 's1', task: 't3', tier: 'opus', context: 80_000, overhead: 0.5 } as RunLine,
+  ]
+  const text = report(lines)
+  const rows = sectionOf(text, 'WHOLE TASKS')
+  expect(rows[0]).toMatch(/^Tasks finished +5$/)
+  // The warm request makes t3's actual 2.5 and t4's stays 3: ratios 0.8, 1, 1.2, 2.5, 3.
+  expect(rows[1]).toMatch(/^Cost vs estimate +median 1\.2x of the estimate$/)
+  expect(rows[2]).toMatch(/^Over 1\.5x +2 of 5 tasks \(40%\)$/)
+  // t3's extra is 1.5 (0.5 of it keep warm), t4's is 2 (all other): 0.5 / 3.5 = 14%, and 3 / 3.5 = 86%.
+  expect(rows[3]).toMatch(/^Extra came from +retries\/rework 0%, helpers 0%, keep warm 14%, other 86%$/)
+  // Staying would have cost 1.2 each (6 in all); the tasks cost 0.8+1+1.2+2.5+3 = 8.5: 2.5 more.
+  expect(rows[4]).toMatch(/^Saved vs staying +-\$2\.50$/)
+  expect(rows.slice(5).map(r => r.replace(/^Median by type +/, ''))).toEqual(['debug: 1.9x over 2 tasks', 'feature: 0.9x over 2 tasks', 'review: 3.0x over 1 task'])
+  expect(titles(text)).toContain('WHOLE TASKS')
+  expect(text.split('\n').filter(l => l.length > 80), 'no line past 80 characters').toEqual([])
+  expect(rows.join('\n'), 'API billing carries no API-equivalent label here').not.toContain('API-equivalent')
+})
+
+test('Whole tasks on a subscription labels its dollar row API-equivalent, and the desktop app gets a code fence', async () => {
+  const lines = manyTasks([0.5, 0.6, 0.7, 0.8, 0.9])
+  const sub = sectionOf(report(lines, { subscription: true }), 'WHOLE TASKS')
+  expect(sub[3], 'estimated 5, stay 6, actual 3.5').toMatch(/^Saved vs staying +~\$2\.50 \(API-equivalent\)$/)
+  expect(sub[2], 'no task over 1.5x: no extra row').toMatch(/^Over 1\.5x +0 of 5 tasks \(0%\)$/)
+  expect(sub.some(r => r.startsWith('Extra came from'))).toBe(false)
+  const subOver = report(manyTasks([0.8, 1, 1.2, 2, 3], ['feature', 'feature', 'debug', 'debug', 'review']), { subscription: true })
+  expect(sectionOf(subOver, 'WHOLE TASKS').some(r => r.startsWith('Extra came from')), 'an over-estimate task shows its extra').toBe(true)
+  expect(subOver.split('\n').filter(l => l.length > 80), 'no line past 80 characters on a subscription either').toEqual([])
+  const md = report(lines, { markdown: true }).split('\n')
+  expect(md[md.indexOf('WHOLE TASKS') + 1]).toBe('```')
+  // Only the five types with the most tasks show.
+  const six = manyTasks([1, 1, 1, 1, 1, 1, 1], ['a', 'b', 'c', 'd', 'e', 'f', 'a'])
+  const types = sectionOf(report(six), 'WHOLE TASKS').slice(4).map(r => r.replace(/^Median by type +/, '').split(':')[0])
+  expect(types.length).toBe(5)
+  expect(types[0], 'most tasks first').toBe('a')
+})
+
+test('with fewer than 5 finished tasks Whole tasks is one line saying how many more it needs, and nothing when nothing was rated', async () => {
+  const text = report(manyTasks([1, 1, 1]))
+  expect(text).not.toContain('WHOLE TASKS')
+  expect(text.replace(/\s+/g, ' ')).toContain('Whole tasks: 3 finished tasks so far; this section needs 5, 2 more to go.')
+  expect(report(manyTasks([1])).replace(/\s+/g, ' ')).toContain('Whole tasks: 1 finished task so far; this section needs 5, 4 more to go.')
+  expect(report([]), 'an empty log has no such line').not.toContain('Whole tasks')
+  expect(wholeTaskRows(manyTasks([1, 1, 1, 1]), NOW, false)).toEqual({ need: 'Whole tasks: 4 finished tasks so far; this section needs 5, 1 more to go.' })
+})
+
+// ---- Keep warm savings -------------------------------------------------------------
+
+const ping = (x: Partial<RunLine> = {}): RunLine => ({ at: ago(0), kind: 'warm', session: 's1', task: 't1', tier: 'opus', context: 80_000, overhead: 0.3, warmRun: ago(1), ...x })
+const kept = (saved: number, x: Partial<RunLine> = {}): RunLine => ({ at: ago(0), kind: 'warmSaved', session: 's1', task: 't1', tier: 'opus', context: 80_000, saved, ...x })
+
+test('a keep-warm return counts its saving in totals, and a run never returned to stays pure cost', async () => {
+  const t = totals([ping(), ping(), kept(0.63)])
+  expect(t.returns).toBe(1)
+  expect(Number(t.keptSaved.toFixed(5))).toBe(0.63)
+  expect(Number((t.saved - t.overhead).toFixed(5)), '0.63 saved less two pings of 0.30').toBe(0.03)
+  const never = totals([ping(), ping()])
+  expect(never.returns).toBe(0)
+  expect(Number((never.saved - never.overhead).toFixed(5)), 'no return: the pings are only cost').toBe(-0.6)
+  // The saving is no run: it adds no rated prompt and no cost.
+  expect(totals([kept(0.63)])).toMatchObject({ rated: 0, overhead: 0, spent: 0, returns: 1 })
+})
+
+test('the Keep warm line: runs, savings on returns, cost, and the net, in dollars with an API-equivalent label on a subscription', async () => {
+  const lines = [ping({ warmRun: ago(3) }), ping({ warmRun: ago(3), overhead: 0.1 }), ping({ warmRun: ago(2), overhead: 0.2 }), ping({ warmRun: ago(1), overhead: 0.3 }), kept(1.2), kept(1), kept(1)]
+  expect(keepWarmLine(lines, false), 'three runs (the pings share a run), cost 0.9, saved 3.2').toBe('Keep warm: 3 runs · saved ~$3.20 on 3 returns · cost ~$0.90 · net ~$2.30 saved')
+  expect(keepWarmLine(lines, true)).toBe('Keep warm: 3 runs · saved ~$3.20 on 3 returns · cost ~$0.90 · net ~$2.30 saved (API-equivalent)')
+  expect(keepWarmLine([ping({ overhead: 0.9 }), kept(0.5)], false)).toBe('Keep warm: 1 run · saved ~$0.50 on 1 return · cost ~$0.90 · net ~$0.40 more')
+  expect(keepWarmLine([ping(), ping({ warmRun: ago(2) })], false), 'never returned to: no saving').toBe('Keep warm: 2 runs · saved nothing: no returns · cost ~$0.60 · net ~$0.60 more')
+  expect(keepWarmLine([ping({ overhead: 0.5 }), kept(0.5)], false)).toBe('Keep warm: 1 run · saved ~$0.50 on 1 return · cost ~$0.50 · net about even')
+  expect(keepWarmLine([run({})], false), 'no keep warm, no line').toBeUndefined()
+  expect(keepWarmLine([ping({ warmRun: undefined, session: 'a' }), ping({ warmRun: undefined, session: 'a' }), ping({ warmRun: undefined, session: 'b' })], false)?.startsWith('Keep warm: 2 runs'), 'an older line with no run id counts by session').toBe(true)
+})
+
+test('the report shows the Keep warm line, and Total saved and the session total include the saving', async () => {
+  const lines = [run({ change: 'lower', offered: 'lower', actual: 0.1, stay: 0.4, taken: 0.1 }), ping({ overhead: 0.1 }), kept(0.6)]
+  const text = report(lines)
+  expect(text).toContain('Keep warm: 1 run · saved ~$0.60 on 1 return · cost ~$0.10 · net ~$0.50 saved')
+  // 0.3 from the lowering, 0.6 from the return, less 0.1 of pings.
+  expect(cells(text, 'Total saved')).toEqual(['~$0.80', '~$0.80', '~$0.80'])
+  expect(text.split('\n')[1]).toBe('Saved ~$0.80 (~80%) in the last 30 days.')
+  expect(sessionTotal(lines, 's1', false), 'the band\'s session total is the same figure').toBe('Session: ~$0.80 saved')
+  expect(sessionTotal([ping({ overhead: 0.1 })], 's1', false), 'with no return it is only cost').toBe('Session: ~$0.10 more')
+  expect(text.replace(/\s+/g, ' ')).toContain('Total saved is after the cost of rating prompts and of keeping the cache warm ($0.10 in 30 days), and counts what keeping it warm saved when you came back to a warm cache.')
+  expect(report([run({})]), 'no keep warm: no line and no note').not.toContain('Keep warm')
+  expect(text.split('\n').filter(l => l.length > 80), 'no line past 80 characters').toEqual([])
+  const sub = report(lines, { subscription: true })
+  const at = sub.split('\n').findIndex(l => l.startsWith('Keep warm'))
+  expect(sub.split('\n').slice(at, at + 2).join(' ').replace(/\s+/g, ' ')).toContain('Keep warm: 1 run · saved ~$0.60 on 1 return · cost ~$0.10 · net ~$0.50 saved (API-equivalent)')
 })

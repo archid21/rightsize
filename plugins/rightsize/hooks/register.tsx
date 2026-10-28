@@ -59,7 +59,11 @@ import {
   usageCost,
   type Usage,
   CAL_STORE,
+  routeFactor,
+  rebaseCal,
 } from './cost'
+import { type FreshRun, type HandedOff, NO_STEPS, type StepState, actingExp, mergeSteps, medians, parseStepState, STEP_PROVE, typicalShrink } from './steps'
+import { type LearningNote, learningNote } from './learning'
 import { PRICING_URL, applyPrices, diffPrices, isDue, parsePricingPage } from './prices'
 import { howSure, missCounts, missMap, ownTasks, pauseRates } from './misses'
 import { SHARE_ASK_AFTER, SHARE_EVERY_MS, SHARE_URL, newInstall, nextBatch } from './share'
@@ -288,6 +292,14 @@ type Run = {
   switchTo?: { tier: Tier; level: Level }
   /** A fixed rule chose the route rather than the rating: reviews run on Opus at high or more. */
   rule?: 'review'
+  /** Learning mode: the plan the learned step exponent would have made, beside the real one (learning.ts). */
+  learning?: LearningNote
+  /** The learned step exponent when the learning plan was made (steps.ts scoreRun). */
+  learnG?: number
+  /** Set when this hand-off is one the learned exponent would have stopped: the saving bar it was held to (steps.ts scoreRun). */
+  handedOff?: HandedOff
+  /** The step exponent this turn's estimates were priced with. */
+  stepExp: number
   /** Uncalibrated estimates of the route taken, for calibration. */
   rawMain: number
   rawDelegate?: number
@@ -360,6 +372,10 @@ let rules: Rules = { ...DEFAULT_RULES, handOff: PROFILES.Balanced.handOff }
 let checking: Promise<string> | null = null
 let prices: Prices = DEFAULT_PRICES
 let cal: Calibration = {}
+/** The learned step exponent (steps.ts), and the runs it has not been saved with yet. */
+let stepState: StepState = NO_STEPS
+let unsavedSteps: FreshRun[] = []
+const STEP_STORE = 'step-exponent-v1'
 /** Rated prompts whose turn has not started, oldest first. A turn takes the first one with its text (turn.start). */
 let pending: Run[] = []
 let active: Run | null = null
@@ -760,8 +776,43 @@ function teach(key: string, sample: number) {
   unsaved.push({ key, sample })
 }
 
+/**
+ * The step exponent was applied or stopped: the calibration ratios were learned against the other basis, so they are
+ * rescaled by the typical shrink (steps.ts typicalShrink), and the flip is logged.
+ */
+async function flipSteps($: EngineInterface, before: StepState, after: StepState) {
+  const factor = after.applied ? 1 / typicalShrink(after) : typicalShrink(before)
+  // The new state is already stored, so a rebase that fails here is not retried (that would rebase twice): the
+  // ratios stay on the old basis and the moving average brings them over.
+  try {
+    await $.store.set(CAL_STORE, rebaseCal(parseCalibration(await $.store.get(CAL_STORE)), factor))
+    cal = rebaseCal(cal, factor)
+  } catch {
+    // Left on the old basis.
+  }
+  if (after.applied) {
+    const { inc, cand } = medians(after)
+    const cut = inc > 0 ? Math.round((1 - cand / inc) * 100) : 0
+    await log($, `step estimates applied: they cut estimate error by ${cut}% on your last ${after.scores.length} runs`)
+  } else await log($, 'step estimates paused: they stopped beating the plain estimate')
+}
+
 async function mergeCal($: EngineInterface) {
   const batch = unsaved
+  const runs = unsavedSteps
+  if (runs.length) {
+    unsavedSteps = []
+    try {
+      const stored = parseStepState(await $.store.get(STEP_STORE))
+      const next = mergeSteps(stored, runs, await $.clock.now())
+      // The state is stored before the rebase: a failed save is retried with the same runs and rebases once, when it lands.
+      await $.store.set(STEP_STORE, next)
+      stepState = next
+      if (next.applied !== stored.applied) await flipSteps($, stored, next)
+    } catch {
+      unsavedSteps = [...runs, ...unsavedSteps]
+    }
+  }
   if (!batch.length) return
   unsaved = []
   try {
@@ -1059,7 +1110,7 @@ async function situation($: EngineInterface): Promise<Situation> {
   const have = typeof kept === 'number' && kept > 0
   const reported = have ? undefined : (await usageNow($))?.context?.tokens
   const context = have ? kept : typeof reported === 'number' && reported > 0 ? reported : DEFAULT_CONTEXT
-  return { tier, level, context, prices, cal, rules, ties: await tiesSeen($), misses, missBlock, minTasks, counts, ceiling, without, explore }
+  return { tier, level, context, prices, cal, rules, ties: await tiesSeen($), misses, missBlock, minTasks, counts, ceiling, without, explore, stepExp: actingExp(stepState) }
 }
 
 // Close calls seen so far, kept in the store so the one-in-five exploration holds across sessions.
@@ -1380,6 +1431,7 @@ function startRun(r: Rating, s: Situation, d: Decision, p: Plan, base: Level, ov
     auto: d.auto === true,
     delegate: d.delegate,
     ...(sw ? { switchTo: sw } : {}),
+    stepExp: s.stepExp ?? 0,
     rawMain: rawMainCost(r, swOn ?? s, level),
     rawDelegate: d.delegate ? rawDelegateCost(r, s, d.delegate.tier, d.delegate.level) : undefined,
     stay: mainCost(r, s, base, 0),
@@ -1651,14 +1703,28 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
     if (delegated && run.delegate && run.rawDelegate) {
       const sample = ratioSample(actual, run.rawDelegate)
       for (const key of delegateKeys(r.type, run.delegate.tier, run.delegate.level)) teach(key, sample)
+      // A hand-off the learned exponent would have stopped is scored against its real cost. It teaches g nothing.
+      if (run.handedOff) unsavedSteps.push({ steps: r.steps, actual, taken: run.takenDelegate ?? 0, stepExpUsed: run.stepExp, g: run.learnG ?? stepState.g, handedOff: run.handedOff })
     }
     // A turn that stepped back up, or was raised mid-turn, ran at more than one
     // level, so its cost says nothing about one level's estimate: it teaches nothing.
     else if (!run.delegate && !run.steppedUp && !run.escalations.length) {
       // A switched turn teaches the switched model's keys, with the one cache write the switch costs taken out.
       const written = run.switchTo ? (run.context * prices[run.switchTo.tier].cacheWrite) / 1e6 : 0
-      const sample = ratioSample(Math.max(0, actual - run.missCost - written), run.rawMain)
-      for (const key of mainKeys(r.type, run.switchTo?.tier ?? run.tier, run.ranAt)) teach(key, sample)
+      const spent = Math.max(0, actual - run.missCost - written)
+      const sample = ratioSample(spent, run.rawMain)
+      const keys = mainKeys(r.type, run.switchTo?.tier ?? run.tier, run.ranAt)
+      // The step exponent learns from what the estimate would have been with no shrink: calibrated, then the shrink taken back out.
+      // Scored with the same run: what the estimate was, and how close it would have been with the learned exponent.
+      unsavedSteps.push({
+        steps: r.steps,
+        actual: spent,
+        taken: run.takenMain,
+        stepExpUsed: run.stepExp,
+        g: run.learnG ?? stepState.g,
+        estimated: (run.rawMain * routeFactor(cal, keys)) / Math.max(1, r.steps) ** run.stepExp,
+      })
+      for (const key of keys) teach(key, sample)
     }
     await saveCal($)
   }
@@ -1696,6 +1762,7 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
       ...(run.resized.length ? { resized: run.resized } : {}),
       ...(run.tie ? { tie: run.tie } : {}),
       ...(run.rule ? { rule: run.rule } : {}),
+      ...(run.learning ? { learning: run.learning } : {}),
       ...(run.switchTo ? { switched: run.switchTo.tier, switchedLevel: run.switchTo.level } : {}),
       ...(run.pace.mode !== 'normal' ? { pace: { ...run.pace, ...(run.pace.pace === undefined ? {} : { pace: Number(run.pace.pace.toFixed(2)) }) } } : {}),
       auto: run.auto,
@@ -2728,7 +2795,9 @@ async function resetMeasurement($: EngineInterface) {
   await saving.catch(() => undefined)
   cal = {}
   unsaved = []
-  for (const key of [CAL_STORE, TIES_STORE, SPOT_STORE, 'startCheckedAt', 'startSnooze']) await $.store.set(key, null).catch(() => undefined)
+  stepState = NO_STEPS
+  unsavedSteps = []
+  for (const key of [CAL_STORE, STEP_STORE, TIES_STORE, SPOT_STORE, 'startCheckedAt', 'startSnooze']) await $.store.set(key, null).catch(() => undefined)
   measureFrom = await $.clock.now()
   await $.store.set('measureFrom', new Date(measureFrom).toISOString()).catch(() => undefined)
   await refreshMisses($)
@@ -3103,6 +3172,7 @@ export const register: Register = (on, options) => {
       }
     }
     cal = parseCalibration(await $.store.get(CAL_STORE).catch(() => undefined))
+    stepState = parseStepState(await $.store.get(STEP_STORE).catch(() => undefined))
     // Until this session's first response shows its rate limits, an earlier session's reading stands.
     const saved = (await $.store.get('billing').catch(() => undefined)) as { value?: unknown; by?: unknown } | undefined
     billingAsked = false
@@ -3268,6 +3338,18 @@ export const register: Register = (on, options) => {
         if (d.session) await $.state.set({ plugin: 'rightsize', key: 'sessionEffort' }, d.session)
         if (d.delegate) out = { ...e, context: [...(e.context ?? []), delegateNote(d.delegate, chances)] }
         run = startRun(r, s, d, p, (await seenEffort($)) ?? s.level, overhead, { text, at: submittedAt, ...(e.turnId !== undefined ? { during: e.turnId } : {}) })
+        // Learning mode: the same plan with the learned step exponent applied, logged beside the real one. Nothing acts on it.
+        try {
+          const learnG = stepState.g
+          run.learnG = learnG
+          run.learning = learningNote(planned, plan(r, { ...s, stepExp: learnG }, floor), learnG, stepState.applied)
+          const note = run.learning
+          if (run.change === 'delegate-down' && note.differs && !note.plan.startsWith('delegate-down')) {
+            run.handedOff = { actingStay: run.stay / Math.max(1, r.steps) ** run.stepExp, ruleShare: (s.rules ?? DEFAULT_RULES).handOff }
+          }
+        } catch {
+          // A failed learning note is left out; the prompt runs as it would have.
+        }
         prevTask = kept
         if (follows) {
           run.task = kept.id

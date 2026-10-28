@@ -1,3 +1,4 @@
+import { HANDOFF_SHARE, pricedSteps } from './steps'
 import type {
   RightsizeLevel as Level,
   RightsizeTaskType as TaskType,
@@ -200,6 +201,16 @@ export function learn(cal: Calibration, key: string, sample: number): Calibratio
 export const ratioSample = (actual: number, estimated: number) =>
   estimated > 0 ? Math.min(10, Math.max(0.1, actual / estimated)) : 1
 
+/**
+ * Rescales every key's ratio by `factor`, for when the estimate's basis changes (the step exponent applied or
+ * stopped): the ratios were learned against the old basis. The switch key is a share of misses, not a cost, so it stays.
+ */
+export function rebaseCal(cal: Calibration, factor: number): Calibration {
+  const out: Calibration = {}
+  for (const [key, e] of Object.entries(cal)) out[key] = key === SWITCH_KEY ? e : { n: e.n, ratio: Math.min(10, Math.max(0.1, e.ratio * factor)) }
+  return out
+}
+
 // ---- Estimates -------------------------------------------------------------
 
 /**
@@ -282,6 +293,8 @@ export type Situation = {
   without?: readonly Tier[]
   /** False: a close call always takes the guide's pick (Explore close calls). True when absent. */
   explore?: boolean
+  /** The learned step exponent (see steps.ts): the work is priced for `steps ** (1 + stepExp)` steps. 0 when absent, which prices the rater's guess as it is. */
+  stepExp?: number
 }
 
 /** The share of wrong judgements at which rightsize stops trusting the rater for a task type and model: the default of Pause after misses. */
@@ -296,7 +309,7 @@ const blocked = (s: Situation, type: TaskType, tier: Tier) => {
 /** The main chat doing the work at `level`, before calibration. */
 export function rawMainCost(r: Rating, s: Situation, level: Level) {
   const w = WORK[s.tier][level]
-  const steps = Math.max(1, r.steps * w.steps)
+  const steps = Math.max(1, pricedSteps(r.steps, s.stepExp ?? 0) * w.steps)
   // Each step re-reads the conversation from cache; what the work reads is written once.
   return dollars(s.prices[s.tier], {
     cacheRead: steps * s.context + ((steps - 1) * r.read) / 2,
@@ -321,7 +334,7 @@ const reworkFactor = (main: Tier, sub: Tier) => (tierRank(sub) >= tierRank(main)
 /** A subagent's own requests on `sub`, before calibration: it starts with no cache, so its base and the brief are written fresh. */
 export function subWork(r: Rating, s: Situation, sub: Tier, subLevel: Level) {
   const w = WORK[sub][subLevel]
-  const steps = Math.max(1, r.steps * w.steps)
+  const steps = Math.max(1, pricedSteps(r.steps, (s.stepExp ?? 0) * HANDOFF_SHARE) * w.steps)
   return dollars(s.prices[sub], {
     cacheWrite: SUB_BASE + BRIEF + r.read,
     cacheRead: steps * (SUB_BASE + BRIEF) + ((steps - 1) * r.read) / 2,

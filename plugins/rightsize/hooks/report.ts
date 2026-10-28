@@ -1,4 +1,5 @@
 import { MISS_BLOCK, TIER_NAME, isTier, money } from './cost'
+import { STEP_PROVE } from './steps'
 import { MISS_MIN, checkTotals, missRates, missTotals } from './misses'
 import type { StartBlock } from './start'
 
@@ -86,6 +87,8 @@ export type RunLine = {
   parentEstimate?: number
   /** The hand-off was a close call between two models, and how it was broken. */
   tie?: Tie
+  /** Learning mode: the plan the learned step exponent would have made beside the real one. `applied`: the real decision uses it. */
+  learning?: { g: number; plan: string; differs: boolean; applied: boolean; delegateCost?: number; mainCost?: number }
   /** Claude's subagents moved to a cheaper model this turn; each may carry a close call too. */
   resized?: { tie?: Tie }[]
   /** Main-chat requests in the turn. */
@@ -423,6 +426,22 @@ function grid(rows: readonly (readonly string[])[], right: readonly number[] = [
   )
 }
 
+/**
+ * The learned step exponent's status, from the run log alone: learning until STEP_PROVE runs are scored, then applied
+ * since the first run of the current applied streak (dated in Pacific), or learning again after a pause.
+ */
+export function stepLine(lines: readonly RunLine[], from = 0) {
+  const runs = lines.filter(l => l.learning !== undefined && Date.parse(l.at) >= from)
+  const last = runs[runs.length - 1]
+  if (!last?.learning?.applied) return `Step estimates: learning, ${Math.min(STEP_PROVE, runs.length)} of ${STEP_PROVE} runs`
+  let start = 0
+  runs.forEach((l, i) => {
+    if (!l.learning?.applied) start = i + 1
+  })
+  const day = new Date(Date.parse(runs[start]?.at ?? last.at)).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'America/Los_Angeles' })
+  return `Step estimates: applied since ${day}`
+}
+
 /** Wraps `text` to `width` columns, starting with `first` and indenting later lines with `rest`. */
 function wrap(text: string, first: string, rest: string, width = 78) {
   const out: string[] = []
@@ -746,6 +765,7 @@ export function buildReport(
       ? [sub ? "Extra on harder prompts: what raising effort or using a stronger model would cost on the API, for better answers. It isn't taken off Total saved." : "Extra spent on harder prompts: what raising effort or using a stronger model cost, for better answers. It isn't taken off Total saved."]
       : []),
     ...(sub && cols.some(s => s.kept) ? ['Window shares are ranges because the rate limits report whole percents.'] : []),
+    ...(nothing ? [] : [stepLine(lines, opts.measureFrom ? Date.parse(opts.measureFrom) : 0)]),
     ...(sub ? ['Dollar amounts are API-equivalent: what the same use would cost on the API.', 'You only pay for your subscription.'] : []),
   ]
   out.push('', ...(md ? foot : foot.flatMap(f => wrap(f, '', '', 78))))

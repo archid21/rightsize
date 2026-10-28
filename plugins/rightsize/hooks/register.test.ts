@@ -5044,6 +5044,46 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(readRuns(h).filter(l => l.kind === 'run').map(l => [l.change, l.offered])).toEqual([['delegate-down', 'delegate-down'], ['none', 'none']])
   })
 
+  test(`a run line carries the learning note, and the real hand-off is still made (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    // The step exponent is stored under 'step-exponent-v1' (steps.ts state, register.tsx STEP_STORE).
+    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: { ...HELPERS, 'step-exponent-v1': { g: -0.4, since: 0, samples: [] } } })
+    const d = drive($, h)
+    await d.start(surface)
+    await warm(d, h)
+    h.rating = HAND_OFF()
+    await d.submit(SEARCH)
+    expect(last(h.submitted)?.context?.length, 'a whole request is handed down, as without learning mode').toBe(1)
+    await d.step('t1')
+    await d.complete('t1')
+    const run = readRuns(h).find(l => l.kind === 'run')
+    expect(run?.change, 'the decision is unchanged').toBe('delegate-down')
+    const note = run?.learning as { g: number; plan: string; differs: boolean; applied: boolean } | undefined
+    expect(note?.g, 'the learned exponent is logged').toBe(-0.4)
+    expect(note?.applied, 'a fresh exponent is not applied yet').toBe(false)
+    expect(typeof note?.plan, 'the learning plan is labelled').toBe('string')
+    expect(note?.differs, 'differs is whether the labels differ').toBe(note?.plan !== 'delegate-down:haiku')
+  })
+
+  test(`a promotion of the step exponent rebases calibration once, and the state is stored (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    // 49 scores where g beats the plain estimate, steady refits and a typical shrink of 16 ** -0.2: the 50th score promotes it.
+    const scores = Array.from({ length: 49 }, () => ({ inc: 0.6, cand: 0.3, flip: false, unjust: false }))
+    const samples = Array.from({ length: 10 }, () => ({ ls: Math.log(16), lr: 0 }))
+    const state = { g: -0.2, since: 0, samples, scores, gs: [-0.2, -0.2, -0.2], applied: false }
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { 'step-exponent-v1': state, [CAL_STORE]: { ...FREE_SWITCHES, 'writing:main': { n: 30, ratio: 1 } } } })
+    const d = drive($, h)
+    await d.start(surface)
+    h.rating = NO_CHANGE
+    await d.submit(LOOKUP)
+    await d.step('t1')
+    await d.complete('t1')
+    const stored = h.store['step-exponent-v1'] as { applied: boolean; appliedAt?: number }
+    expect(stored.applied, 'the exponent is applied once it has proven itself').toBe(true)
+    const ratio = (h.store[CAL_STORE] as Record<string, { n: number; ratio: number }>)['writing:main']?.ratio ?? 0
+    const once = 1 / 16 ** -0.2
+    expect(Math.abs(ratio - once) < 0.01, `calibration is rebased once (${once.toFixed(2)}), not twice`).toBe(true)
+    expect(h.files[LOG_PATH] ?? '').toContain('step estimates applied')
+  })
+
   test(`the rater is told how the task began and how many prompts it has had (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { model: 'claude-sonnet-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES } })
     const d = drive($, h)

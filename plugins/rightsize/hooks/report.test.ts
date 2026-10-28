@@ -814,3 +814,20 @@ test('a cold line (how an offer was answered) is no run: it is parsed, and chang
   expect(report(cold).split('\n')[1]).toBe(report([]).split('\n')[1])
   expect(sessionTotal(cold, 's1', false)).toBeUndefined()
 })
+
+test('the step estimates line counts scored runs while learning, then dates the applied streak in Pacific', async () => {
+  const learn = (at: string, applied: boolean) => run({ at, learning: { g: -0.2, plan: 'none', differs: false, applied } })
+  const hour = (h: number) => new Date(NOW - h * 60 * 60 * 1000).toISOString()
+  const few = Array.from({ length: 3 }, (_, i) => learn(hour(10 + i), false))
+  expect(report(few), 'learning until 50 scored runs').toContain('Step estimates: learning, 3 of 50 runs')
+  expect(report([run({ at: hour(1) })]), 'a run without a learning note is not counted').toContain('Step estimates: learning, 0 of 50 runs')
+  const many = Array.from({ length: 60 }, (_, i) => learn(hour(100 + i), false))
+  expect(report(many)).toContain('Step estimates: learning, 50 of 50 runs')
+  // Applied from Oct 20 (11:00 Pacific on the 20th, 18:00 UTC); a pause before it does not count.
+  const applied = [learn('2026-10-20T18:00:00.000Z', true), learn('2026-10-21T18:00:00.000Z', true)]
+  const streak = report([...many, ...applied])
+  expect(streak).toContain('Step estimates: applied since Oct 20')
+  expect(streak.split('\n').filter(l => l.length > 80), 'the line fits 80 columns').toEqual([])
+  const paused = report([...applied, learn('2026-10-22T18:00:00.000Z', false), learn('2026-10-23T17:00:00.000Z', true)])
+  expect(paused).toContain('Step estimates: applied since Oct 23')
+})

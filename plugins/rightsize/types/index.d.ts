@@ -43,8 +43,12 @@ export type RightsizeBand = {
   tip?: string
   /** The id of the run this band is about: the band offers 👍 and 👎, which tune rightsize on this machine only. */
   rate?: string
-  /** Before the cache goes cold: the buttons of the offer (`id` says what pressing it does), or the Stop of a keep-warm run. */
+  /** The cache line, shown as a row of its own under `text`: the offer before the cache goes cold, or the keep-warm line. */
+  coldText?: string
+  /** The cache row's button (`id` says what pressing it does): the offer's first keep-warm choice, or the Stop of a keep-warm run. */
   cold?: { id: string; label: string }[]
+  /** The offer's other choices, which the ⋯ menu lists; pressing one does what its `id` says, as a cache button does. */
+  coldMore?: { id: string; label: string }[]
 }
 
 declare module 'claude-code' {
@@ -70,6 +74,8 @@ declare module 'claude-code' {
       band: RightsizeBand | null
       /** When the band shows. */
       bandMode: RightsizeBandMode
+      /** Counts the changes made in the /rightsize settings pane: the pane reads it while it draws, so a change draws it again with the new values. */
+      menu: number
     }
   }
 }

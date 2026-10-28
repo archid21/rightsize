@@ -51,6 +51,7 @@ import {
   rawDelegateCost,
   rawMainCost,
   share,
+  usageVs,
   sizeSubagent,
   subagentKeys,
   tierOf,
@@ -64,6 +65,7 @@ import { howSure, missCounts, missMap, ownTasks, pauseRates } from './misses'
 import { SHARE_ASK_AFTER, SHARE_EVERY_MS, SHARE_URL, newInstall, nextBatch } from './share'
 import { START_CHECK_DAYS, START_SNOOZE_DAYS, adviseStart, startBlock, startKey, startTip } from './start'
 import {
+  ADVANCED,
   KEYS,
   NOT_SET,
   PROFILES,
@@ -92,8 +94,8 @@ import {
 import { BRIEF_MAX, cutRequest, parseRating, ratingPrompt, ratingSystem } from './rate'
 import { isApprovalStep } from './approval'
 import { LIMITS, type Limits, type Signals, type Struggle, blockedError, callKey, isSensitivity, isTestCommand, noSignals, noteCall, oneUp, struggle } from './struggle'
-import { type Change, type HelperLine, type RunLine, type SwitchLine, type Windows, SESSION_TOTAL, buildReport, costTag, parseLines, sessionTotal, shareMessage, windowCostText, windowRates } from './report'
-import { COLD_MIN, PING_PROMPT, WRAP_UP, breakEvenMs, clockText, coldPlan, isCacheClock, isGroundwork, keepWarmChoices, leadMs, offerText, pingCost, pingEvery, usualStart, warmPlan, warmingText } from './warm'
+import { type Change, type HelperLine, type RunLine, type SwitchLine, type Windows, SESSION_TOTAL, bandShareText, buildReport, costTag, parseLines, sessionTotal, shareMessage, shareOf, usedTag, windowCostText, windowRates } from './report'
+import { COLD_MIN, PING_PROMPT, ROW_OF, WRAP_UP, alwaysText, breakEvenMs, clockText, coldPlan, ignoredLately, isCacheClock, isGroundwork, keepWarmChoices, leadMs, learnedChoice, offerAt, offerText, pingCost, pingEvery, standingChoice, usualStart, warmEndText, warmPlan, warmingText } from './warm'
 
 // Before a prompt is sent, a quick Haiku call rates the effort, the model and
 // the work needs on each model, and the cost model prices each route that fits. The first time
@@ -841,6 +843,17 @@ async function pick<V>($: EngineInterface, q: Question<V>): Promise<V | undefine
   }
 }
 
+/** $.ui.ask takes at most this many options. */
+const ASK_MAX = 4
+
+// Like pick(), for a list of any length: past ASK_MAX options it shows the first ones and "More…", which asks for the rest.
+async function pickFrom<V>($: EngineInterface, q: Question<V>, header = q.header, moreHeader = 'More cache'): Promise<V | undefined> {
+  if (q.options.length <= ASK_MAX) return pick($, { ...q, header })
+  const more = Symbol('more')
+  const v = await pick<V | typeof more>($, { ...q, header, options: [...q.options.slice(0, ASK_MAX - 1), ['More…', more]] })
+  return v === more ? pickFrom($, { ...q, options: q.options.slice(ASK_MAX - 1) }, moreHeader, moreHeader) : v
+}
+
 /** How long a question waits for the person before rightsize takes the choice that changes nothing and costs nothing. */
 const QUESTION_WAIT_MS = 120_000
 const WAIT_MINUTES = QUESTION_WAIT_MS / 60_000
@@ -913,12 +926,21 @@ function writeSetting($: EngineInterface, key: SettingKey, value: string): Promi
  */
 async function putConfig($: EngineInterface, key: SettingKey, value: string) {
   const unset = value === NOT_SET
-  if (cfg[key] === value && yours.has(key) === !unset) return
+  if (cfg[key] === value && yours.has(key) === !unset) return false
   cfg = { ...cfg, [key]: value }
   yours = mark(yours, key, !unset)
   if (!unset) await forgetReset($, key)
   applyOption(key)
   await writeSetting($, key, value).catch(() => undefined)
+  return true
+}
+
+/**
+ * A row the person changes in rightsize's own words (a button, the settings pane): `putConfig`, and then what the
+ * config.set hook does after it. `putConfig` runs none of `followRow`, so it runs here, once, and only for a change.
+ */
+async function changeRow($: EngineInterface, key: SettingKey, value: string) {
+  if (await putConfig($, key, value)) await followRow($, key, value)
 }
 
 // The four rule rows follow the rules: a rule not answered shows as "not set".
@@ -941,7 +963,7 @@ async function askWorkflow($: EngineInterface, id: string | undefined) {
     if (askedWorkflows.has(id)) return
     askedWorkflows.add(id)
   }
-  const v = await askWithin($, withWait(qWorkflow, 'rightsize pauses for this workflow'), late => putConfig($, 'workflows', late))
+  const v = await askWithin($, withWait(qWorkflow, 'rightsize pauses for this workflow'), async late => void (await putConfig($, 'workflows', late)))
   if (v === TIMED_OUT) {
     await logTimeout($, 'Workflow', 'rightsize paused for this workflow; not saved')
     return
@@ -1227,6 +1249,10 @@ const costLine = (d: number, stay: number, cur: string) =>
     ? `About ${money(d)} that way vs ${money(stay)} staying on ${cur} (estimated).`
     : `That uses ${share(d, stay)} the usage vs staying on ${cur} (estimated).`
 
+/** The band's short form of `costLine`: "~28% of Opus usage." on a subscription, "$0.45 vs ~$1.61 on Opus." on the API. */
+const bandCost = (d: number, stay: number, cur: string) =>
+  billing === 'api' ? `${money(d)} vs ~${money(stay)} on ${cur}.` : `${usageVs(d, stay, cur)}.`
+
 type Decision = { level?: Level; session?: Level; auto?: boolean; delegate?: Run['delegate']; model?: Run['switchTo'] }
 
 async function resolveEffort($: EngineInterface, p: Plan, r: Rating, s: Situation): Promise<Decision> {
@@ -1409,9 +1435,15 @@ const setBand = ($: EngineInterface, band: Band | null) => {
   if (!band) return $.state.set(BAND, null).catch(() => undefined)
   // A band built from an earlier band's text already carries a total: drop it, and add the current one last.
   let text = band.text.replace(SESSION_TOTAL, '')
+  let coldText = band.coldText?.replace(SESSION_TOTAL, '')
   if (bandNote && !text.includes(bandNote)) text = `${text} ${bandNote}`
   const total = sessionTotal(runLog, sessionId, billing === 'subscription')
-  return $.state.set(BAND, { ...band, text: total ? `${text} · ${total}` : text }).catch(() => undefined)
+  // The total goes after the route's text; a band with only the cache line carries it there.
+  const after = (t: string) => `${t}${/[.!?]$/.test(t) ? '' : '.'} ${total}`
+  if (total && text) text = after(text)
+  else if (total && coldText) coldText = after(coldText)
+  const { coldText: _, ...rest } = band
+  return $.state.set(BAND, { ...rest, text, ...(coldText ? { coldText } : {}) }).catch(() => undefined)
 }
 
 async function setBandMode($: EngineInterface, v: BandMode) {
@@ -1444,12 +1476,12 @@ export function bandFor(run: Pick<Run, 'id' | 'tier' | 'normal' | 'auto' | 'dele
   const sure = (tier: Tier) => (run.rating ? howSure(run.rating.type, tier, ownCounts, misses) : '')
   const more = (...parts: string[]) => parts.filter(Boolean).map(x => ` ${x}`).join('')
   if (run.switchTo) {
-    return { text: `Running this review on ${TIER_NAME[run.switchTo.tier]} at ${run.switchTo.level} effort, then back to ${cur}. ${costLine(run.takenMain ?? 0, run.stay, cur)}${more(why)}`, acted: true, rule: 'up', canStay: true }
+    return { text: `Running this review on ${TIER_NAME[run.switchTo.tier]} at ${run.switchTo.level} effort, then back to ${cur}. ${bandCost(run.takenMain ?? 0, run.stay, cur)}${more(why)}`, acted: true, rule: 'up', canStay: true }
   }
   if (run.delegate) {
     const to = `${TIER_NAME[run.delegate.tier]} subagent at ${run.delegate.level} effort`
     const instead = p.kind === 'delegate' && p.instead && levelRank(p.instead) > levelRank(run.normal) ? ` instead of raising ${cur} to ${p.instead}` : ''
-    return { text: `Sending this to a ${to}${instead}. ${costLine(run.takenDelegate ?? 0, run.stay, cur)}${more(why, run.delegate.dir === 'down' ? sure(run.delegate.tier) : '')}`, acted: true, rule: run.delegate.dir, canStay: true }
+    return { text: `Sending this to a ${to}${instead}. ${bandCost(run.takenDelegate ?? 0, run.stay, cur)}${more(why, run.delegate.dir === 'down' ? sure(run.delegate.tier) : '')}`, acted: true, rule: run.delegate.dir, canStay: true }
   }
   const level = d.level ?? d.session
   if (level) {
@@ -1519,11 +1551,49 @@ async function giveFeedback($: EngineInterface, ref: string, value: 'up' | 'down
   $.ui.toast('Rightsize: thanks — this tunes its choices on this machine.')
 }
 
+// 👍 and 👎 are for the result in front of the person: their next prompt takes them off the band.
+async function dropRate($: EngineInterface) {
+  const band = (await $.state.get(BAND).catch(() => undefined))?.value
+  if (!band?.rate) return
+  const { rate: _, ...rest } = band
+  await setBand($, rest)
+}
+
 async function chooseBandMode($: EngineInterface) {
   const v = await pick($, qBand)
   if (v === undefined) return
   await setBandMode($, v)
   await putConfig($, 'band', v)
+}
+
+type MenuChoice = { rule: string } | { cold: string } | { tip: string } | { cache: true } | { mode: true }
+
+const MENU_NOTE = 'Dollar amounts on a subscription are API-equivalent: what the same use would cost on the API.'
+
+// The ⋯ menu: this band's rule options, the tip's Stop suggesting, the offer's other cache choices, and the band setting.
+// Dismissed: nothing changes. $.ui.ask takes 4 options at most, so when the list is longer the cache choices go one level down.
+async function bandMenu($: EngineInterface, band: Band) {
+  const rule = band.rule
+  const have = rule ? (await choices($))[rule] : undefined
+  const own: (readonly [string, MenuChoice])[] = []
+  if (rule) for (const [value, label] of RULES[rule]) if (value !== have) own.push([label, { rule: value }])
+  if (band.tip) own.push(['Stop suggesting', { tip: band.tip }])
+  const cache: (readonly [string, MenuChoice])[] = (band.coldMore ?? []).map(c => [c.label, { cold: c.id }])
+  const mode: readonly [string, MenuChoice] = ['When the band shows…', { mode: true }]
+  const all = [...own, ...cache, mode]
+  const header = 'Options'
+  const question = `Options for this band. ${MENU_NOTE}`
+  let v: MenuChoice | undefined
+  if (all.length <= ASK_MAX) v = await pick($, { header, question, options: all })
+  else {
+    v = await pick($, { header, question, options: [...own, ['More cache choices…', { cache: true }], mode] })
+    if (v && 'cache' in v) v = await pickFrom($, { header: 'Cache', question: `Cache choices. ${MENU_NOTE}`, options: cache })
+  }
+  if (!v) return
+  if ('rule' in v && rule) await setRule($, rule, v.rule)
+  else if ('tip' in v) await stopStartTips($)
+  else if ('cold' in v) await pressCold($, v.cold)
+  else if ('mode' in v) await chooseBandMode($)
 }
 
 /** "Ran 2 of Claude's subagents on Haiku (low) instead of Opus." */
@@ -1537,10 +1607,10 @@ export function resizedText(xs: readonly Resized[]) {
 export function report(run: Pick<Run, 'tier' | 'stay'> & { delegate: NonNullable<Run['delegate']> }, actual: number, mode: 'api' | 'subscription') {
   const to = TIER_NAME[run.delegate.tier]
   const cur = TIER_NAME[run.tier]
-  const vs = `${money(actual)} vs about ${money(run.stay)} staying on ${cur} (estimated)`
-  if (mode === 'subscription') return `rightsize: Sent to ${to}: used ${share(actual, run.stay)} the usage vs staying on ${cur}. API-equivalent: ${vs}.`
-  const diff = actual <= run.stay ? `saved about ${Math.round((1 - actual / Math.max(run.stay, 1e-9)) * 100)}%` : `cost ${share(actual, run.stay)} vs staying`
-  return `rightsize: Sent to ${to}: ${vs}, ${diff}.`
+  if (mode === 'subscription') return `rightsize: Sent to ${to}. ${usageVs(actual, run.stay, cur)} (${money(actual)} vs ${money(run.stay)}).`
+  const x = actual / Math.max(run.stay, 1e-9)
+  const diff = actual <= run.stay ? `~${Math.round((1 - x) * 100)}% saved` : `~${x.toFixed(1)}x the cost`
+  return `rightsize: Sent to ${to}. ${money(actual)} vs ~${money(run.stay)} on ${cur} (${diff}).`
 }
 
 const round = (n: number) => Number(n.toFixed(5))
@@ -1676,7 +1746,7 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
   if (run.resized.length && bandMode !== 'off') {
     const text = resizedText(run.resized)
     const band = (await $.state.get(BAND).catch(() => undefined))?.value
-    await setBand($, band?.acted ? { ...band, text: `${band.text} ${text}` } : { text, acted: true })
+    await setBand($, band?.acted ? { ...band, text: band.text ? `${band.text} ${text}` : text } : { text, acted: true })
   }
   await showStatus($)
 }
@@ -1819,6 +1889,12 @@ function usageCostText(d: number, rates: Awaited<ReturnType<typeof windowPerDoll
   return billing === 'api' ? `about ${money(d)}` : windowCostText(d, rates)
 }
 
+/** What coming back cold costs, for the band's offer: "about $1.10" on the API; on a subscription "~2% ($1.10)" once runs show the rate, else the dollars, labelled. */
+function coldCostText(d: number, rates: Awaited<ReturnType<typeof windowPerDollar>>) {
+  if (billing === 'api') return `about ${money(d)}`
+  return rates === undefined ? `about ${money(d)} API-equivalent` : `${bandShareText(shareOf(d, rates))} (${money(d)})`
+}
+
 // After the cache expired, the next request writes the whole conversation again. Past
 // 200K tokens Claude Code compacts an idle session before the cache expires, so this is
 // for sessions under that. A subscriber is told the cost in their 5-hour window.
@@ -1866,6 +1942,9 @@ async function holdIdle($: EngineInterface): Promise<boolean> {
 // A session whose conversation is big enough that coming back after its cache expired would cost $0.50 or more
 // (API-equivalent dollars, on a subscription too) gets one of these at the end of a main-chat turn, by the row:
 // an offer in the band (ask), keep-warm requests until a chosen time, a Groundwork handoff, a compaction, or nothing.
+// The offer is a row of its own under the band's route line, with one button; the other choices are in the ⋯ menu. On a
+// cache of 1 hour or more it shows OFFER_AFTER_MS after the turn ended, not at its end (the timer below); on a shorter
+// cache it shows at once.
 // It is rightsize's own: the prices and the cache's life are cost.ts and prices.json, the cost the report counts as
 // overhead (a `warm` line), the words the band's. A session has one timer, a `$.clock.after` that waits for the next
 // thing to do (the expiry action, or the next ping, which schedules the one after it). A newer turn's end replaces it,
@@ -1887,10 +1966,17 @@ type ColdTurn = {
   groundwork: boolean
   /** Where each offered keep-warm choice ends, by its id. */
   ends: Record<string, number>
-  /** The band the turn ended with: an offer or a keep-warm line shows after it, so a lowering's Retry and 👍 👎 stay. */
-  base: Band | null
+  /** The offer as it shows without a question: its line, its one button and the choices of the ⋯ menu. */
+  offer?: { text: string; first: ColdButton; more: ColdButton[] }
+  /** The question the cache row asks instead, until it is answered. */
+  ask?: ColdAsk
 }
+type ColdButton = { id: string; label: string }
+/** "Always …?" for a choice that has a row value, or whether to stop offering. */
+type ColdAsk = { kind: 'always'; choice: string } | { kind: 'stop' }
 let coldTurn: ColdTurn | null = null
+/** An offer is on the band and nobody has answered it: its outcome goes in the run log when it is. */
+let offerOpen = false
 type Warming = { until: number; pings: number; spent: number; rates: Awaited<ReturnType<typeof windowPerDollar>> }
 let warming: Warming | null = null
 /** A handoff or a compaction ran since the person's last prompt: the turn it caused does not start another round. */
@@ -1919,12 +2005,17 @@ function cancelCold($: EngineInterface, why: string) {
   if (w) void log($, `keep warm stopped (${why}): ${pingsText(w.pings)}, ${money(w.spent)}`)
 }
 
-/** The band for this turn's offer or keep-warm line. With `join`, after what the turn's own band said. */
-async function showCold($: EngineInterface, text: string, cold?: { id: string; label: string }[], join = false) {
+/**
+ * The band for this turn's offer or keep-warm line: `text` goes on the cache row, with `cold` as its button and `more`
+ * as the offer's other choices (the ⋯ menu lists them). With `join`, the row sits under what the band said before (a
+ * lowering's Retry and 👍 👎 stay); without it, it is the only row.
+ */
+async function showCold($: EngineInterface, text: string, cold?: { id: string; label: string }[], join = false, more?: { id: string; label: string }[]) {
   if (bandMode === 'off') return
-  const base = join ? coldTurn?.base ?? null : null
-  const lead = base && (base.acted || bandMode === 'always') ? { ...base, text: `${base.text} ${text}` } : { text }
-  await setBand($, { ...lead, acted: true, ...(cold?.length ? { cold } : {}) })
+  const had = join ? (await $.state.get(BAND).catch(() => undefined))?.value : undefined
+  const { coldText: _t, cold: _c, coldMore: _m, ...route } = had ?? { text: '', acted: false }
+  const lead = had && (had.acted || bandMode === 'always') ? route : { text: '' }
+  await setBand($, { ...lead, acted: true, coldText: text, ...(cold?.length ? { cold } : {}), ...(more?.length ? { coldMore: more } : {}) })
 }
 
 /** The other plugins that matter: Groundwork writes the handoff, Cache Clock keeps a cache warm itself. A listing that fails says neither. */
@@ -1956,6 +2047,7 @@ async function armCold($: EngineInterface, gen: number, at: number, fn: () => Pr
 // to speak of (a cold return under $0.50), one over 200K tokens (Claude Code compacts those itself), Cache Clock
 // installed, and a round already done after the person's last prompt.
 async function coldCheck($: EngineInterface) {
+  await closeOffer($, 'ignored')
   cancelCold($, 'a newer turn ended')
   coldTurn = null
   // An offer for an earlier turn is stale now: this turn gets its own, or none.
@@ -1972,8 +2064,7 @@ async function coldCheck($: EngineInterface) {
     return
   }
   const plan = coldPlan(coldMode, groundwork)
-  const prev = (await $.state.get(BAND).catch(() => undefined))?.value
-  const turn: ColdTurn = { endedAt: lastTurnAt || (await $.clock.now()), context, tier, cold, groundwork, ends: {}, base: prev && !prev.cold ? prev : null }
+  const turn: ColdTurn = { endedAt: lastTurnAt || (await $.clock.now()), context, tier, cold, groundwork, ends: {} }
   coldTurn = turn
   const gen = coldGen
   if (plan.action === 'warm') {
@@ -1981,47 +2072,111 @@ async function coldCheck($: EngineInterface) {
   } else if (plan.action === 'handoff' || plan.action === 'compact') {
     await log($, `before the cache goes cold: ${plan.action} ${Math.round(leadMs(cacheTtl) / 60_000)} min before it expires (${money(cold)} cold, ${Math.round(context / 1000)}K tokens on ${TIER_NAME[tier]})`)
     await armCold($, gen, turn.endedAt + cacheTtl - leadMs(cacheTtl), () => atCold($, turn, plan.action as 'handoff' | 'compact'))
-  } else if (plan.action === 'ask') await offerCold($, turn)
+  } else if (plan.action === 'ask') {
+    // A cache of 1 hour or more has time: the offer waits, so it does not sit on the band while the person reads the answer.
+    if (cacheTtl >= 60 * 60_000) await armCold($, gen, offerAt(turn.endedAt, cacheTtl), () => offerCold($, turn))
+    else await offerCold($, turn)
+  }
 }
 
-// The offer: one button per priced keep-warm choice, the handoff or the compaction, "Let it go cold" and "Turn this off".
-// Nobody presses a button: nothing happens, and the cache goes cold.
+// The offer: the cache row shows when the cache goes cold and what coming back cold costs, with one button: the choice
+// the person picked most often in their last 10 answered offers, else the first priced keep-warm choice (or the handoff
+// or the compaction). The other choices are in the ⋯ menu, in a fixed order. After 3 of the same answer the row asks
+// whether to make it a standing rule; after 5 offers with no answer, whether to stop offering. Nobody presses a button:
+// nothing happens, and the cache goes cold.
 async function offerCold($: EngineInterface, turn: ColdTurn) {
   if (bandMode === 'off') {
     await log($, 'before the cache goes cold: no offer, the band is off')
     return
   }
+  const now = await $.clock.now()
+  if (mainBusy) {
+    await log($, 'before the cache goes cold: no offer, a turn is running')
+    return
+  }
+  if (turn.endedAt + cacheTtl <= now) {
+    await log($, 'before the cache goes cold: no offer, the cache already went cold')
+    return
+  }
   const rates = billing === 'subscription' ? await windowPerDollar($) : undefined
   const ping = pingCost(prices[turn.tier], turn.context)
-  const usual = usualStart(runLog, await $.clock.now())
+  const usual = usualStart(runLog, now)
   const choices = keepWarmChoices({ ttl: cacheTtl, endedAt: turn.endedAt, cold: turn.cold, ping, startMinutes: usual.minutes, tag: d => costTag(d, billing === 'subscription', rates) })
   for (const c of choices) if (c.endsAt !== undefined) turn.ends[c.id] = c.endsAt
-  const text = offerText({ ttl: cacheTtl, context: turn.context, model: TIER_NAME[turn.tier], coldText: usageCostText(turn.cold, rates), breakEven: breakEvenMs(turn.cold, ping, cacheTtl) })
-  await showCold(
-    $,
-    text,
-    [
-      ...choices.map(c => ({ id: c.id, label: c.label })),
-      turn.groundwork ? { id: 'handoff', label: 'Save a handoff' } : { id: 'compact', label: 'Compact now' },
-      { id: 'let-go', label: 'Let it go cold' },
-      { id: 'off', label: 'Turn this off' },
-    ],
-    true,
-  )
-  await log($, `before the cache goes cold: offered ${choices.map(c => c.id).join(', ') || 'no keep-warm time'} (${money(turn.cold)} cold, ${Math.round(turn.context / 1000)}K tokens on ${TIER_NAME[turn.tier]}${usual.fallback ? `, usual start 9:00 by default, ${usual.days} days of runs` : ''})`)
+  // The minutes left are counted now, from the turn's end.
+  const minutes = Math.max(1, Math.round((turn.endedAt + cacheTtl - now) / 60_000))
+  const text = offerText({ ttl: cacheTtl, minutes, cost: coldCostText(turn.cold, rates), breakEven: breakEvenMs(turn.cold, ping, cacheTtl) })
+  const all: ColdButton[] = [
+    ...choices.map(c => ({ id: c.id, label: c.label })),
+    turn.groundwork ? { id: 'handoff', label: 'Save a handoff' } : { id: 'compact', label: 'Compact now' },
+    { id: 'let-go', label: 'Let it go cold' },
+    { id: 'off', label: "Don't offer again" },
+  ]
+  const ids = all.map(c => c.id)
+  const learned = learnedChoice(runLog, ids)
+  const first = all.find(c => c.id === learned) ?? (all[0] as ColdButton)
+  turn.offer = { text, first, more: all.filter(c => c !== first) }
+  // At most one question, each at most once: the back-off first, as a person who ignores the offer has no standing rule to make.
+  const asked = await coldAsked($)
+  const standing = standingChoice(runLog, ids, asked)
+  if (ignoredLately(runLog) && !asked.includes(STOP_ASKED)) {
+    turn.ask = { kind: 'stop' }
+    await markAsked($, STOP_ASKED)
+  } else if (standing) {
+    turn.ask = { kind: 'always', choice: standing }
+    await markAsked($, standing)
+  }
+  offerOpen = true
+  await showOffer($, turn)
+  // The cache goes cold with the offer unanswered: that is its outcome.
+  await armCold($, coldGen, turn.endedAt + cacheTtl, () => closeOffer($, 'ignored'))
+  await log($, `before the cache goes cold: offered ${choices.map(c => c.id).join(', ') || 'no keep-warm time'}, button ${first.id}${learned ? ' (the one picked most)' : ''}${turn.ask ? `, asked ${turn.ask.kind === 'stop' ? 'whether to stop offering' : alwaysText(turn.ask.choice)}` : ''} (${money(turn.cold)} cold, ${Math.round(turn.context / 1000)}K tokens on ${TIER_NAME[turn.tier]}${usual.fallback ? `, usual start 9:00 by default, ${usual.days} days of runs` : ''})`)
 }
 
-const spentText = (w: Warming) => (billing === 'api' ? money(w.spent) : windowCostText(w.spent, w.rates))
+/** Puts the turn's offer on the cache row: its line and one button, or the question it asks instead. */
+async function showOffer($: EngineInterface, turn: ColdTurn) {
+  const o = turn.offer
+  if (!o) return
+  const yesNo: ColdButton[] = [{ id: 'ask-yes', label: 'Yes' }, { id: 'ask-no', label: 'No' }]
+  if (turn.ask?.kind === 'always') await showCold($, alwaysText(turn.ask.choice), [...yesNo, o.first], true, o.more)
+  else if (turn.ask?.kind === 'stop') await showCold($, 'Stop offering to keep the cache warm?', yesNo, true, [o.first, ...o.more])
+  else await showCold($, o.text, [o.first], true, o.more)
+}
 
-const showWarming = ($: EngineInterface, w: Warming) => showCold($, warmingText({ until: w.until, pings: w.pings, spentText: spentText(w) }), [{ id: 'stop', label: 'Stop' }], true)
+/** The offers a question was already asked about, in the store: a choice's id, or `stop`. Each is asked once, whatever the answer. */
+const COLD_ASKED = 'coldAsked'
+const STOP_ASKED = 'stop'
 
-/** The keep-warm run ends: `text` is the band's last word on it. */
-async function endWarm($: EngineInterface, w: Warming, text: string) {
+async function coldAsked($: EngineInterface): Promise<string[]> {
+  const v = await $.store.get(COLD_ASKED).catch(() => undefined)
+  return Array.isArray(v) && v.every(x => typeof x === 'string') ? v : []
+}
+
+async function markAsked($: EngineInterface, key: string) {
+  await $.store.set(COLD_ASKED, [...new Set([...(await coldAsked($)), key])]).catch(() => undefined)
+}
+
+/** The offer's outcome goes in the run log, once: the choice pressed, or `ignored`. After that the offer has none to give. */
+async function closeOffer($: EngineInterface, choice: string) {
+  if (!offerOpen) return
+  offerOpen = false
+  const line: RunLine = { at: new Date(await $.clock.now()).toISOString(), kind: 'cold', session: sessionId, choice }
+  await append($, 'runs.jsonl', JSON.stringify(line), RUNS_LOG_MAX)
+  runLog.push(line)
+}
+
+/** What the run has used, in the band's one unit; undefined before the first request. */
+const usedText = (w: Warming) => (w.pings === 0 && w.spent === 0 ? undefined : usedTag(w.spent, billing === 'subscription', w.rates))
+
+const showWarming = ($: EngineInterface, w: Warming) => showCold($, warmingText({ until: w.until, used: usedText(w) }), [{ id: 'stop', label: 'Stop keeping warm' }], true)
+
+/** The keep-warm run ends: `what` is the band's last word on it, without a full stop. */
+async function endWarm($: EngineInterface, w: Warming, what: string) {
   if (warming === w) {
     warming = null
     stopColdTimer()
   }
-  await showCold($, `${text} ${pingsText(w.pings)}, ${spentText(w)}.`)
+  await showCold($, warmEndText(what, usedText(w)))
 }
 
 /** Writes one `warm` line to the run log: the report counts its cost as rightsize's own, so it lowers Total saved. */
@@ -2074,13 +2229,13 @@ async function sendPing($: EngineInterface, gen: number, c: ColdTurn, w: Warming
     if (!r.isAnswered) {
       const why = 'status' in r ? `${r.reason}${r.status === null ? '' : ` ${r.status}`}, ${r.error}` : r.reason
       await log($, `keep warm stopped: the request failed (${why})`)
-      await endWarm($, w, 'Stopped keeping warm: a request failed.')
+      await endWarm($, w, 'Stopped keeping warm: a request failed')
       return
     }
     // The planned last request may end a little over: it is the end anyway. Before it, a run that costs more than planned stops.
     if (k < count && w.spent >= c.cold) {
       await log($, `keep warm stopped: ${money(w.spent)} spent, as much as coming back cold`)
-      await endWarm($, w, 'Stopped keeping warm: it cost as much as coming back cold.')
+      await endWarm($, w, 'Stopped keeping warm: it cost as much as coming back cold')
       return
     }
     if (k < count) {
@@ -2089,7 +2244,7 @@ async function sendPing($: EngineInterface, gen: number, c: ColdTurn, w: Warming
       return
     }
     await log($, `keep warm ended at ${clockText(w.until)}: ${pingsText(w.pings)}, ${money(w.spent)}`)
-    await endWarm($, w, `Kept the cache warm until ${clockText(w.until)}.`)
+    await endWarm($, w, `Kept the cache warm until ${clockText(w.until)}`)
   } catch (err) {
     await log($, `keep warm failed: ${err instanceof Error ? err.message : String(err)}`)
     if (gen === coldGen && warming === w) warming = null
@@ -2148,14 +2303,16 @@ async function compactNow($: EngineInterface) {
 }
 
 // A band button. Offer buttons act on the turn that ended; the cache is still warm, so a handoff or a compaction runs
-// right away, and a keep-warm time counts from the turn's end.
-async function pressCold($: EngineInterface, id: string) {
+// right away, and a keep-warm time counts from the turn's end. Each answer to an offer goes in the run log.
+async function pressCold($: EngineInterface, id: string): Promise<void> {
   if (id === 'stop') {
     const w = warming
     cancelCold($, 'Stop pressed')
-    if (w) await showCold($, `Stopped keeping warm. ${pingsText(w.pings)}, ${spentText(w)}.`)
+    if (w) await showCold($, warmEndText('Stopped keeping warm', usedText(w)))
     return
   }
+  if (id === 'ask-yes' || id === 'ask-no') return answerAsk($, id === 'ask-yes')
+  await closeOffer($, id)
   if (id === 'off') {
     cancelCold($, 'turned off')
     await putConfig($, 'beforeCold', 'off')
@@ -2171,7 +2328,11 @@ async function pressCold($: EngineInterface, id: string) {
     return
   }
   const c = coldTurn
-  if (!c) return
+  if (c) await runCold($, c, id)
+}
+
+/** A keep-warm time, the handoff or the compaction, for the offered turn `c`. */
+async function runCold($: EngineInterface, c: ColdTurn, id: string) {
   cancelCold($, 'a new choice')
   if (id === 'handoff' || id === 'compact') {
     await setBand($, null)
@@ -2186,6 +2347,28 @@ async function pressCold($: EngineInterface, id: string) {
     return
   }
   await startWarm($, c, end - c.endedAt, `button ${id}`)
+}
+
+// Yes or No to the question on the cache row. Yes to "Always …?" writes the choice to its /config row, with what a
+// change in /config does, and does it for this offer too. Yes to stopping is Don't offer again. No drops the question and
+// leaves the offer; neither question is asked again.
+async function answerAsk($: EngineInterface, yes: boolean): Promise<void> {
+  const c = coldTurn
+  const ask = c?.ask
+  if (!c || !ask) return
+  c.ask = undefined
+  if (!yes) {
+    await log($, `before the cache goes cold: answered No to ${ask.kind === 'stop' ? 'stop offering' : alwaysText(ask.choice)}`)
+    await showOffer($, c)
+    return
+  }
+  if (ask.kind === 'stop') return pressCold($, 'off')
+  const value = ROW_OF[ask.choice] ?? ''
+  await closeOffer($, ask.choice)
+  await changeRow($, 'beforeCold', value)
+  $.ui.toast(`Rightsize: Before the cache goes cold is now "${value}". It is the row in /config; set it back any time.`)
+  await log($, `before the cache goes cold: answered Yes to ${alwaysText(ask.choice)}; saved as your setting`)
+  await runCold($, c, ask.choice)
 }
 
 const APPROVAL_DENY =
@@ -2354,10 +2537,81 @@ async function summary($: EngineInterface) {
   ].join('\n')
 }
 
+// ---- Settings pane -------------------------------------------------------------------
+
+// Bare /rightsize opens a pane that lists every row of /config, in the table's order, each a picker. A pick takes effect
+// at once, as a change in /config does. Where no pane can be drawn (none placed, or the mobile app, which has no picker
+// element), a loop of questions does the same: pick a row, pick its value, back to the rows.
+
+const MENU_ID = 'rightsize-menu'
+const MENU = { plugin: 'rightsize', key: 'menu' } as const
+let menuTicks = 0
+
+/** The pane draws again: it reads this key while it draws, so a write to it is a redraw. */
+async function bumpMenu($: EngineInterface) {
+  menuTicks += 1
+  await $.state.set(MENU, menuTicks).catch(() => undefined)
+}
+
+/** A row is yours when you set it or answered it; Reports also when its question was answered. Every other row is on its default. */
+const rowYours = (key: SettingKey) => (key === 'billing' ? billingYours() : yours.has(key))
+
+/** The row's picker in the pane: "Lowest effort (yours)" or "Lowest effort (default)", then its value. */
+const rowLabel = (key: SettingKey) => `${plainTitle(SETTINGS[key].title)} (${rowYours(key) ? 'yours' : 'default'})`
+
+/** A change made in the pane or the loop: the row is written as yours and followed, then the pane draws the new values. */
+async function setFromMenu($: EngineInterface, key: SettingKey, value: string) {
+  if (!inOptions(key, value)) return
+  await changeRow($, key, value)
+  await bumpMenu($)
+}
+
+/**
+ * The words of /rightsize: opens the pane, or, with none to open, asks. Every surface is the mobile app, or the pane
+ * is not placed: the questions.
+ */
+async function openSettings($: EngineInterface) {
+  const surfaces = await $.session.surfaces().catch(() => [])
+  if (surfaces.length === 0 || !surfaces.every(x => x === 'mobile')) {
+    const opened = await $.ui.open({ id: MENU_ID, title: 'Rightsize', focus: true, closeOnEscape: true, holdToasts: true }).catch(() => undefined)
+    if (opened?.isPlaced) return 'Rightsize settings are open in a pane. A change takes effect at once. Esc closes it.'
+    // An unplaced pane stays open and undrawn: close it, so it does not appear later on its own.
+    if (opened) await $.ui.close({ id: MENU_ID }).catch(() => undefined)
+  }
+  return askSettings($)
+}
+
+/** The fallback: "Setting: value" rows, then the row's values, until Done or a dismissed question. */
+async function askSettings($: EngineInterface) {
+  const changed: string[] = []
+  for (;;) {
+    const rows = await pickFrom<SettingKey | 'done'>(
+      $,
+      { header: 'Setting', question: 'Which setting? A change takes effect at once.', options: [['Done', 'done'], ...KEYS.map(k => [`${plainTitle(SETTINGS[k].title)}: ${cfg[k]}`, k] as const)] },
+      'Setting',
+      'More rows',
+    )
+    if (rows === undefined || rows === 'done') break
+    const key = rows
+    const title = plainTitle(SETTINGS[key].title)
+    const value = await pickFrom(
+      $,
+      { header: 'Value', question: `${title}: now ${cfg[key]} (${rowYours(key) ? 'yours' : 'default'}).`, options: SETTINGS[key].options.map(o => [o === cfg[key] ? `${o} (current)` : o, o] as const) },
+      'Value',
+      'More values',
+    )
+    if (value === undefined || value === cfg[key]) continue
+    await setFromMenu($, key, value)
+    changed.push(`${title}: ${value}`)
+  }
+  return changed.length ? `Changed ${changed.join('; ')}.` : 'No setting changed.'
+}
+
 // ---- Help --------------------------------------------------------------------------
 
 const COMMANDS: readonly (readonly [string, string])[] = [
-  ['', 'show your changed settings and current state'],
+  ['', 'open the settings pane: change any setting, and see which you set'],
+  ['status', 'show your changed settings and current state'],
   ['settings', 'answer the questions again'],
   ['report', 'what it saved and what went wrong'],
   ['retry', 're-run the last auto-lowered prompt at the original effort'],
@@ -2788,6 +3042,7 @@ export const register: Register = (on, options) => {
       if (yours.has(key)) await forgetReset($, key)
       applyOption(key)
       await followRow($, key, result.value)
+      await bumpMenu($)
       return result
     })
   }
@@ -2813,12 +3068,13 @@ export const register: Register = (on, options) => {
     lastTurnAt = 0
     idleWarnedFor = 0
     cancelCold($, 'a session started')
+    offerOpen = false
     coldTurn = null
     coldDone = false
     coldPrompt = null
     mainBusy = false
     lastWarmAt = 0
-    await $.command.register({ name: CMD, description: 'Rightsize: status, report, share, settings, retry or clear' })
+    await $.command.register({ name: CMD, description: 'Rightsize: settings, status, report, share, retry or clear' })
     // Claude Code hands over every value with its default filled in; only settings.json tells which ones are yours.
     const configs = await $.settings.read({ key: 'pluginConfigs' }).catch(() => undefined)
     const resetBefore = resetKeys(await $.store.get('resetFields').catch(() => undefined))
@@ -2916,28 +3172,27 @@ export const register: Register = (on, options) => {
     }
     if (arg === 'clear') return { text: await clearSession($) }
     if (arg === 'help') return { text: helpText() }
-    if (arg !== '' && arg !== 'settings') return { text: `Unknown command "${arg}".\n\n${helpText()}` }
-    if (arg === 'settings') {
-      const s = await situation($)
-      const cur = TIER_NAME[s.tier]
-      const up = TIERS.filter(t => tierRank(t) > tierRank(s.tier))
-      const down = TIERS.filter(t => tierRank(t) < tierRank(s.tier))
-      billingAsked = false
-      if (billingYours()) {
-        const v = await pick($, qBilling)
-        if (v !== undefined) await answerBilling($, v)
-      } else await knowBilling($, true)
-      const next: Choices = {}
-      next.lower = await pick($, qLower())
-      next.raise = await pick($, qRaise())
-      if (up.length) next.up = await pick($, qUp(cur, names(up)))
-      if (down.length) next.down = await pick($, qDown(cur, names(down)))
-      for (const k of Object.keys(next) as (keyof Choices)[]) if (next[k] === undefined) delete next[k]
-      await $.state.set({ plugin: 'rightsize', key: 'rememberAsked' }, false)
-      await $.store.set('remember', false).catch(() => undefined)
-      await saveChoices($, next, true)
-      return { text: await summary($) }
-    }
+    if (arg === 'status') return { text: await summary($) }
+    if (arg === '') return { text: await openSettings($) }
+    if (arg !== 'settings') return { text: `Unknown command "${arg}".\n\n${helpText()}` }
+    const s = await situation($)
+    const cur = TIER_NAME[s.tier]
+    const up = TIERS.filter(t => tierRank(t) > tierRank(s.tier))
+    const down = TIERS.filter(t => tierRank(t) < tierRank(s.tier))
+    billingAsked = false
+    if (billingYours()) {
+      const v = await pick($, qBilling)
+      if (v !== undefined) await answerBilling($, v)
+    } else await knowBilling($, true)
+    const next: Choices = {}
+    next.lower = await pick($, qLower())
+    next.raise = await pick($, qRaise())
+    if (up.length) next.up = await pick($, qUp(cur, names(up)))
+    if (down.length) next.down = await pick($, qDown(cur, names(down)))
+    for (const k of Object.keys(next) as (keyof Choices)[]) if (next[k] === undefined) delete next[k]
+    await $.state.set({ plugin: 'rightsize', key: 'rememberAsked' }, false)
+    await $.store.set('remember', false).catch(() => undefined)
+    await saveChoices($, next, true)
     return { text: await summary($) }
   })
 
@@ -2947,11 +3202,14 @@ export const register: Register = (on, options) => {
       coldPrompt = null
       return next(e)
     }
-    // The person is back: keep-warm requests and a waiting handoff stop, and the next big turn's end starts afresh.
+    // The person is back: keep-warm requests, a waiting handoff and a waiting offer stop, and the next big turn's end starts afresh.
     if (!off && fromPerson(e) && !e.command && !e.isMeta) {
       coldDone = false
+      await closeOffer($, 'ignored')
       cancelCold($, 'a prompt was submitted')
     }
+    // 👍 and 👎 go with the next prompt, whatever it is.
+    if (!off && fromPerson(e) && !e.isMeta) await dropRate($)
     if (off || !fromPerson(e) || e.command || e.isMeta) return next(e)
     // A new prompt replaces the last one's band.
     bandNote = null
@@ -3309,8 +3567,6 @@ export const register: Register = (on, options) => {
     const mode = (await $.state.get(BAND_MODE).catch(() => undefined))?.value ?? bandMode
     const band = (await $.state.get(BAND).catch(() => undefined))?.value
     if (!band || mode === 'off' || (mode === 'when it acts' && !band.acted)) return next(e)
-    const rule = band.rule
-    const have = rule ? (await choices($))[rule] : undefined
     const buttons: { key: string; label: string; press: () => Promise<unknown> }[] = []
     if (band.canRetry) buttons.push({ key: 'retry', label: 'Retry at original effort', press: async () => $.ui.toast(await retry($)) })
     if (band.canStay && lastAuto?.kind === 'route') buttons.push({ key: 'stay', label: `Run on ${lastAuto.model}`, press: async () => $.ui.toast(await runOnCurrent($)) })
@@ -3318,31 +3574,79 @@ export const register: Register = (on, options) => {
     if (band.tip) {
       const tip = band.tip
       buttons.push({ key: 'tip-later', label: 'Not now', press: () => snoozeStart($, tip) })
-      buttons.push({ key: 'tip-stop', label: 'Stop suggesting', press: () => stopStartTips($) })
     }
     if (band.rate) {
       const ref = band.rate
       buttons.push({ key: 'good', label: '👍', press: () => giveFeedback($, ref, 'up') })
       buttons.push({ key: 'bad', label: '👎', press: () => giveFeedback($, ref, 'down') })
     }
-    if (rule) {
-      for (const [value, label] of RULES[rule]) {
-        if (value !== have) buttons.push({ key: `rule-${value}`, label, press: () => setRule($, rule, value) })
-      }
-    }
-    for (const c of band.cold ?? []) buttons.push({ key: `cold-${c.id}`, label: c.label, press: () => pressCold($, c.id) })
+    const coldButtons = (band.cold ?? []).map(c => ({ key: `cold-${c.id}`, label: c.label, press: () => pressCold($, c.id) }))
     const { Box, Button, Text } = $.ui.resolve(e)
+    // Number keys 1-9 run down both rows in order.
+    const rowButtons = (list: typeof buttons, from: number) =>
+      list.map((b, i) => <Button key={b.key} label={b.label} {...(from + i < 9 ? { hotkey: String(from + i + 1) } : {})} onPress={() => void b.press()} />)
+    const ends = [
+      <Button key="mode" label="⋯" onPress={() => void bandMenu($, band)} />,
+      <Button key="close" label="×" role="dismiss" onPress={() => void setBand($, null)} />,
+    ]
+    // Row 1 is the route's line; the cache line is row 2. With no route line the cache row is the only one, and has ⋯ and ×.
+    const routeRow = band.text !== '' || !band.coldText
     return (
-      <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
-        <Text>
-          <Text dimColor>rightsize: </Text>
-          {band.text}
-        </Text>
-        {buttons.map((b, i) => (
-          <Button key={b.key} label={b.label} {...(i < 9 ? { hotkey: String(i + 1) } : {})} onPress={() => void b.press()} />
-        ))}
-        <Button key="mode" label="⋯" onPress={() => void chooseBandMode($)} />
-        <Button key="close" label="×" role="dismiss" onPress={() => void setBand($, null)} />
+      <Box flexDirection="column">
+        {routeRow ? (
+          <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
+            <Text>
+              <Text dimColor>rightsize: </Text>
+              {band.text}
+            </Text>
+            {rowButtons(buttons, 0)}
+            {ends}
+          </Box>
+        ) : null}
+        {band.coldText ? (
+          <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
+            <Text>
+              {routeRow ? null : <Text dimColor>rightsize: </Text>}
+              {band.coldText}
+            </Text>
+            {rowButtons(coldButtons, buttons.length)}
+            {routeRow ? null : ends}
+          </Box>
+        ) : null}
+      </Box>
+    )
+  })
+
+  // The settings pane (bare /rightsize): every row of /config as a picker, Advanced rows under their own heading. The mobile
+  // app has no picker element: it lists the rows and a button that asks.
+  on('ui.render', { component: 'Pane', requestId: MENU_ID }, async ($, e) => {
+    // Read while drawing: a change in the pane (or in /config) writes it, and the pane draws again.
+    await $.state.get(MENU).catch(() => undefined)
+    const line = (key: SettingKey) => `${rowLabel(key)}: ${cfg[key]}`
+    const plain = KEYS.filter(k => !SETTINGS[k].title.startsWith(ADVANCED))
+    const advanced = KEYS.filter(k => SETTINGS[k].title.startsWith(ADVANCED))
+    if (e.surface === 'mobile') {
+      const { Box, Button, Text } = $.ui.resolve(e)
+      return (
+        <Box flexDirection="column">
+          {plain.map(k => <Text key={k}>{line(k)}</Text>)}
+          <Text bold>Advanced</Text>
+          {advanced.map(k => <Text key={k}>{line(k)}</Text>)}
+          <Button key="change" label="Change a setting" onPress={() => void askSettings($)} />
+        </Box>
+      )
+    }
+    const { Box, Select, Text } = $.ui.resolve(e)
+    // The first row takes the keys when the pane opens focused.
+    const row = (key: SettingKey) => (
+      <Select key={`row-${key}`} label={rowLabel(key)} options={SETTINGS[key].options.map(value => ({ value }))} value={cfg[key]} {...(key === KEYS[0] ? { autoFocus: true as const } : {})} onSelect={value => void setFromMenu($, key, value)} />
+    )
+    return (
+      <Box flexDirection="column">
+        <Text dimColor>A change takes effect at once. (default) is a row you have not set.</Text>
+        {plain.map(row)}
+        <Text bold>Advanced</Text>
+        {advanced.map(row)}
       </Box>
     )
   })

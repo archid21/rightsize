@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import { DEFAULT_PRICES, idleCost } from './cost'
-import { COLD_MIN, DEFAULT_START, breakEvenMs, breakEvenPings, clockText, coldPlan, isCacheClock, isGroundwork, keepWarmChoices, leadMs, nextStart, offerText, pingCost, pingEvery, pingsFor, usualStart, warmPlan, warmingText } from './warm'
+import { ALWAYS_AFTER, BACK_OFF_AFTER, COLD_MIN, LEARN_OVER, OFFER_AFTER_MS, DEFAULT_START, ROW_OF, breakEvenMs, breakEvenPings, clockText, coldPlan, isCacheClock, isGroundwork, alwaysText, ignoredLately, keepWarmChoices, leadMs, learnedChoice, nextStart, offerAt, offerText, pingCost, pingEvery, pingsFor, standingChoice, usualStart, warmEndText, warmPlan, warmingText } from './warm'
 
 const MIN = 60_000
 const HOUR = 60 * MIN
@@ -108,7 +108,7 @@ test('the offer on a 1-hour cache: 2 h, 8 h and until the usual start, each pric
   const o = { ttl: HOUR, endedAt: local(15, 18), cold: 0.63, ping, startMinutes: 9 * 60, tag: usd }
   const choices = keepWarmChoices(o)
   // 18:00 to 9:00 is 15 hours: 15 pings.
-  expect(choices.map(c => c.label)).toEqual(['Keep warm 2 h · $0.03', 'Keep warm 8 h · $0.13', 'Until 9:00 tomorrow · $0.24'])
+  expect(choices.map(c => c.label)).toEqual(['Keep warm 2 hours · $0.03', 'Keep warm 8 hours · $0.13', 'Keep warm until 9:00 tomorrow · $0.24'])
   expect(choices.map(c => c.id)).toEqual(['2h', '8h', 'start'])
   expect(choices[2]?.endsAt).toBe(local(16, 9))
   // Pricier pings: 15 of them cost more than a cold return.
@@ -116,32 +116,46 @@ test('the offer on a 1-hour cache: 2 h, 8 h and until the usual start, each pric
   expect(keepWarmChoices({ ...o, ping: 0.1 }).map(c => c.id), '8 x $0.10 is $0.80').toEqual(['2h'])
   expect(keepWarmChoices({ ...o, ping: 0.4 }), 'two pings cost more than a cold return').toEqual([])
   // A turn that ends at 5 a.m.: the usual 9:00 is 4 hours away, labelled with no "tomorrow".
-  expect(keepWarmChoices({ ...o, endedAt: local(15, 5) }).map(c => c.label)).toEqual(['Keep warm 2 h · $0.03', 'Keep warm 8 h · $0.13', 'Until 9:00 · $0.06'])
+  expect(keepWarmChoices({ ...o, endedAt: local(15, 5) }).map(c => c.label)).toEqual(['Keep warm 2 hours · $0.03', 'Keep warm 8 hours · $0.13', 'Keep warm until 9:00 · $0.06'])
+  // "tomorrow" only past 12 hours: 22:00 to 9:00 is 11 hours, on the next calendar day; 20:00 to 9:00 is 13.
+  expect(keepWarmChoices({ ...o, endedAt: local(15, 22) }).map(c => c.label)[2], '11 hours').toBe('Keep warm until 9:00 · $0.18')
+  expect(keepWarmChoices({ ...o, endedAt: local(15, 20) }).map(c => c.label)[2], '13 hours').toBe('Keep warm until 9:00 tomorrow · $0.21')
   // A turn that ends at 8 a.m.: 9:00 is inside the 2 h choice.
   expect(keepWarmChoices({ ...o, endedAt: local(15, 8) }).map(c => c.id)).toEqual(['2h', '8h'])
 })
 
 test('the offer on a 5-minute cache: only 30 min and 1 h, and only when they cost less than coming back cold', async () => {
   const o = { ttl: 5 * MIN, endedAt: local(15, 18), cold: 0.72, ping: 0.03, startMinutes: 9 * 60, tag: usd }
-  expect(keepWarmChoices(o).map(c => c.label), '7 and 14 pings').toEqual(['Keep warm 30 min · $0.21', 'Keep warm 1 h · $0.42'])
+  expect(keepWarmChoices(o).map(c => c.label), '7 and 14 pings').toEqual(['Keep warm 30 min · $0.21', 'Keep warm 1 hour · $0.42'])
   expect(keepWarmChoices({ ...o, ping: 0.06 }).map(c => c.id), '14 x $0.06 is $0.84, over $0.72').toEqual(['30m'])
   expect(keepWarmChoices({ ...o, ping: 0.12 }), '7 x $0.12 is $0.84').toEqual([])
 })
 
-test('the offer text names the time, the size, the model and the cold cost; a 5-minute cache adds where keeping warm stops paying', async () => {
-  const one = { ttl: HOUR, context: 80_500, model: 'Opus', coldText: 'about $0.63', breakEven: 39 * 57 * MIN }
-  expect(offerText(one)).toBe('Cache goes cold in ~60 min (81K tokens on Opus). Coming back cold: about $0.63.')
-  expect(offerText({ ...one, ttl: 5 * MIN, breakEven: 96 * MIN })).toBe(
-    'Cache goes cold in ~5 min (81K tokens on Opus). Coming back cold: about $0.63. Keeping warm past about 96 min costs more than coming back cold.',
+test('the offer text names the minutes left and the cold cost; a 5-minute cache adds where keeping warm stops paying', async () => {
+  const one = { ttl: HOUR, minutes: 55, cost: 'about $0.63', breakEven: 39 * 57 * MIN }
+  expect(offerText(one)).toBe('Cache goes cold in ~55 min · coming back cold costs about $0.63')
+  expect(offerText({ ...one, ttl: 5 * MIN, minutes: 5, breakEven: 96 * MIN })).toBe(
+    'Cache goes cold in ~5 min · coming back cold costs about $0.63. Keeping warm past about 96 min costs more than coming back cold.',
   )
-  expect(offerText({ ...one, coldText: '~0.8–1.6% of your 5-hour window ($0.63 API-equivalent)' })).toContain('Coming back cold: ~0.8–1.6% of your 5-hour window ($0.63 API-equivalent).')
+  expect(offerText({ ...one, cost: '~2% ($1.10)' })).toBe('Cache goes cold in ~55 min · coming back cold costs ~2% ($1.10)')
 })
 
-test('the keep-warm line says until when, and how many pings so far', async () => {
+test('the offer shows 5 minutes after the turn on a cache of 1 hour or more, and at once on a shorter one', async () => {
+  const ended = local(15, 18)
+  expect(offerAt(ended, HOUR)).toBe(ended + 5 * MIN)
+  expect(offerAt(ended, HOUR)).toBe(ended + OFFER_AFTER_MS)
+  expect(offerAt(ended, 5 * MIN)).toBe(ended)
+})
+
+test('the keep-warm line says until when and what it used so far, with no ping count', async () => {
   const until = local(15, 22, 5)
-  expect(warmingText({ until, pings: 0, spentText: '$0.00' })).toBe('Keeping warm until 22:05 · no pings yet')
-  expect(warmingText({ until, pings: 1, spentText: '$0.02' })).toBe('Keeping warm until 22:05 · 1 ping, $0.02 so far')
-  expect(warmingText({ until, pings: 3, spentText: '$0.05' })).toBe('Keeping warm until 22:05 · 3 pings, $0.05 so far')
+  expect(warmingText({ until, used: undefined })).toBe('Keeping warm until 22:05 · nothing used yet')
+  expect(warmingText({ until, used: '~0.1% used' })).toBe('Keeping warm until 22:05 · ~0.1% used so far')
+  expect(warmingText({ until, used: '~$0.04' })).toBe('Keeping warm until 22:05 · ~$0.04 so far')
+  expect(warmingText({ until, used: '$0.04' })).toBe('Keeping warm until 22:05 · $0.04 so far')
+  expect(warmEndText('Stopped keeping warm', '~0.1% used')).toBe('Stopped keeping warm · ~0.1% used.')
+  expect(warmEndText('Kept the cache warm until 22:05', '$0.04')).toBe('Kept the cache warm until 22:05 · $0.04.')
+  expect(warmEndText('Stopped keeping warm', undefined)).toBe('Stopped keeping warm · nothing used.')
 })
 
 test('each row value is a plan: a handoff without Groundwork is a compaction, and an unknown value asks', async () => {
@@ -172,4 +186,58 @@ test('the cold cost that triggers it is $0.50: about 64K tokens on Opus and 128K
   // Haiku would need 2.6 million tokens: past the window.
   expect(tokensFor(DEFAULT_PRICES.haiku)).toBeGreaterThan(2_000)
   expect(DAY).toBe(86_400_000)
+})
+
+/** Cold lines, oldest first, a day apart. */
+const answers = (...choices: string[]) => choices.map((choice, i) => ({ at: new Date(local(1 + i, 12)).toISOString(), kind: 'cold', choice }))
+const HERE = ['2h', '8h', 'start', 'handoff', 'let-go', 'off']
+
+test('the one button is the choice picked most in the last 10 answered offers; a tie goes to the most recent', async () => {
+  expect(LEARN_OVER).toBe(10)
+  expect(learnedChoice([], HERE), 'no history').toBeUndefined()
+  expect(learnedChoice(answers('8h', '8h', '2h'), HERE)).toBe('8h')
+  expect(learnedChoice(answers('8h', '2h'), HERE), 'a tie: the 2 hours was picked last').toBe('2h')
+  expect(learnedChoice(answers('2h', '8h'), HERE)).toBe('8h')
+  expect(learnedChoice(answers('8h', 'ignored', 'ignored', 'ignored', '2h', 'ignored'), HERE), 'ignored offers are no answers').toBe('2h')
+  // Only the last 10 answers count: 8 hours leads over all 14, 2 hours over the last 10.
+  const long = answers('8h', '8h', '8h', '8h', '2h', '8h', '2h', '8h', '2h', 'let-go', '2h', '8h', '2h', 'let-go')
+  expect(learnedChoice(long, HERE)).toBe('2h')
+  expect(learnedChoice(long.slice(-9), HERE), 'ignored lines do not use up the 10').toBe('2h')
+  expect(learnedChoice(answers('handoff', 'handoff', '8h'), ['2h', '8h', 'compact']), 'only choices this offer has').toBe('8h')
+  expect(learnedChoice(answers('handoff', 'handoff'), ['2h', 'compact']), 'no match: the default stands').toBeUndefined()
+  expect(learnedChoice([{ at: new Date(local(1, 12)).toISOString(), kind: 'run', choice: '8h' }, { at: new Date(local(2, 12)).toISOString(), kind: 'cold' }], HERE), 'only cold lines with a choice').toBeUndefined()
+  // Lines out of order in the log are read by time.
+  expect(learnedChoice([...answers('2h', '2h', '8h', '8h', '8h')].reverse(), HERE)).toBe('8h')
+  expect(learnedChoice([...answers('8h', '8h', '2h', '2h')].reverse(), HERE), 'a tie by time, not by position').toBe('2h')
+})
+
+test('3 answers of one choice with a row value make an "Always …?" offer, once per choice', async () => {
+  expect(ALWAYS_AFTER).toBe(3)
+  expect(ROW_OF).toEqual({ '2h': 'keep warm 2 h', '8h': 'keep warm 8 h', handoff: 'save a handoff', compact: 'compact' })
+  expect(standingChoice(answers('2h', '2h', '2h'), HERE, [])).toBe('2h')
+  expect(standingChoice(answers('let-go', '8h', '8h', '8h'), HERE, []), 'the last 3').toBe('8h')
+  expect(standingChoice(answers('handoff', 'handoff', 'handoff'), HERE, [])).toBe('handoff')
+  expect(standingChoice(answers('compact', 'compact', 'compact'), ['2h', 'compact'], [])).toBe('compact')
+  expect(standingChoice(answers('2h', '2h'), HERE, []), 'two is not three').toBeUndefined()
+  expect(standingChoice(answers('2h', '8h', '2h'), HERE, [])).toBeUndefined()
+  expect(standingChoice(answers('2h', '2h', 'ignored', '2h'), HERE, []), 'ignored offers are no answers').toBe('2h')
+  expect(standingChoice(answers('let-go', 'let-go', 'let-go'), HERE, []), 'no row value').toBeUndefined()
+  expect(standingChoice(answers('start', 'start', 'start'), HERE, []), 'no row value').toBeUndefined()
+  expect(standingChoice(answers('2h', '2h', '2h'), HERE, ['2h']), 'asked once already').toBeUndefined()
+  expect(standingChoice(answers('2h', '2h', '2h'), HERE, ['8h']), 'another choice\'s question does not count').toBe('2h')
+  expect(standingChoice(answers('8h', '8h', '8h'), ['2h', 'compact'], []), 'this offer does not have it').toBeUndefined()
+  expect(alwaysText('2h')).toBe('Always keep warm 2 hours?')
+  expect(alwaysText('8h')).toBe('Always keep warm 8 hours?')
+  expect(alwaysText('handoff')).toBe('Always save a handoff?')
+  expect(alwaysText('compact')).toBe('Always compact?')
+})
+
+test('5 offers in a row with no answer make the back-off offer', async () => {
+  expect(BACK_OFF_AFTER).toBe(5)
+  expect(ignoredLately(answers('ignored', 'ignored', 'ignored', 'ignored', 'ignored'))).toBe(true)
+  expect(ignoredLately(answers('2h', 'ignored', 'ignored', 'ignored', 'ignored', 'ignored'))).toBe(true)
+  expect(ignoredLately(answers('ignored', 'ignored', 'ignored', 'ignored'))).toBe(false)
+  expect(ignoredLately(answers('ignored', 'ignored', 'let-go', 'ignored', 'ignored'))).toBe(false)
+  expect(ignoredLately(answers('ignored', 'ignored', 'ignored', 'ignored', 'ignored', '2h'))).toBe(false)
+  expect(ignoredLately([])).toBe(false)
 })

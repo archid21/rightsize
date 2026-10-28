@@ -109,15 +109,15 @@ export function clockText(ms: number) {
 
 export type Choice = { id: string; label: string; /** Where keeping warm ends, for a duration. */ endsAt?: number; cost?: number }
 
-/** How long a duration is, by id, for the offer: 2 h and 8 h on a 1-hour cache; 30 min and 1 h on a 5-minute one. */
+/** How long a duration is, by id, for the offer: 2 and 8 hours on a 1-hour cache; 30 min and 1 hour on a 5-minute one. */
 const DURATIONS: Record<'long' | 'short', readonly { id: string; ms: number; name: string }[]> = {
   long: [
-    { id: '2h', ms: 2 * HOUR, name: '2 h' },
-    { id: '8h', ms: 8 * HOUR, name: '8 h' },
+    { id: '2h', ms: 2 * HOUR, name: '2 hours' },
+    { id: '8h', ms: 8 * HOUR, name: '8 hours' },
   ],
   short: [
     { id: '30m', ms: 30 * MIN, name: '30 min' },
-    { id: '1h', ms: HOUR, name: '1 h' },
+    { id: '1h', ms: HOUR, name: '1 hour' },
   ],
 }
 
@@ -138,22 +138,98 @@ export function keepWarmChoices(o: { ttl: number; endedAt: number; cold: number;
   if (long) {
     const next = nextStart(o.endedAt, o.startMinutes)
     // Shorter than the 2 h choice, it would be the same choice twice.
-    if (next.at - o.endedAt > 2 * HOUR) add('start', `Until ${clockText(next.at)}${next.tomorrow ? ' tomorrow' : ''}`, next.at - o.endedAt)
+    if (next.at - o.endedAt > 2 * HOUR) add('start', `Keep warm until ${clockText(next.at)}${next.at - o.endedAt > 12 * HOUR ? ' tomorrow' : ''}`, next.at - o.endedAt)
   }
   return out
 }
 
-/** "Cache goes cold in ~60 min (80K tokens on Opus). Coming back cold: about $0.63." On a 5-minute cache it adds where keeping warm stops paying. */
-export function offerText(o: { ttl: number; context: number; model: string; coldText: string; breakEven: number }) {
-  const tokens = `${Math.round(o.context / 1000)}K`
-  const head = `Cache goes cold in ~${Math.round(o.ttl / MIN)} min (${tokens} tokens on ${o.model}). Coming back cold: ${o.coldText}.`
-  return o.ttl >= HOUR ? head : `${head} Keeping warm past about ${Math.floor(o.breakEven / MIN)} min costs more than coming back cold.`
+/**
+ * The offer's line: "Cache goes cold in ~55 min · coming back cold costs ~2% ($1.10)". `minutes` is what is left of the
+ * cache's life when the line shows. `cost` is the cold cost as the caller writes it ("about $1.10", "~2% ($1.10)"). On a
+ * 5-minute cache it adds where keeping warm stops paying.
+ */
+export function offerText(o: { ttl: number; minutes: number; cost: string; breakEven: number }) {
+  const head = `Cache goes cold in ~${o.minutes} min · coming back cold costs ${o.cost}`
+  return o.ttl >= HOUR ? head : `${head}. Keeping warm past about ${Math.floor(o.breakEven / MIN)} min costs more than coming back cold.`
 }
 
-/** The band while keeping warm: "Keeping warm until 14:05 · 3 pings, $0.04 so far". */
-export function warmingText(o: { until: number; pings: number; spentText: string }) {
-  const done = o.pings === 0 ? 'no pings yet' : `${o.pings} ping${o.pings === 1 ? '' : 's'}, ${o.spentText} so far`
-  return `Keeping warm until ${clockText(o.until)} · ${done}`
+/** How long after a turn ends the offer shows on a cache of 1 hour or more: the person may be about to send a prompt, and the offer would only be in the way. */
+export const OFFER_AFTER_MS = 5 * MIN
+
+/** When the offer shows, for a turn that ended at `endedAt`: at once on a cache under 1 hour, `OFFER_AFTER_MS` later on a longer one. */
+export const offerAt = (endedAt: number, ttl: number) => (ttl >= HOUR ? endedAt + OFFER_AFTER_MS : endedAt)
+
+/**
+ * The band while keeping warm: "Keeping warm until 14:05 · ~0.1% used so far", "· ~$0.04 so far", "· $0.04 so far".
+ * `used` is what the requests cost, as the caller writes it ("~0.1% used", "~$0.04", "$0.04"); none before the first request.
+ */
+export function warmingText(o: { until: number; used: string | undefined }) {
+  return `Keeping warm until ${clockText(o.until)} · ${o.used === undefined ? 'nothing used yet' : `${o.used} so far`}`
+}
+
+/** How a keep-warm run ends on the band: "Stopped keeping warm · ~0.1% used." `what` is the end's words, without a full stop. */
+export const warmEndText = (what: string, used: string | undefined) => `${what} · ${used ?? 'nothing used'}.`
+
+// ---- What the person picks ---------------------------------------------------
+
+/** A log line as the offer's history reads it: a `cold` line carries the choice pressed, or `ignored`. */
+type Answered = { at: string; kind?: string; choice?: string }
+
+/** The offers' outcomes in the log, oldest first. */
+const outcomes = (lines: readonly Answered[]) =>
+  lines
+    .filter(l => l.kind === 'cold' && typeof l.choice === 'string')
+    .sort((a, b) => (Date.parse(a.at) || 0) - (Date.parse(b.at) || 0))
+    .map(l => l.choice as string)
+
+/** Offers that were pressed, not ignored. */
+const pressed = (lines: readonly Answered[]) => outcomes(lines).filter(c => c !== 'ignored')
+
+/** The one button looks back over this many answered offers. */
+export const LEARN_OVER = 10
+
+/**
+ * The choice the person picked most often in their last 10 answered offers (any session), counting only the choices in
+ * `among`: those this offer has. A tie goes to the one picked most recently. Undefined with no history or no match.
+ */
+export function learnedChoice(lines: readonly Answered[], among: readonly string[]): string | undefined {
+  const last = pressed(lines).slice(-LEARN_OVER)
+  let best: { id: string; count: number; latest: number } | undefined
+  for (const id of new Set(last)) {
+    if (!among.includes(id)) continue
+    const count = last.filter(c => c === id).length
+    const latest = last.lastIndexOf(id)
+    if (!best || count > best.count || (count === best.count && latest > best.latest)) best = { id, count, latest }
+  }
+  return best?.id
+}
+
+/** The /config row value a choice stands for; a choice with none (a keep-warm until the usual start, let it go cold) is not here. */
+export const ROW_OF: Readonly<Record<string, string>> = { '2h': 'keep warm 2 h', '8h': 'keep warm 8 h', handoff: 'save a handoff', compact: 'compact' }
+
+/** The same answer this many offers in a row makes the person a standing-rule offer. */
+export const ALWAYS_AFTER = 3
+
+const ALWAYS: Readonly<Record<string, string>> = { '2h': 'Always keep warm 2 hours?', '8h': 'Always keep warm 8 hours?', handoff: 'Always save a handoff?', compact: 'Always compact?' }
+
+/** The standing-rule question for a choice: "Always keep warm 2 hours?", "Always save a handoff?", "Always compact?". */
+export const alwaysText = (choice: string) => ALWAYS[choice] ?? ''
+
+/** The choice to ask "Always …?" about: the last 3 answered offers were that one choice, it has a row value, this offer has it, and it was not asked about before. */
+export function standingChoice(lines: readonly Answered[], among: readonly string[], asked: readonly string[]): string | undefined {
+  const last = pressed(lines).slice(-ALWAYS_AFTER)
+  const id = last[0]
+  if (last.length < ALWAYS_AFTER || id === undefined || !last.every(c => c === id)) return undefined
+  return id in ROW_OF && among.includes(id) && !asked.includes(id) ? id : undefined
+}
+
+/** This many offers in a row with no answer make the person a back-off offer. */
+export const BACK_OFF_AFTER = 5
+
+/** True when the last 5 offers were all ignored. */
+export const ignoredLately = (lines: readonly Answered[]) => {
+  const last = outcomes(lines).slice(-BACK_OFF_AFTER)
+  return last.length === BACK_OFF_AFTER && last.every(c => c === 'ignored')
 }
 
 /** What a row value does at a turn's end: `warm` has the hours. A handoff without Groundwork is a compaction. */

@@ -58,3 +58,14 @@ test('the next batch starts after the last send, holds at most 100, and moves pa
   expect(first.upTo, 'the 100th line').toBe(at(99))
   expect(nextBatch(many, I, first.upTo).events.length).toBe(50)
 })
+
+test('a cold line (how an offer was answered) is never shared, and it only moves the mark', async () => {
+  const cold: RunLine[] = [
+    { at: at(0), kind: 'cold', session: 'sess', choice: '2h' },
+    { at: at(1), kind: 'cold', session: 'sess', choice: 'ignored' },
+  ]
+  for (const line of cold) expect(shareEvent(line, I)).toBeUndefined()
+  const lines: RunLine[] = [{ at: at(0), kind: 'run' }, ...cold.slice(0, 1), { at: at(2), kind: 'run' }, { ...(cold[1] as RunLine), at: at(3) }]
+  expect(nextBatch(lines, I, undefined), 'two runs, and nothing of the cold lines').toEqual({ events: [{ kind: 'run', at: at(0) }, { kind: 'run', at: at(2) }], upTo: at(3) })
+  expect(nextBatch(cold, I, undefined), 'cold lines alone are no events').toEqual({ events: [], upTo: at(1) })
+})

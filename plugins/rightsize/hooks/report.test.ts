@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { accuracyRows, type RunLine, buildReport, costTag, counterfactual, fixedBlock, parseLines, problems, sessionTotal, shareMessage, shareText, span, tieCounts, totals, windowCostText, windowRates } from './report'
+import { SESSION_TOTAL, accuracyRows, type RunLine, bandShareText, buildReport, costTag, counterfactual, fixedBlock, parseLines, problems, sessionTotal, shareMessage, shareText, span, tieCounts, totals, usedTag, windowCostText, windowRates } from './report'
 import type { StartBlock } from './start'
 
 const NOW = Date.parse('2026-10-23T18:00:00.000Z')
@@ -596,10 +596,10 @@ test('sessionTotal puts the session net in plain words, from the same figure as 
   expect(sessionTotal([saved], 's1', false)).toBe('Session: ~$0.49 saved')
   expect(sessionTotal([cost], 's1', false)).toBe('Session: ~$0.50 more')
   expect(sessionTotal([saved, run({ session: 's2', change: 'lower', offered: 'lower', actual: 0.1, stay: 5, taken: 0.1 })], 's1', false), 'another session adds nothing').toBe('Session: ~$0.49 saved')
-  expect(sessionTotal([{ ...saved, ...win }], 's1', true), 'subscription with a window').toBe('Session: under 2.0% of the 5-hour window saved')
-  expect(sessionTotal([{ ...cost, before: { five_hour: 10 }, after: { five_hour: 12 } }], 's1', true)).toBe('Session: ~1.7–5.0% more of the 5-hour window')
-  expect(sessionTotal([saved], 's1', true), 'subscription without window data').toBe('Session: ~$0.49 saved (API-equivalent)')
-  expect(sessionTotal([cost], 's1', true)).toBe('Session: ~$0.50 more (API-equivalent)')
+  expect(sessionTotal([{ ...saved, ...win }], 's1', true), 'subscription with a window').toBe('Session: under 2% saved')
+  expect(sessionTotal([{ ...cost, before: { five_hour: 10 }, after: { five_hour: 12 } }], 's1', true)).toBe('Session: ~2–5% more')
+  expect(sessionTotal([saved], 's1', true), 'subscription without window data').toBe('Session: ~$0.49 saved')
+  expect(sessionTotal([cost], 's1', true)).toBe('Session: ~$0.50 more')
   // The band's figure is the report's Session "Total saved".
   const lines = [saved, run({ change: 'lower', offered: 'lower', actual: 0.1, stay: 0.3, taken: 0.15, overhead: 0.02 })]
   const shown = cells(report(lines), 'Total saved')?.[0]
@@ -647,6 +647,46 @@ test('a window share is written as a range: one decimal, an en dash, a single va
   expect(windowCostText(0.16, undefined), 'no rate yet: dollars alone, labelled').toBe('about $0.16 API-equivalent')
 })
 
+test('the band writes a window share short: whole percent, one decimal only under 1%, one number when both ends agree', async () => {
+  expect(bandShareText({ lo: 9.9, hi: 17.4 })).toBe('~10–17%')
+  expect(bandShareText({ lo: 1.9, hi: 2.2 }), 'both ends round to 2').toBe('~2%')
+  expect(bandShareText({ lo: 0.3, hi: 0.8 }), 'under 1%: one decimal').toBe('~0.3–0.8%')
+  expect(bandShareText({ lo: 0.3, hi: 17.4 }), 'only the value under 1% gets a decimal').toBe('~0.3–17%')
+  expect(bandShareText({ lo: 0.97, hi: 1.2 }), 'a value that would read 1.0 reads 1').toBe('~1%')
+  expect(bandShareText({ lo: 0, hi: 17.4 })).toBe('under 17%')
+  expect(bandShareText({ lo: 0.01, hi: 0.04 })).toBe('under 0.1%')
+  expect(bandShareText({ lo: -17.4, hi: -9.9 }), 'a loss is written as its size').toBe('~10–17%')
+  // The /rightsize report keeps its one decimal.
+  expect(shareText({ lo: 9.9, hi: 17.4 })).toBe('~9.9–17.4%')
+})
+
+test('the session total on the band: a share, or dollars with no API-equivalent label; SESSION_TOTAL strips every form it writes', async () => {
+  // 400 runs of 10 points for $0.10 each, and 3 that saved $0.28 each: about $0.84 saved.
+  const base = Array.from({ length: 400 }, (_, i) => run({ id: `m${i}`, actual: 0.1, before: { five_hour: 0 }, after: { five_hour: 10 } }))
+  const saves = [1, 2, 3].map(i => run({ id: `s${i}`, change: 'lower', offered: 'lower', actual: 0.1, stay: 0.38, taken: 0.1 }))
+  const share = sessionTotal([...base, ...saves], 's1', true)
+  expect(share, 'ends rounded to whole percent').toMatch(/^Session: ~\d+(–\d+)?% saved$/)
+  const dollars = sessionTotal(saves, 's1', true)
+  expect(dollars, 'dollars on a subscription: no label').toBe('Session: ~$0.84 saved')
+  const forms = [
+    'Session: ~10–17% saved',
+    'Session: ~2% saved',
+    'Session: ~0.3–0.8% more',
+    'Session: under 17% saved',
+    'Session: ~$0.84 saved',
+    'Session: ~$0.84 more',
+    'Session: about even',
+    ...(share ? [share] : []),
+    // The older wording, in a band saved by an earlier version.
+    'Session: ~1.7–5.0% more of the 5-hour window',
+    'Session: ~$0.49 saved (API-equivalent)',
+  ]
+  for (const f of forms) {
+    expect(`Sent to Sonnet. ~28% of Opus usage ($0.45 vs $1.61). ${f}`.replace(SESSION_TOTAL, ''), f).toBe('Sent to Sonnet. ~28% of Opus usage ($0.45 vs $1.61).')
+    expect(`Cache goes cold in ~55 min. ${f} Ran 2 subagents.`.replace(SESSION_TOTAL, ''), f).toBe('Cache goes cold in ~55 min. Ran 2 subagents.')
+  }
+})
+
 test('the headline, the table and the band show the window share as a range, the minutes too, and a single value once the data is enough', async () => {
   const lines = [
     run({ change: 'lower', offered: 'lower', actual: 0.5, stay: 1, taken: 0.5, durationMs: 60_000, before: { five_hour: 10 }, after: { five_hour: 14 } }),
@@ -656,7 +696,7 @@ test('the headline, the table and the band show the window share as a range, the
   const text = report(lines, { subscription: true })
   expect(text.split('\n')[1]).toBe('Saved ~3.3–4.7% of your 5-hour window (~1 min) in the last 30 days.')
   expect(cells(text, '5-hour window saved')).toEqual(['~3.3–4.7%', '~3.3–4.7%', '~3.3–4.7%'])
-  expect(sessionTotal(lines, 's1', true)).toBe('Session: ~3.3–4.7% of the 5-hour window saved')
+  expect(sessionTotal(lines, 's1', true)).toBe('Session: ~3–5% saved')
   // The 7-day window gets its own range.
   const week = lines.map(l => ({ ...l, before: { ...l.before, seven_day: 20 }, after: { ...l.after, seven_day: 21 } }))
   expect(cells(report(week, { subscription: true }), '7-day window saved')?.[0]).toBe('~0.3–1.7%')
@@ -670,7 +710,7 @@ test('the headline, the table and the band show the window share as a range, the
     run({ change: 'lower', offered: 'lower', actual: 0.1, stay: 0.12, taken: 0.1, before: { five_hour: 0 }, after: { five_hour: 10 } }),
   ]
   expect(report(big, { subscription: true }).split('\n')[1]).toBe('Saved ~2.0% of your 5-hour window in the last 30 days.')
-  expect(sessionTotal(big, 's1', true)).toBe('Session: ~2.0% of the 5-hour window saved')
+  expect(sessionTotal(big, 's1', true)).toBe('Session: ~2% saved')
   // One turn: the rounding error is as big as the reading, so the low end is 0.
   const one = [run({ change: 'lower', offered: 'lower', actual: 0.5, stay: 1, taken: 0.5, before: { five_hour: 10 }, after: { five_hour: 11 } })]
   expect(report(one, { subscription: true }).split('\n')[1]).toBe('Saved under 2.0% of your 5-hour window in the last 30 days.')
@@ -740,9 +780,37 @@ test('a keep-warm ping is rightsize\'s own cost: its overhead lowers Total saved
   expect(sessionTotal([warm(0.04)], 's1', false)).toBe('Session: ~$0.04 more')
 })
 
-test('a cost on a button: dollars on the API; on a subscription the window share as a range with the dollars after it', async () => {
+test('a cost on a button, in one unit: dollars on the API; on a subscription the window share, or ~dollars before the rate is known', async () => {
   expect(costTag(0.1288, false, undefined)).toBe('$0.13')
-  expect(costTag(0.1288, true, undefined), 'before runs show the rate').toBe('$0.13 API-equivalent')
-  expect(costTag(1, true, { low: 0.8, high: 1.6 })).toBe('~0.8–1.6% ($1.00)')
+  expect(costTag(0.1288, true, undefined), 'before runs show the rate').toBe('~$0.13')
+  expect(costTag(1, true, { low: 0.8, high: 1.6 }), 'no dollars next to the share').toBe('~0.8–2% usage')
+  expect(costTag(0.06, true, { low: 1.5, high: 2 })).toBe('~0.1% usage')
   expect(costTag(0.001, false, undefined)).toBe('under $0.01')
+  expect(costTag(0.001, true, undefined)).toBe('under $0.01')
+})
+
+test('what a keep-warm run has used, in the same unit', async () => {
+  expect(usedTag(0.04, false, undefined)).toBe('$0.04')
+  expect(usedTag(0.04, true, undefined)).toBe('~$0.04')
+  expect(usedTag(0.06, true, { low: 1.5, high: 2 })).toBe('~0.1% used')
+})
+
+test('a cold line (how an offer was answered) is no run: it is parsed, and changes no total, report or session figure', async () => {
+  const lines = [run({ change: 'lower', offered: 'lower', actual: 0.1, stay: 0.4, taken: 0.1 })]
+  const cold: RunLine[] = [
+    { at: ago(0), kind: 'cold', session: 's1', choice: '2h' },
+    { at: ago(0), kind: 'cold', session: 's1', choice: 'ignored' },
+  ]
+  const text = `${JSON.stringify(cold[0])}\n{"torn\n${JSON.stringify(cold[1])}\n`
+  expect(parseLines<RunLine>(text), 'read back whole').toEqual(cold)
+  expect(totals([...lines, ...cold])).toEqual(totals(lines))
+  for (const subscription of [false, true]) {
+    expect(report([...lines, ...cold], { subscription })).toBe(report(lines, { subscription }))
+    expect(report([...lines, ...cold], { subscription, markdown: true })).toBe(report(lines, { subscription, markdown: true }))
+    expect(sessionTotal([...lines, ...cold], 's1', subscription)).toBe(sessionTotal(lines, 's1', subscription))
+  }
+  expect(shareMessage([...lines, ...cold], { now: NOW, subscription: false })).toBe(shareMessage(lines, { now: NOW, subscription: false }))
+  // Cold lines alone are nothing to report.
+  expect(report(cold).split('\n')[1]).toBe(report([]).split('\n')[1])
+  expect(sessionTotal(cold, 's1', false)).toBeUndefined()
 })

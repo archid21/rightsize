@@ -422,10 +422,15 @@ test('the main chat learns per model and level: expensive high runs leave the lo
 
 test('reports a hand-off in dollars or as a share of usage', async () => {
   const run = { tier: 'fable' as const, stay: 0.31, delegate: { tier: 'haiku' as const, level: 'low' as const, dir: 'down' as const } }
-  expect(report(run, 0.04, 'api')).toBe('rightsize: Sent to Haiku: $0.04 vs about $0.31 staying on Fable (estimated), saved about 87%.')
-  expect(report(run, 0.04, 'subscription')).toContain('used about 13% of the usage vs staying on Fable')
+  expect(report(run, 0.04, 'api')).toBe('rightsize: Sent to Haiku. $0.04 vs ~$0.31 on Fable (~87% saved).')
+  expect(report(run, 0.04, 'subscription')).toBe('rightsize: Sent to Haiku. ~13% of Fable usage ($0.04 vs $0.31).')
+  // The numbers of the band's example: a subscriber reads a share first, the dollars after it.
+  const sonnet = { tier: 'opus' as const, stay: 1.61, delegate: { tier: 'sonnet' as const, level: 'low' as const, dir: 'down' as const } }
+  expect(report(sonnet, 0.45, 'subscription')).toBe('rightsize: Sent to Sonnet. ~28% of Opus usage ($0.45 vs $1.61).')
+  expect(report(sonnet, 0.45, 'api')).toBe('rightsize: Sent to Sonnet. $0.45 vs ~$1.61 on Opus (~72% saved).')
   const up = { tier: 'opus' as const, stay: 0.3, delegate: { tier: 'fable' as const, level: 'high' as const, dir: 'up' as const } }
-  expect(report(up, 0.81, 'api')).toBe('rightsize: Sent to Fable: $0.81 vs about $0.30 staying on Opus (estimated), cost about 2.7x vs staying.')
+  expect(report(up, 0.81, 'api')).toBe('rightsize: Sent to Fable. $0.81 vs ~$0.30 on Opus (~2.7x the cost).')
+  expect(report(up, 0.81, 'subscription'), 'more than staying: a multiple').toBe('rightsize: Sent to Fable. ~2.7x Opus usage ($0.81 vs $0.30).')
   expect(money(0.001)).toBe('under $0.01')
   expect(share(1, 0)).toBe('an unknown share of')
 })

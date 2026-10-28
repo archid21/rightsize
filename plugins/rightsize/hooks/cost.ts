@@ -699,6 +699,13 @@ export function sizeSubagent(r: Rating, s: Situation, parent: Tier, floor: Level
 
 export const money = (d: number) => (d < 0.005 ? 'under $0.01' : `$${d < 10 ? d.toFixed(2) : d.toFixed(0)}`)
 
+/** "~13% of Opus usage", "~2.4x Opus usage": a cost against what staying on `cur` would use. */
+export function usageVs(part: number, whole: number, cur: string) {
+  if (whole <= 0) return `an unknown share of ${cur} usage`
+  const x = part / whole
+  return x < 1 ? `~${Math.max(1, Math.round(x * 100))}% of ${cur} usage` : `~${x.toFixed(1)}x ${cur} usage`
+}
+
 /** "about 13% of", "about 2.4x" */
 export function share(part: number, whole: number) {
   if (whole <= 0) return 'an unknown share of'

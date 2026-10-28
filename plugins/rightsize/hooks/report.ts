@@ -24,9 +24,12 @@ export type RunLine = {
    * 'unbound': a rated prompt that never got a turn of its own, because it was delivered into a running turn or cancelled before its turn started; `reason` says which and `overhead` what its rating cost.
    * 'dropped' and 'unbound' are not rated runs: the report counts only their overhead.
    * 'warm': one keep-warm request that kept the prompt cache from expiring (Before the cache goes cold); `overhead` is what it cost, `tier` its model and `context` the conversation it re-read.
+   * 'cold': how the person answered one offer before the cache goes cold; `choice` is the id they pressed, or 'ignored'. It carries no cost, is never shared, and is no part of any total.
    * `totals` adds the `overhead` of every line, so these pings count as rightsize's own cost and lower Total saved.
    */
-  kind?: 'run' | 'overhead' | 'subagent' | 'check' | 'feedback' | 'unrated' | 'dropped' | 'unbound' | 'warm'
+  kind?: 'run' | 'overhead' | 'subagent' | 'check' | 'feedback' | 'unrated' | 'dropped' | 'unbound' | 'warm' | 'cold'
+  /** A 'cold' line: the id of the choice pressed (`2h`, `8h`, `start`, `30m`, `1h`, `handoff`, `compact`, `let-go`, `off`), or `ignored` when the offer got no answer. */
+  choice?: string
   /** A run line's own id, which feedback lines name in `ref`. */
   id?: string
   /** The task the line belongs to: the id of the run that started it. Follow-ups, unrated prompts and subagents carry it. */
@@ -309,10 +312,22 @@ export function windowCostText(usd: number, rates: { low: number; high: number }
   return `${shareText(shareOf(usd, rates))} of your 5-hour window (${money(usd)} API-equivalent)`
 }
 
-/** A cost as a short tag for a button: dollars on the API; on a subscription the 5-hour window share as a range with the dollars after it, or the API-equivalent dollars until runs show the rate. */
+/** Dollars with a "~" for an estimate; "under $0.01" stands alone. */
+const tildeMoney = (usd: number) => (money(usd).startsWith('under') ? money(usd) : `~${money(usd)}`)
+
+/**
+ * A cost as a short tag for a band button, in one unit only: dollars on the API ("$0.06"); on a subscription the 5-hour
+ * window share ("~0.1% usage"), or the API-equivalent dollars until runs show the rate ("~$0.06").
+ */
 export function costTag(usd: number, subscription: boolean, rates: { low: number; high: number } | undefined) {
   if (!subscription) return money(usd)
-  return rates === undefined ? `${money(usd)} API-equivalent` : `${shareText(shareOf(usd, rates))} (${money(usd)})`
+  return rates === undefined ? tildeMoney(usd) : `${bandShareText(shareOf(usd, rates))} usage`
+}
+
+/** What a keep-warm run has used, the same way: "$0.04" on the API, "~0.1% used" on a subscription with rates, else "~$0.04". */
+export function usedTag(usd: number, subscription: boolean, rates: { low: number; high: number } | undefined) {
+  if (!subscription) return money(usd)
+  return rates === undefined ? tildeMoney(usd) : `${bandShareText(shareOf(usd, rates))} used`
 }
 
 /** The saving as a share of what the turns would have cost, after rating calls. */
@@ -366,18 +381,31 @@ function headline(s: Stats, subscription: boolean) {
   return net > 0 ? `Saved ~${money(net)} (~${savedShare(t)}%) ${DAYS_30}.` : `Cost ~${money(-net)} more than it saved ${DAYS_30}.`
 }
 
-/** A running total already on a band's text, in any of the forms `sessionTotal` writes: `setBand` strips it before it adds the current one. */
-export const SESSION_TOTAL = / · Session: (?:about even|~\$[\d.,]+ (?:saved|more)|(?:~|under )\d+\.\d(?:–\d+\.\d)?% (?:of the 5-hour window saved|more of the 5-hour window))(?: \(API-equivalent\))?/g
+/**
+ * A share for the band, short: ends rounded to whole percent, one decimal only for a value under 1%. "~10–17%", "~2%"
+ * (both ends equal), "under 17%" (the low end is 0), "under 0.1%". The sign is left out (callers say saved or more).
+ * The /rightsize report keeps `shareText`.
+ */
+export function bandShareText(s: Share) {
+  const [lo, hi] = s.hi > 0 ? [s.lo, s.hi] : [-s.hi, -s.lo]
+  const one = (v: number) => (v < 0.95 ? v.toFixed(1) : String(Math.round(v)))
+  const a = one(Math.max(0, lo))
+  const b = one(hi)
+  if (a === '0.0') return b === '0.0' ? 'under 0.1%' : `under ${b}%`
+  return a === b ? `~${b}%` : `~${a}–${b}%`
+}
 
-/** The session's running net, in the band's words. The same figure as the report's Session "Total saved": it comes from `stats`. */
+/** A running total already on a band's text, in any of the forms `sessionTotal` writes (and the older ones): `setBand` strips it before it adds the current one. */
+export const SESSION_TOTAL = /(?: ·)? Session: (?:about even|~\$[\d.,]+ (?:saved|more)(?: \(API-equivalent\))?|(?:~|under )[\d.]+(?:–[\d.]+)?% (?:of the 5-hour window saved|more of the 5-hour window|saved|more))/g
+
+/** The session's running net, in the band's words: "Session: ~10–17% saved", "Session: ~$0.84 saved". The same figure as the report's Session "Total saved": it comes from `stats`. */
 export function sessionTotal(lines: readonly RunLine[], session: string, subscription: boolean): string | undefined {
   if (session === '') return undefined
   const { net, empty, kept } = stats(lines.filter(l => l.session === session), subscription)
   if (empty) return undefined
   if (Math.abs(net) < 0.005) return 'Session: about even'
-  if (kept) return kept.five.hi > 0 ? `Session: ${shareText(kept.five)} of the 5-hour window saved` : `Session: ${shareText(kept.five)} more of the 5-hour window`
-  const text = net > 0 ? `Session: ~${money(net)} saved` : `Session: ~${money(-net)} more`
-  return subscription ? `${text} (API-equivalent)` : text
+  if (kept) return `Session: ${bandShareText(kept.five)} ${kept.five.hi > 0 ? 'saved' : 'more'}`
+  return net > 0 ? `Session: ~${money(net)} saved` : `Session: ~${money(-net)} more`
 }
 
 /**

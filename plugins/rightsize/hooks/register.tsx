@@ -65,7 +65,7 @@ import {
 import { type FreshRun, type HandedOff, NO_STEPS, type StepState, actingExp, mergeSteps, medians, parseStepState, STEP_PROVE, typicalShrink } from './steps'
 import { type LearningNote, learningNote } from './learning'
 import { PRICING_URL, applyPrices, diffPrices, isDue, parsePricingPage } from './prices'
-import { howSure, missCounts, missMap, ownTasks, pauseRates } from './misses'
+import { confidence, missCounts, missMap, ownTasks, pauseRates } from './misses'
 import { SHARE_ASK_AFTER, SHARE_EVERY_MS, SHARE_URL, newInstall, nextBatch } from './share'
 import { START_CHECK_DAYS, START_SNOOZE_DAYS, adviseStart, startBlock, startKey, startTip } from './start'
 import {
@@ -98,7 +98,7 @@ import {
 import { BRIEF_MAX, cutRequest, parseRating, ratingPrompt, ratingSystem } from './rate'
 import { isApprovalStep } from './approval'
 import { LIMITS, type Limits, type Signals, type Struggle, blockedError, callKey, isSensitivity, isTestCommand, noSignals, noteCall, oneUp, struggle } from './struggle'
-import { type Change, type HelperLine, type RunLine, type SwitchLine, type Windows, SESSION_TOTAL, bandShareText, buildReport, costTag, parseLines, sessionTotal, shareMessage, shareOf, usedTag, windowCostText, windowRates } from './report'
+import { type Change, type HelperLine, type RunLine, type SwitchLine, type Windows, SESSION_TOTAL, SESSION_TOTAL_FROM, bandShareText, buildReport, costTag, parseLines, ratedInSession, sessionTotal, shareMessage, shareOf, usedTag, windowCostText, windowRates } from './report'
 import { COLD_MIN, PING_PROMPT, ROW_OF, WRAP_UP, alwaysText, breakEvenMs, cacheHeld, clockText, coldPlan, ignoredLately, isCacheClock, isGroundwork, keepWarmChoices, leadMs, learnedChoice, offerAt, offerText, pingCost, pingEvery, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText } from './warm'
 
 // Before a prompt is sent, a quick Haiku call rates the effort, the model and
@@ -431,7 +431,7 @@ let minTasks = 0
 /** The outcomes logged per task type and model (misses.ts): minTasks is counted against these. */
 // Before the log is read, the research priors alone.
 let counts: Record<string, number> = missCounts([])
-/** The tasks the log itself holds per type and model, research priors left out: what "How sure" in the band counts. */
+/** The tasks the log itself holds per type and model, research priors left out: what the confidence in the band counts. */
 let ownCounts: Record<string, number> = {}
 /**
  * Chances a task has to retry: a helper raised a level, or the main chat reworking a hand-off. When they
@@ -1487,13 +1487,15 @@ const isBandMode = (v: unknown): v is BandMode => v === 'when it acts' || v === 
 /** A line every band of this turn carries, so a later band (a hand-off's result) does not hide it: a miss just forgiven. */
 let bandNote: string | null = null
 
-const setBand = ($: EngineInterface, band: Band | null) => {
+/** `rating` is true for the band of a prompt being rated now: its run line is not in the log yet, so it counts as one more rated prompt toward SESSION_TOTAL_FROM. */
+const setBand = ($: EngineInterface, band: Band | null, rating = false) => {
   if (!band) return $.state.set(BAND, null).catch(() => undefined)
   // A band built from an earlier band's text already carries a total: drop it, and add the current one last.
   let text = band.text.replace(SESSION_TOTAL, '')
   let coldText = band.coldText?.replace(SESSION_TOTAL, '')
   if (bandNote && !text.includes(bandNote)) text = `${text} ${bandNote}`
-  const total = sessionTotal(runLog, sessionId, billing === 'subscription')
+  // Not before the session's 3rd rated prompt (SESSION_TOTAL_FROM); the report counts from the first.
+  const total = ratedInSession(runLog, sessionId) + (rating ? 1 : 0) >= SESSION_TOTAL_FROM ? sessionTotal(runLog, sessionId, billing === 'subscription') : undefined
   // The total goes after the route's text; a band with only the cache line carries it there.
   const after = (t: string) => `${t}${/[.!?]$/.test(t) ? '' : '.'} ${total}`
   if (total && text) text = after(text)
@@ -1527,9 +1529,17 @@ const whyText = (reason: string) => {
 /** What the band shows for a rated prompt: what was done, or what was suggested and not done. */
 export function bandFor(run: Pick<Run, 'id' | 'tier' | 'normal' | 'auto' | 'delegate' | 'stay' | 'takenDelegate'> & Partial<Pick<Run, 'switchTo' | 'takenMain'>> & { rating?: Pick<Rating, 'reason' | 'type'> }, d: Decision, p: Plan): Band {
   const cur = TIER_NAME[run.tier]
-  // Why this route, and for a move to a cheaper model (a lowering or a hand-off down: the routes the miss rate scores) how sure rightsize is.
+  // Why this route, and for a move to a cheaper model (a lowering or a hand-off down: the routes the miss rate scores) how confident rightsize is: the level on the band, the detail in the ⋯ menu.
   const why = run.rating ? whyText(run.rating.reason) : ''
-  const sure = (tier: Tier) => (run.rating ? howSure(run.rating.type, tier, ownCounts, misses) : '')
+  const conf = (tier: Tier) => (run.rating ? confidence(run.rating.type, tier, ownCounts, misses) : undefined)
+  const sure = (tier: Tier) => {
+    const c = conf(tier)
+    return c ? `Confidence: ${c.level}.` : ''
+  }
+  const sureDetail = (tier: Tier | undefined) => {
+    const c = tier ? conf(tier) : undefined
+    return c ? { sure: `Confidence: ${c.level}, ${c.detail}.` } : {}
+  }
   const more = (...parts: string[]) => parts.filter(Boolean).map(x => ` ${x}`).join('')
   if (run.switchTo) {
     return { text: `Running this review on ${TIER_NAME[run.switchTo.tier]} at ${run.switchTo.level} effort, then back to ${cur}. ${bandCost(run.takenMain ?? 0, run.stay, cur)}${more(why)}`, acted: true, rule: 'up', canStay: true }
@@ -1537,7 +1547,7 @@ export function bandFor(run: Pick<Run, 'id' | 'tier' | 'normal' | 'auto' | 'dele
   if (run.delegate) {
     const to = `${TIER_NAME[run.delegate.tier]} subagent at ${run.delegate.level} effort`
     const instead = p.kind === 'delegate' && p.instead && levelRank(p.instead) > levelRank(run.normal) ? ` instead of raising ${cur} to ${p.instead}` : ''
-    return { text: `Sending this to a ${to}${instead}. ${bandCost(run.takenDelegate ?? 0, run.stay, cur)}${more(why, run.delegate.dir === 'down' ? sure(run.delegate.tier) : '')}`, acted: true, rule: run.delegate.dir, canStay: true }
+    return { text: `Sending this to a ${to}${instead}. ${bandCost(run.takenDelegate ?? 0, run.stay, cur)}${more(why, run.delegate.dir === 'down' ? sure(run.delegate.tier) : '')}`, acted: true, rule: run.delegate.dir, canStay: true, ...sureDetail(run.delegate.dir === 'down' ? run.delegate.tier : undefined) }
   }
   const level = d.level ?? d.session
   if (level) {
@@ -1547,6 +1557,7 @@ export function bandFor(run: Pick<Run, 'id' | 'tier' | 'normal' | 'auto' | 'dele
       text: `Effort ${lower ? 'lowered' : 'raised'}: ${run.normal} → ${level} for ${scope}.${more(why, lower ? sure(run.tier) : '')}`,
       acted: true,
       rule: lower ? 'lower' : 'raise',
+      ...sureDetail(lower ? run.tier : undefined),
       // A lowering can be marked right or wrong: it was a bet on the rating.
       ...(lower ? { rate: run.id } : {}),
       ...(run.auto && d.level ? { canRetry: true } : {}),
@@ -1557,7 +1568,7 @@ export function bandFor(run: Pick<Run, 'id' | 'tier' | 'normal' | 'auto' | 'dele
   const what = p.kind === 'effort' ? `${p.level} effort` : p.kind === 'switch' ? `${TIER_NAME[p.tier]} at ${p.level}` : `a ${TIER_NAME[p.tier]} subagent at ${p.level}`
   const rule = p.kind === 'effort' ? (p.dir === 'lower' ? 'lower' : 'raise') : p.kind === 'switch' ? 'up' : p.dir
   const down = p.kind === 'effort' ? (p.dir === 'lower' ? run.tier : undefined) : p.kind === 'delegate' && p.dir === 'down' ? p.tier : undefined
-  return { text: `No change: ${what} would fit, kept ${run.normal} on ${cur}.${more(why, down ? sure(down) : '')}`, acted: false, rule }
+  return { text: `No change: ${what} would fit, kept ${run.normal} on ${cur}.${more(why, down ? sure(down) : '')}`, acted: false, rule, ...sureDetail(down) }
 }
 
 async function setRule($: EngineInterface, key: keyof Choices, value: string) {
@@ -1638,7 +1649,7 @@ async function bandMenu($: EngineInterface, band: Band) {
   const mode: readonly [string, MenuChoice] = ['When the band shows…', { mode: true }]
   const all = [...own, ...cache, mode]
   const header = 'Options'
-  const question = `Options for this band. ${MENU_NOTE}`
+  const question = `${band.sure ? `${band.sure} ` : ''}Options for this band. ${MENU_NOTE}`
   let v: MenuChoice | undefined
   if (all.length <= ASK_MAX) v = await pick($, { header, question, options: all })
   else {
@@ -2179,9 +2190,7 @@ async function offerCold($: EngineInterface, turn: ColdTurn) {
   const usual = usualStart(runLog, now)
   const choices = keepWarmChoices({ ttl: cacheTtl, endedAt: turn.endedAt, cold: turn.cold, ping, startMinutes: usual.minutes, tag: d => costTag(d, billing === 'subscription', rates) })
   for (const c of choices) if (c.endsAt !== undefined) turn.ends[c.id] = c.endsAt
-  // The minutes left are counted now, from the turn's end.
-  const minutes = Math.max(1, Math.round((turn.endedAt + cacheTtl - now) / 60_000))
-  const text = offerText({ ttl: cacheTtl, minutes, cost: coldCostText(turn.cold, rates), breakEven: breakEvenMs(turn.cold, ping, cacheTtl) })
+  const text = offerText({ ttl: cacheTtl, endedAt: turn.endedAt, cost: coldCostText(turn.cold, rates), breakEven: breakEvenMs(turn.cold, ping, cacheTtl) })
   const all: ColdButton[] = [
     ...choices.map(c => ({ id: c.id, label: c.label })),
     turn.groundwork ? { id: 'handoff', label: 'Save a handoff' } : { id: 'compact', label: 'Compact now' },
@@ -3414,7 +3423,7 @@ export const register: Register = (on, options) => {
           : p !== unfanned
           ? { text: `Kept ${s.level} on ${TIER_NAME[s.tier]} instead of ${unfanned.kind === 'delegate' ? `a ${TIER_NAME[unfanned.tier]} subagent` : unfanned.kind === 'switch' ? `running on ${TIER_NAME[unfanned.tier]}` : `raising to ${unfanned.kind === 'effort' ? unfanned.level : ''}`}.`, acted: true }
           : bandFor(run, d, p)
-        await setBand($, note ? { ...band, text: `${band.text} ${note}` } : band)
+        await setBand($, note ? { ...band, text: `${band.text} ${note}` } : band, true)
         const did = d.delegate ? `delegate ${d.delegate.tier}` : d.model ? `switch to ${d.model.tier} at ${d.model.level} for the turn` : d.level ? `${d.auto ? 'auto ' : ''}${d.level} for the prompt` : d.session ? `${d.session} for the session` : 'no change'
         const fit = TIERS.map(t => `${t[0]}:${r.fit[t] ?? (r.fit[t] === null ? 'no' : '?')}`).join(' ')
         if (noDowngrade) await log($, `no downgrade: context ${unsure}`)

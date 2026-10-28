@@ -214,21 +214,22 @@ export function missCounts(lines: readonly RunLine[]): Record<string, number> {
 }
 
 /**
- * How sure rightsize is that a route's cheaper model does this kind of work well: one sentence for the band.
- * `own` is the person's own logged tasks per `${type}:${tier}` (ownTasks, not missCounts: that one counts the
- * research priors as tasks), and `misses` the miss shares (missMap). Fewer than PRIOR_N own tasks: low, from the
- * research and those tasks. PRIOR_N or more: only the person's own log counts: high under 10% missed, else medium.
+ * How confident rightsize is that a route's cheaper model does this kind of work well: a level for the band and the
+ * detail behind it for the ⋯ menu. `own` is the person's own logged tasks per `${type}:${tier}` (ownTasks, not
+ * missCounts: that one counts the research priors as tasks), and `misses` the miss shares (missMap). Fewer than
+ * PRIOR_N own tasks: low, from the research and those tasks. PRIOR_N or more: only the person's own log counts: high
+ * under 10% missed, else medium.
  */
-export function howSure(type: string, tier: string, own: Readonly<Record<string, number>>, misses: Readonly<Record<string, number>>): string {
+export function confidence(type: string, tier: string, own: Readonly<Record<string, number>>, misses: Readonly<Record<string, number>>): { level: 'high' | 'medium' | 'low'; detail: string } {
   const key = missKey(type, tier)
   const n = own[key] ?? 0
   if (n < PRIOR_N) {
     // Only routes with a research prior start from research; the rest have only this machine's few tasks.
-    if (RESEARCH_PRIORS[key] === undefined) return `How sure: low, ${n > 0 ? `only ${n} of your tasks` : 'none of your tasks yet'}.`
-    return `How sure: low, from research${n > 0 ? ` and ${n} of your tasks` : ''}.`
+    if (RESEARCH_PRIORS[key] === undefined) return { level: 'low', detail: n > 0 ? `only ${n} of your tasks` : 'none of your tasks yet' }
+    return { level: 'low', detail: `from research${n > 0 ? ` and ${n} of your tasks` : ''}` }
   }
   const share = misses[key] ?? 0
-  return `How sure: ${share < 0.1 ? 'high' : 'medium'}, ${n} of your tasks, ${Math.round(share * 100)}% missed.`
+  return { level: share < 0.1 ? 'high' : 'medium', detail: `${n} of your tasks, ${Math.round(share * 100)}% missed` }
 }
 
 /** All outcomes together: how many were misses of how many. */

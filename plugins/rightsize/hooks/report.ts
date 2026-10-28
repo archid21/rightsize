@@ -418,6 +418,16 @@ export function bandShareText(s: Share) {
 /** A running total already on a band's text, in any of the forms `sessionTotal` writes (and the older ones): `setBand` strips it before it adds the current one. */
 export const SESSION_TOTAL = /(?: ·)? Session: (?:about even|~\$[\d.,]+ (?:saved|more)(?: \(API-equivalent\))?|(?:~|under )[\d.]+(?:–[\d.]+)?% (?:of the 5-hour window saved|more of the 5-hour window|saved|more))/g
 
+/**
+ * The band shows its session total only from this many rated prompts in the session: one or two runs are too few for a
+ * running net to mean anything. "Rated" is what `totals` counts as `rated`: lines of kind `run` (not unrated, dropped,
+ * unbound, subagent or cache lines). `/rightsize report` and `/rightsize status` count from the first prompt.
+ */
+export const SESSION_TOTAL_FROM = 3
+
+/** How many rated prompts the session has: the figure `SESSION_TOTAL_FROM` is held against. */
+export const ratedInSession = (lines: readonly RunLine[], session: string) => totals(lines.filter(l => l.session === session)).rated
+
 /** The session's running net, in the band's words: "Session: ~10–17% saved", "Session: ~$0.84 saved". The same figure as the report's Session "Total saved": it comes from `stats`. */
 export function sessionTotal(lines: readonly RunLine[], session: string, subscription: boolean): string | undefined {
   if (session === '') return undefined

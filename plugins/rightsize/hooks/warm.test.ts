@@ -108,7 +108,7 @@ test('the offer on a 1-hour cache: 2 h, 8 h and until the usual start, each pric
   const o = { ttl: HOUR, endedAt: local(15, 18), cold: 0.63, ping, startMinutes: 9 * 60, tag: usd }
   const choices = keepWarmChoices(o)
   // 18:00 to 9:00 is 15 hours: 15 pings.
-  expect(choices.map(c => c.label)).toEqual(['Keep warm 2 hours · $0.03', 'Keep warm 8 hours · $0.13', 'Keep warm until 9:00 tomorrow · $0.24'])
+  expect(choices.map(c => c.label)).toEqual(['Keep warm until 20:00 · $0.03', 'Keep warm until 2:00 tomorrow · $0.13', 'Keep warm until 9:00 tomorrow · $0.24'])
   expect(choices.map(c => c.id)).toEqual(['2h', '8h', 'start'])
   expect(choices[2]?.endsAt).toBe(local(16, 9))
   // Pricier pings: 15 of them cost more than a cold return.
@@ -116,9 +116,9 @@ test('the offer on a 1-hour cache: 2 h, 8 h and until the usual start, each pric
   expect(keepWarmChoices({ ...o, ping: 0.1 }).map(c => c.id), '8 x $0.10 is $0.80').toEqual(['2h'])
   expect(keepWarmChoices({ ...o, ping: 0.4 }), 'two pings cost more than a cold return').toEqual([])
   // A turn that ends at 5 a.m.: the usual 9:00 is 4 hours away, labelled with no "tomorrow".
-  expect(keepWarmChoices({ ...o, endedAt: local(15, 5) }).map(c => c.label)).toEqual(['Keep warm 2 hours · $0.03', 'Keep warm 8 hours · $0.13', 'Keep warm until 9:00 · $0.06'])
-  // "tomorrow" only past 12 hours: 22:00 to 9:00 is 11 hours, on the next calendar day; 20:00 to 9:00 is 13.
-  expect(keepWarmChoices({ ...o, endedAt: local(15, 22) }).map(c => c.label)[2], '11 hours').toBe('Keep warm until 9:00 · $0.18')
+  expect(keepWarmChoices({ ...o, endedAt: local(15, 5) }).map(c => c.label)).toEqual(['Keep warm until 7:00 · $0.03', 'Keep warm until 13:00 · $0.13', 'Keep warm until 9:00 · $0.06'])
+  // "tomorrow" whenever the end is on a later calendar day than the turn's end: 22:00 to 9:00 is 11 hours, 20:00 to 9:00 is 13.
+  expect(keepWarmChoices({ ...o, endedAt: local(15, 22) }).map(c => c.label)[2], '11 hours').toBe('Keep warm until 9:00 tomorrow · $0.18')
   expect(keepWarmChoices({ ...o, endedAt: local(15, 20) }).map(c => c.label)[2], '13 hours').toBe('Keep warm until 9:00 tomorrow · $0.21')
   // A turn that ends at 8 a.m.: 9:00 is inside the 2 h choice.
   expect(keepWarmChoices({ ...o, endedAt: local(15, 8) }).map(c => c.id)).toEqual(['2h', '8h'])
@@ -126,18 +126,32 @@ test('the offer on a 1-hour cache: 2 h, 8 h and until the usual start, each pric
 
 test('the offer on a 5-minute cache: only 30 min and 1 h, and only when they cost less than coming back cold', async () => {
   const o = { ttl: 5 * MIN, endedAt: local(15, 18), cold: 0.72, ping: 0.03, startMinutes: 9 * 60, tag: usd }
-  expect(keepWarmChoices(o).map(c => c.label), '7 and 14 pings').toEqual(['Keep warm 30 min · $0.21', 'Keep warm 1 hour · $0.42'])
+  expect(keepWarmChoices(o).map(c => c.label), '7 and 14 pings').toEqual(['Keep warm until 18:30 · $0.21', 'Keep warm until 19:00 · $0.42'])
   expect(keepWarmChoices({ ...o, ping: 0.06 }).map(c => c.id), '14 x $0.06 is $0.84, over $0.72').toEqual(['30m'])
   expect(keepWarmChoices({ ...o, ping: 0.12 }), '7 x $0.12 is $0.84').toEqual([])
 })
 
-test('the offer text names the minutes left and the cold cost; a 5-minute cache adds where keeping warm stops paying', async () => {
-  const one = { ttl: HOUR, minutes: 55, cost: 'about $0.63', breakEven: 39 * 57 * MIN }
-  expect(offerText(one)).toBe('Cache goes cold in ~55 min · coming back cold costs about $0.63')
-  expect(offerText({ ...one, ttl: 5 * MIN, minutes: 5, breakEven: 96 * MIN })).toBe(
-    'Cache goes cold in ~5 min · coming back cold costs about $0.63. Keeping warm past about 96 min costs more than coming back cold.',
+test('the offer text names the clock time the cache goes cold and the cold cost; a 5-minute cache adds the time keeping warm stops paying', async () => {
+  const ended = local(15, 13, 55)
+  const one = { ttl: HOUR, endedAt: ended, cost: 'about $0.63', breakEven: 39 * 57 * MIN }
+  expect(offerText(one)).toBe('Cache goes cold at 14:55 · coming back cold costs about $0.63')
+  expect(offerText({ ...one, ttl: 5 * MIN, endedAt: local(15, 13), breakEven: 96 * MIN })).toBe(
+    'Cache goes cold at 13:05 · coming back cold costs about $0.63. Keeping warm past 14:36 costs more than coming back cold.',
   )
-  expect(offerText({ ...one, cost: '~2% ($1.10)' })).toBe('Cache goes cold in ~55 min · coming back cold costs ~2% ($1.10)')
+  expect(offerText({ ...one, cost: '~2% ($1.10)' })).toBe('Cache goes cold at 14:55 · coming back cold costs ~2% ($1.10)')
+})
+
+test('keep-warm buttons: clock times counted from the turn end, in API and subscription words; one button per end minute', async () => {
+  const o = { ttl: HOUR, endedAt: local(15, 14), cold: 0.63, ping: 0.016, startMinutes: 9 * 60 }
+  const sub = (d: number) => `~${(d * 2).toFixed(1)}% usage`
+  expect(keepWarmChoices({ ...o, tag: usd }).map(c => c.label)).toEqual(['Keep warm until 16:00 · $0.03', 'Keep warm until 22:00 · $0.13', 'Keep warm until 9:00 tomorrow · $0.30'])
+  expect(keepWarmChoices({ ...o, tag: sub }).map(c => c.label)).toEqual(['Keep warm until 16:00 · ~0.1% usage', 'Keep warm until 22:00 · ~0.3% usage', 'Keep warm until 9:00 tomorrow · ~0.6% usage'])
+  expect(keepWarmChoices({ ...o, tag: d => `~$${d.toFixed(2)}` })[0]?.label).toBe('Keep warm until 16:00 · ~$0.03')
+  // The usual start at 16:00 is the 2 h choice's own end: one button.
+  const same = keepWarmChoices({ ...o, startMinutes: 16 * 60, tag: usd })
+  expect(same.map(c => c.id), 'same clock minute: the first stays').toEqual(['2h', '8h'])
+  // The end is the turn's end plus the choice, whatever time it is pressed.
+  expect(keepWarmChoices({ ...o, tag: usd }).map(c => c.endsAt)).toEqual([local(15, 16), local(15, 22), local(16, 9)])
 })
 
 test('the offer shows 5 minutes after the turn on a cache of 1 hour or more, and at once on a shorter one', async () => {

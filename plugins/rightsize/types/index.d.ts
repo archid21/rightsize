@@ -43,6 +43,8 @@ export type RightsizeBand = {
   tip?: string
   /** The id of the run this band is about: the band offers 👍 and 👎, which tune rightsize on this machine only. */
   rate?: string
+  /** The confidence behind the band's `Confidence: high.`, for the ⋯ menu: `Confidence: high, 42 of your tasks, 4% missed.` Set only on a move to a cheaper model. */
+  sure?: string
   /** The cache line, shown as a row of its own under `text`: the offer before the cache goes cold, or the keep-warm line. */
   coldText?: string
   /** The cache row's button (`id` says what pressing it does): the offer's first keep-warm choice, or the Stop of a keep-warm run. */

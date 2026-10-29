@@ -281,17 +281,17 @@ test('Before the cache goes cold is the 28th row: six options, asking by default
 })
 
 test('Before the cache goes cold: the profile supplies the value until you set the row, and then your row wins', async () => {
-  expect([PROFILES.Quality.beforeCold, PROFILES.Balanced.beforeCold, PROFILES.Economy.beforeCold]).toEqual(['keep warm 8 h', 'ask', 'save a handoff'])
+  expect([PROFILES.Quality.beforeCold, PROFILES.Balanced.beforeCold, PROFILES.Economy.beforeCold]).toEqual(['keep warm 8 h', 'ask', 'ask'])
   const values = { ...defaults(), beforeCold: 'compact' }
   // Not set: the row's own value (here compact) is only the default's stand-in, and the profile decides.
   expect(inUse('Quality', defaults(), set()).beforeCold).toBe('keep warm 8 h')
   expect(inUse('Balanced', defaults(), set()).beforeCold).toBe('ask')
-  expect(inUse('Economy', defaults(), set()).beforeCold).toBe('save a handoff')
+  expect(inUse('Economy', defaults(), set()).beforeCold).toBe('ask')
   expect(inUse('Quality', values, set()).beforeCold, 'a value that is not yours changes nothing').toBe('keep warm 8 h')
   // Set: yours, whatever the profile.
   for (const profile of PROFILE_NAMES) expect(inUse(profile, values, set('beforeCold')).beforeCold, profile).toBe('compact')
   expect(inUse('Quality', { ...defaults(), beforeCold: 'off' }, set('beforeCold')).beforeCold).toBe('off')
-  expect(inUse('Economy', { ...defaults(), beforeCold: 'keep warm 2 h' }, set('beforeCold')).beforeCold, 'Economy never keeps warm only by default').toBe('keep warm 2 h')
+  expect(inUse('Economy', { ...defaults(), beforeCold: 'keep warm 2 h' }, set('beforeCold')).beforeCold, 'your setting wins over the profile').toBe('keep warm 2 h')
   // Set back to the default "ask", it is still yours: Quality then asks.
   expect(inUse('Quality', defaults(), set('beforeCold')).beforeCold).toBe('ask')
 })

@@ -239,8 +239,8 @@ export type ProfileValues = {
   /** Chances a task has to retry: a helper raised a level, or the main chat reworking a hand-off. */
   chances: number
   answers: Answers
-  /** What a big session does before its cache goes cold, while Before the cache goes cold is not yours. Economy never keeps warm. */
-  beforeCold: 'ask' | 'keep warm 8 h' | 'save a handoff'
+  /** What a big session does before its cache goes cold, while Before the cache goes cold is not yours. */
+  beforeCold: 'ask' | 'keep warm 8 h'
 }
 
 // What each profile stands for. The Quality and Balanced values are starting points, to be recalibrated
@@ -269,7 +269,7 @@ export const PROFILES: Record<Profile, ProfileValues> = {
     raterEvery: 30,
     chances: 3,
     answers: { lower: 'auto', raise: 'auto', up: 'stay', down: 'auto' },
-    beforeCold: 'save a handoff',
+    beforeCold: 'ask',
   },
 }
 

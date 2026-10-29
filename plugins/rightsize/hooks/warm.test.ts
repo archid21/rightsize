@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import { DEFAULT_PRICES, idleCost } from './cost'
-import { ALWAYS_AFTER, BACK_OFF_AFTER, COLD_MIN, LEARN_OVER, OFFER_AFTER_MS, DEFAULT_START, ROW_OF, breakEvenMs, breakEvenPings, clockText, coldPlan, isCacheClock, isGroundwork, alwaysText, ignoredLately, keepWarmChoices, leadMs, learnedChoice, nextStart, offerAt, offerText, pingCost, pingEvery, pingsFor, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText, WARM_PROOF, cacheHeld } from './warm'
+import { ALWAYS_AFTER, BACK_OFF_AFTER, COLD_MIN, LEARN_OVER, OFFER_AFTER_MS, DEFAULT_START, ROW_OF, breakEvenMs, breakEvenPings, clockText, coldPlan, isGroundwork, alwaysText, ignoredLately, keepWarmChoices, leadMs, learnedChoice, nextStart, offerAt, offerText, pingCost, pingEvery, pingsFor, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText, WARM_PROOF, cacheHeld } from './warm'
 
 const MIN = 60_000
 const HOUR = 60 * MIN
@@ -183,9 +183,7 @@ test('each row value is a plan: a handoff without Groundwork is a compaction, an
   expect(coldPlan('something else', true)).toEqual({ action: 'ask' })
 })
 
-test('Cache Clock and Groundwork are found by plugin name', async () => {
-  for (const name of ['cache-clock', 'cache_clock', 'Cache Clock', 'cacheclock', 'cache-clock@ben-ai']) expect(isCacheClock(name), name).toBe(true)
-  for (const name of ['groundwork', 'cache', 'clock', undefined]) expect(isCacheClock(name), String(name)).toBe(false)
+test('Groundwork is found by plugin name', async () => {
   expect(isGroundwork('groundwork')).toBe(true)
   expect(isGroundwork('groundwork@archid21')).toBe(true)
   expect(isGroundwork('groundwork-lite')).toBe(false)

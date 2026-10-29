@@ -284,8 +284,5 @@ export function coldPlan(value: string, groundwork: boolean): ColdPlan {
   }
 }
 
-/** True when a plugin's name is Cache Clock's, which already keeps a cache warm: rightsize leaves the cache to it. */
-export const isCacheClock = (plugin: string | undefined) => /cache.?clock/i.test(plugin ?? '')
-
 /** True when a plugin's name is Groundwork's (`groundwork`, or `groundwork@<marketplace>`). */
 export const isGroundwork = (plugin: string | undefined) => plugin === 'groundwork' || (plugin ?? '').startsWith('groundwork@')

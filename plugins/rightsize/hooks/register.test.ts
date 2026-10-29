@@ -5877,7 +5877,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
   /** 18:00 local: the next 9:00 is 15 hours away. */
   const EVENING = new Date(2027, 0, 15, 18, 0, 0, 0).getTime()
   const GROUNDWORK = [{ name: 'groundwork:groundwork', description: 'Groundwork', source: 'plugin', plugin: 'groundwork' }]
-  const CACHE_CLOCK = [{ name: 'cache-clock:status', description: 'Cache Clock', source: 'plugin', plugin: 'cache-clock' }]
   type ColdOver = {
     stored?: Record<string, string>
     commands?: typeof GROUNDWORK
@@ -6531,23 +6530,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(coldLog(h)).toContain('keep warm skipped: a turn is running')
   })
 
-  test(`Cache Clock installed: nothing happens, whatever the row says, and the skip is logged (${surface})`, { timeoutMs: 30000, options: WARM8.options }, async ($, on) => {
-    const { h, d } = await coldSession($, on, { stored: WARM8.stored, commands: [...GROUNDWORK, ...CACHE_CLOCK] })
-    await coldTurn(d, 't1')
-    await h.advance(3 * HOUR)
-    expect(NOTHING_DONE(h)).toEqual(NONE)
-    expect(await bandText($, surface)).toBe('')
-    expect(coldLog(h)).toContain('skipped, Cache Clock is installed and keeps the cache warm')
-    await d.config('beforeCold', 'ask')
-    await coldOffer(h, d, 't2')
-    expect(await bandText($, surface), 'no offer either').toBe('')
-    await d.config('beforeCold', 'save a handoff')
-    await coldTurn(d, 't3')
-    await h.advance(3 * HOUR)
-    expect(NOTHING_DONE(h)).toEqual(NONE)
-  })
-
-  test(`a command list that fails is no Cache Clock: the offer shows, and the log says what happened (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`a command list that fails: the offer shows, and the log says what happened (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const { h, d } = await coldSession($, on)
     h.commandsFail = true
     await coldOffer(h, d, 't1')
@@ -6585,22 +6568,13 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(NOTHING_DONE(h)).toEqual(NONE)
   })
 
-  test(`profiles: Economy saves a handoff with Groundwork when the row is not set, and never keeps warm (${surface})`, { timeoutMs: 30000, options: inProfile('Economy').options }, async ($, on) => {
-    const { h, d } = await coldSession($, on, { stored: inProfile('Economy').stored, commands: GROUNDWORK })
-    await coldTurn(d, 't1')
-    expect(await bandText($, surface), 'no offer, no keep-warm line').toBe('')
-    await h.advance(57 * MIN)
-    expect(NOTHING_DONE(h)).toEqual({ forks: 0, submitted: 1, compactions: 0 })
-    expect(h.submitted.map(s => s.text)).toEqual(['wrap up'])
-    await h.advance(8 * HOUR)
-    expect(h.forks.length).toBe(0)
-  })
-
-  test(`profiles: Economy compacts when Groundwork is not installed (${surface})`, { timeoutMs: 30000, options: inProfile('Economy').options }, async ($, on) => {
+  test(`profiles: Economy asks when the row is not set (${surface})`, { timeoutMs: 30000, options: inProfile('Economy').options }, async ($, on) => {
     const { h, d } = await coldSession($, on, { stored: inProfile('Economy').stored })
-    await coldTurn(d, 't1')
-    await h.advance(57 * MIN)
-    expect(NOTHING_DONE(h)).toEqual({ forks: 0, submitted: 0, compactions: 1 })
+    await coldOffer(h, d, 't1')
+    expect(await bandText($, surface)).toContain('Cache goes cold at 19:00')
+    expect((await bandButtons($)).map(b => b[1])[0], 'the keep-warm offer').toMatch(/^Keep warm until /)
+    await h.advance(3 * HOUR)
+    expect(NOTHING_DONE(h)).toEqual(NONE)
   })
 
   test(`your setting wins: Quality compacts when you say compact (${surface})`, { timeoutMs: 30000, options: inProfile('Quality', { beforeCold: 'compact' }).options }, async ($, on) => {
@@ -6614,7 +6588,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const { h, d } = await coldSession($, on, { stored: inProfile('Economy', { beforeCold: 'keep warm 2 h' }).stored, commands: GROUNDWORK })
     await coldTurn(d, 't1')
     await h.advance(5 * HOUR)
-    expect(NOTHING_DONE(h), 'not Economy\'s handoff').toEqual({ forks: 2, submitted: 0, compactions: 0 })
+    expect(NOTHING_DONE(h), 'keep warm 2 h, not the profile\'s ask').toEqual({ forks: 2, submitted: 0, compactions: 0 })
   })
 
   test(`your setting wins: Balanced stays quiet when you say off, and Quality asks when you say ask (${surface})`, { timeoutMs: 30000, options: inProfile('Balanced', { beforeCold: 'off' }).options }, async ($, on) => {

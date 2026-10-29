@@ -99,7 +99,7 @@ import { BRIEF_MAX, cutRequest, parseRating, ratingPrompt, ratingSystem } from '
 import { isApprovalStep } from './approval'
 import { LIMITS, type Limits, type Signals, type Struggle, blockedError, callKey, isSensitivity, isTestCommand, noSignals, noteCall, oneUp, struggle } from './struggle'
 import { type Change, type HelperLine, type RunLine, type SwitchLine, type Windows, SESSION_TOTAL, SESSION_TOTAL_FROM, bandShareText, buildReport, costTag, parseLines, ratedInSession, sessionTotal, shareMessage, shareOf, usedTag, windowCostText, windowRates } from './report'
-import { COLD_MIN, PING_PROMPT, ROW_OF, WRAP_UP, alwaysText, breakEvenMs, cacheHeld, clockText, coldPlan, ignoredLately, isCacheClock, isGroundwork, keepWarmChoices, leadMs, learnedChoice, offerAt, offerText, pingCost, pingEvery, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText } from './warm'
+import { COLD_MIN, PING_PROMPT, ROW_OF, WRAP_UP, alwaysText, breakEvenMs, cacheHeld, clockText, coldPlan, ignoredLately, isGroundwork, keepWarmChoices, leadMs, learnedChoice, offerAt, offerText, pingCost, pingEvery, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText } from './warm'
 
 // Before a prompt is sent, a quick Haiku call rates the effort, the model and
 // the work needs on each model, and the cost model prices each route that fits. The first time
@@ -2104,14 +2104,14 @@ async function showCold($: EngineInterface, text: string, cold?: { id: string; l
   await setBand($, { ...lead, acted: true, coldText: text, ...(cold?.length ? { cold } : {}), ...(more?.length ? { coldMore: more } : {}) })
 }
 
-/** The other plugins that matter: Groundwork writes the handoff, Cache Clock keeps a cache warm itself. A listing that fails says neither. */
+/** The other plugin that matters: Groundwork writes the handoff. A listing that fails says it is not installed. */
 async function neighbours($: EngineInterface) {
   try {
     const list = await $.command.list()
-    return { groundwork: list.some(c => isGroundwork(c.plugin)), cacheClock: list.some(c => isCacheClock(c.plugin)) }
+    return { groundwork: list.some(c => isGroundwork(c.plugin)) }
   } catch (err) {
-    await log($, `before the cache goes cold: could not list the commands (${err instanceof Error ? err.message : String(err)}); Groundwork and Cache Clock taken as not installed`)
-    return { groundwork: false, cacheClock: false }
+    await log($, `before the cache goes cold: could not list the commands (${err instanceof Error ? err.message : String(err)}); Groundwork taken as not installed`)
+    return { groundwork: false }
   }
 }
 
@@ -2130,8 +2130,8 @@ async function armCold($: EngineInterface, gen: number, at: number, fn: () => Pr
 }
 
 // At a main turn's end, in the session's own model's prices. Skipped: rightsize off, the row off, no conversation
-// to speak of (a cold return under $0.50), one over 200K tokens (Claude Code compacts those itself), Cache Clock
-// installed, and a round already done after the person's last prompt.
+// to speak of (a cold return under $0.50), one over 200K tokens (Claude Code compacts those itself),
+// and a round already done after the person's last prompt.
 async function coldCheck($: EngineInterface) {
   await closeOffer($, 'ignored')
   cancelCold($, 'a newer turn ended')
@@ -2144,11 +2144,7 @@ async function coldCheck($: EngineInterface) {
   const tier = (await situation($)).tier
   const cold = idleCost(prices[tier], context).resend
   if (cold < COLD_MIN) return
-  const { groundwork, cacheClock } = await neighbours($)
-  if (cacheClock) {
-    await log($, `before the cache goes cold: skipped, Cache Clock is installed and keeps the cache warm (${money(cold)} cold, ${Math.round(context / 1000)}K tokens)`)
-    return
-  }
+  const { groundwork } = await neighbours($)
   const plan = coldPlan(coldMode, groundwork)
   const task = (await currentTask($))?.id
   const turn: ColdTurn = { endedAt: lastTurnAt || (await $.clock.now()), context, tier, cold, groundwork, ...(task ? { task } : {}), ends: {} }

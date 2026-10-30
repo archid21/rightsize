@@ -45,6 +45,8 @@ export type RightsizeBand = {
   rate?: string
   /** The confidence behind the band's `Confidence: high.`, for the ⋯ menu: `Confidence: high, 42 of your tasks, 4% missed.` Set only on a move to a cheaper model. */
   sure?: string
+  /** The dollar amounts behind the line, for the ⋯ menu: the band itself shows one unit. */
+  detail?: string
   /** The cache line, shown as a row of its own under `text`: the offer before the cache goes cold, or the keep-warm line. */
   coldText?: string
   /** The cache row's button (`id` says what pressing it does): the offer's first keep-warm choice, or the Stop of a keep-warm run. */
@@ -61,6 +63,8 @@ export type RightsizeQuestion = {
   question: string
   /** The options' labels, in order: the band numbers them after its own buttons. */
   options: string[]
+  /** What happens with no answer, drawn dim under the question: "this session only". */
+  ifNone?: string
 }
 
 declare module 'claude-code' {

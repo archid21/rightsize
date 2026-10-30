@@ -147,7 +147,7 @@ type Measured = Resized & { raw: number; parentRaw: number; spend: number; inWor
 /** A spawn the engine is starting: its first step can come before its id does. */
 type Spawning = { description: string; type: string; run?: Run; size?: Omit<Measured, 'spend'>; id?: string }
 type SubagentMode = 'cheaper when it fits' | 'off'
-type Question<V> = { header: string; question: string; options: readonly (readonly [string, V])[] }
+type Question<V> = { header: string; question: string; options: readonly (readonly [string, V])[]; ifNone?: string }
 
 // The four questions list the answer the profile prefers first, marked (Recommended). The answer's
 // value comes from its own option, so it is right whatever the order.
@@ -241,13 +241,17 @@ const qWorkflow: Question<WorkflowMode> = {
     ['Also right-size every workflow agent (one Haiku rating per agent; many may run on cheaper models at once)', 'right-size every agent'],
   ],
 }
-const qRemember: Question<boolean> = {
-  header: 'Remember',
-  question: 'Use these choices in every session?',
-  options: [
-    ['Yes, from now on', true],
-    ['Just this session', false],
-  ],
+/** Remember choices, naming the rules set so far: "Keep your rules (Lowering: lower automatically) in every session?" */
+const qRemember = (c: Choices): Question<boolean> => {
+  const set = (Object.keys(RULE_NAME) as (keyof Choices)[]).filter(r => c[r] !== undefined).map(r => `${RULE_NAME[r]}: ${ruleLabel(r, c[r])}`)
+  return {
+    header: 'Remember',
+    question: `Keep your rules${set.length ? ` (${set.join('; ')})` : ''} in every session?`,
+    options: [
+      ['Every session', true],
+      ['This session', false],
+    ],
+  }
 }
 
 /** Why the rater may have seen too little: the request was cut, or a task is in progress and Claude's last reply could not be read. */
@@ -916,7 +920,7 @@ let questionWait: QuestionWait = '30 seconds'
 const TIMED_OUT: unique symbol = Symbol('timed out')
 
 /** A band question's text with the sentence that says what happens when nobody answers before the next prompt. */
-const withNextPrompt = <V,>(q: Question<V>, what: string): Question<V> => ({ ...q, question: `${q.question} No answer by your next prompt: ${what}.` })
+const withNextPrompt = <V,>(q: Question<V>, what: string): Question<V> => ({ ...q, ifNone: what })
 /** A dialog question's text with the sentence that says what happens when nobody answers. */
 const withWait = <V,>(q: Question<V>, what: string): Question<V> => ({ ...q, question: `${q.question} No answer in ${questionWait}: ${what}.` })
 
@@ -964,6 +968,8 @@ type BandAsk = {
   until: 'turn' | 'prompt'
   /** False until it may show: a question asked while a prompt is sent shows once the turn ends. */
   ready: boolean
+  /** True once the band has shown it: a `prompt` question that never showed waits for a later band. */
+  shown?: boolean
   why: BandWhy
 }
 
@@ -981,7 +987,7 @@ async function bandCanAsk($: EngineInterface) {
 /** Puts a question on the band; `now` false waits for the main chat's turn to end. */
 async function askBand<V>($: EngineInterface, q: Question<V>, until: BandAsk['until'], now: boolean, why: BandWhy) {
   bandAsks.push({
-    q: { id: ++questionIds, header: q.header, question: q.question, options: q.options.map(o => o[0]) },
+    q: { id: ++questionIds, header: q.header, question: q.question, options: q.options.map(o => o[0]), ...(q.ifNone ? { ifNone: q.ifNone } : {}) },
     values: q.options.map(o => o[1]),
     until,
     ready: now,
@@ -1005,7 +1011,7 @@ async function answerBand($: EngineInterface, id: number, at: number | undefined
 
 /** The main chat's turn ended (`turn`), or a prompt came (`prompt`): those questions go, unanswered. */
 async function endBand($: EngineInterface, until: BandAsk['until']) {
-  const going = bandAsks.filter(x => x.until === until && (until === 'turn' || x.ready))
+  const going = bandAsks.filter(x => x.until === until && (until === 'turn' || (x.ready && x.shown)))
   for (const x of going) bandAsks.splice(bandAsks.indexOf(x), 1)
   if (until === 'turn') for (const x of bandAsks) x.ready = true
   await showQuestion($)
@@ -1069,7 +1075,19 @@ async function bandUnanswered($: EngineInterface, why: BandWhy) {
   }
 }
 
-const showQuestion = ($: EngineInterface) => $.state.set(QUESTION, bandAsks.find(x => x.ready)?.q ?? null).catch(() => undefined)
+/**
+ * Shows the first ready question. The band keeps to three rows: while it shows both the prompt's row and the cache
+ * row, only a question that ends with the turn (Stuck) shows; the others wait, and do not go at the next prompt unseen.
+ */
+async function showQuestion($: EngineInterface) {
+  const band = (await $.state.get(BAND).catch(() => undefined))?.value
+  const mode = (await $.state.get(BAND_MODE).catch(() => undefined))?.value ?? bandMode
+  const rows = bandRows(band, mode)
+  const full = rows.route && rows.cold
+  const ask = bandAsks.find(x => x.ready && (!full || x.until === 'turn'))
+  if (ask) ask.shown = true
+  await $.state.set(QUESTION, ask?.q ?? null).catch(() => undefined)
+}
 
 /** One log line for a band question that went unanswered. */
 const logUnanswered = ($: EngineInterface, header: string, did: string) => log($, `no answer on the band to ${header}: ${did}`)
@@ -1185,9 +1203,9 @@ async function saveChoices($: EngineInterface, next: Choices, explicit = false) 
   if (asked === true) return
   await $.state.set({ plugin: 'rightsize', key: 'rememberAsked' }, true)
   // It changes nothing about this prompt, so it waits on the band; an answer applies to the choices as they stand then.
-  if (await bandCanAsk($)) return askBand($, withNextPrompt(qRemember, 'this session only'), 'prompt', false, { kind: 'remember' })
+  if (await bandCanAsk($)) return askBand($, withNextPrompt(qRemember(next), 'this session only'), 'prompt', false, { kind: 'remember' })
   // A late answer is applied as an on-time one would be, to the choices as they stand then.
-  const yes = await askWithin($, withWait(qRemember, 'this session only'), async late => {
+  const yes = await askWithin($, withWait(qRemember(next), 'this session only'), async late => {
     if (late === true) await rememberAlways($)
   })
   if (yes === TIMED_OUT) {
@@ -1640,12 +1658,18 @@ const BAND_MODE = { plugin: 'rightsize', key: 'bandMode' } as const
 
 const isBandMode = (v: unknown): v is BandMode => v === 'when it acts' || v === 'always' || v === 'off'
 
+/** Which of the band's rows show: the prompt's row (also when there is nothing else to show) and the cache row. */
+function bandRows(band: Band | null | undefined, mode: BandMode) {
+  const shows = !!band && mode !== 'off' && (mode === 'when it acts' ? band.acted : true)
+  return { route: shows && (band.text !== '' || !band.coldText), cold: shows && !!band.coldText }
+}
+
 /** A line every band of this turn carries, so a later band (a hand-off's result) does not hide it: a miss just forgiven. */
 let bandNote: string | null = null
 
 /** `rating` is true for the band of a prompt being rated now: its run line is not in the log yet, so it counts as one more rated prompt toward SESSION_TOTAL_FROM. */
 const setBand = ($: EngineInterface, band: Band | null, rating = false) => {
-  if (!band) return $.state.set(BAND, null).catch(() => undefined)
+  if (!band) return $.state.set(BAND, null).catch(() => undefined).then(() => showQuestion($))
   // A band built from an earlier band's text already carries a total: drop it, and add the current one last.
   let text = band.text.replace(SESSION_TOTAL, '')
   let coldText = band.coldText?.replace(SESSION_TOTAL, '')
@@ -1657,12 +1681,13 @@ const setBand = ($: EngineInterface, band: Band | null, rating = false) => {
   if (total && text) text = after(text)
   else if (total && coldText) coldText = after(coldText)
   const { coldText: _, ...rest } = band
-  return $.state.set(BAND, { ...rest, text, ...(coldText ? { coldText } : {}) }).catch(() => undefined)
+  return $.state.set(BAND, { ...rest, text, ...(coldText ? { coldText } : {}) }).catch(() => undefined).then(() => showQuestion($))
 }
 
 async function setBandMode($: EngineInterface, v: BandMode) {
   bandMode = v
   await $.state.set(BAND_MODE, v).catch(() => undefined)
+  await showQuestion($)
 }
 
 const RULE_NAME: Record<keyof Choices, string> = { lower: 'Lowering', raise: 'Raising', up: 'Stronger model', down: 'Cheaper model' }
@@ -1805,7 +1830,7 @@ async function bandMenu($: EngineInterface, band: Band) {
   const mode: readonly [string, MenuChoice] = ['When the band shows…', { mode: true }]
   const all = [...own, ...cache, mode]
   const header = 'Options'
-  const question = `${band.sure ? `${band.sure} ` : ''}Options for this band. ${MENU_NOTE}`
+  const question = `${band.sure ? `${band.sure} ` : ''}${band.detail ? `${band.detail} ` : ''}Options for this band. ${MENU_NOTE}`
   let v: MenuChoice | undefined
   if (all.length <= ASK_MAX) v = await pick($, { header, question, options: all })
   else {
@@ -1827,10 +1852,11 @@ export function resizedText(xs: readonly Resized[]) {
   return `Ran ${n} on ${to} instead of ${from}.`
 }
 
-export function report(run: Pick<Run, 'tier' | 'stay'> & { delegate: NonNullable<Run['delegate']> }, actual: number, mode: 'api' | 'subscription') {
+/** The hand-off's result line. `short`, for the band: on a subscription the share only, as the ⋯ menu gives the dollars. */
+export function report(run: Pick<Run, 'tier' | 'stay'> & { delegate: NonNullable<Run['delegate']> }, actual: number, mode: 'api' | 'subscription', short = false) {
   const to = TIER_NAME[run.delegate.tier]
   const cur = TIER_NAME[run.tier]
-  if (mode === 'subscription') return `rightsize: Sent to ${to}. ${usageVs(actual, run.stay, cur)} (${money(actual)} vs ${money(run.stay)}).`
+  if (mode === 'subscription') return `rightsize: Sent to ${to}. ${usageVs(actual, run.stay, cur)}${short ? '' : ` (${money(actual)} vs ${money(run.stay)})`}.`
   const x = actual / Math.max(run.stay, 1e-9)
   const diff = actual <= run.stay ? `~${Math.round((1 - x) * 100)}% saved` : `~${x.toFixed(1)}x the cost`
   return `rightsize: Sent to ${to}. ${money(actual)} vs ~${money(run.stay)} on ${cur} (${diff}).`
@@ -1976,10 +2002,11 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
       ? `rightsize: Claude kept this in the main chat for steps only you can approve (push, publish, deploy, send); it ran on ${TIER_NAME[run.tier]} (${cost}).`
       : !delegated
       ? `rightsize: Claude did not hand this to a ${TIER_NAME[run.delegate.tier]} subagent; it ran on ${TIER_NAME[run.tier]} (${cost}).`
-      : report({ tier: run.tier, stay: run.stay, delegate: run.delegate }, actual, billing)
+      : report({ tier: run.tier, stay: run.stay, delegate: run.delegate }, actual, billing, bandMode !== 'off')
+    const detail = delegated && billing === 'subscription' ? { detail: `${money(actual)} vs ${money(run.stay)} on ${TIER_NAME[run.tier]}, API-equivalent.` } : {}
     // The band shows the result in place of a transcript line; with the band off, the line stays.
     if (bandMode === 'off') $.ui.log(text)
-    else await setBand($, { text: text.replace(/^rightsize: /, ''), acted: true, rule: run.delegate.dir, ...(delegated ? { rate: run.id } : {}) })
+    else await setBand($, { text: text.replace(/^rightsize: /, ''), acted: true, rule: run.delegate.dir, ...(delegated ? { rate: run.id } : {}), ...detail })
   }
   if (run.resized.length && bandMode !== 'off') {
     const text = resizedText(run.resized)
@@ -2016,7 +2043,7 @@ async function escalate($: EngineInterface, run: Run, sign: Struggle, from: Leve
     // The turn goes on at its effort while the band asks; a Raise applies from its next request, while the turn still runs.
     if (await bandCanAsk($)) {
       if (onBand('Stuck')) return
-      return askBand($, { ...q, question: `${q.question} The turn goes on at ${cur} until you answer.` }, 'turn', true, { kind: 'stuck', run, cur, to, sign, step })
+      return askBand($, { ...q, ifNone: `the turn goes on at ${cur}` }, 'turn', true, { kind: 'stuck', run, cur, to, sign, step })
     }
     const a = await askWithin($, withWait(q, `it keeps ${cur}`))
     if (a === TIMED_OUT) await logTimeout($, 'Stuck', `kept ${cur}`)
@@ -2061,11 +2088,12 @@ async function escalateHelper($: EngineInterface, id: string, w: Watch, sign: St
     if (onBand('Stuck')) return
     const q: Question<'yes' | 'no'> = {
       header: 'Stuck',
-      question: `A helper looks stuck: ${sign.why}. Raise its effort from ${cur} to ${to}? It uses one of this task's ${chances} retries. It goes on at ${cur} until you answer.`,
+      question: `A helper looks stuck: ${sign.why}. Raise its effort from ${cur} to ${to}? It uses one of this task's ${chances} retries.`,
       options: [
         [`Raise to ${to}`, 'yes'],
         [`Keep ${cur}`, 'no'],
       ],
+      ifNone: `it goes on at ${cur}`,
     }
     return askBand($, q, 'turn', true, { kind: 'helper', id, w, cur, to, sign })
   } else if (rule !== 'auto') {
@@ -2149,10 +2177,10 @@ function usageCostText(d: number, rates: Awaited<ReturnType<typeof windowPerDoll
   return billing === 'api' ? `about ${money(d)}` : windowCostText(d, rates)
 }
 
-/** What coming back cold costs, for the band's offer: "about $1.10" on the API; on a subscription "~2% ($1.10)" once runs show the rate, else the dollars, labelled. */
+/** What coming back cold costs, for the band's offer: "about $1.10" on the API; on a subscription "~2%" once runs show the rate, else the dollars, labelled. */
 function coldCostText(d: number, rates: Awaited<ReturnType<typeof windowPerDollar>>) {
   if (billing === 'api') return `about ${money(d)}`
-  return rates === undefined ? `about ${money(d)} API-equivalent` : `${bandShareText(shareOf(d, rates))} (${money(d)})`
+  return rates === undefined ? `about ${money(d)} API-equivalent` : bandShareText(shareOf(d, rates))
 }
 
 // After the cache expired, the next request writes the whole conversation again. Past
@@ -2362,7 +2390,7 @@ async function offerCold($: EngineInterface, turn: ColdTurn) {
   const rates = billing === 'subscription' ? await windowPerDollar($) : undefined
   const ping = pingCost(prices[turn.tier], turn.context)
   const usual = usualStart(runLog, now)
-  const choices = keepWarmChoices({ ttl: cacheTtl, endedAt: turn.endedAt, cold: turn.cold, ping, startMinutes: usual.minutes, tag: d => costTag(d, billing === 'subscription', rates) })
+  const choices = keepWarmChoices({ ttl: cacheTtl, endedAt: turn.endedAt, cold: turn.cold, ping, startMinutes: usual.minutes, tag: d => (billing === 'subscription' && rates ? bandShareText(shareOf(d, rates)) : costTag(d, billing === 'subscription', rates)) })
   for (const c of choices) if (c.endsAt !== undefined) turn.ends[c.id] = c.endsAt
   const text = offerText({ ttl: cacheTtl, endedAt: turn.endedAt, cost: coldCostText(turn.cold, rates), breakEven: breakEvenMs(turn.cold, ping, cacheTtl) })
   const all: ColdButton[] = [
@@ -3897,78 +3925,88 @@ export const register: Register = (on, options) => {
     return result
   }).catch(($, e, next) => next(e))
 
-  // One row above the prompt: what rightsize did, then buttons to retry it at the original effort, change
-  // the rule for this situation, choose when the band shows, or close it.
-  // A timed question takes the band while it waits, alone, so its options are the keys 1 to 4.
+  // Above the prompt, one row per topic: what rightsize did with the prompt, the cache, and a question. Each row
+  // is a dim label (Prompt, Cache, the question's header), one line, and that row's buttons. With two rows or
+  // more, a header line carries ⋯ and × for all of them; a single row carries them at its end.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (off || e.props.hasSurvey) return next(e)
     const question = (await $.state.get(QUESTION).catch(() => undefined))?.value
     const mode = (await $.state.get(BAND_MODE).catch(() => undefined))?.value ?? bandMode
     const band = (await $.state.get(BAND).catch(() => undefined))?.value
-    const shows = !!band && mode !== 'off' && (mode === 'when it acts' ? band.acted : true)
-    if (!shows && !question) return next(e)
+    const shown = bandRows(band, mode)
+    if (!shown.route && !shown.cold && !question) return next(e)
     const { Box, Button, Text } = $.ui.resolve(e)
-    // A question is the band's last row; its options take the number keys after the band's own buttons.
-    const questionRow = (from: number) =>
-      question ? (
-        <Box key="question" flexDirection="row" flexWrap="wrap" columnGap={1}>
-          <Text>
-            <Text dimColor>rightsize · {question.header}: </Text>
-            {question.question}
-          </Text>
-          {question.options.map((label, i) => (
-            <Button key={`q-${i}`} label={label} {...(from + i < 9 ? { hotkey: String(from + i + 1) } : {})} onPress={() => void answerBand($, question.id, i)} />
-          ))}
-          <Button key="q-close" label="×" role="dismiss" onPress={() => void answerBand($, question.id, undefined)} />
-        </Box>
-      ) : null
-    if (!shows || !band) return <Box flexDirection="column">{questionRow(0)}</Box>
+    type Row = { key: string; label: string; text: string; buttons: ReturnType<typeof Button>[]; note?: string }
+    const rows: Row[] = []
     const buttons: { key: string; label: string; press: () => Promise<unknown> }[] = []
-    if (band.canRetry) buttons.push({ key: 'retry', label: 'Retry at original effort', press: async () => $.ui.toast(await retry($)) })
-    if (band.canStay && lastAuto?.kind === 'route') buttons.push({ key: 'stay', label: `Run on ${lastAuto.model}`, press: async () => $.ui.toast(await runOnCurrent($)) })
-    if (band.canClear) buttons.push({ key: 'clear', label: 'Clear', press: async () => $.ui.toast(await clearSession($)) })
-    if (band.tip) {
-      const tip = band.tip
-      buttons.push({ key: 'tip-later', label: 'Not now', press: () => snoozeStart($, tip) })
+    if (band && shown.route) {
+      if (band.canRetry) buttons.push({ key: 'retry', label: 'Retry at original effort', press: async () => $.ui.toast(await retry($)) })
+      if (band.canStay && lastAuto?.kind === 'route') buttons.push({ key: 'stay', label: `Run on ${lastAuto.model}`, press: async () => $.ui.toast(await runOnCurrent($)) })
+      if (band.canClear) buttons.push({ key: 'clear', label: 'Clear', press: async () => $.ui.toast(await clearSession($)) })
+      if (band.tip) {
+        const tip = band.tip
+        buttons.push({ key: 'tip-later', label: 'Not now', press: () => snoozeStart($, tip) })
+      }
+      if (band.rate) {
+        const ref = band.rate
+        buttons.push({ key: 'good', label: '👍', press: () => giveFeedback($, ref, 'up') })
+        buttons.push({ key: 'bad', label: '👎', press: () => giveFeedback($, ref, 'down') })
+      }
     }
-    if (band.rate) {
-      const ref = band.rate
-      buttons.push({ key: 'good', label: '👍', press: () => giveFeedback($, ref, 'up') })
-      buttons.push({ key: 'bad', label: '👎', press: () => giveFeedback($, ref, 'down') })
+    // Number keys 1-9 run down the rows in order.
+    let keys = 0
+    const numbered = (list: typeof buttons) =>
+      list.map(b => {
+        const n = ++keys
+        return <Button key={b.key} label={b.label} {...(n <= 9 ? { hotkey: String(n) } : {})} onPress={() => void b.press()} />
+      })
+    if (band && shown.route) rows.push({ key: 'route', label: 'Prompt', text: band.text, buttons: numbered(buttons) })
+    if (band && shown.cold && band.coldText) {
+      const cold = (band.cold ?? []).map(c => ({ key: `cold-${c.id}`, label: c.label, press: () => pressCold($, c.id) }))
+      rows.push({ key: 'cold', label: 'Cache', text: band.coldText, buttons: numbered(cold) })
     }
-    const coldButtons = (band.cold ?? []).map(c => ({ key: `cold-${c.id}`, label: c.label, press: () => pressCold($, c.id) }))
-    // Number keys 1-9 run down both rows in order.
-    const rowButtons = (list: typeof buttons, from: number) =>
-      list.map((b, i) => <Button key={b.key} label={b.label} {...(from + i < 9 ? { hotkey: String(from + i + 1) } : {})} onPress={() => void b.press()} />)
+    if (question) {
+      const options = question.options.map((label, i) => ({ key: `q-${i}`, label, press: () => answerBand($, question.id, i) }))
+      rows.push({ key: 'question', label: question.header, text: question.question, buttons: numbered(options), ...(question.ifNone ? { note: `No answer: ${question.ifNone}.` } : {}) })
+    }
+    // × closes every row: a question closed this way gets its no-answer default. A question alone has no ⋯.
+    const close = async () => {
+      if (band && (shown.route || shown.cold)) await setBand($, null)
+      if (question) await answerBand($, question.id, undefined)
+    }
     const ends = [
-      <Button key="mode" label="⋯" onPress={() => void bandMenu($, band)} />,
-      <Button key="close" label="×" role="dismiss" onPress={() => void setBand($, null)} />,
+      ...(band && (shown.route || shown.cold) ? [<Button key="mode" label="⋯" onPress={() => void bandMenu($, band)} />] : []),
+      <Button key={question && !shown.route && !shown.cold ? 'q-close' : 'close'} label="×" role="dismiss" onPress={() => void close()} />,
     ]
-    // Row 1 is the route's line; the cache line is row 2. With no route line the cache row is the only one, and has ⋯ and ×.
-    const routeRow = band.text !== '' || !band.coldText
+    const single = rows.length === 1
+    // The labels line up in one column, as wide as the longest.
+    const width = Math.max(...rows.map(r => r.label.length))
+    const drawRow = (r: Row) => (
+      <Box key={r.key} flexDirection="row" columnGap={1}>
+        <Box flexShrink={0} {...(single ? {} : { width })}>
+          <Text dimColor>{single ? `rightsize · ${r.label}` : r.label}</Text>
+        </Box>
+        <Box flexDirection="column" flexShrink={1}>
+          <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
+            <Text>{r.text}</Text>
+            {r.buttons}
+            {single ? ends : null}
+          </Box>
+          {r.note ? <Text dimColor>{r.note}</Text> : null}
+        </Box>
+      </Box>
+    )
     return (
-      <Box flexDirection="column">
-        {routeRow ? (
-          <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
-            <Text>
-              <Text dimColor>rightsize: </Text>
-              {band.text}
-            </Text>
-            {rowButtons(buttons, 0)}
-            {ends}
+      <Box flexDirection="column" rowGap="xs">
+        {single ? null : (
+          <Box key="head" flexDirection="row" justifyContent="space-between">
+            <Text dimColor>rightsize</Text>
+            <Box flexDirection="row" columnGap={1}>
+              {ends}
+            </Box>
           </Box>
-        ) : null}
-        {band.coldText ? (
-          <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
-            <Text>
-              {routeRow ? null : <Text dimColor>rightsize: </Text>}
-              {band.coldText}
-            </Text>
-            {rowButtons(coldButtons, buttons.length)}
-            {routeRow ? null : ends}
-          </Box>
-        ) : null}
-        {questionRow(buttons.length + (band.coldText ? coldButtons.length : 0))}
+        )}
+        {rows.map(drawRow)}
       </Box>
     )
   })

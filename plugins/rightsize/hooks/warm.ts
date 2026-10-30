@@ -148,7 +148,7 @@ const DURATIONS: Record<'long' | 'short', readonly { id: string; ms: number; nam
  * cache they are 2 h, 8 h and until the person's usual start time; on a 5-minute cache 30 min and 1 h, so a 5-minute
  * cache never offers more than break-even. `tag` writes a cost for a button.
  *
- * Each label gives the clock time keeping warm ends ("Keep warm until 16:00 · $0.06"), counted from the turn's end, so it
+ * Each label gives the clock time keeping warm ends ("Keep warm to 16:00 ($0.06)"), counted from the turn's end, so it
  * never goes stale; " tomorrow" follows when that is a later calendar day than the turn's end. Two choices that end at the
  * same minute are one choice: the first stays.
  */
@@ -163,7 +163,7 @@ export function keepWarmChoices(o: { ttl: number; endedAt: number; cold: number;
     const until = `${clockText(end)}${sameDay(end, o.endedAt) ? '' : ' tomorrow'}`
     if (seen.has(until)) return
     seen.add(until)
-    out.push({ id, label: `Keep warm until ${until} · ${o.tag(plan.cost)}`, endsAt: end, cost: plan.cost })
+    out.push({ id, label: `Keep warm to ${until} (${o.tag(plan.cost)})`, endsAt: end, cost: plan.cost })
   }
   for (const d of DURATIONS[long ? 'long' : 'short']) add(d.id, d.ms)
   if (long) {
@@ -175,14 +175,14 @@ export function keepWarmChoices(o: { ttl: number; endedAt: number; cold: number;
 }
 
 /**
- * The offer's line: "Cache goes cold at 14:55 · coming back cold costs ~2% ($1.10)". `endedAt` is when the turn ended; the
- * cache goes cold one `ttl` later, a clock time that stays true however long the row shows. `cost` is the cold cost as the
- * caller writes it ("about $1.10", "~2% ($1.10)"). On a 5-minute cache it adds where keeping warm stops paying, also as a
- * clock time.
+ * The offer's line, under the band's Cache label: "Goes cold at 14:55 · coming back after costs ~2%". `endedAt` is when
+ * the turn ended; the cache goes cold one `ttl` later, a clock time that stays true however long the row shows. `cost` is
+ * the cold cost as the caller writes it ("about $1.10", "~2%"). On a 5-minute cache it adds where keeping warm stops
+ * paying, also as a clock time.
  */
 export function offerText(o: { ttl: number; endedAt: number; cost: string; breakEven: number }) {
-  const head = `Cache goes cold at ${clockText(o.endedAt + o.ttl)} · coming back cold costs ${o.cost}`
-  return o.ttl >= HOUR ? head : `${head}. Keeping warm past ${clockText(o.endedAt + o.breakEven)} costs more than coming back cold.`
+  const head = `Goes cold at ${clockText(o.endedAt + o.ttl)} · coming back after costs ${o.cost}`
+  return o.ttl >= HOUR ? head : `${head}. Keeping warm past ${clockText(o.endedAt + o.breakEven)} costs more.`
 }
 
 /** How long after a turn ends the offer shows on a cache of 1 hour or more: the person may be about to send a prompt, and the offer would only be in the way. */

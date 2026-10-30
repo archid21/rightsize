@@ -1,7 +1,7 @@
 # Project map
 
-Goal: (one or two lines)
-Scope: (what is in, what is out)
+Goal: Lowest cost without sacrificing quality. rightsize picks the model and effort level for each prompt in Claude Code, and shows what that saved.
+Scope: In: model and effort choice, hand-offs to subagents, the cost report, and keeping the prompt cache warm. Out: prompt rewriting, plan or memory upkeep (Groundwork's job), task dashboards, and agents other than Claude Code.
 
 One line per record. Follow the link; do not add content here.
 

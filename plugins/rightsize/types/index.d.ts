@@ -53,6 +53,16 @@ export type RightsizeBand = {
   coldMore?: { id: string; label: string }[]
 }
 
+/** A question the band asks while the work goes on: the next prompt, or the end of the turn, takes it away. */
+export type RightsizeQuestion = {
+  /** Which asking this is: a press of an older one's button does nothing. */
+  id: number
+  header: string
+  question: string
+  /** The options' labels, in order: the band numbers them after its own buttons. */
+  options: string[]
+}
+
 declare module 'claude-code' {
   interface PluginState {
     'rightsize': {
@@ -76,6 +86,8 @@ declare module 'claude-code' {
       band: RightsizeBand | null
       /** When the band shows. */
       bandMode: RightsizeBandMode
+      /** The question the band shows now; null when none is waiting. */
+      question: RightsizeQuestion | null
       /** Counts the changes made in the /rightsize settings pane: the pane reads it while it draws, so a change draws it again with the new values. */
       menu: number
     }

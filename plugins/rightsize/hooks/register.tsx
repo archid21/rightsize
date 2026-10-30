@@ -4,6 +4,7 @@ import type {
   RightsizeBandMode as BandMode,
   RightsizeChoices as Choices,
   RightsizeLevel as Level,
+  RightsizeQuestion as BandQuestion,
   RightsizeTaskType as TaskType,
   RightsizeTier as Tier,
 } from '../types'
@@ -229,6 +230,7 @@ const qBand: Question<BandMode> = {
   ],
 }
 type WorkflowMode = 'pause rightsize' | 'follow my rules' | 'right-size every agent'
+const isWorkflowMode = (v: unknown): v is WorkflowMode => v === 'pause rightsize' || v === 'follow my rules' || v === 'right-size every agent'
 const qWorkflow: Question<WorkflowMode> = {
   header: 'Workflow',
   question:
@@ -874,9 +876,10 @@ async function knowBilling($: EngineInterface, mayAsk: boolean) {
   if (seen) return saveBilling($, seen, 'detected')
   if (!mayAsk || billingAsked || lastContext === 0) return
   billingAsked = true
+  // It changes only the reports, so it waits on the band and the prompt goes on. Not answered: not saved, and asked again next session.
+  if (await bandCanAsk($)) return askBand($, withNextPrompt(qBilling, 'reports use API prices for now'), 'prompt', false, { kind: 'billing' })
   const v = await askWithin($, withWait(qBilling, 'reports use API prices for now'), late => answerBilling($, late))
   if (v === TIMED_OUT) {
-    // Not saved: it is asked again next session.
     billing = 'api'
     await logTimeout($, 'Billing', 'reports use API prices for this session; not saved')
   } else if (v !== undefined) await answerBilling($, v)
@@ -905,17 +908,22 @@ async function pickFrom<V>($: EngineInterface, q: Question<V>, header = q.header
   return v === more ? pickFrom($, { ...q, options: q.options.slice(ASK_MAX - 1) }, moreHeader, moreHeader) : v
 }
 
-/** How long a question waits for the person before rightsize takes the choice that changes nothing and costs nothing. */
-const QUESTION_WAIT_MS = 120_000
-const WAIT_MINUTES = QUESTION_WAIT_MS / 60_000
+/** Question wait in /config: how long a question waits before rightsize takes the choice that changes nothing and costs nothing. */
+const QUESTION_WAITS = { '30 seconds': 30_000, '1 minute': 60_000, '2 minutes': 120_000 } as const
+type QuestionWait = keyof typeof QUESTION_WAITS
+const isQuestionWait = (v: unknown): v is QuestionWait => typeof v === 'string' && Object.hasOwn(QUESTION_WAITS, v)
+let questionWait: QuestionWait = '30 seconds'
 const TIMED_OUT: unique symbol = Symbol('timed out')
 
-/** A question's text with the sentence that says what happens when nobody answers. */
-const withWait = <V,>(q: Question<V>, what: string): Question<V> => ({ ...q, question: `${q.question} No answer in ${WAIT_MINUTES} minutes: ${what}.` })
+/** A band question's text with the sentence that says what happens when nobody answers before the next prompt. */
+const withNextPrompt = <V,>(q: Question<V>, what: string): Question<V> => ({ ...q, question: `${q.question} No answer by your next prompt: ${what}.` })
+/** A dialog question's text with the sentence that says what happens when nobody answers. */
+const withWait = <V,>(q: Question<V>, what: string): Question<V> => ({ ...q, question: `${q.question} No answer in ${questionWait}: ${what}.` })
 
-// Asks, and waits QUESTION_WAIT_MS for the answer. Past that it returns TIMED_OUT, so the caller takes its
-// safe default, and an answer that comes later goes to `onLate` (without one, a toast says it came too late).
-// A dismissed question stays undefined, as with pick().
+// Asks in the engine's dialog, and waits Question wait for the answer. Past that it returns TIMED_OUT, so the caller
+// takes its safe default; the dialog, which nothing can close, stays, and an answer that comes later goes to `onLate`
+// (without one, a toast says it came too late). A dismissed question stays undefined, as with pick().
+// For the questions that must be answered before the work goes on: the band cannot draw while the hook waits.
 async function askWithin<V>($: EngineInterface, q: Question<V>, onLate?: (v: V) => void | Promise<void>): Promise<V | undefined | typeof TIMED_OUT> {
   let late = false
   const asked = pick($, q).then(v => {
@@ -924,14 +932,150 @@ async function askWithin<V>($: EngineInterface, q: Question<V>, onLate?: (v: V) 
     }
     return v
   })
-  const waited = $.clock.sleep(QUESTION_WAIT_MS).then((): typeof TIMED_OUT => TIMED_OUT, (): typeof TIMED_OUT => TIMED_OUT)
+  const waited = $.clock.sleep(QUESTION_WAITS[questionWait]).then((): typeof TIMED_OUT => TIMED_OUT, (): typeof TIMED_OUT => TIMED_OUT)
   const a = await Promise.race([asked, waited])
   if (a === TIMED_OUT) late = true
   return a
 }
 
-/** One log line for a question nobody answered in time. */
-const logTimeout = ($: EngineInterface, header: string, did: string) => log($, `no answer in ${WAIT_MINUTES} minutes to ${header}: ${did}`)
+// ---- Questions on the band ----------------------------------------------------
+
+// A question that need not stop the work is a row on the band, under what rightsize did, and nobody waits for it:
+// the work goes on with the question's safe default, and the answer is applied when it comes. Nothing has a hook
+// open then, so the band can draw it and its buttons answer it. A question lasts until the main chat's turn ends
+// (`turn`: Stuck, a stuck helper) or until the next prompt (`prompt`: Remember choices, Reports, Share, Workflow).
+// Unanswered by then, its `gone` applies the default. Without the band (Band "Never", or a surface that does not
+// draw it, such as the mobile app) the caller asks in the engine's dialog, as before.
+
+const QUESTION = { plugin: 'rightsize', key: 'question' } as const
+
+/** What a band question is about, with what its answer needs. */
+type BandWhy =
+  | { kind: 'billing' }
+  | { kind: 'remember' }
+  | { kind: 'share'; at: number; last: boolean; next: number | undefined }
+  | { kind: 'workflow' }
+  | { kind: 'stuck'; run: Run; cur: Level; to: Level; sign: Struggle; step: number }
+  | { kind: 'helper'; id: string; w: Watch; cur: Level; to: Level; sign: Struggle }
+
+type BandAsk = {
+  q: BandQuestion
+  values: readonly unknown[]
+  until: 'turn' | 'prompt'
+  /** False until it may show: a question asked while a prompt is sent shows once the turn ends. */
+  ready: boolean
+  why: BandWhy
+}
+
+/** The band's questions, oldest first: the band shows the first one that is ready. */
+const bandAsks: BandAsk[] = []
+let questionIds = 0
+
+/** The band can ask: it is on (not Band "Never") and every surface draws it (the terminal and the desktop app). */
+async function bandCanAsk($: EngineInterface) {
+  if (bandMode === 'off') return false
+  const surfaces = await $.session.surfaces().catch(() => [])
+  return surfaces.length > 0 && surfaces.every(x => x === 'terminal' || x === 'desktop')
+}
+
+/** Puts a question on the band; `now` false waits for the main chat's turn to end. */
+async function askBand<V>($: EngineInterface, q: Question<V>, until: BandAsk['until'], now: boolean, why: BandWhy) {
+  bandAsks.push({
+    q: { id: ++questionIds, header: q.header, question: q.question, options: q.options.map(o => o[0]) },
+    values: q.options.map(o => o[1]),
+    until,
+    ready: now,
+    why,
+  })
+  await showQuestion($)
+}
+
+/** True when a question with this header waits on the band. */
+const onBand = (header: string) => bandAsks.some(x => x.q.header === header)
+
+/** Question `id` answered with option `at` (undefined: ×); the next one shows. A press on one already gone does nothing. */
+async function answerBand($: EngineInterface, id: number, at: number | undefined) {
+  const i = bandAsks.findIndex(x => x.q.id === id)
+  if (i < 0) return
+  const [done] = bandAsks.splice(i, 1)
+  if (!done) return
+  await showQuestion($)
+  await bandAnswered($, done.why, at === undefined ? undefined : done.values[at]).catch(() => undefined)
+}
+
+/** The main chat's turn ended (`turn`), or a prompt came (`prompt`): those questions go, unanswered. */
+async function endBand($: EngineInterface, until: BandAsk['until']) {
+  const going = bandAsks.filter(x => x.until === until && (until === 'turn' || x.ready))
+  for (const x of going) bandAsks.splice(bandAsks.indexOf(x), 1)
+  if (until === 'turn') for (const x of bandAsks) x.ready = true
+  await showQuestion($)
+  for (const x of going) await bandUnanswered($, x.why).catch(() => undefined)
+}
+
+/** A band question's answer (undefined: ×), applied to things as they stand now. */
+async function bandAnswered($: EngineInterface, why: BandWhy, v: unknown) {
+  switch (why.kind) {
+    case 'billing':
+      if (isBilling(v)) await answerBilling($, v)
+      return
+    case 'remember':
+      if (v === true) await rememberAlways($)
+      // ×: asked again after the next answer.
+      else if (v === undefined) await $.state.set({ plugin: 'rightsize', key: 'rememberAsked' }, false)
+      return
+    case 'share':
+      if (v === undefined) return bandUnanswered($, why)
+      return answerShare($, v === true)
+    case 'workflow':
+      await log($, `workflow question: ${v ?? 'dismissed'}`)
+      if (isWorkflowMode(v)) await putConfig($, 'workflows', v)
+      return
+    case 'stuck': {
+      const { run, cur, to, sign, step } = why
+      // Raised only while that turn still runs; it applies from its next request.
+      if (v !== 'yes' || active !== run || run.raisedTo === to) return
+      return raiseRun($, run, cur, to, sign, step)
+    }
+    case 'helper': {
+      const { id, w, cur, to, sign } = why
+      if (v === 'no') return log($, `helper ${id} struggling (${sign.why}): kept at ${cur}, as you chose`)
+      // Gone back, or done: nothing left to raise.
+      if (v !== 'yes' || w.returned || watches.get(id) !== w || w.raisedTo === to) return
+      if (!(await useChance($, w.task))) return log($, `helper ${id} not raised: the task has no retry left`)
+      return raiseHelper($, id, w, cur, to, sign)
+    }
+  }
+}
+
+/** A band question that went unanswered: its default stands. */
+async function bandUnanswered($: EngineInterface, why: BandWhy) {
+  switch (why.kind) {
+    case 'billing':
+      // Not saved: asked again next session.
+      billing = 'api'
+      return logUnanswered($, 'Billing', 'reports use API prices for this session; not saved')
+    case 'remember':
+      return logUnanswered($, 'Remember', 'these choices stay for this session only')
+    case 'share':
+      await log($, `share question: no answer at ${why.at} rated prompts; ${why.next === undefined ? 'not asked again' : `asked again at ${why.next}`}`)
+      if (why.last) await $.store.set('shareAsked', true).catch(() => undefined)
+      return
+    case 'workflow':
+      return logUnanswered($, 'Workflow', 'rightsize paused for this workflow; not saved')
+    case 'stuck':
+      return logUnanswered($, 'Stuck', `kept ${why.cur}`)
+    case 'helper':
+      return logUnanswered($, 'Stuck', `helper ${why.id} kept at ${why.cur}`)
+  }
+}
+
+const showQuestion = ($: EngineInterface) => $.state.set(QUESTION, bandAsks.find(x => x.ready)?.q ?? null).catch(() => undefined)
+
+/** One log line for a band question that went unanswered. */
+const logUnanswered = ($: EngineInterface, header: string, did: string) => log($, `no answer on the band to ${header}: ${did}`)
+
+/** One log line for a dialog question nobody answered in time. */
+const logTimeout = ($: EngineInterface, header: string, did: string) => log($, `no answer in ${questionWait} to ${header}: ${did}`)
 
 const RULE_IDS = Object.keys(RULE_KEYS) as (keyof Choices)[]
 
@@ -965,6 +1109,7 @@ function writeSetting($: EngineInterface, key: SettingKey, value: string): Promi
     case 'beforeCold': return $.config.set({ key: 'rightsize.beforeCold', value: value })
     case 'billing': return $.config.set({ key: 'rightsize.billing', value: value })
     case 'band': return $.config.set({ key: 'rightsize.band', value: value })
+    case 'questionWait': return $.config.set({ key: 'rightsize.questionWait', value: value })
     case 'share': return $.config.set({ key: 'rightsize.share', value: value })
     case 'priceCheck': return $.config.set({ key: 'rightsize.priceCheck', value: value })
   }
@@ -1007,12 +1152,17 @@ async function keepChoices($: EngineInterface, next: Choices) {
 
 // `explicit`: the person set these rules on purpose (a band button, /rightsize settings), so the
 // rows show them at once; an answer to a question is kept only the way Remember choices says.
-// A Workflow call the person has not been asked about yet: asked before it starts, once per call. The answer is
-// Workflows in /config, and the person's. Closed without an answer: paused for this workflow, asked at the next.
+// A Workflow call the person has not been asked about yet, once per call. The answer is Workflows in /config, and the
+// person's. Not answered: paused for this workflow, asked at the next. On the band the workflow starts at once,
+// paused, and an answer applies from then on; in the dialog it is asked before the workflow starts.
 async function askWorkflow($: EngineInterface, id: string | undefined) {
   if (id !== undefined) {
     if (askedWorkflows.has(id)) return
     askedWorkflows.add(id)
+  }
+  if (await bandCanAsk($)) {
+    if (onBand('Workflow')) return
+    return askBand($, withNextPrompt(qWorkflow, 'rightsize stays paused for this workflow'), 'prompt', true, { kind: 'workflow' })
   }
   const v = await askWithin($, withWait(qWorkflow, 'rightsize pauses for this workflow'), async late => void (await putConfig($, 'workflows', late)))
   if (v === TIMED_OUT) {
@@ -1034,12 +1184,11 @@ async function saveChoices($: EngineInterface, next: Choices, explicit = false) 
   const asked = (await $.state.get({ plugin: 'rightsize', key: 'rememberAsked' }).catch(() => undefined))?.value
   if (asked === true) return
   await $.state.set({ plugin: 'rightsize', key: 'rememberAsked' }, true)
+  // It changes nothing about this prompt, so it waits on the band; an answer applies to the choices as they stand then.
+  if (await bandCanAsk($)) return askBand($, withNextPrompt(qRemember, 'this session only'), 'prompt', false, { kind: 'remember' })
   // A late answer is applied as an on-time one would be, to the choices as they stand then.
   const yes = await askWithin($, withWait(qRemember, 'this session only'), async late => {
-    if (late !== true) return
-    await $.store.set('remember', true).catch(() => undefined)
-    await keepChoices($, await choices($))
-    await putConfig($, 'remember', 'every session')
+    if (late === true) await rememberAlways($)
   })
   if (yes === TIMED_OUT) {
     await logTimeout($, 'Remember', 'these choices stay for this session only')
@@ -1051,6 +1200,13 @@ async function saveChoices($: EngineInterface, next: Choices, explicit = false) 
     // Dismissed: ask again after the next answer.
     await $.state.set({ plugin: 'rightsize', key: 'rememberAsked' }, false)
   }
+}
+
+/** Remember choices: every session, from the choices as they stand now. */
+async function rememberAlways($: EngineInterface) {
+  await $.store.set('remember', true).catch(() => undefined)
+  await keepChoices($, await choices($))
+  await putConfig($, 'remember', 'every session')
 }
 
 // A rule row changed in /config: the rule follows it at once. "not set" clears the rule, so its question comes back.
@@ -1849,17 +2005,27 @@ async function escalate($: EngineInterface, run: Run, sign: Struggle, from: Leve
   }
   if (rule === 'never') return
   if (rule !== 'auto') {
-    const a = await askWithin($, withWait({
+    const q: Question<'yes' | 'no'> = {
       header: 'Stuck',
       question: `Claude looks stuck: ${sign.why}. Raise effort from ${cur} to ${to} for the rest of this turn?`,
       options: [
         [`Raise to ${to} for this turn`, 'yes'],
         [`Keep ${cur}`, 'no'],
       ],
-    }, `it keeps ${cur}`))
+    }
+    // The turn goes on at its effort while the band asks; a Raise applies from its next request, while the turn still runs.
+    if (await bandCanAsk($)) {
+      if (onBand('Stuck')) return
+      return askBand($, { ...q, question: `${q.question} The turn goes on at ${cur} until you answer.` }, 'turn', true, { kind: 'stuck', run, cur, to, sign, step })
+    }
+    const a = await askWithin($, withWait(q, `it keeps ${cur}`))
     if (a === TIMED_OUT) await logTimeout($, 'Stuck', `kept ${cur}`)
     if (a !== 'yes') return
   }
+  await raiseRun($, run, cur, to, sign, step)
+}
+
+async function raiseRun($: EngineInterface, run: Run, cur: Level, to: Level, sign: Struggle, step: number) {
   run.raisedTo = to
   run.escalations.push({ step, from: cur, to, why: sign.why })
   await setBand($, { text: `Effort raised mid-turn: ${cur} → ${to} (${sign.why}).`, acted: true, rule: 'raise' })
@@ -1869,8 +2035,8 @@ async function escalate($: EngineInterface, run: Run, sign: Struggle, from: Leve
 
 // A helper is struggling: only more effort for struggling helps, and only from the task's retry
 // budget. Raising decides as it does for the main chat: automatic raises, Never leaves it alone, and
-// otherwise the person is asked; no answer in QUESTION_WAIT_MS sends the helper back, so a helper running
-// while nobody watches does not wait for ever. When no chance or no level is left, it goes back to the
+// otherwise the person is asked. On the band the helper goes on at its effort while it asks, and a Raise applies while
+// it still runs; in the dialog no answer within Question wait sends the helper back, so a helper does not wait for ever. When no chance or no level is left, it goes back to the
 // main chat. Blocked errors are not struggling; a sign with only blocked errors behind it can't be told apart
 // from them, so it neither raises nor counts as a miss. Each sign is weighed once, as in escalate().
 async function escalateHelper($: EngineInterface, id: string, w: Watch, sign: Struggle) {
@@ -1891,37 +2057,49 @@ async function escalateHelper($: EngineInterface, id: string, w: Watch, sign: St
   if (!to) why = `${cur} is as high as it goes`
   // No chance left: nothing to ask about.
   else if ((await retriesUsed($, w.task)) >= chances) why = 'the task has no retry left'
-  else if (rule !== 'auto') {
+  else if (rule !== 'auto' && (await bandCanAsk($))) {
+    if (onBand('Stuck')) return
+    const q: Question<'yes' | 'no'> = {
+      header: 'Stuck',
+      question: `A helper looks stuck: ${sign.why}. Raise its effort from ${cur} to ${to}? It uses one of this task's ${chances} retries. It goes on at ${cur} until you answer.`,
+      options: [
+        [`Raise to ${to}`, 'yes'],
+        [`Keep ${cur}`, 'no'],
+      ],
+    }
+    return askBand($, q, 'turn', true, { kind: 'helper', id, w, cur, to, sign })
+  } else if (rule !== 'auto') {
     const a = await askHelper($, sign, cur, to)
     if (a === 'no') {
       await log($, `helper ${id} struggling (${sign.why}): kept at ${cur}, as you chose`)
       return
     }
-    if (a === 'timeout') why = `no answer in ${WAIT_MINUTES} minutes`
+    if (a === 'timeout') why = `no answer in ${questionWait}`
   }
   if (to && !why && !(await useChance($, w.task))) why = 'the task has no retry left'
-  if (to && !why) {
-    w.raisedTo = to
-    w.raises.push({ step: w.steps, from: cur, to, why: sign.why })
-    w.stall = 'struggling'
-    await setBand($, { text: `Helper effort raised: ${cur} → ${to} (${sign.why}).`, acted: true, rule: 'raise' })
-    await log($, `raised helper ${id} ${cur} → ${to} at step ${w.steps}: ${sign.why}`)
-    return
-  }
+  if (to && !why) return raiseHelper($, id, w, cur, to, sign)
   w.returned = true
   w.stall = 'struggling'
   await setBand($, { text: `Helper stopped and sent back to the main chat: ${sign.why}, and ${why}.`, acted: true })
   await log($, `returned helper ${id} to the main chat at step ${w.steps}: ${sign.why}, and ${why}`)
 }
 
-// The Stuck question for a helper. A dismissed question is a no, as for the main chat. An answer
+async function raiseHelper($: EngineInterface, id: string, w: Watch, cur: Level, to: Level, sign: Struggle) {
+  w.raisedTo = to
+  w.raises.push({ step: w.steps, from: cur, to, why: sign.why })
+  w.stall = 'struggling'
+  await setBand($, { text: `Helper effort raised: ${cur} → ${to} (${sign.why}).`, acted: true, rule: 'raise' })
+  await log($, `raised helper ${id} ${cur} → ${to} at step ${w.steps}: ${sign.why}`)
+}
+
+// The Stuck question for a helper, in the dialog. A dismissed question is a no, as for the main chat. An answer
 // that comes after the wait is too late: the helper is already back with the main chat.
 async function askHelper($: EngineInterface, sign: Struggle, cur: Level, to: Level): Promise<'yes' | 'no' | 'timeout'> {
   const a = await askWithin(
     $,
     {
       header: 'Stuck',
-      question: `A helper looks stuck: ${sign.why}. Raise its effort from ${cur} to ${to}? It uses one of this task's ${chances} retries. With no answer in ${WAIT_MINUTES} minutes it goes back to the main chat.`,
+      question: `A helper looks stuck: ${sign.why}. Raise its effort from ${cur} to ${to}? It uses one of this task's ${chances} retries. With no answer in ${questionWait} it goes back to the main chat.`,
       options: [
         [`Raise to ${to}`, 'yes'],
         [`Keep ${cur}`, 'no'],
@@ -1998,12 +2176,12 @@ async function holdIdle($: EngineInterface): Promise<boolean> {
   const cost = usageCostText(c.resend, rates)
   let answered = false
   let shown = false
-  void $.clock.sleep(QUESTION_WAIT_MS).then(async () => {
+  void $.clock.sleep(QUESTION_WAITS[questionWait]).then(async () => {
     if (answered) return
     shown = true
     const text = `Held: sending now costs ${cost} more than a warm cache. Answer to go on.`
     await setBand($, { acted: true, text })
-    await log($, `no answer in ${WAIT_MINUTES} minutes to Idle: the prompt stays held; band: ${text}`)
+    await log($, `no answer in ${questionWait} to Idle: the prompt stays held; band: ${text}`)
   }, () => undefined)
   const a = await pick($, {
     header: 'Idle',
@@ -2895,13 +3073,29 @@ async function setShare($: EngineInterface, enabled: boolean) {
   await $.store.set('sharedUpTo', new Date(await $.clock.now()).toISOString()).catch(() => undefined)
 }
 
+/** Share is asked after this many rated prompts. Not answered, it is asked again at the next; after the last, never again. */
+const SHARE_ASKS = [SHARE_ASK_AFTER, 50, 100]
+
 async function askShare($: EngineInterface) {
-  if (sharing || (await $.store.get('shareAsked').catch(() => undefined)) === true) return
-  if (runLog.filter(l => (l.kind ?? 'run') === 'run').length < SHARE_ASK_AFTER) return
-  await $.store.set('shareAsked', true).catch(() => undefined)
+  // `shareAsked`: answered, or asked for the last time.
+  if (sharing || onBand('Share') || (await $.store.get('shareAsked').catch(() => undefined)) === true) return
+  const stored = await $.store.get('shareAsks').catch(() => undefined)
+  const asks = typeof stored === 'number' ? stored : 0
+  const at = SHARE_ASKS[asks]
+  if (at === undefined || runLog.filter(l => (l.kind ?? 'run') === 'run').length < at) return
+  await $.store.set('shareAsks', asks + 1).catch(() => undefined)
+  const why: BandWhy = { kind: 'share', at, last: asks + 1 >= SHARE_ASKS.length, next: SHARE_ASKS[asks + 1] }
+  if (await bandCanAsk($)) return askBand($, qShare, 'prompt', false, why)
   const yes = await pick($, qShare)
-  await log($, `share question: ${yes === true ? 'yes' : yes === false ? 'no' : 'dismissed'}`)
-  if (yes !== true) return
+  if (yes === undefined) await bandUnanswered($, why)
+  else await answerShare($, yes)
+}
+
+/** The answer to Share, yes or no: either way it is not asked again. */
+async function answerShare($: EngineInterface, yes: boolean) {
+  await $.store.set('shareAsked', true).catch(() => undefined)
+  await log($, `share question: ${yes ? 'yes' : 'no'}`)
+  if (!yes) return
   await setShare($, true)
   await putConfig($, 'share', 'on')
   $.ui.toast('Rightsize: thanks. Anonymous numbers will be shared; Share anonymous feedback in /config turns it off.')
@@ -3049,6 +3243,9 @@ function applyOption(key: SettingKey) {
     case 'band':
       if (isBandMode(v)) bandMode = v
       return
+    case 'questionWait':
+      if (isQuestionWait(v)) questionWait = v
+      return
     case 'share':
       sharing = v === 'on'
       return
@@ -3174,6 +3371,9 @@ export const register: Register = (on, options) => {
     lastContext = 0
     workflowSeen = false
     askedWorkflows.clear()
+    // A question an earlier session left on the band goes, unanswered: its default applies.
+    await endBand($, 'turn')
+    await endBand($, 'prompt')
     resizedRuns.clear()
     spawning.length = 0
     lastTurnAt = 0
@@ -3321,6 +3521,8 @@ export const register: Register = (on, options) => {
       await closeOffer($, 'ignored')
       await noteReturn($)
       cancelCold($, 'a prompt was submitted')
+      // The band's questions that wait for the next prompt go, unanswered.
+      await endBand($, 'prompt')
     }
     // 👍 and 👎 go with the next prompt, whatever it is.
     if (!off && fromPerson(e) && !e.isMeta) await dropRate($)
@@ -3608,7 +3810,7 @@ export const register: Register = (on, options) => {
 
   on('tool.call', async ($, e, next) => {
     // Ultracode's fan-out runs through the Workflow tool, from the main chat or a subagent.
-    // Until Workflows is answered, the person is asked before the workflow starts.
+    // Until Workflows is answered, the person is asked: on the band while it runs, paused, or in the dialog before it starts.
     if (String(e.tool) === 'Workflow' && !off) {
       if (askingWorkflow) await askingWorkflow
       if (workflows === 'ask') {
@@ -3694,11 +3896,30 @@ export const register: Register = (on, options) => {
 
   // One row above the prompt: what rightsize did, then buttons to retry it at the original effort, change
   // the rule for this situation, choose when the band shows, or close it.
+  // A timed question takes the band while it waits, alone, so its options are the keys 1 to 4.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (off || e.props.hasSurvey) return next(e)
+    const question = (await $.state.get(QUESTION).catch(() => undefined))?.value
     const mode = (await $.state.get(BAND_MODE).catch(() => undefined))?.value ?? bandMode
     const band = (await $.state.get(BAND).catch(() => undefined))?.value
-    if (!band || mode === 'off' || (mode === 'when it acts' && !band.acted)) return next(e)
+    const shows = !!band && mode !== 'off' && (mode === 'when it acts' ? band.acted : true)
+    if (!shows && !question) return next(e)
+    const { Box, Button, Text } = $.ui.resolve(e)
+    // A question is the band's last row; its options take the number keys after the band's own buttons.
+    const questionRow = (from: number) =>
+      question ? (
+        <Box key="question" flexDirection="row" flexWrap="wrap" columnGap={1}>
+          <Text>
+            <Text dimColor>rightsize · {question.header}: </Text>
+            {question.question}
+          </Text>
+          {question.options.map((label, i) => (
+            <Button key={`q-${i}`} label={label} {...(from + i < 9 ? { hotkey: String(from + i + 1) } : {})} onPress={() => void answerBand($, question.id, i)} />
+          ))}
+          <Button key="q-close" label="×" role="dismiss" onPress={() => void answerBand($, question.id, undefined)} />
+        </Box>
+      ) : null
+    if (!shows || !band) return <Box flexDirection="column">{questionRow(0)}</Box>
     const buttons: { key: string; label: string; press: () => Promise<unknown> }[] = []
     if (band.canRetry) buttons.push({ key: 'retry', label: 'Retry at original effort', press: async () => $.ui.toast(await retry($)) })
     if (band.canStay && lastAuto?.kind === 'route') buttons.push({ key: 'stay', label: `Run on ${lastAuto.model}`, press: async () => $.ui.toast(await runOnCurrent($)) })
@@ -3713,7 +3934,6 @@ export const register: Register = (on, options) => {
       buttons.push({ key: 'bad', label: '👎', press: () => giveFeedback($, ref, 'down') })
     }
     const coldButtons = (band.cold ?? []).map(c => ({ key: `cold-${c.id}`, label: c.label, press: () => pressCold($, c.id) }))
-    const { Box, Button, Text } = $.ui.resolve(e)
     // Number keys 1-9 run down both rows in order.
     const rowButtons = (list: typeof buttons, from: number) =>
       list.map((b, i) => <Button key={b.key} label={b.label} {...(from + i < 9 ? { hotkey: String(from + i + 1) } : {})} onPress={() => void b.press()} />)
@@ -3745,6 +3965,7 @@ export const register: Register = (on, options) => {
             {routeRow ? null : ends}
           </Box>
         ) : null}
+        {questionRow(buttons.length + (band.coldText ? coldButtons.length : 0))}
       </Box>
     )
   })
@@ -3802,6 +4023,8 @@ export const register: Register = (on, options) => {
       await finish($, run, e.isAborted, e.durationMs)
       await askShare($).catch(() => undefined)
     }
+    // The turn's own questions go, unanswered; those asked while its prompt was sent show now.
+    if (e.agentId === undefined) await endBand($, 'turn')
     if (e.agentId === undefined) void sendShare($)
     // A person who interrupted is at the keyboard: no offer for an aborted turn.
     if (e.agentId === undefined && !e.isAborted) await coldCheck($).catch(err => log($, `before the cache goes cold failed: ${err instanceof Error ? err.message : String(err)}`))

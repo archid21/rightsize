@@ -60,6 +60,13 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
     paneCloses: [] as string[],
     panePlaced: true,
     asked: [] as { header: string; question: string; options: string[] }[],
+    /** The test's `$`, which `drive` hands over: band questions are answered by pressing their buttons through it. */
+    test$: undefined as unknown,
+    /** The question the band shows now, as rightsize last wrote it; the ids already answered from `answers`. */
+    question: null as BandAsk | null,
+    bandAnswered: new Set<number>(),
+    /** Headers whose band answer came after the question had gone: the press found nothing to press. */
+    tooLate: [] as string[],
     sent: [] as { effort?: string; model?: string; agentId?: string; turnId: string }[],
     submitted: [] as { text: string; context?: readonly string[] }[],
     logs: [] as string[],
@@ -357,6 +364,20 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
     await h.answerGate[header]
     return { result: { questions: e.questions, answers: { [q?.question ?? '']: answer } } }
   })
+  // A timed question on the band, answered from `answers` as the dialog's are.
+  on('state.set', async (_$, e, next) => {
+    const result = await next(e)
+    const { key, value } = e as { key: string; value: unknown }
+    if (key === 'question') {
+      h.question = (value as BandAsk | null) ?? null
+      if (h.question && !h.bandAnswered.has(h.question.id)) {
+        h.bandAnswered.add(h.question.id)
+        // A press after the test ended finds nothing to press.
+        void answerBand(h, h.question).catch(() => undefined)
+      }
+    }
+    return result
+  })
   ;(on as unknown as LooseOn)('tool.call', { tool: 'Agent' }, async () => ({ result: { content: 'done' } }))
   ;(on as unknown as LooseOn)('tool.call', { tool: 'SendMessage' }, async () => ({ result: { content: 'sent' } }))
   ;(on as unknown as LooseOn)('tool.call', { tool: 'Workflow' }, async () => {
@@ -419,8 +440,28 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
   return h
 }
 
+/** A timed question as the band shows it. */
+type BandAsk = { id: number; header: string; question: string; options: string[] }
+
+// Answers a band question as the person would: presses the option `answers` names (× for none, or one not offered),
+// after its gate. An answer whose question has gone by then (its wait ran out) presses nothing.
+async function answerBand(h: ReturnType<typeof engine>, q: BandAsk) {
+  h.asked.push({ header: q.header, question: q.question, options: q.options })
+  h.events.push(`ask:${q.header}`)
+  const answer = h.answerQueue[q.header]?.shift() ?? h.answers[q.header]
+  if (answer === NO_ONE) return
+  await h.answerGate[q.header]
+  await flush()
+  if (h.question?.id !== q.id || !h.test$) return void h.tooLate.push(q.header)
+  const at = answer === undefined ? -1 : q.options.indexOf(answer)
+  const ui = await mount(h.test$, h.surfaces[0] ?? 'terminal')
+  await ui.press({ key: at < 0 ? 'q-close' : `q-${at}` })
+  await ui.unmount()
+}
+
 const drive = ($: unknown, h: ReturnType<typeof engine>) => {
   const e = $ as Engine
+  h.test$ = $
   return {
     start: (surface: string) => e.session.start({ source: 'startup', cwd: '/tmp', surface, isInteractive: true }),
     /** `turnId`: the turn that was running when the prompt was typed; left out, the session was idle. */
@@ -455,6 +496,10 @@ const drive = ($: unknown, h: ReturnType<typeof engine>) => {
 // The test runner has timers; the hook environment's types do not declare them.
 const timers = globalThis as unknown as { setTimeout: (f: () => void, ms: number) => unknown }
 const flush = () => new Promise<void>(resolve => timers.setTimeout(resolve, 20))
+/** Lets a band question that just showed be answered: the test presses its button a moment later. */
+const settle = async () => {
+  for (let i = 0; i < 5; i++) await flush()
+}
 /** Waits until a question was asked (more than `before` so far) and its answer was handled: the ⋯ menu asks through the engine, which takes a moment. */
 const untilAsked = async (h: { asked: unknown[] }, before: number, questions = 1) => {
   for (let i = 0; i < 50 && h.asked.length < before + questions; i++) await flush()
@@ -522,7 +567,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.rating = '{"level":"low","model":"same","size":"small","type":"lookup","read":2000,"write":3000,"steps":1,"reason":"one function lookup"}'
     h.answers = { Lowering: 'Lower automatically (Recommended)', Remember: 'Just this session' }
     await d.submit(LOOKUP)
-    expect(h.asked.map(a => a.header), 'Q1, then the remember question').toEqual(['Lowering', 'Remember'])
+    expect(h.asked.map(a => a.header), 'Q1; Remember waits for the turn to end').toEqual(['Lowering'])
     await d.step('t1', 0)
     expect(last(h.sent)?.effort, 'runs low').toBe('low')
     await d.step('t1', 5)
@@ -570,10 +615,12 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.rating = '{"level":"high","model":"same","type":"debug","read":20000,"write":3000,"steps":8,"reason":"unknown cause"}'
     h.answers = { Raising: 'Raise automatically (Recommended)', Remember: 'Yes, from now on' }
     await d.submit(DEBUG)
-    expect(h.asked.map(a => a.header)).toEqual(['Raising', 'Remember'])
+    expect(h.asked.map(a => a.header), 'Remember waits for the turn to end').toEqual(['Raising'])
     await d.step('t1')
     expect(last(h.sent)?.effort).toBe('high')
     await d.complete('t1')
+    // Remember waits on the band for the turn to end, and is answered there.
+    await settle()
     expect(h.store.remember, 'saved for every session').toBe(true)
     expect(h.store.choices).toEqual({ raise: 'auto' })
 
@@ -607,8 +654,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.rating = '{"level":"high","model":"fable","size":"small","type":"debug","read":30000,"write":4000,"steps":12,"reason":"subtle concurrency bug"}'
     h.answers = { Stronger: 'Ask before using it', Remember: 'Just this session', Subagent: 'Send it to a Fable subagent' }
     await d.submit(DEBUG)
-    expect(h.asked.map(a => a.header)).toEqual(['Stronger', 'Remember', 'Subagent'])
-    expect(h.asked[2]?.question ?? '', 'the question carries both costs').toMatch(/About \$[\d.]+ that way vs \$[\d.]+ staying on Opus/)
+    expect(h.asked.map(a => a.header), 'Remember waits for the turn to end').toEqual(['Stronger', 'Subagent'])
+    expect(h.asked[1]?.question ?? '', 'the question carries both costs').toMatch(/About \$[\d.]+ that way vs \$[\d.]+ staying on Opus/)
     const note = last(h.submitted)?.context?.join('\n') ?? ''
     expect(note).toContain('[rightsize]')
     expect(note).toContain('model "fable", effort "high"')
@@ -639,7 +686,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.rating = REVIEW
     h.answers = { Stronger: 'Use the stronger model automatically (Recommended)', Remember: 'Just this session' }
     await d.submit(DEBUG)
-    expect(h.asked.map(a => a.header), 'Q3 then the remember question').toEqual(['Stronger', 'Remember'])
+    expect(h.asked.map(a => a.header), 'Q3; Remember waits for the turn to end').toEqual(['Stronger'])
     expect(h.submitted.at(-1)?.context ?? [], 'no subagent note').toEqual([])
     await d.step('t1', 0)
     await d.step('t1', 1)
@@ -789,7 +836,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.rating = '{"level":"low","model":"haiku","size":"bulky","type":"search","read":150000,"write":3000,"steps":30,"reason":"repo-wide search"}'
     h.answers = { Cheaper: 'Send it to a cheaper subagent (Recommended)', Remember: 'Just this session' }
     await d.submit(SEARCH)
-    expect(h.asked.map(a => a.header)).toEqual(['Cheaper', 'Remember'])
+    expect(h.asked.map(a => a.header), 'Remember waits for the turn to end').toEqual(['Cheaper'])
     const note = last(h.submitted)?.context?.join('\n') ?? ''
     expect(note).toContain('model "haiku"')
     expect(note).toContain('finish the task yourself')
@@ -931,7 +978,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.rating = '{"fit":{"haiku":"high","sonnet":"high","opus":"high","fable":"medium"},"size":"small","type":"feature","read":20000,"write":2000,"steps":6,"reason":"small helper with tests"}'
     h.answers = { Cheaper: 'Send it to a cheaper subagent (Recommended)', Remember: 'Just this session' }
     await d.submit(DEBUG)
-    expect(h.asked.map(a => a.header), 'Q4, not Q2: a cheaper model, not more effort').toEqual(['Cheaper', 'Remember'])
+    expect(h.asked.map(a => a.header), 'Q4, not Q2: a cheaper model, not more effort').toEqual(['Cheaper'])
     const note = last(h.submitted)?.context?.join('\n') ?? ''
     expect(note).toContain('model "haiku", effort "high"')
     expect(await bandText($, surface)).toMatch(/^rightsize: Sending this to a Haiku subagent at high effort instead of raising Opus to high\. \$[\d.]+ vs ~\$[\d.]+ on Opus\./)
@@ -1189,7 +1236,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.rating = '{"fit":{"haiku":"no","sonnet":"no","opus":"high","fable":"medium"},"size":"small","type":"debug","read":8000,"write":800,"steps":6,"reason":"race"}'
     h.answers = { Raising: 'Ask me each time', Remember: 'Just this session', Effort: 'Keep medium' }
     await d.submit(DEBUG)
-    expect(h.asked.map(a => a.header), 'the Raising rule asks, as it always does').toEqual(['Raising', 'Remember', 'Effort'])
+    expect(h.asked.map(a => a.header), 'the Raising rule asks, as it always does; Remember waits for the turn to end').toEqual(['Raising', 'Effort'])
     await d.step('t1')
     expect(last(h.sent)?.effort, 'kept: "Ask" never raises on its own').toBe('medium')
     expect(last(h.asked)?.question ?? '', 'the question names the raise').toContain('Raise from medium to high?')
@@ -1248,14 +1295,17 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.bash('fail make')
     h.answers = { Stuck: 'Keep medium' }
     await d.step('t1', 1)
-    expect(h.asked.map(a => a.question)).toEqual(['Claude looks stuck: the same tool call failed twice. Raise effort from medium to high for the rest of this turn? No answer in 2 minutes: it keeps medium.'])
-    expect(last(h.sent)?.effort).toBe('medium')
+    expect(h.asked.map(a => a.question)).toEqual(['Claude looks stuck: the same tool call failed twice. Raise effort from medium to high for the rest of this turn? The turn goes on at medium until you answer.'])
+    await settle()
     await d.step('t1', 2)
+    expect(last(h.sent)?.effort).toBe('medium')
     expect(h.asked.length, 'the same sign is not asked again').toBe(1)
     await d.bash('fail make test')
     h.answers = { Stuck: 'Raise to high for this turn' }
     await d.step('t1', 3)
-    expect(last(h.sent)?.effort, 'a new sign, and a yes').toBe('high')
+    await settle()
+    await d.step('t1', 4)
+    expect(last(h.sent)?.effort, 'a new sign, and a yes: from the next request').toBe('high')
   })
 
   test(`no mid-turn raise when Raising is never (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -1635,6 +1685,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.submit(LOOKUP)
     await d.step('t1')
     await d.complete('t1')
+    // Share waits on the band.
+    await settle()
     expect(h.asked.filter(a => a.header === 'Share').length).toBe(1)
     expect(last(h.configSet)).toBe('on')
     expect(String(h.store.shareInstall)).toMatch(/^[a-f0-9]{32}$/)
@@ -1645,6 +1697,61 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t2')
     await d.complete('t2')
     expect(h.asked.filter(a => a.header === 'Share').length, 'asked once').toBe(1)
+  })
+
+  test(`Share not answered is asked again after 50 and 100 rated prompts, then never again (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    const d = drive($, h)
+    h.rating = NO_CHANGE
+    h.answers = { Share: NO_ONE }
+    const shares = () => h.asked.filter(a => a.header === 'Share').length
+    let n = 0
+    const turn = async () => {
+      const t = `t${++n}`
+      await d.submit(LOOKUP)
+      await d.step(t)
+      await d.complete(t)
+      await settle()
+    }
+    for (const [runs, asked, said] of [
+      [20, 1, 'no answer at 20 rated prompts; asked again at 50'],
+      [50, 2, 'no answer at 50 rated prompts; asked again at 100'],
+      [100, 3, 'no answer at 100 rated prompts; not asked again'],
+    ] as const) {
+      h.files[RUNS] = shareLog(h.now, runs)
+      await d.start(surface)
+      await turn()
+      expect(shares(), `asked at ${runs}`).toBe(asked)
+      await turn()
+      expect(shares(), 'not again before the next mark').toBe(asked)
+      expect(helperLog(h)).toContain(`share question: ${said}`)
+    }
+    h.files[RUNS] = shareLog(h.now, 200)
+    await d.start(surface)
+    await turn()
+    expect(shares(), 'never again').toBe(3)
+    expect(h.configSet, 'still off').not.toContain('on')
+  })
+
+  test(`Share answered no is never asked again (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    const d = drive($, h)
+    h.rating = NO_CHANGE
+    h.answers = { Share: "Don't share" }
+    h.files[RUNS] = shareLog(h.now, 20)
+    await d.start(surface)
+    await d.submit(LOOKUP)
+    await d.step('t1')
+    await d.complete('t1')
+    await settle()
+    expect(h.asked.filter(a => a.header === 'Share').length).toBe(1)
+    h.files[RUNS] = shareLog(h.now, 60)
+    await d.start(surface)
+    await d.submit(LOOKUP)
+    await d.step('t2')
+    await d.complete('t2')
+    await settle()
+    expect(h.asked.filter(a => a.header === 'Share').length, 'not at 50 either').toBe(1)
   })
 
   test(`sharing sends only new, anonymous numbers, at most once an hour (${surface})`, { timeoutMs: 30000, options: { share: 'on' } }, async ($, on) => {
@@ -1922,6 +2029,10 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.complete('t1')
 
     await d.submit(LOOKUP)
+    // Billing waits on the band for the turn to end.
+    await d.step('t1b')
+    await d.complete('t1b')
+    await settle()
     expect(h.asked.map(a => a.header)).toEqual(['Billing'])
     expect(h.store.billing).toEqual({ value: 'api', by: 'answered' })
     await d.submit(LOOKUP)
@@ -2444,6 +2555,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.submit(SEARCH)
     await d.step('t1')
     await d.complete('t1')
+    // Remember waits on the band for the turn to end, and is answered there.
+    await settle()
     expect(await buttons($), 'no hand-off happened').toEqual(['mode', 'close'])
 
     await d.submit(SEARCH)
@@ -2488,6 +2601,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.submit(LOOKUP)
     await d.step('t1')
     await d.complete('t1')
+    // Remember waits on the band for the turn to end, and is answered there.
+    await settle()
     expect(await buttons($)).toEqual(['retry', 'good', 'bad', 'mode', 'close'])
 
     const ui = await mount($, surface)
@@ -2774,8 +2889,16 @@ for (const surface of ['desktop', 'terminal'] as const) {
       value: 'this session',
       start: { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES } },
       see: async c => {
-        const { asked } = await prompt(c, LOOKUP, LOWER, { Lowering: 'Lower automatically (Recommended)', Remember: 'Yes, from now on' })
-        return { asked, saved: c.h.store.choices, remembered: c.h.store.remember }
+        const from = c.h.asked.length
+        c.h.rating = LOWER
+        c.h.answers = { Lowering: 'Lower automatically (Recommended)', Remember: 'Yes, from now on' }
+        await c.d.submit(LOOKUP)
+        const t = c.turn()
+        await c.d.step(t)
+        // Remember waits on the band for the turn to end.
+        await c.d.complete(t)
+        await settle()
+        return { asked: c.h.asked.slice(from).map(a => a.header), saved: c.h.store.choices, remembered: c.h.store.remember }
       },
       set: { asked: ['Lowering'], saved: undefined, remembered: undefined },
       def: { asked: ['Lowering', 'Remember'], saved: { lower: 'auto' }, remembered: true },
@@ -2970,6 +3093,24 @@ for (const surface of ['desktop', 'terminal'] as const) {
       },
       set: 'rightsize: No change: medium on Opus fits this prompt.',
       def: '',
+    },
+    {
+      key: 'questionWait',
+      value: '2 minutes',
+      start: { model: 'claude-opus-5-5', effort: 'medium', store: { remember: true, choices: { raise: 'ask' } } },
+      see: async c => {
+        c.h.rating = RAISE_HIGH
+        c.h.answers = { Effort: NO_ONE }
+        c.h.sleepEnds = true
+        await c.d.submit(DEBUG)
+        const t = c.turn()
+        await c.d.step(t)
+        await c.d.complete(t)
+        // What the question says, and how long rightsize waited for it.
+        return [c.h.asked.find(a => a.header === 'Effort')?.question.match(/No answer in ([^:]+):/)?.[1], c.h.sleeps.includes(120_000)]
+      },
+      set: ['2 minutes', true],
+      def: ['30 seconds', false],
     },
     {
       key: 'share',
@@ -3603,6 +3744,10 @@ for (const surface of ['desktop', 'terminal'] as const) {
       h.rating = LOWER
       h.answers = { Lowering: 'Lower automatically (Recommended)', Remember: row.remember }
       await d.submit(LOOKUP)
+      // Remember waits on the band for the turn to end.
+      await d.step('t1')
+      await d.complete('t1')
+      await settle()
       expect(h.asked.map(a => a.header)).toEqual(row.asked)
       expect(h.store.choices, 'the store').toEqual(row.kept ? { lower: 'auto' } : undefined)
       expect(h.stored.lowerRule, 'the Lowering row').toBe(row.kept ? 'lower automatically' : undefined)
@@ -3691,7 +3836,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   // ---- Workflows ------------------------------------------------------------------------------------
 
   const WORKFLOW_QUESTION =
-    'Claude is starting a workflow. It may start many helper agents at once, often 10 or more, and each picks its own model. What should rightsize do during workflows? You can change this any time with Workflows in /config. No answer in 2 minutes: rightsize pauses for this workflow.'
+    'Claude is starting a workflow. It may start many helper agents at once, often 10 or more, and each picks its own model. What should rightsize do during workflows? You can change this any time with Workflows in /config. No answer by your next prompt: rightsize stays paused for this workflow.'
   const WORKFLOW_ANSWERS: [string, string][] = [
     ['Pause rightsize for workflows (recommended)', 'pause rightsize'],
     ['Follow my rules for the main chat', 'follow my rules'],
@@ -3704,9 +3849,10 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.submit(LOOKUP)
     await d.step(turn)
     await d.workflow(id)
+    await settle()
   }
 
-  test(`at ask, the Workflow question comes before the workflow starts, with its three answers (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`at ask, the Workflow question shows on the band as the workflow starts, with its three answers (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { ...OPUS })
     const d = drive($, h)
     await d.start(surface)
@@ -4115,6 +4261,9 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.answers = { Lowering: 'Lower automatically (Recommended)', Remember: 'Just this session' }
     h.asked.length = 0
     await d.submit(LOOKUP)
+    await d.step('t1')
+    await d.complete('t1')
+    await settle()
     expect(h.asked.map(a => a.header)).toEqual(['Lowering', 'Remember'])
   })
 
@@ -4529,8 +4678,10 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.bash('fail a', 'agent-helper')
     await d.step('t1', 1, 'agent-helper')
     expect(h.asked.map(a => a.header), 'asked, as for the main chat').toEqual(['Stuck'])
-    expect(h.asked[0]?.question).toContain('It uses one of this task\'s 2 retries. With no answer in 2 minutes it goes back to the main chat.')
-    expect(last(h.sent)?.effort, 'raised on yes').toBe('medium')
+    expect(h.asked[0]?.question).toContain('It uses one of this task\'s 2 retries. It goes on at low until you answer.')
+    await settle()
+    await d.step('t1', 2, 'agent-helper')
+    expect(last(h.sent)?.effort, 'raised on yes, from its next request').toBe('medium')
     await d.complete('t1')
 
     // A new task, and a keep: not raised, not sent back.
@@ -4542,37 +4693,40 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.bash('fail b', 'agent-second')
     await d.step('t2', 1, 'agent-second')
     expect(h.asked.map(a => a.header)).toEqual(['Stuck'])
+    await settle()
+    await d.step('t2', 2, 'agent-second')
     expect(last(h.sent)?.effort, 'kept').toBe('low')
     expect(((await d.bash('ls', 'agent-second')) as { deny?: string }).deny, 'not sent back').toBeUndefined()
     expect(helperLog(h)).toContain('kept at low, as you chose')
     await d.complete('t2')
   })
 
-  test(`a struggling helper with nobody to answer goes back to the main chat after the wait (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`a struggling helper with nobody to answer goes on at its effort, and is not sent back (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: { remember: true, choices: { down: 'auto' } } })
     const d = drive($, h)
     await d.start(surface)
     await warm(d, h)
     h.rating = HAND_OFF()
     h.answers = { Stuck: NO_ONE }
-    h.sleepEnds = true
     await startHelper(d, h, 't1', 'helper')
     await d.bash('fail a', 'agent-helper')
     await d.bash('fail a', 'agent-helper')
     await d.step('t1', 1, 'agent-helper')
     expect(h.asked.map(a => a.header)).toEqual(['Stuck'])
+    await d.step('t1', 2, 'agent-helper')
     expect(last(h.sent)?.effort, 'not raised').toBe('low')
-    expect(helperLog(h)).toContain('no answer in 2 minutes')
-    expect(((await d.bash('ls', 'agent-helper')) as { deny?: string }).deny).toContain('stuck')
+    expect(((await d.bash('ls', 'agent-helper')) as { deny?: string }).deny, 'not sent back').toBeUndefined()
     await d.complete('t1')
+    expect(h.question, 'the turn ended: the question went').toBeNull()
+    expect(helperLog(h)).toContain('no answer on the band to Stuck: helper agent-helper kept at low')
   })
 
-  // ---- Every question waits 2 minutes, then takes the choice that changes nothing ----
+  // ---- Every question waits 30 seconds (Question wait), then takes the choice that changes nothing ----
 
   const until = async (done: () => boolean) => {
     for (let i = 0; i < 200 && !done(); i++) await new Promise(r => setTimeout(r, 10))
   }
-  const NO_ANSWER = 'No answer in 2 minutes:'
+  const NO_ANSWER = 'No answer in 30 seconds:'
 
   test(`Lowering with nobody to answer: this prompt runs as it is, nothing is saved, and it is asked again next time (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
@@ -4589,7 +4743,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.asked[0]?.question).toContain(`${NO_ANSWER} this prompt runs as it is.`)
     expect(last(h.sent)?.effort, 'no change').toBe('medium')
     expect(h.store.choices, 'nothing saved').toBeUndefined()
-    expect(helperLog(h)).toContain('no answer in 2 minutes to Lowering: this prompt ran with no change; nothing saved')
+    expect(helperLog(h)).toContain('no answer in 30 seconds to Lowering: this prompt ran with no change; nothing saved')
     await d.complete('t1')
     await d.submit(LOOKUP)
     expect(h.asked.map(a => a.header), 'asked again').toEqual(['Lowering', 'Lowering'])
@@ -4611,11 +4765,11 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(handedTo(h), 'no hand-off').toBeUndefined()
     expect(last(h.sent)?.model, 'no switch').not.toBe('fable')
     expect(h.store.choices).toBeUndefined()
-    expect(helperLog(h)).toContain('no answer in 2 minutes to Stronger')
+    expect(helperLog(h)).toContain('no answer in 30 seconds to Stronger')
     await d.complete('t1')
   })
 
-  test(`Remember with nobody to answer: this session only, and it is not asked again (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`Remember with nobody to answer: it waits on the band for the turn to end, and with no answer by the next prompt it is this session only (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
     const d = drive($, h)
     await d.start(surface)
@@ -4623,36 +4777,48 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.complete('t0')
     h.rating = LOWER
     h.answers = { Lowering: 'Lower automatically (Recommended)', Remember: NO_ONE }
-    h.sleepEnds = true
     await d.submit(LOOKUP)
     await d.step('t1', 0)
+    expect(last(h.sent)?.effort, 'the prompt did not wait for Remember').toBe('low')
+    expect(h.asked.map(a => a.header), 'Remember waits for the turn to end').toEqual(['Lowering'])
+    await d.complete('t1')
+    await settle()
     expect(h.asked.map(a => a.header)).toEqual(['Lowering', 'Remember'])
-    expect(h.asked[1]?.question).toBe(`Use these choices in every session? ${NO_ANSWER} this session only.`)
-    expect(last(h.sent)?.effort, 'the Lowering answer still applies').toBe('low')
+    expect(h.asked[1]?.question).toBe('Use these choices in every session? No answer by your next prompt: this session only.')
+    h.rating = NO_CHANGE
+    await d.submit(LOOKUP)
+    expect(h.question, 'the next prompt took it away').toBeNull()
     expect(h.store.remember, 'not kept for every session').toBeUndefined()
     expect(h.store.choices).toBeUndefined()
-    expect(helperLog(h)).toContain('no answer in 2 minutes to Remember: these choices stay for this session only')
+    expect(helperLog(h)).toContain('no answer on the band to Remember: these choices stay for this session only')
   })
 
-  test(`Billing with nobody to answer: API prices for now, not saved, asked again next session (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`Billing with nobody to answer: it waits on the band, API prices for now, not saved, asked again next session (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
     const d = drive($, h)
     h.rateLimits = []
     h.rating = NO_CHANGE
     h.answers = { Billing: NO_ONE }
-    h.sleepEnds = true
+    const turn = async (t: string) => {
+      await d.submit(LOOKUP)
+      await d.step(t)
+      await d.complete(t)
+      await settle()
+    }
     await d.start(surface)
-    await d.step('t1')
-    await d.complete('t1')
-    await d.submit(LOOKUP)
+    await d.step('t0')
+    await d.complete('t0')
+    await turn('t1')
     expect(h.asked.map(a => a.header)).toEqual(['Billing'])
-    expect(h.asked[0]?.question).toContain(`${NO_ANSWER} reports use API prices for now.`)
+    expect(h.asked[0]?.question).toContain('No answer by your next prompt: reports use API prices for now.')
+    await turn('t2')
     expect(h.store.billing, 'not saved').toBeUndefined()
-    expect(helperLog(h)).toContain('no answer in 2 minutes to Billing')
+    expect(helperLog(h)).toContain('no answer on the band to Billing')
+    expect(h.asked.map(a => a.header), 'once a session').toEqual(['Billing'])
     await d.start(surface)
-    await d.step('t2')
-    await d.complete('t2')
-    await d.submit(LOOKUP)
+    await d.step('t3')
+    await d.complete('t3')
+    await turn('t4')
     expect(h.asked.map(a => a.header), 'asked again in the next session').toEqual(['Billing', 'Billing'])
   })
 
@@ -4670,7 +4836,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.asked.map(a => a.header)).toEqual(['Effort'])
     expect(h.asked[0]?.question).toContain(`${NO_ANSWER} it stays as it is.`)
     expect(last(h.sent)?.effort, 'never raised').toBe('medium')
-    expect(helperLog(h)).toContain('no answer in 2 minutes to Effort: kept medium')
+    expect(helperLog(h)).toContain('no answer in 30 seconds to Effort: kept medium')
     await d.complete('t1')
   })
 
@@ -4688,11 +4854,11 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.asked.map(a => a.header)).toEqual(['Subagent'])
     expect(h.asked[0]?.question).toContain(`${NO_ANSWER} it stays as it is.`)
     expect(handedTo(h), 'not sent').toBeUndefined()
-    expect(helperLog(h)).toContain('no answer in 2 minutes to Subagent: stayed on Opus')
+    expect(helperLog(h)).toContain('no answer in 30 seconds to Subagent: stayed on Opus')
     await d.complete('t1')
   })
 
-  test(`Stuck in the main chat with nobody to answer keeps the effort, and a late answer only gets a toast (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`Stuck in the main chat with nobody to answer: the turn goes on at its effort, and the question goes when the turn ends (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
     const d = drive($, h)
     await d.start(surface)
@@ -4701,40 +4867,52 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t1', 0)
     await d.bash('fail make')
     await d.bash('fail make')
-    let release = () => {}
-    h.answerGate = { Stuck: new Promise<void>(r => (release = r)) }
-    h.answers = { Stuck: 'Raise to high for this turn' }
-    h.sleepEnds = true
+    h.answers = { Stuck: NO_ONE }
     await d.step('t1', 1)
-    expect(h.asked[0]?.question).toBe(`Claude looks stuck: the same tool call failed twice. Raise effort from medium to high for the rest of this turn? ${NO_ANSWER} it keeps medium.`)
-    expect(last(h.sent)?.effort).toBe('medium')
-    expect(helperLog(h)).toContain('no answer in 2 minutes to Stuck: kept medium')
-    release()
-    await until(() => h.toasts.some(t => t.includes('too late')))
-    expect(last(h.toasts)).toBe('rightsize: that answer came too late; nothing changed.')
+    expect(h.asked[0]?.question).toBe('Claude looks stuck: the same tool call failed twice. Raise effort from medium to high for the rest of this turn? The turn goes on at medium until you answer.')
+    expect(h.question?.header, 'on the band').toBe('Stuck')
     await d.step('t1', 2)
-    expect(last(h.sent)?.effort, 'still not raised').toBe('medium')
+    expect(last(h.sent)?.effort, 'the turn went on, not raised').toBe('medium')
+    await d.complete('t1')
+    expect(h.question, 'the turn ended: the question went').toBeNull()
+    expect(helperLog(h)).toContain('no answer on the band to Stuck: kept medium')
   })
 
-  test(`Workflow with nobody to answer pauses rightsize for this workflow without saving it; a late answer is kept for later (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`Stuck in the main chat answered on the band: the raise applies from the turn's next request (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    const d = drive($, h)
+    await d.start(surface)
+    h.rating = NO_CHANGE
+    await d.submit(LOOKUP)
+    await d.step('t1', 0)
+    await d.bash('fail make')
+    await d.bash('fail make')
+    h.answers = { Stuck: 'Raise to high for this turn' }
+    await d.step('t1', 1)
+    await settle()
+    await d.step('t1', 2)
+    expect(last(h.sent)?.effort).toBe('high')
+    expect(h.question).toBeNull()
+    await d.complete('t1')
+  })
+
+  test(`Workflow with nobody to answer: the workflow goes ahead with rightsize paused, nothing is saved, and the next prompt takes the question away (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { ...OPUS })
     const d = drive($, h)
     await d.start(surface)
-    let release = () => {}
-    h.answerGate = { Workflow: new Promise<void>(r => (release = r)) }
     h.rating = NO_CHANGE
-    h.answers = { Workflow: 'Follow my rules for the main chat' }
-    h.sleepEnds = true
+    h.answers = { Workflow: NO_ONE }
     await d.submit(LOOKUP)
     await d.step('t1')
     await d.workflow()
     expect(h.events, 'the workflow went ahead').toContain('workflow')
-    expect(h.asked[0]?.question).toContain(`${NO_ANSWER} rightsize pauses for this workflow.`)
+    expect(h.asked[0]?.question).toContain('No answer by your next prompt: rightsize stays paused for this workflow.')
+    await d.complete('t1')
+    expect(h.question?.header, 'it stays after the turn').toBe('Workflow')
+    await d.submit(LOOKUP)
+    expect(h.question, 'the next prompt took it away').toBeNull()
+    expect(helperLog(h)).toContain('no answer on the band to Workflow: rightsize paused for this workflow; not saved')
     expect(await settingsText(d), 'not saved').not.toContain('Workflows:')
-    expect(helperLog(h)).toContain('no answer in 2 minutes to Workflow')
-    release()
-    await until(() => h.configSet.length > 0)
-    expect(await settingsText(d), 'the late answer is kept').toContain('Workflows: follow my rules')
   })
 
   test(`a late answer to a rule question is saved for the next prompt, and the running one is unchanged (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -4763,7 +4941,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(last(h.sent)?.effort, 'the saved rule lowers it').toBe('low')
   })
 
-  test(`Idle is not timed: after 2 minutes the band says the prompt is held, and an answer still works (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`Idle is not timed: after 30 seconds the band says the prompt is held, and an answer still works (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const { h, d } = await idleSetup($, on, surface)
     h.now += 2 * 60 * MIN
     let release = () => {}
@@ -4777,7 +4955,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await until(() => h.asked.length > 0)
     // The engine draws nothing while the prompt hook is open, so the log carries the band's text.
     await until(() => helperLog(h).includes('Held:'))
-    expect(helperLog(h)).toContain('no answer in 2 minutes to Idle: the prompt stays held; band: Held: sending now costs about $0.16 more than a warm cache. Answer to go on.')
+    expect(helperLog(h)).toContain('no answer in 30 seconds to Idle: the prompt stays held; band: Held: sending now costs about $0.16 more than a warm cache. Answer to go on.')
     expect(settled, 'still waiting for the answer').toBe(false)
     expect(h.submitted.length, 'not sent').toBe(sent)
     release()
@@ -4785,6 +4963,107 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(out.drop).toContain('rightsize held this prompt')
     expect(h.submitted.length).toBe(sent)
     expect(await bandText($, surface), 'the band clears').toBe('')
+  })
+
+  // ---- On the terminal and the desktop app, a question that need not stop the work is a row on the band ----
+
+  /** A turn where Claude looks stuck and Raising is not automatic: the band asks Stuck, and nobody answers yet. */
+  const stuckAsked = async ($: unknown, on: Parameters<TestBody>[1]) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    const d = drive($, h)
+    await d.start(surface)
+    h.rating = NO_CHANGE
+    h.answers = { Stuck: NO_ONE, Workflow: NO_ONE }
+    await d.submit(LOOKUP)
+    await d.step('t1', 0)
+    await d.bash('fail make')
+    await d.bash('fail make')
+    await d.step('t1', 1)
+    return { h, d }
+  }
+
+  test(`a band question is a row of its own: its options are buttons with number keys, then × (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const { h, d } = await stuckAsked($, on)
+    const ui = await mount($, surface)
+    const options = (await ui.findAll({ type: 'Button' })).filter(b => String(b.props?.key).startsWith('q-'))
+    expect(options.map(b => b.props?.key)).toEqual(['q-0', 'q-1', 'q-close'])
+    expect(options.map(b => (b.props as { hotkey?: string } | undefined)?.hotkey)).toEqual(['1', '2', undefined])
+    expect(options.map(b => b.props?.label)).toEqual(['Raise to high for this turn', 'Keep medium', '×'])
+    expect((await ui.find({ type: 'Text', text: /rightsize · Stuck/ }))?.text).toContain('rightsize · Stuck: Claude looks stuck: the same tool call failed twice.')
+    await ui.press({ key: 'q-0' })
+    await ui.unmount()
+    await d.step('t1', 2)
+    expect(last(h.sent)?.effort, 'the answer applies').toBe('high')
+    expect(h.question, 'the row is gone').toBeNull()
+    await d.complete('t1')
+  })
+
+  test(`× on a band question dismisses it: nothing changes, and it is not counted as unanswered (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const { h, d } = await stuckAsked($, on)
+    const ui = await mount($, surface)
+    await ui.press({ key: 'q-close' })
+    await ui.unmount()
+    await d.step('t1', 2)
+    expect(last(h.sent)?.effort).toBe('medium')
+    expect(h.question).toBeNull()
+    await d.complete('t1')
+    expect(helperLog(h)).not.toContain('no answer on the band')
+  })
+
+  test(`two band questions take turns: the second shows when the first is answered (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const { h, d } = await stuckAsked($, on)
+    await d.workflow()
+    expect(h.events, 'the workflow went ahead').toContain('workflow')
+    expect(h.question?.header, 'the second waits behind the first').toBe('Stuck')
+    expect(h.asked.map(a => a.header)).toEqual(['Stuck'])
+    const ui = await mount($, surface)
+    await ui.press({ key: 'q-close' })
+    await ui.unmount()
+    await settle()
+    expect(h.question?.header, 'then the second shows').toBe('Workflow')
+    expect(h.asked.map(a => a.header)).toEqual(['Stuck', 'Workflow'])
+  })
+
+  test(`with Band set to Never a timed question is the dialog, and a late answer to a rule is still saved (${surface})`, { timeoutMs: 30000, options: { band: 'off' } }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    const d = drive($, h)
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+    let release = () => {}
+    h.answerGate = { Lowering: new Promise<void>(r => (release = r)) }
+    h.rating = LOWER
+    h.answers = { Lowering: 'Lower automatically (Recommended)', Remember: 'Just this session' }
+    h.sleepEnds = true
+    await d.submit(LOOKUP)
+    await d.step('t1', 0)
+    expect(h.question, 'never on the band').toBeNull()
+    expect(last(h.sent)?.effort, 'this prompt: no change').toBe('medium')
+    await d.complete('t1')
+    release()
+    await until(() => h.toasts.some(t => t.includes('saved your answer')))
+    expect(last(h.toasts)).toBe('rightsize: saved your answer for next time.')
+  })
+
+  test(`with Band set to Never a late answer in the dialog to a one-time question gets a toast (${surface})`, { timeoutMs: 30000, options: { band: 'off' } }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    const d = drive($, h)
+    await d.start(surface)
+    h.rating = NO_CHANGE
+    await d.submit(LOOKUP)
+    await d.step('t1', 0)
+    await d.bash('fail make')
+    await d.bash('fail make')
+    let release = () => {}
+    h.answerGate = { Stuck: new Promise<void>(r => (release = r)) }
+    h.answers = { Stuck: 'Raise to high for this turn' }
+    h.sleepEnds = true
+    await d.step('t1', 1)
+    expect(h.question).toBeNull()
+    expect(last(h.sent)?.effort).toBe('medium')
+    release()
+    await until(() => h.toasts.some(t => t.includes('too late')))
+    expect(last(h.toasts)).toBe('rightsize: that answer came too late; nothing changed.')
   })
 
   test(`a helper whose task has no retry left goes back without a question (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -6921,7 +7200,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.paneCloses).toEqual([])
     const status = (await d.command('status')).text ?? ''
     expect(status.startsWith('Profile: Balanced')).toBe(true)
-    expect(status).toContain('All 28 settings are at their defaults')
+    expect(status).toContain('All 29 settings are at their defaults')
     expect(status.endsWith('Commands: /rightsize help')).toBe(true)
     expect(h.paneOpens.length, 'status opens no pane').toBe(1)
   })

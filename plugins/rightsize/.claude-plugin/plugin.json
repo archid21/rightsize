@@ -161,7 +161,7 @@
     "workflows": {
       "type": "string",
       "title": "Advanced · Workflows",
-      "description": "What rightsize does once Claude starts a workflow (ultracode, or asked for): many helper agents at once, often 10 or more, each picking its own model. ask: ask before the first workflow starts (the default); until you answer, rightsize pauses for it. pause rightsize: hand nothing off for the rest of the session, and leave the workflow's agents alone. follow my rules: hand-offs follow your Stronger model and Cheaper model rules as usual; the workflow's agents are left alone. right-size every agent: as follow my rules, and each workflow agent that names no model is rated by Haiku (one rating call each) and runs on the cheapest model that fits, under Claude's subagents, Use Haiku, Use Fable and Pause after misses. Claude's subagents set to off keeps the agents alone in every case. Whichever you pick, measurement stays paused after a workflow: calibration learns nothing and no saving is claimed.",
+      "description": "What rightsize does once Claude starts a workflow (ultracode, or asked for): many helper agents at once, often 10 or more, each picking its own model. ask: ask on the band when the first workflow starts (the default); until you answer, rightsize pauses for it. pause rightsize: hand nothing off for the rest of the session, and leave the workflow's agents alone. follow my rules: hand-offs follow your Stronger model and Cheaper model rules as usual; the workflow's agents are left alone. right-size every agent: as follow my rules, and each workflow agent that names no model is rated by Haiku (one rating call each) and runs on the cheapest model that fits, under Claude's subagents, Use Haiku, Use Fable and Pause after misses. Claude's subagents set to off keeps the agents alone in every case. Whichever you pick, measurement stays paused after a workflow: calibration learns nothing and no saving is claimed.",
       "default": "ask",
       "options": [
         "ask",
@@ -206,7 +206,7 @@
     "escalation": {
       "type": "string",
       "title": "Advanced · Raise when stuck",
-      "description": "on: when a turn shows Claude is stuck (see Stuck sensitivity), raise effort one level for the rest of the turn, at most twice, never above Highest effort and never to max. It follows your Raising rule: automatic raises without asking, otherwise it asks. off: never raise mid-turn.",
+      "description": "on: when a turn shows Claude is stuck (see Stuck sensitivity), raise effort one level for the rest of the turn, at most twice, never above Highest effort and never to max. It follows your Raising rule: automatic raises without asking, otherwise it asks on the band while the turn goes on. off: never raise mid-turn.",
       "default": "on",
       "options": [
         "on",
@@ -302,6 +302,17 @@
         "when it acts",
         "always",
         "off"
+      ]
+    },
+    "questionWait": {
+      "type": "string",
+      "title": "Advanced · Question wait",
+      "description": "How long a question that must be answered before your prompt runs waits for your answer: the four rule questions the first time, and Effort, Stronger and Subagent when a rule is ask (with Band set to Never, or on the mobile app, every question). With no answer, rightsize takes the choice that changes nothing and costs nothing. Questions on the band do not hold up the work and have no wait. The Idle question is not timed: after this wait the band says the prompt is held.",
+      "default": "30 seconds",
+      "options": [
+        "30 seconds",
+        "1 minute",
+        "2 minutes"
       ]
     },
     "share": {

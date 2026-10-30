@@ -80,6 +80,15 @@ export const blockedError = (text: string): boolean => {
   return BLOCKED.some(re => re.test(t))
 }
 
+/**
+ * Whether a failed tool call's text is the person saying no at the permission prompt. Core reports that
+ * as an error result, not a deny, so it would otherwise count as the work failing. Saying no is the
+ * person steering, not Claude struggling: it neither raises effort nor steps a lowered turn back up.
+ */
+const REFUSED = /^(?:The user doesn't want to proceed with this tool use\b|User rejected tool use\b)/
+
+export const refusedByPerson = (text: string): boolean => REFUSED.test(text.trimStart())
+
 export const noSignals = (): Signals => ({ errors: 0, calls: {}, fired: [] })
 
 /** Keys that label a call rather than make it: Claude writes a fresh `description` for the same Bash command. */

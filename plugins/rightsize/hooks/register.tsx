@@ -98,7 +98,7 @@ import {
 } from './settings'
 import { BRIEF_MAX, cutRequest, parseRating, ratingPrompt, ratingSystem } from './rate'
 import { isApprovalStep } from './approval'
-import { LIMITS, type Limits, type Signals, type Struggle, blockedError, callKey, isSensitivity, isTestCommand, noSignals, noteCall, oneUp, struggle } from './struggle'
+import { LIMITS, type Limits, type Signals, type Struggle, blockedError, callKey, isSensitivity, isTestCommand, noSignals, noteCall, oneUp, refusedByPerson, struggle } from './struggle'
 import { type Change, type HelperLine, type RunLine, type SwitchLine, type Windows, SESSION_TOTAL, SESSION_TOTAL_FROM, bandShareText, buildReport, costTag, parseLines, ratedInSession, sessionTotal, shareMessage, shareOf, usedTag, windowCostText, windowRates } from './report'
 import { COLD_MIN, PING_PROMPT, ROW_OF, WRAP_UP, alwaysText, breakEvenMs, cacheHeld, clockText, coldPlan, ignoredLately, isGroundwork, keepWarmChoices, leadMs, learnedChoice, offerAt, offerText, pingCost, pingEvery, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText } from './warm'
 
@@ -2738,6 +2738,7 @@ async function noteHelperCall($: EngineInterface, id: string, w: Watch, e: Recor
   const r = result as { deny?: string; isError?: boolean }
   if (r.deny) return
   const isError = r.isError === true
+  if (isError && refusedByPerson(errorText(result))) return
   if (isError && blockedError(errorText(result))) {
     w.blocked += 1
     if (w.stall !== 'struggling') w.stall = 'blocked'
@@ -3855,15 +3856,17 @@ export const register: Register = (on, options) => {
       const model = (e as { model?: unknown }).model
       if (String(e.tool) === 'Agent' && active.delegate && tierOf(typeof model === 'string' ? model : undefined) === active.delegate.tier) active.delegated = true
       if (String(e.tool) === 'Agent' || String(e.tool) === 'SendMessage') active.agentCalls += 1
-      const isError = (result as { isError?: boolean }).isError === true
+      // A call the person said no to at the permission prompt comes back as an error: it is their steering, not a failure.
+      const refused = (result as { isError?: boolean }).isError === true && refusedByPerson(errorText(result))
+      const isError = (result as { isError?: boolean }).isError === true && !refused
       // An error from the environment (no network, no login, a denied sandbox, a missing program) is a Blocked
       // stall: more effort would not fix it, so it is neither an error nor a sign of struggling.
       const blocked = isError && blockedError(errorText(result))
       if (blocked) active.blocked += 1
       else if (isError) active.errors += 1
-      if (!(result as { deny?: string }).deny && isApprovalStep(String(e.tool), e as Record<string, unknown>)) active.approvalSteps += 1
-      // A refused call (a denied permission) says nothing about the work.
-      if (!(result as { deny?: string }).deny && !blocked) active.signals = noteCall(active.signals, callKey(String(e.tool), e as Record<string, unknown>), isError, isTestCommand(String(e.tool), e as Record<string, unknown>))
+      if (!(result as { deny?: string }).deny && !refused && isApprovalStep(String(e.tool), e as Record<string, unknown>)) active.approvalSteps += 1
+      // A refused call (a hook's deny, or the person's no) says nothing about the work.
+      if (!(result as { deny?: string }).deny && !refused && !blocked) active.signals = noteCall(active.signals, callKey(String(e.tool), e as Record<string, unknown>), isError, isTestCommand(String(e.tool), e as Record<string, unknown>))
     }
     return result
   }).catch(($, e, next) => next(e))

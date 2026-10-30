@@ -26,6 +26,8 @@ const SESSION_DIR = `${LOGS}/rightsize/sess-1`
 const RUNS_FILE = `${SESSION_DIR}/runs.jsonl`
 const SWITCHES_FILE = `${SESSION_DIR}/switches.jsonl`
 const LOG_PATH = `${SESSION_DIR}/rightsize.log`
+/** What core returns when the person says no at the permission prompt. */
+const REJECTED = "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed."
 /** The shared files of 0.7 and before: still read, never written. */
 const LEGACY_RUNS = `${LOGS}/rightsize-runs.jsonl`
 const LEGACY_SWITCHES = `${LOGS}/rightsize-switches.jsonl`
@@ -384,10 +386,12 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
     h.events.push('workflow')
     return { result: { content: 'started in the background' } }
   })
-  // A command starting "fail" fails, and so does one ending " --red" (a test run that is red); one starting "denied" is refused, as a denied permission is; one starting "env:" fails with the text after it.
+  // A command starting "fail" fails, and so does one ending " --red" (a test run that is red); one starting "denied" is refused by a hook;
+  // one starting "rejected" is refused by the person at the permission prompt, which core reports as an error result; one starting "env:" fails with the text after it.
   ;(on as unknown as LooseOn)('tool.call', { tool: 'Bash' }, async (_$, e) => {
     const command = String((e as unknown as { command: string }).command)
     if (command.startsWith('denied')) return { deny: 'permission denied' }
+    if (command.startsWith('rejected')) return { result: REJECTED, text: REJECTED, isError: true }
     // "env:<text>" fails with that text, as the environment does (no network, a missing program); the text is part of the call.
     if (command.startsWith('env:')) return { result: command.slice(4), text: command.slice(4), isError: true }
     return command.startsWith('fail') || command.endsWith(' --red') ? { result: { stdout: '', stderr: 'boom' }, text: 'boom', isError: true } : { result: { stdout: 'ok', stderr: '' }, text: 'ok' }
@@ -1329,7 +1333,11 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t1', 0)
     for (let i = 0; i < 3; i++) await d.bash('denied rm -rf build')
     await d.step('t1', 1)
-    expect(last(h.sent)?.effort).toBe('medium')
+    expect(last(h.sent)?.effort, 'refused by a hook').toBe('medium')
+    for (let i = 0; i < 3; i++) await d.bash('rejected rm -rf build')
+    await d.step('t1', 2)
+    expect(last(h.sent)?.effort, 'refused by the person at the prompt').toBe('medium')
+    expect(h.asked.length).toBe(0)
   })
 
   test(`blocked errors (sandbox, network, missing program) do not raise effort, however often they repeat (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -1366,7 +1374,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect('blocked' in next).toBe(false)
   })
 
-  test(`a blocked error does not step an auto-lowered turn back up; an ordinary failure does (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`a blocked error or a refused call does not step an auto-lowered turn back up; an ordinary failure does (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES } })
     const d = drive($, h)
     await d.start(surface)
@@ -1381,8 +1389,11 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.bash('env:ssh: connect to host example.com port 22: Network is unreachable')
     await d.step('t1', 1)
     expect(last(h.sent)?.effort, 'the network is down: effort would not help').toBe('low')
-    await d.bash('fail npm test')
+    await d.bash('rejected git reset --hard')
     await d.step('t1', 2)
+    expect(last(h.sent)?.effort, 'the person said no: the task is no harder').toBe('low')
+    await d.bash('fail npm test')
+    await d.step('t1', 3)
     expect(last(h.sent)?.effort, 'a failure of the work: back to medium').toBe('medium')
     await d.complete('t1')
   })

@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { ERRORS, LIMITS, LONG_MIN, LONG_X, LOOP, REPEAT, blockedError, callKey, isSensitivity, isTestCommand, noSignals, noteCall, oneUp, struggle } from './struggle'
+import { ERRORS, LIMITS, LONG_MIN, LONG_X, LOOP, REPEAT, blockedError, callKey, isSensitivity, isTestCommand, noSignals, noteCall, oneUp, refusedByPerson, struggle } from './struggle'
 
 // Claude labels each Bash call afresh, so the description differs between runs of one command.
 const bash = (command: string) => callKey('Bash', { tool: 'Bash', tool_use_id: Math.random().toString(), command, description: `run ${command} (${Math.random()})` })
@@ -214,4 +214,11 @@ test('struggle takes the turn\'s cap on raises: a helper\'s cap is the task\'s b
   const s = { ...noteCall(noteCall(noSignals(), bash('a'), true), bash('a'), true), fired: ['errors', 'loop'] as const }
   expect(struggle({ ...s, fired: [...s.fired] }, 3, 5), 'two raised: the turn is done').toBeUndefined()
   expect(struggle({ ...s, fired: [...s.fired] }, 3, 5, LIMITS.normal, Infinity)?.kind).toBe('repeat-fail')
+})
+
+test('refusedByPerson: a call the person said no to at the permission prompt, in either of core\'s wordings', async () => {
+  expect(refusedByPerson("The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.")).toBe(true)
+  expect(refusedByPerson("The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). To tell you how to proceed, the user said:\nuse the other branch")).toBe(true)
+  expect(refusedByPerson('User rejected tool use')).toBe(true)
+  for (const text of ['boom', 'rm: cannot remove build: Permission denied', 'error: the user rejected the merge request in review', '']) expect(refusedByPerson(text), text).toBe(false)
 })

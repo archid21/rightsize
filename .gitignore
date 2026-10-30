@@ -4,3 +4,8 @@
 plugins/*/.claude-plugin/types/
 # Written by the monthly price check.
 *.bak
+.groundwork/config.local.json
+
+# Groundwork: decisions and handoff stay private (research-stays-private rule)
+docs/decisions/
+docs/project/HANDOFF.md

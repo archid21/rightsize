@@ -1,0 +1,20 @@
+{
+  "items": {
+    "commands:CONTRIBUTING.md#test": {
+      "answer": "yes",
+      "date": "2026-10-30T21:13Z",
+      "result": "docs/project/HOW-WE-WORK.md"
+    },
+    "commands:README.md#install": {
+      "answer": "no",
+      "date": "2026-10-30T21:13Z"
+    },
+    "commands:README.md#run": {
+      "answer": "no",
+      "date": "2026-10-30T21:13Z"
+    }
+  },
+  "kinds": {
+    "commands": "review"
+  }
+}

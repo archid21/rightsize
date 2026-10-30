@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "ask": [
+      "Bash(rm -rf *)",
+      "Bash(git push --force *)",
+      "Bash(git push -f *)"
+    ],
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Edit(./.env)",
+      "Edit(./.env.*)"
+    ]
+  }
+}

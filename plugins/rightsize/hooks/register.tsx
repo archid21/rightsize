@@ -2285,8 +2285,8 @@ type ColdTurn = {
   task?: string
   /** Where each offered keep-warm choice ends, by its id. */
   ends: Record<string, number>
-  /** The offer as it shows without a question: its line, its one button and the choices of the ⋯ menu. */
-  offer?: { text: string; first: ColdButton; more: ColdButton[] }
+  /** The offer as it shows without a question: its line, its one button and the choices of the ⋯ menu. `args` are what the line is made of, so a minute tick can redraw it. */
+  offer?: { text: string; first: ColdButton; more: ColdButton[]; args: Omit<Parameters<typeof offerText>[0], 'now'> }
   /** The question the cache row asks instead, until it is answered. */
   ask?: ColdAsk
 }
@@ -2424,7 +2424,8 @@ async function offerCold($: EngineInterface, turn: ColdTurn) {
   const usual = usualStart(runLog, now)
   const choices = keepWarmChoices({ ttl: cacheTtl, endedAt: turn.endedAt, cold: turn.cold, ping, startMinutes: usual.minutes, tag: d => (billing === 'subscription' && rates ? bandShareText(shareOf(d, rates)) : costTag(d, billing === 'subscription', rates)) })
   for (const c of choices) if (c.endsAt !== undefined) turn.ends[c.id] = c.endsAt
-  const text = offerText({ ttl: cacheTtl, endedAt: turn.endedAt, cost: coldCostText(turn.cold, rates), breakEven: breakEvenMs(turn.cold, ping, cacheTtl) })
+  const args = { ttl: cacheTtl, endedAt: turn.endedAt, cost: coldCostText(turn.cold, rates), breakEven: breakEvenMs(turn.cold, ping, cacheTtl) }
+  const text = offerText({ ...args, now })
   const all: ColdButton[] = [
     ...choices.map(c => ({ id: c.id, label: c.label })),
     turn.groundwork ? { id: 'handoff', label: 'Save a handoff' } : { id: 'compact', label: 'Compact now' },
@@ -2434,7 +2435,7 @@ async function offerCold($: EngineInterface, turn: ColdTurn) {
   const ids = all.map(c => c.id)
   const learned = learnedChoice(runLog, ids)
   const first = all.find(c => c.id === learned) ?? (all[0] as ColdButton)
-  turn.offer = { text, first, more: all.filter(c => c !== first) }
+  turn.offer = { text, first, more: all.filter(c => c !== first), args }
   // At most one question, each at most once: the back-off first, as a person who ignores the offer has no standing rule to make.
   const asked = await coldAsked($)
   const standing = standingChoice(runLog, ids, asked)
@@ -2450,6 +2451,16 @@ async function offerCold($: EngineInterface, turn: ColdTurn) {
   // The cache goes cold with the offer unanswered: that is its outcome.
   await armCold($, coldGen, turn.endedAt + cacheTtl, () => closeOffer($, 'ignored'))
   await log($, `before the cache goes cold: offered ${choices.map(c => c.id).join(', ') || 'no keep-warm time'}, button ${first.id}${learned ? ' (the one picked most)' : ''}${turn.ask ? `, asked ${turn.ask.kind === 'stop' ? 'whether to stop offering' : alwaysText(turn.ask.choice)}` : ''} (${money(turn.cold)} cold, ${Math.round(turn.context / 1000)}K tokens on ${TIER_NAME[turn.tier]}${usual.fallback ? `, usual start 9:00 by default, ${usual.days} days of runs` : ''})`)
+}
+
+/** Once a minute, from the 3-second timer: redraws the offer's line when its minute has changed. Not while a question is on the row. */
+async function tickOffer($: EngineInterface) {
+  const turn = coldTurn
+  if (!offerOpen || !turn?.offer || turn.ask) return
+  const text = offerText({ ...turn.offer.args, now: await $.clock.now() })
+  if (text === turn.offer.text) return
+  turn.offer.text = text
+  await showOffer($, turn)
 }
 
 /** Puts the turn's offer on the cache row: its line and one button, or the question it asks instead. */
@@ -3517,6 +3528,7 @@ export const register: Register = (on, options) => {
           coldTurn = null
         }
       })
+      void tickOffer($)
     })
     await showStatus($)
     return result

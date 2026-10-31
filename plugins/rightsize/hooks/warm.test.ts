@@ -131,14 +131,19 @@ test('the offer on a 5-minute cache: only 30 min and 1 h, and only when they cos
   expect(keepWarmChoices({ ...o, ping: 0.12 }), '7 x $0.12 is $0.84').toEqual([])
 })
 
-test('the offer text names the clock time the cache goes cold and the cold cost; a 5-minute cache adds the time keeping warm stops paying', async () => {
+test('the offer text counts the minutes left and names the clock time the cache goes cold, with the cold cost; a 5-minute cache adds the time keeping warm stops paying', async () => {
   const ended = local(15, 13, 55)
   const one = { ttl: HOUR, endedAt: ended, cost: 'about $0.63', breakEven: 39 * 57 * MIN }
-  expect(offerText(one)).toBe('Goes cold at 14:55 · coming back after costs about $0.63')
-  expect(offerText({ ...one, ttl: 5 * MIN, endedAt: local(15, 13), breakEven: 96 * MIN })).toBe(
-    'Goes cold at 13:05 · coming back after costs about $0.63. Keeping warm past 14:36 costs more.',
+  expect(offerText({ ...one, now: local(15, 14, 13) }), '42 min left at 14:13').toBe('Goes cold in 42 min (14:55) · coming back after costs about $0.63')
+  expect(offerText({ ...one, now: local(15, 14, 54) + 30_000 }), 'under a minute left: 1 min, rounded up').toBe('Goes cold in 1 min (14:55) · coming back after costs about $0.63')
+  expect(offerText({ ...one, now: local(15, 14, 55) }), 'never 0 min while the cache is warm').toBe('Goes cold in 1 min (14:55) · coming back after costs about $0.63')
+  expect(offerText({ ...one, now: local(15, 14, 13), cost: '~2% ($1.10)' })).toBe('Goes cold in 42 min (14:55) · coming back after costs ~2% ($1.10)')
+  expect(offerText({ ...one, ttl: 5 * MIN, endedAt: local(15, 13), breakEven: 96 * MIN, now: local(15, 13) })).toBe(
+    'Goes cold in 5 min (13:05) · coming back after costs about $0.63. Keeping warm past 14:36 costs more.',
   )
-  expect(offerText({ ...one, cost: '~2% ($1.10)' })).toBe('Goes cold at 14:55 · coming back after costs ~2% ($1.10)')
+  expect(offerText({ ...one, ttl: 5 * MIN, endedAt: local(15, 13), breakEven: 96 * MIN, now: local(15, 13) + 30_000 }), 'the short-cache tail stays; 4 min 30 s left is 5 min').toBe(
+    'Goes cold in 5 min (13:05) · coming back after costs about $0.63. Keeping warm past 14:36 costs more.',
+  )
 })
 
 test('keep-warm buttons: clock times counted from the turn end, in API and subscription words; one button per end minute', async () => {

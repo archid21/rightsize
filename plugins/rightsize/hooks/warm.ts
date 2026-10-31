@@ -175,13 +175,14 @@ export function keepWarmChoices(o: { ttl: number; endedAt: number; cold: number;
 }
 
 /**
- * The offer's line, under the band's Cache label: "Goes cold at 14:55 · coming back after costs ~2%". `endedAt` is when
- * the turn ended; the cache goes cold one `ttl` later, a clock time that stays true however long the row shows. `cost` is
- * the cold cost as the caller writes it ("about $1.10", "~2%"). On a 5-minute cache it adds where keeping warm stops
- * paying, also as a clock time.
+ * The offer's line, under the band's Cache label: "Goes cold in 42 min (14:55) · coming back after costs ~2%". `endedAt`
+ * is when the turn ended; the cache goes cold one `ttl` later. `now` sets the minutes left, never below 1 while the cache
+ * is warm, and the clock time in brackets stays true however long the row shows. `cost` is the cold cost as the caller
+ * writes it ("about $1.10", "~2%"). On a 5-minute cache it adds where keeping warm stops paying, also as a clock time.
  */
-export function offerText(o: { ttl: number; endedAt: number; cost: string; breakEven: number }) {
-  const head = `Goes cold at ${clockText(o.endedAt + o.ttl)} · coming back after costs ${o.cost}`
+export function offerText(o: { ttl: number; endedAt: number; cost: string; breakEven: number; now: number }) {
+  const left = Math.max(1, Math.ceil((o.endedAt + o.ttl - o.now) / MIN))
+  const head = `Goes cold in ${left} min (${clockText(o.endedAt + o.ttl)}) · coming back after costs ${o.cost}`
   return o.ttl >= HOUR ? head : `${head}. Keeping warm past ${clockText(o.endedAt + o.breakEven)} costs more.`
 }
 

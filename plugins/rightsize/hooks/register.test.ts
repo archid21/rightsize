@@ -181,6 +181,10 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
     /** Every wait the plugin asked $.clock.sleep for, and every $.clock.after, in ms: a long wait has to be an `after`, which does not hang on a hook's budget. */
     sleeps: [] as number[],
     afters: [] as number[],
+    /** Every repeating timer the plugin asked $.clock.every for, in ms. */
+    everies: [] as number[],
+    /** True: the repeating timer fires on the virtual clock. Off by default: a long advance would run every 3-second tick. */
+    ticks: false,
     /** Moves the virtual clock on by `ms`, ending each sleep that comes due on the way and letting the plugin run before the next. */
     advance: async (ms: number) => {
       // What the plugin has started waits for first: a sleep it is about to start counts from now, not from the time moved on to.
@@ -212,7 +216,13 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
     return { value: undefined } as never
   })
   on('command.register', async () => ({ value: undefined }) as never)
-  on('clock.every', async () => ({ value: undefined }) as never)
+  // A repeating timer: on the virtual clock it ends each time `advance` reaches its next tick, so the plugin's callback runs once per tick.
+  on('clock.every', async (_$, e) => {
+    const ms = (e as { ms: number }).ms
+    h.everies.push(ms)
+    if (h.virtual && h.ticks) await new Promise<void>(release => h.sleepers.push({ due: h.now + ms, release }))
+    return { value: undefined } as never
+  })
   // The merged settings, as the engine holds them: a read of one key is this object, projected.
   on('settings.read', async () => {
     if (h.settingsFail) throw new Error('settings could not be read')
@@ -6570,6 +6580,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     model?: string
     store?: Record<string, unknown>
     rateLimits?: { kind: string; percentUsed: number }[]
+    /** True: the 3-second band timer fires on the virtual clock. */
+    ticks?: boolean
   }
   // Opus: 80,500 tokens in the conversation, $0.63 to come back cold.
   const coldSession = async ($: unknown, on: Parameters<TestBody>[1], over: ColdOver = {}) => {
@@ -6578,6 +6590,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     if (over.rateLimits) h.rateLimits = over.rateLimits
     h.now = EVENING
     h.virtual = true
+    h.ticks = over.ticks === true
     h.stepUsage = over.usage ?? BIG_TURN
     h.commands = over.commands ?? []
     if ('fork' in over) h.forkUsage = over.fork
@@ -6640,7 +6653,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await h.advance(4 * MIN)
     expect(await bandText($, surface), 'not at 4 minutes').toBe('')
     await h.advance(MIN)
-    expect(await bandText($, surface), 'the cache line stands alone: no route text, so it carries the prefix').toBe('Goes cold at 19:00 · coming back after costs about $0.63')
+    expect(await bandText($, surface), 'the cache line stands alone: no route text, so it carries the prefix').toBe('Goes cold in 55 min (19:00) · coming back after costs about $0.63')
     expect(await bandButtons($), 'one button; ⋯ and × follow it').toEqual([
       ['cold-2h', 'Keep warm to 20:00 ($0.03)'],
       ['mode', '⋯'],
@@ -6663,9 +6676,21 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const { h, d } = await coldSession($, on)
     await coldTurn(d, 't1')
     await h.advance(5 * MIN)
-    expect(await bandText($, surface)).toContain('Goes cold at 19:00')
+    expect(await bandText($, surface)).toContain('Goes cold in 55 min (19:00)')
     expect(await bandText($, surface)).not.toMatch(/tokens|Opus/)
     expect(coldLog(h)).toContain('($0.63 cold, 81K tokens on Opus')
+  })
+
+  test(`ask: the offer's minutes count down once a minute, from the 3-second timer; ten seconds later the row is the same (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const { h, d } = await coldSession($, on, { ticks: true })
+    await coldTurn(d, 't1')
+    await h.advance(5 * MIN)
+    expect(await coldRow($)).toBe('Goes cold in 55 min (19:00) · coming back after costs about $0.63')
+    await h.advance(10_000)
+    expect(await coldRow($), 'ten seconds later: still 55 min').toBe('Goes cold in 55 min (19:00) · coming back after costs about $0.63')
+    await h.advance(MIN - 10_000)
+    expect(await coldRow($), 'a minute later: 54 min').toBe('Goes cold in 54 min (19:00) · coming back after costs about $0.63')
+    expect(h.everies.every(ms => ms === 3000), 'the 3-second timer is the only one for the band').toBe(true)
   })
 
   test(`ask: a prompt in the first 5 minutes cancels the offer (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -6692,7 +6717,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text)
     expect(texts.slice(0, 2), 'a header line, then the labelled rows').toEqual(['rightsize', 'Prompt'])
     expect(await rowText(ui, 'Prompt'), 'row 1 is the route text alone').toMatch(/^Effort lowered/)
-    expect(await coldRow($)).toBe('Goes cold at 19:00 · coming back after costs about $0.63')
+    expect(await coldRow($)).toBe('Goes cold in 55 min (19:00) · coming back after costs about $0.63')
     await ui.unmount()
     expect((await bandButtons($)).map(b => b[0]), '⋯ and × on the header; the route buttons; then the cache button').toEqual(['mode', 'close', 'retry', 'cold-2h'])
   })
@@ -6706,7 +6731,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t1')
     await d.complete('t1')
     await h.advance(5 * MIN)
-    expect(await coldRow($)).toBe('Goes cold at 19:00 · coming back after costs about $0.63')
+    expect(await coldRow($)).toBe('Goes cold in 55 min (19:00) · coming back after costs about $0.63')
     expect((await bandButtons($)).map(b => b[0]), '⋯ and × on the header, then the cache button').toEqual(['mode', 'close', 'cold-2h'])
     expect((await openMenu($, h))[0]?.options, 'the rule options, then the cache choices, three to a page').toEqual(['Ask me each time', 'Never raise', 'Keep warm to 2:00 tomorrow ($0.13)', 'More…'])
   })
@@ -6741,7 +6766,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await bandText($, surface)).toBe('')
     h.stepUsage = { ...BIG_TURN, cache_read_input_tokens: 139_500 }
     await coldOffer(h, d, 't4')
-    expect(await bandText($, surface)).toBe('Goes cold at 19:00 · coming back after costs about $0.55')
+    expect(await bandText($, surface)).toBe('Goes cold in 55 min (19:00) · coming back after costs about $0.55')
     // Opus at exactly 200K tokens is offered; one token more is Claude Code's to compact.
     h.model = 'claude-opus-5-5'
     h.stepUsage = { ...BIG_TURN, cache_read_input_tokens: 199_500 }
@@ -6815,7 +6840,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.rating = NO_CHANGE
     await d.submit('continue')
     await coldOffer(h, d, 't3')
-    expect(await coldRow($), 'the offer is its own row under the prompt\'s').toContain('Goes cold at ')
+    expect(await coldRow($), 'the offer is its own row under the prompt\'s').toContain('Goes cold in ')
   })
 
   test(`an offered keep-warm time starts at once and counts from the turn's end (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -7103,7 +7128,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await coldTurn(d, 't1')
     expect(h.afters, 'a cache under 1 hour shows the offer at the turn\'s end: the one timer is for the cache going cold, 5 minutes on').toEqual([5 * MIN])
     expect(await bandText($, surface)).toBe(
-      'Goes cold at 18:05 · coming back after costs about $0.72. Keeping warm past 19:36 costs more.',
+      'Goes cold in 5 min (18:05) · coming back after costs about $0.72. Keeping warm past 19:36 costs more.',
     )
     expect((await bandButtons($)).map(b => b[1]), 'one button').toEqual(['Keep warm to 18:30 ($0.21)', '⋯', '×'])
     const asks = await openMenu($, h, { Options: 'More…' }, 2)
@@ -7233,7 +7258,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const { h, d } = await coldSession($, on)
     h.commandsFail = true
     await coldOffer(h, d, 't1')
-    expect(await bandText($, surface)).toContain('Goes cold at 19:00')
+    expect(await bandText($, surface)).toContain('Goes cold in 55 min (19:00)')
     expect(coldLog(h)).toContain('could not list the commands')
   })
 
@@ -7325,7 +7350,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   test(`profiles: the ask value still offers, for Balanced and Economy too, when the row is set to it (${surface})`, { timeoutMs: 30000, options: inProfile('Economy', { beforeCold: 'ask' }).options }, async ($, on) => {
     const { h, d } = await coldSession($, on, { stored: inProfile('Economy', { beforeCold: 'ask' }).stored })
     await coldOffer(h, d, 't1')
-    expect(await bandText($, surface)).toContain('Goes cold at 19:00')
+    expect(await bandText($, surface)).toContain('Goes cold in 55 min (19:00)')
     expect((await bandButtons($)).map(b => b[1])[0], 'the keep-warm offer').toMatch(/^Keep warm to /)
     await h.advance(3 * HOUR)
     expect(NOTHING_DONE(h)).toEqual(NONE)
@@ -7355,7 +7380,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.config('profile', 'Quality')
     await d.config('beforeCold', 'ask')
     await coldOffer(h, d, 't2')
-    expect(await bandText($, surface)).toContain('Goes cold at ')
+    expect(await bandText($, surface)).toContain('Goes cold in ')
     await h.advance(9 * HOUR)
     expect(NOTHING_DONE(h)).toEqual(NONE)
   })
@@ -7365,13 +7390,13 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const { h, d } = await coldSession($, on, { rateLimits: SUB.rateLimits })
     await coldOffer(h, d, 't1')
     // No run has shown the window rate yet: dollars, said to be API-equivalent.
-    expect(await bandText($, surface)).toBe('Goes cold at 19:00 · coming back after costs about $0.63 API-equivalent')
+    expect(await bandText($, surface)).toBe('Goes cold in 55 min (19:00) · coming back after costs about $0.63 API-equivalent')
     expect((await bandButtons($)).map(b => b[1]).slice(0, 1)).toEqual(['Keep warm to 20:00 (~$0.03)'])
     expect((await openMenu($, h))[0]?.options.slice(0, 2)).toEqual(['Keep warm to 2:00 tomorrow (~$0.13)', 'Keep warm to 9:00 tomorrow (~$0.24)'])
     // 5% of the window for $1 of one turn, give or take a point: $0.63 is 2.5–3.8%, written in whole percent.
     h.files[LEGACY_RUNS] = `${JSON.stringify({ at: new Date(h.now).toISOString(), kind: 'run', actual: 1, before: { five_hour: 10 }, after: { five_hour: 15 } })}\n`
     await coldOffer(h, d, 't2')
-    expect(await bandText($, surface)).toBe('Goes cold at 19:05 · coming back after costs ~3–4%')
+    expect(await bandText($, surface)).toBe('Goes cold in 55 min (19:05) · coming back after costs ~3–4%')
     expect((await bandButtons($)).map(b => b[1]).slice(0, 1)).toEqual(['Keep warm to 20:05 (~0.1–0.2%)'])
     expect((await openMenu($, h))[0]?.options.slice(0, 2)).toEqual(['Keep warm to 2:05 tomorrow (~0.5–0.8%)', 'Keep warm to 9:00 tomorrow (~1%)'])
     // Keeping warm says what it cost in the window too.
@@ -7476,7 +7501,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await history(h, d, ['8h', 'ignored', '8h', '2h', 'ignored', '8h'])
     await coldOffer(h, d, 't1')
     expect(await bandButtons($), 'the one picked most').toEqual([['cold-8h', 'Keep warm to 2:00 tomorrow ($0.13)'], ['mode', '⋯'], ['close', '×']])
-    expect(await bandText($, surface), 'the line is the same').toBe('Goes cold at 19:00 · coming back after costs about $0.63')
+    expect(await bandText($, surface), 'the line is the same').toBe('Goes cold in 55 min (19:00) · coming back after costs about $0.63')
     const asks = await openMenu($, h, CACHE_MENU, 2)
     expect(asks.map(a => a.options), 'the others, in the fixed order, without the one on the row').toEqual([
       ['Keep warm to 20:00 ($0.03)', 'Keep warm to 9:00 tomorrow ($0.24)', 'Compact now', 'More…'],
@@ -7560,7 +7585,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await history(h, d, ['2h', '2h', '2h'])
     await coldOffer(h, d, 't1')
     await pressBand($, 'cold-ask-no')
-    expect(await bandText($, surface), 'the offer, as it was').toBe('Goes cold at 19:00 · coming back after costs about $0.63')
+    expect(await bandText($, surface), 'the offer, as it was').toBe('Goes cold in 55 min (19:00) · coming back after costs about $0.63')
     expect((await bandButtons($))[0]).toEqual(['cold-2h', 'Keep warm to 20:00 ($0.03)'])
     expect(h.sets.filter(x => x.key === 'rightsize.beforeCold')).toEqual([])
     await coldOffer(h, d, 't2')

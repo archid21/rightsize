@@ -1861,21 +1861,18 @@ const MENU_NOTE = 'Dollar amounts on a subscription are API-equivalent: what the
 async function bandMenu($: EngineInterface, band: Band) {
   const rule = band.rule
   const have = rule ? (await choices($))[rule] : undefined
+  // The marks come first on a result band (they are what the band is for), then the rules, the cache choices and the band setting.
   const own: (readonly [string, MenuChoice])[] = []
-  if (rule) for (const [value, label] of RULES[rule]) if (value !== have) own.push([label, { rule: value }])
   if (band.rate) own.push(['Mark this 👍 (right call)', { rate: 'up' }], ['Mark this 👎 (wrong call)', { rate: 'down' }])
+  if (rule) for (const [value, label] of RULES[rule]) if (value !== have) own.push([label, { rule: value }])
   if (band.tip) own.push(['Stop suggesting', { tip: band.tip }])
   const cache: (readonly [string, MenuChoice])[] = (band.coldMore ?? []).map(c => [c.label, { cold: c.id }])
   const mode: readonly [string, MenuChoice] = ['When the band shows…', { mode: true }]
   const all = [...own, ...cache, mode]
   const header = 'Options'
   const question = `${band.sure ? `${band.sure} ` : ''}${band.detail ? `${band.detail} ` : ''}Options for this band. ${MENU_NOTE}`
-  let v: MenuChoice | undefined
-  if (all.length <= ASK_MAX) v = await pick($, { header, question, options: all })
-  else {
-    v = await pick($, { header, question, options: [...own, ['More cache choices…', { cache: true }], mode] })
-    if (v && 'cache' in v) v = await pickFrom($, { header: 'Cache', question: `Cache choices. ${MENU_NOTE}`, options: cache })
-  }
+  // $.ui.ask takes 4 options at most: a longer list is paged, three at a time with More….
+  const v = await pickFrom($, { header, question, options: all }, header, 'More options')
   if (!v) return
   if ('rule' in v && rule) await setRule($, rule, v.rule)
   else if ('rate' in v && band.rate) await giveFeedback($, band.rate, v.rate)
@@ -2069,11 +2066,13 @@ async function escalate($: EngineInterface, run: Run, sign: Struggle, from: Leve
   const cur = run.raisedTo ?? from
   const to = cur ? oneUp(cur, ceiling) : undefined
   if (!cur || !to) return
-  const rule = (await choices($)).raise
-  if (paceNow.mode === 'max' && rule === undefined) {
+  const set = (await choices($)).raise
+  if (paceNow.mode === 'max' && set === undefined) {
     await log($, `mid-turn raise to ${to} skipped (${sign.why}): the usage window is nearly used up`)
     return
   }
+  // No rule set: the profile's Raising answer decides, as for a rated raise.
+  const rule = set ?? answers.raise
   if (rule === 'never') return
   if (rule !== 'auto') {
     const q: Question<'yes' | 'no'> = {
@@ -2116,9 +2115,10 @@ async function escalateHelper($: EngineInterface, id: string, w: Watch, sign: St
     await log($, `helper ${id} looks stuck (${sign.why}) but only the environment failed: can't tell, no raise`)
     return
   }
-  const rule = (await choices($)).raise
+  const set = (await choices($)).raise
+  const rule = set ?? answers.raise
   if (rule === 'never') return
-  if (paceNow.mode === 'max' && rule === undefined) {
+  if (paceNow.mode === 'max' && set === undefined) {
     await log($, `raise of helper ${id} skipped (${sign.why}): the usage window is nearly used up`)
     return
   }
@@ -3009,7 +3009,7 @@ function confirmText(what: ResetWhat | SettingKey) {
   if (what === 'settings') return `Reset settings? ${SETTINGS_GO} ${UNDONE}`
   if (what === 'measurement') return `Reset cost measurement? ${MEASURE_GO} ${UNDONE}`
   if (what === 'both') return `Reset settings and cost measurement? ${SETTINGS_GO} ${MEASURE_GO} ${UNDONE}`
-  const rule = RULE_IDS.some(r => RULE_KEYS[r] === what) ? ' Its question is asked again the next time it comes up.' : ''
+  const rule = RULE_IDS.some(r => RULE_KEYS[r] === what) ? ' Your profile decides that case again.' : ''
   return `Reset ${plainTitle(SETTINGS[what].title)}? It goes back to its default, ${SETTINGS[what].default}.${rule} ${UNDONE}`
 }
 

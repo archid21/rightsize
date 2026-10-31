@@ -749,7 +749,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.start(surface)
     await d.step('t0')
     await d.complete('t0')
-    h.answers = { Stronger: 'Use the stronger model automatically (Recommended)', Remember: 'This session' }
 
     h.rating = rated('feature', false)
     await d.submit(DEBUG)
@@ -906,7 +905,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.complete('t0')
 
     h.rating = '{"level":"low","model":"haiku","size":"bulky","type":"search","read":150000,"write":3000,"steps":30,"reason":"repo-wide search"}'
-    h.answers = { Cheaper: 'Send it to a cheaper subagent (Recommended)', Remember: 'This session' }
     await d.submit(SEARCH)
     await d.step('t1')
     await d.bash('denied git push')
@@ -925,7 +923,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.complete('t0')
 
     h.rating = '{"fit":{"haiku":"high","sonnet":"high","opus":"high","fable":"medium"},"type":"feature","read":20000,"write":2000,"steps":6,"reason":"small helper with tests"}'
-    h.answers = { Cheaper: 'Send it to a cheaper subagent (Recommended)', Remember: 'This session' }
     await d.submit(DEBUG)
     h.subModel = 'claude-haiku-5-5'
     await d.step('t1', 0)
@@ -965,7 +962,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.complete('t0')
 
     h.rating = '{"fit":{"haiku":"high","sonnet":"high","opus":"high","fable":"medium"},"size":"small","type":"feature","read":20000,"write":2000,"steps":6,"reason":"small helper with tests"}'
-    h.answers = { Cheaper: 'Send it to a cheaper subagent (Recommended)', Remember: 'This session' }
     await d.submit(DEBUG)
     h.subModel = 'claude-haiku-5-5'
     await d.step('t1', 0)
@@ -986,7 +982,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t0')
     await d.complete('t0')
     h.rating = '{"fit":{"haiku":"high","sonnet":"high","opus":"high","fable":"medium"},"type":"feature","read":20000,"write":2000,"steps":6,"reason":"small helper with tests"}'
-    h.answers = { Cheaper: 'Send it to a cheaper subagent (Recommended)', Remember: 'This session' }
     await d.submit(DEBUG)
     await d.step('t1', 0)
     await d.agent('haiku')
@@ -1209,7 +1204,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t0')
     await d.complete('t0')
     h.rating = NEAR
-    h.answers = { Cheaper: 'Send it to a cheaper subagent (Recommended)', Remember: 'This session' }
     await d.submit(SEARCH)
     expect(last(h.submitted)?.context?.join('\n') ?? '').toContain('model "haiku"')
     expect(await bandText($, surface)).toContain('The 5-hour window is on pace to run out before it resets, so rightsize saves harder.')
@@ -1242,7 +1236,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t0')
     await d.complete('t0')
     h.rating = '{"fit":{"haiku":"no","sonnet":"no","opus":"high","fable":"medium"},"size":"small","type":"debug","read":8000,"write":800,"steps":6,"reason":"race"}'
-    h.answers = { Raising: 'Raise automatically (Recommended)', Remember: 'This session' }
     await d.submit(DEBUG)
     expect(h.asked.length, 'no raise to ask about').toBe(0)
     await d.step('t1')
@@ -1258,7 +1251,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t0')
     await d.complete('t0')
     h.rating = '{"fit":{"haiku":"no","sonnet":"no","opus":"high","fable":"medium"},"size":"small","type":"debug","read":8000,"write":800,"steps":6,"reason":"race"}'
-    h.answers = { Raising: 'Raise automatically (Recommended)', Remember: 'This session' }
     await d.submit(DEBUG)
     await d.step('t1')
     expect(last(h.sent)?.effort, 'the decision still follows the window').toBe('medium')
@@ -1325,10 +1317,29 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(last(h.sent)?.effort).toBe('medium')
   })
 
+  test(`Raising left unset follows the profile: Balanced raises a stuck main chat without a question, and says so in the log (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    const d = drive($, h)
+    await d.start(surface)
+    h.rating = NO_CHANGE
+    await d.submit(LOOKUP)
+    await d.step('t1', 0)
+    await d.bash('fail make')
+    await d.bash('fail make')
+    await d.step('t1', 1)
+    await d.step('t1', 2)
+    expect(h.asked, 'no question: the profile\'s Raising answer is auto').toEqual([])
+    expect(last(h.sent)?.effort, 'raised from the next request').toBe('high')
+    expect(h.files[LOG_PATH] ?? '').toContain('raised mid-turn medium → high at step')
+    expect(await bandText($, surface)).toBe('Effort raised mid-turn: medium → high (the same tool call failed twice).')
+  })
+
   test(`asks before a mid-turn raise unless Raising is automatic, and does not ask twice for one sign (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
     const d = drive($, h)
     await d.start(surface)
+    // Raising set to ask: the profile's own answer (auto) would raise without a question.
+    await d.config('raiseRule', 'ask me')
     h.rating = NO_CHANGE
     await d.submit(LOOKUP)
     await d.step('t1', 0)
@@ -1418,7 +1429,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t0')
     await d.complete('t0')
     h.rating = LOWER
-    h.answers = { Lowering: 'Lower automatically (Recommended)', Remember: 'This session' }
 
     await d.submit(LOOKUP)
     await d.step('t1', 0)
@@ -1640,7 +1650,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(last(h.submitted)?.context?.join('\n') ?? '').toContain('model "haiku"')
   })
 
-  test(`the band shows a change, and its buttons change the rule and undo it (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`the band shows a change and who decided it; Retry undoes it (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES } })
     const d = drive($, h)
     await d.start(surface)
@@ -1654,35 +1664,51 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const ui = await mount($, surface)
     expect((await ui.findAll({ type: 'Button' })).map(b => b.key), '👍 and 👎 are in the ⋯ menu now, not buttons').toEqual(['retry', 'mode', 'close'])
 
-    // The ⋯ menu lists the rule options for this band (none is the person's yet), the marks, and the band setting.
-    h.answers = { Options: 'Ask me each time', Remember: 'This session' }
-    let asked = h.asked.length
-    await ui.press({ key: 'mode' })
-    await untilAsked(h, asked)
-    expect(h.asked.at(-1)?.options, 'the rules, the two marks, the band setting').toEqual(['Lower automatically', 'Ask me each time', 'Never lower', 'Mark this 👍 (right call)', 'Mark this 👎 (wrong call)', 'When the band shows…'])
-    expect(h.asked.at(-1)?.question, 'the menu says what the dollars are').toContain('API-equivalent')
-    expect(h.asked.at(-1)?.question, 'and the detail behind the band\'s confidence').toMatch(/^Confidence: low, none of your tasks yet\. Options for this band\./)
-    expect(last(h.toasts)).toBe('Rightsize: Lowering is now "Ask me each time".')
-    expect((await d.command('status')).text ?? '').toContain('Lowering: ask me')
-    expect(h.stored.lowerRule, 'the button sets the /config row too').toBe('ask me')
-    expect(h.sets.filter(x => x.key === 'rightsize.lowerRule').length, 'once').toBe(1)
-    expect(h.asked.map(a => a.header), 'a rule the person set is followed by Remember').toContain('Remember')
-    expect((await ui.findAll({ type: 'Button' })).map(b => b.key), 'the row keeps Retry, ⋯ and ×').toEqual(['retry', 'mode', 'close'])
-    // Dismissing the menu (no answer) does nothing.
-    h.answers = {}
-    asked = h.asked.length
-    await ui.press({ key: 'mode' })
-    await untilAsked(h, asked)
-    expect(h.asked.at(-1)?.options, 'the new rule is not offered again').toEqual(['Lower automatically', 'Never lower', 'Mark this 👍 (right call)', 'Mark this 👎 (wrong call)', 'When the band shows…'])
-    expect(h.stored.lowerRule, 'dismissed: unchanged').toBe('ask me')
-    expect(h.sets.filter(x => x.key === 'rightsize.lowerRule').length).toBe(1)
-
     // Retry at original effort puts the prompt back in the box and closes the band.
     await ui.press({ key: 'retry' })
     expect(h.filled[0]).toBe(LOOKUP)
     expect(last(h.toasts) ?? '').toContain('run it at medium')
     await ui.unmount()
     expect(await bandText($, surface)).toBe('')
+  })
+
+  const HIGH = '{"level":"high","model":"same","type":"debug","read":20000,"write":3000,"steps":8,"reason":"unknown cause"}'
+
+  test(`the ⋯ menu of a band lists the other rules; one pick sets the rule's /config row, and Remember follows it (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES } })
+    const d = drive($, h)
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+
+    h.rating = HIGH
+    await d.submit(DEBUG)
+    expect(await bandText($, surface)).toMatch(/Effort raised: medium → high.* Your Balanced profile decided \(Raising\); ⋯ changes it\.$/)
+    expect(h.asked, 'nothing asked yet: Remember follows only a rule the person sets').toEqual([])
+    const ui = await mount($, surface)
+    expect((await ui.findAll({ type: 'Button' })).map(b => b.key), 'no marks on a raise').toEqual(['mode', 'close'])
+    h.answers = { Options: 'Ask me each time', Remember: 'This session' }
+    let asked = h.asked.length
+    await ui.press({ key: 'mode' })
+    await untilAsked(h, asked)
+    expect(h.asked.at(-1)?.options, 'no rule is the person\'s yet: all three, then the band setting').toEqual(['Raise automatically', 'Ask me each time', 'Never raise', 'When the band shows…'])
+    expect(last(h.toasts)).toBe('Rightsize: Raising is now "Ask me each time".')
+    expect(h.stored.raiseRule, 'the button sets the /config row too').toBe('ask me')
+    expect((await d.command('status')).text ?? '').toContain('Raising: ask me')
+    expect(h.sets.filter(x => x.key === 'rightsize.raiseRule').length, 'once').toBe(1)
+    await d.step('t1')
+    await d.complete('t1')
+    await settle()
+    expect(h.asked.map(a => a.header), 'the rule is the person\'s now: Remember follows it, when the turn ends').toContain('Remember')
+    // Dismissing the menu (no answer) does nothing.
+    h.answers = {}
+    asked = h.asked.length
+    await ui.press({ key: 'mode' })
+    await untilAsked(h, asked)
+    expect(h.asked.at(-1)?.options, 'the new rule is not offered again').toEqual(['Raise automatically', 'Never raise', 'When the band shows…'])
+    expect(h.stored.raiseRule, 'dismissed: unchanged').toBe('ask me')
+    expect(h.sets.filter(x => x.key === 'rightsize.raiseRule').length).toBe(1)
+    await ui.unmount()
   })
 
   const RUNS = LEGACY_RUNS
@@ -1737,38 +1763,10 @@ for (const surface of ['desktop', 'terminal'] as const) {
       JSON.stringify({ at: new Date(now - (n - i) * 60_000).toISOString(), kind: 'run', id: `sess-0:${i}`, session: 'sess-0', type: 'lookup', route: 'main', tier: 'opus', level: 'medium', normal: 'medium', fit: { haiku: 'low', sonnet: 'low', opus: 'low', fable: 'low' }, read: 800, write: 60, steps: 2, actual: 0.1, fixed: { tokens: 1000, servers: { secret_server: 500 } }, escalations: [{ step: 2, from: 'low', to: 'medium', why: 'Bash failed on /Users/x' }] }),
     ).join('\n')
 
-  test(`after 20 rated prompts, asks once whether to share anonymous numbers (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
-    h.files[RUNS] = shareLog(h.now, 20)
-    const d = drive($, h)
-    await d.start(surface)
-    await flush()
-    expect(h.posts.length, 'off by default: nothing sent').toBe(0)
-    h.rating = NO_CHANGE
-    h.answers = { Share: 'Share anonymous numbers' }
-    await d.submit(LOOKUP)
-    await d.step('t1')
-    await d.complete('t1')
-    // Share waits on the band.
-    await settle()
-    expect(h.asked.filter(a => a.header === 'Share').length).toBe(1)
-    expect(last(h.configSet)).toBe('on')
-    expect(String(h.store.shareInstall)).toMatch(/^[a-f0-9]{32}$/)
-    expect((await d.command('status')).text ?? '').toContain('Share anonymous feedback: on')
-    expect((await d.command('status')).text ?? '').toContain(`Sharing install ID: ${String(h.store.shareInstall)}`)
-
-    await d.submit(LOOKUP)
-    await d.step('t2')
-    await d.complete('t2')
-    expect(h.asked.filter(a => a.header === 'Share').length, 'asked once').toBe(1)
-  })
-
-  test(`Share not answered is asked again after 50 and 100 rated prompts, then never again (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`Share is a row, not a question: nothing is asked at 20, 50 or 100 rated prompts, and the row in /config still turns it on (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
     const d = drive($, h)
     h.rating = NO_CHANGE
-    h.answers = { Share: NO_ONE }
-    const shares = () => h.asked.filter(a => a.header === 'Share').length
     let n = 0
     const turn = async () => {
       const t = `t${++n}`
@@ -1777,45 +1775,28 @@ for (const surface of ['desktop', 'terminal'] as const) {
       await d.complete(t)
       await settle()
     }
-    for (const [runs, asked, said] of [
-      [20, 1, 'no answer at 20 rated prompts; asked again at 50'],
-      [50, 2, 'no answer at 50 rated prompts; asked again at 100'],
-      [100, 3, 'no answer at 100 rated prompts; not asked again'],
-    ] as const) {
+    for (const runs of [20, 50, 100, 200]) {
       h.files[RUNS] = shareLog(h.now, runs)
       await d.start(surface)
+      await flush()
       await turn()
-      expect(shares(), `asked at ${runs}`).toBe(asked)
       await turn()
-      expect(shares(), 'not again before the next mark').toBe(asked)
-      expect(helperLog(h)).toContain(`share question: ${said}`)
+      expect(h.asked.filter(a => a.header === 'Share'), `no Share question at ${runs} rated prompts`).toEqual([])
     }
-    h.files[RUNS] = shareLog(h.now, 200)
-    await d.start(surface)
+    expect(h.store.shareAsked, 'no store key for it').toBeUndefined()
+    expect(h.posts.length, 'off by default: nothing sent').toBe(0)
+    const off = (await d.command('status')).text ?? ''
+    expect(off).toContain('Share anonymous feedback: off')
+    expect(off, 'no install ID while off').not.toContain('Sharing install ID')
+    // The row in /config still works.
+    await d.config('share', 'on')
+    expect(h.stored.share).toBe('on')
+    expect(String(h.store.shareInstall)).toMatch(/^[a-f0-9]{32}$/)
+    const on1 = (await d.command('status')).text ?? ''
+    expect(on1).toContain('Share anonymous feedback: on')
+    expect(on1).toContain(`Sharing install ID: ${String(h.store.shareInstall)}`)
     await turn()
-    expect(shares(), 'never again').toBe(3)
-    expect(h.configSet, 'still off').not.toContain('on')
-  })
-
-  test(`Share answered no is never asked again (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
-    const d = drive($, h)
-    h.rating = NO_CHANGE
-    h.answers = { Share: "Don't share" }
-    h.files[RUNS] = shareLog(h.now, 20)
-    await d.start(surface)
-    await d.submit(LOOKUP)
-    await d.step('t1')
-    await d.complete('t1')
-    await settle()
-    expect(h.asked.filter(a => a.header === 'Share').length).toBe(1)
-    h.files[RUNS] = shareLog(h.now, 60)
-    await d.start(surface)
-    await d.submit(LOOKUP)
-    await d.step('t2')
-    await d.complete('t2')
-    await settle()
-    expect(h.asked.filter(a => a.header === 'Share').length, 'not at 50 either').toBe(1)
+    expect(h.asked.filter(a => a.header === 'Share'), 'and still no question').toEqual([])
   })
 
   test(`sharing sends only new, anonymous numbers, at most once an hour (${surface})`, { timeoutMs: 30000, options: { share: 'on' } }, async ($, on) => {
@@ -1880,6 +1861,100 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(String((await d.command('report')).text)).toContain('STARTING POINT  Needs 50 rated prompts on Opus at medium to compare (has 30).')
   })
 
+  // ---- The day-one tip: once per install, on an Opus start with too few rated prompts to compare ----
+
+  const DAY_ONE = 'Starting tip: most work runs as well on Sonnet 5.5 at medium for well under half the usage of Opus. Reviews still run on Opus, and work Sonnet would struggle with goes to a stronger helper. Switch with /model sonnet.'
+  const FRESH_INSTALL = { startDayOne: undefined }
+
+  test(`day one: an Opus start with under 50 rated prompts shows the tip once, with Switch: /model sonnet and Not now (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: FRESH_INSTALL })
+    h.files[RUNS] = easyLog(h.now).split('\n').slice(0, 30).join('\n')
+    const d = drive($, h)
+    await d.start(surface)
+    expect(await bandText($, surface)).toBe(DAY_ONE)
+    expect(await buttons($), 'Not now, Switch, then ⋯ and ×').toEqual(['tip-later', 'tip-switch', 'mode', 'close'])
+    const ui = await mount($, surface)
+    expect((await ui.find({ type: 'Button', key: 'tip-switch' }))?.text, 'the button names the command').toBe('Switch: /model sonnet')
+    await ui.unmount()
+    expect(h.store.startDayOne, 'once per install: the store remembers').toBe(true)
+    expect(h.files[LOG_PATH] ?? '').toContain('day-one start tip shown: Sonnet 5.5 at medium')
+    expect(h.sent, 'rightsize changes no model').toEqual([])
+    // The next session, and the one after: not again.
+    await d.start(surface)
+    expect(await bandText($, surface), 'not again in the next session').toBe('')
+    await d.start(surface)
+    expect(await bandText($, surface)).toBe('')
+  })
+
+  test(`day one: Switch puts /model sonnet in the prompt box and closes the band; rightsize does not run it (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: FRESH_INSTALL })
+    const d = drive($, h)
+    await d.start(surface)
+    expect(await bandText($, surface)).toBe(DAY_ONE)
+    await pressBandKey($, 'tip-switch')
+    expect(h.filled, 'the command is in the prompt box, for the person to run').toEqual(['/model sonnet'])
+    expect(last(h.toasts)).toBe('Rightsize: press Enter to run /model sonnet.')
+    expect(await bandText($, surface), 'the band closes').toBe('')
+    expect(h.submitted, 'nothing was submitted').toEqual([])
+    expect(h.ratings, 'nothing was rated').toBe(0)
+  })
+
+  test(`day one: Not now closes the tip, and it does not come back (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: FRESH_INSTALL })
+    const d = drive($, h)
+    await d.start(surface)
+    await pressBandKey($, 'tip-later')
+    expect(await bandText($, surface)).toBe('')
+    expect(h.filled, 'nothing in the prompt box').toEqual([])
+    await d.start(surface)
+    expect(await bandText($, surface), 'once per install').toBe('')
+  })
+
+  test(`day one: not on a Sonnet start: the tip is for an Opus start, and it stays unspent (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    // Sonnet: the tip is for an Opus start.
+    const sonnet = engine(on, { model: 'claude-sonnet-5-5', effort: 'medium', store: FRESH_INSTALL })
+    await drive($, sonnet).start(surface)
+    expect(await bandText($, surface), 'Sonnet').toBe('')
+    expect(sonnet.store.startDayOne, 'and it is still to come').toBeUndefined()
+  })
+
+  test(`day one: 50 rated prompts are enough for the log to speak: no day-one tip, and it stays unspent (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: FRESH_INSTALL })
+    h.files[RUNS] = easyLog(h.now)
+    const d = drive($, h)
+    await d.start(surface)
+    expect(await bandText($, surface)).not.toContain('Starting tip')
+    expect(h.store.startDayOne).toBeUndefined()
+  })
+
+  test(`day one: Start suggestions set to off shows no tip and spends none (${surface})`, { timeoutMs: 30000, options: { startTips: 'off' } }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: FRESH_INSTALL, stored: { startTips: 'off' } })
+    const d = drive($, h)
+    await d.start(surface)
+    expect(await bandText($, surface)).toBe('')
+    expect(h.store.startDayOne).toBeUndefined()
+  })
+
+  test(`day one: with Band set to Never there is no band to put it on: no tip, and none spent (${surface})`, { timeoutMs: 30000, options: { band: 'off' } }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: FRESH_INSTALL, stored: { band: 'off' } })
+    const d = drive($, h)
+    await d.start(surface)
+    expect(await bandText($, surface)).toBe('')
+    expect(h.store.startDayOne).toBeUndefined()
+    expect(h.files[LOG_PATH] ?? '').not.toContain('day-one')
+  })
+
+  test(`day one: Stop suggesting in the ⋯ menu turns start suggestions off in /config (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: FRESH_INSTALL })
+    const d = drive($, h)
+    await d.start(surface)
+    expect(await bandText($, surface)).toBe(DAY_ONE)
+    await openMenu($, h, { Options: 'Stop suggesting' })
+    expect(last(h.configSet)).toBe('off')
+    expect(h.stored.startTips).toBe('off')
+    expect(await bandText($, surface)).toBe('')
+  })
+
   test(`the Band setting: when it acts, always, off, and the ⋯ and × buttons (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES } })
     const d = drive($, h)
@@ -1916,7 +1991,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
     // "off": a hand-off result goes back to a transcript line.
     h.rating = '{"level":"high","model":"fable","size":"small","type":"debug","read":30000,"write":4000,"steps":12,"reason":"subtle concurrency bug"}'
-    h.answers = { Stronger: 'Use the stronger model automatically (Recommended)', Remember: 'This session' }
     await d.submit(DEBUG)
     await d.step('t1')
     await d.complete('t1')
@@ -1944,7 +2018,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
     // An auto-lowered turn that steps back up teaches nothing.
     h.rating = LOWER
-    h.answers = { Lowering: 'Lower automatically (Recommended)', Remember: 'This session' }
     await d.submit(LOOKUP)
     await d.step('t2', 0)
     await d.step('t2', 5)
@@ -2181,7 +2254,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
     // Lowered on its own.
     h.rating = '{"level":"low","model":"same","size":"small","type":"lookup","read":2000,"write":3000,"steps":1}'
-    h.answers = { Lowering: 'Lower automatically (Recommended)', Remember: 'This session' }
     await d.submit(LOOKUP)
     await d.step('t2')
     await d.complete('t2')
@@ -2227,7 +2299,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.complete('t0')
 
     h.rating = TIE_RATING
-    h.answers = { Cheaper: 'Send it to a cheaper subagent (Recommended)', Remember: 'This session' }
     await d.submit(SEARCH)
     expect(h.store.ties, 'the close call is counted').toBe(4)
     expect(last(h.submitted)?.context?.join('\n') ?? '', 'the guide\'s pick, not the cheaper Opus').toContain('model "sonnet"')
@@ -2262,7 +2333,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t0')
     await d.complete('t0')
     h.rating = TIE_RATING
-    h.answers = { Cheaper: 'Send it to a cheaper subagent (Recommended)', Remember: 'This session' }
     await d.submit(SEARCH)
     expect(last(h.submitted)?.context?.join('\n') ?? '', 'the cheapest').toContain('model "opus"')
     expect(h.store.ties, 'no close call: not counted').toBe(2)
@@ -2598,6 +2668,11 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   // 👍 and 👎: a hand-off's result and an automatic lowering can be marked, on this machine only.
+  const pressBandKey = async ($: unknown, key: string) => {
+    const ui = await mount($, surface)
+    await ui.press({ key })
+    await ui.unmount()
+  }
   const buttons = async ($: unknown) => {
     const ui = await mount($, surface)
     const keys = (await ui.findAll({ type: 'Button' })).map(b => b.key)
@@ -2605,7 +2680,18 @@ for (const surface of ['desktop', 'terminal'] as const) {
     return keys
   }
 
-  test(`👍 and 👎 on a hand-off's result write a feedback line for that run, once (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  /** Presses ⋯ and picks a mark from the menu (the marks are menu entries now): the menu is the first list asked, under "Options". */
+  const markFromMenu = async ($: unknown, h: ReturnType<typeof engine>, label?: string) => {
+    h.answers = label ? { Options: label } : {}
+    const before = h.asked.length
+    const ui = await mount($, surface)
+    await ui.press({ key: 'mode' })
+    await untilAsked(h, before)
+    await ui.unmount()
+    return h.asked.slice(before)
+  }
+
+  test(`👍 and 👎 in the ⋯ menu on a hand-off's result write a feedback line for that run, once (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { model: 'claude-fable-5-1', effort: 'high' })
     const d = drive($, h)
     h.now = Date.now()
@@ -2614,14 +2700,13 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.complete('t0')
 
     h.rating = '{"level":"low","model":"haiku","size":"bulky","type":"search","read":150000,"write":3000,"steps":30,"reason":"repo-wide search"}'
-    h.answers = { Cheaper: 'Send it to a cheaper subagent (Recommended)', Remember: 'This session' }
     // Claude answers without the subagent: nothing to mark.
     await d.submit(SEARCH)
     await d.step('t1')
     await d.complete('t1')
-    // Remember waits on the band for the turn to end, and is answered there.
     await settle()
     expect(await buttons($), 'no hand-off happened').toEqual(['mode', 'close'])
+    expect((await markFromMenu($, h)).flatMap(a => a.options), 'no marks in the menu either').not.toContain('Mark this 👍 (right call)')
 
     await d.submit(SEARCH)
     await d.step('t2', 0)
@@ -2630,11 +2715,10 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t2', 1)
     await d.complete('t2')
     expect(await bandText($, surface)).toMatch(/^Sent to Haiku\./)
-    expect(await buttons($)).toEqual(['good', 'bad', 'mode', 'close'])
+    expect(await buttons($), '👍 and 👎 are not buttons').toEqual(['mode', 'close'])
 
-    const ui = await mount($, surface)
-    await ui.press({ key: 'bad' })
-    await flush()
+    const asks = await markFromMenu($, h, 'Mark this 👎 (wrong call)')
+    expect(asks[0]?.options, 'the marks are menu entries').toEqual(expect.arrayContaining(['Mark this 👍 (right call)', 'Mark this 👎 (wrong call)']))
     expect(last(h.toasts)).toBe('Rightsize: thanks — this tunes its choices on this machine.')
     const lines = runLines(h)
     const handOff = lines.filter(l => l.kind === 'run').find(l => l.route === 'delegate:haiku') as { id: string } | undefined
@@ -2643,16 +2727,15 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(feedback.length).toBe(1)
     expect(feedback[0]).toMatchObject({ kind: 'feedback', session: 'sess-1', ref: handOff?.id, value: 'down' })
     expect(typeof feedback[0]?.at).toBe('string')
-    expect((await ui.findAll({ type: 'Button' })).map(b => b.key), 'the marks go once pressed').toEqual(['mode', 'close'])
-    await ui.unmount()
     expect(await bandText($, surface), 'the band itself stays').toMatch(/^Sent to Haiku\./)
+    expect((await markFromMenu($, h)).flatMap(a => a.options), 'the marks go once given').not.toContain('Mark this 👍 (right call)')
     // Nothing leaves the machine: no fetch beyond the price check, and the line is only in the run log.
     expect(h.fetches).toBeLessThanOrEqual(1)
     // One hit (no rework) and one 👎, both Haiku's.
     expect((await d.command('report')).text ?? '').toMatch(/Haiku's judgement +wrong on 1 of 2 checked prompts \(50%\)/)
   })
 
-  test(`👍 and 👎 on an automatic lowering write a feedback line for that run, and 👍 counts as a hit (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`👍 and 👎 in the ⋯ menu on an automatic lowering write a feedback line for that run, and 👍 counts as a hit (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES } })
     const d = drive($, h)
     h.now = Date.now()
@@ -2661,33 +2744,25 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.complete('t0')
 
     h.rating = LOWER
-    h.answers = { Lowering: 'Lower automatically (Recommended)', Remember: 'This session' }
     await d.submit(LOOKUP)
     await d.step('t1')
     await d.complete('t1')
-    // Remember waits on the band for the turn to end, and is answered there.
     await settle()
-    expect(await buttons($)).toEqual(['retry', 'good', 'bad', 'mode', 'close'])
+    expect(await buttons($), '👍 and 👎 are not buttons').toEqual(['retry', 'mode', 'close'])
 
-    const ui = await mount($, surface)
-    await ui.press({ key: 'good' })
-    await flush()
+    const asks = await markFromMenu($, h, 'Mark this 👍 (right call)')
+    expect(asks[0]?.options, 'the marks are menu entries').toEqual(expect.arrayContaining(['Mark this 👍 (right call)', 'Mark this 👎 (wrong call)']))
     const run = runLines(h).find(l => l.kind === 'run') as { id: string; change: string }
     expect(run.change).toBe('lower')
     expect(runLines(h).filter(l => l.kind === 'feedback')).toMatchObject([{ ref: run.id, value: 'up', session: 'sess-1' }])
     expect(last(h.toasts)).toBe('Rightsize: thanks — this tunes its choices on this machine.')
-    expect((await ui.findAll({ type: 'Button' })).map(b => b.key)).toEqual(['retry', 'mode', 'close'])
-    await ui.unmount()
-    expect(await bandText($, surface), 'one rated prompt: no session total yet').toMatch(/^Effort lowered: medium → low for this prompt \(automatically\)\. Why: .+ Confidence: low\.$/)
+    expect(await buttons($)).toEqual(['retry', 'mode', 'close'])
+    expect(await bandText($, surface), 'one rated prompt: no session total yet').toMatch(/^Effort lowered: medium → low for this prompt \(automatically\)\. Why: .+ Confidence: low\./)
     // The next lowering has its own id.
     await d.submit(LOOKUP)
     await d.step('t2')
     await d.complete('t2')
-    expect(await buttons($)).toEqual(['retry', 'good', 'bad', 'mode', 'close'])
-    const ui2 = await mount($, surface)
-    await ui2.press({ key: 'bad' })
-    await flush()
-    await ui2.unmount()
+    await markFromMenu($, h, 'Mark this 👎 (wrong call)')
     const ids = runLines(h).filter(l => l.kind === 'run').map(l => l.id)
     expect(new Set(ids).size, 'two runs, two ids').toBe(2)
     expect(runLines(h).filter(l => l.kind === 'feedback').map(l => [l.ref, l.value])).toEqual([[ids[0], 'up'], [ids[1], 'down']])
@@ -2700,7 +2775,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t0')
     await d.complete('t0')
     h.rating = '{"level":"high","model":"same","type":"debug","read":20000,"write":3000,"steps":8,"reason":"unknown cause"}'
-    h.answers = { Raising: 'Raise automatically (Recommended)', Remember: 'This session' }
     await d.submit(DEBUG)
     expect(await bandText($, surface)).toContain('Effort raised')
     expect(await buttons($)).toEqual(['mode', 'close'])
@@ -2717,7 +2791,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t0')
     await d.complete('t0')
     h.rating = SMALL_FEATURE
-    h.answers = { Cheaper: 'Send it to a cheaper subagent (Recommended)', Remember: 'This session' }
     await d.submit(DEBUG)
     const text = await bandText($, surface)
     expect(text).toMatch(/^Sending this to a Haiku subagent at high effort/)
@@ -2750,7 +2823,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t0')
     await d.complete('t0')
     h.rating = REVIEW
-    h.answers = { Stronger: 'Use the stronger model automatically (Recommended)', Remember: 'This session' }
     await d.submit(DEBUG)
     const text = await bandText($, surface)
     expect(text).toContain('Running this review on Opus at high effort')
@@ -2778,7 +2850,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t0')
     await d.complete('t0')
     h.rating = '{"level":"high","model":"same","type":"debug","read":20000,"write":3000,"steps":8,"reason":"unknown cause"}'
-    h.answers = { Raising: 'Raise automatically (Recommended)', Remember: 'This session' }
     await d.submit(DEBUG)
     const text = await bandText($, surface)
     expect(text).toContain('Effort raised')
@@ -2794,9 +2865,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t0')
     await d.complete('t0')
     h.rating = LOWER.replace(',"reason":"one function lookup"', '')
-    h.answers = { Lowering: 'Lower automatically (Recommended)', Remember: 'This session' }
     await d.submit(LOOKUP)
-    expect(await bandText($, surface)).toBe('Effort lowered: medium → low for this prompt (automatically). Confidence: low.')
+    expect(await bandText($, surface)).toBe('Effort lowered: medium → low for this prompt (automatically). Confidence: low. Your Balanced profile decided (Lowering); ⋯ changes it.')
   })
 
   test(`the band says only the confidence level; the ⋯ menu question carries the counts (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -2809,10 +2879,9 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t0')
     await d.complete('t0')
     h.rating = LOWER
-    h.answers = { Lowering: 'Lower automatically (Recommended)', Remember: 'This session' }
     await d.submit(LOOKUP)
     const text = await bandText($, surface)
-    expect(text).toMatch(/Why: One function lookup\. Confidence: (high|medium)\.$/)
+    expect(text).toMatch(/Why: One function lookup\. Confidence: (high|medium)\. Your Balanced profile decided \(Lowering\); ⋯ changes it\.$/)
     expect(text, 'no counts on the band').not.toMatch(/of your tasks|missed|How sure/)
     h.answers = {}
     const before = h.asked.length
@@ -2834,7 +2903,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t0')
     await d.complete('t0')
     h.rating = LOWER
-    h.answers = { Lowering: 'Lower automatically (Recommended)', Remember: 'This session' }
     await d.submit(LOOKUP)
     expect(h.asked.length, 'wrong on 3 of 6 lookups on Opus: lowering is paused, so nothing is asked').toBe(0)
     await d.step('t1')
@@ -2858,7 +2926,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t0')
     await d.complete('t0')
     h.rating = LOWER
-    h.answers = { Lowering: 'Lower automatically (Recommended)', Remember: 'This session' }
     await d.submit(LOOKUP)
     await d.step('t1')
     expect(last(h.sent)?.effort, 'wrong on 1 of 6: under the line').toBe('low')
@@ -2876,7 +2943,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
   const disagree = (h: ReturnType<typeof engine>) => (h.files[LOG] ?? '').includes('plugin.json and the settings table disagree')
   const settingsText = async (d: ReturnType<typeof drive>) => (await d.command('status')).text ?? ''
   // A row in the "you changed" list: indented, with no (default) or (detected) mark after it.
-  const listed = (t: string, title: string) => new RegExp(`^  ${title}: [^(\\n]+$`, 'm').test(t)
+  // Only the list of changed rows counts: the Now section below it has a Mode line and a Share line of its own.
+  const listed = (t: string, title: string) => new RegExp(`^  ${title}: [^(\\n]+$`, 'm').test(t.split('\nNow\n')[0] ?? t)
   const changedCount = (t: string) => Number(/You changed (\d+) setting/.exec(t)?.[1] ?? 0)
   const OPUS = { model: 'claude-opus-5-5', effort: 'medium' }
   const FABLE = { model: 'claude-fable-5-1', effort: 'high' }
@@ -2931,46 +2999,60 @@ for (const surface of ['desktop', 'terminal'] as const) {
     { kind: 'five_hour', percentUsed: 80, resetsAt: at(h, 2 * HOUR) },
     { kind: 'seven_day', percentUsed: 20, resetsAt: at(h, 160 * HOUR) },
   ]
-  const CHEAPER_AUTO = { Cheaper: 'Send it to a cheaper subagent (Recommended)', ...YES_REMEMBER }
 
   const CASES: Case[] = [
-    { key: 'profile', value: 'Economy', start: { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES } }, see: async c => (await handOff(c, SEARCH, NEAR, CHEAPER_AUTO)).to, set: 'haiku', def: undefined },
-    { key: 'floor', value: 'medium', start: { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES } }, see: c => effortOf(c, LOOKUP, LOWER, { Lowering: 'Lower automatically (Recommended)', ...YES_REMEMBER }), set: 'medium', def: 'low' },
+    { key: 'profile', value: 'Economy', start: { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES } }, see: async c => (await handOff(c, SEARCH, NEAR)).to, set: 'haiku', def: undefined },
+    {
+      key: 'mode',
+      value: 'watch only',
+      start: { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES } },
+      // Watch only plans the lowering and says so on the band, and applies nothing.
+      see: async c => ({ effort: await effortOf(c, LOOKUP, LOWER), watching: (await bandText(c.$, c.surface)).startsWith('Watching: would lower effort to low') }),
+      set: { effort: 'medium', watching: true },
+      def: { effort: 'low', watching: false },
+    },
+    { key: 'floor', value: 'medium', start: { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES } }, see: c => effortOf(c, LOOKUP, LOWER), set: 'medium', def: 'low' },
     {
       key: 'ceiling',
       value: 'high',
       start: OPUS,
-      see: c => effortOf(c, DEBUG, '{"level":"xhigh","model":"same","type":"refactor"}', { Raising: 'Raise automatically (Recommended)', ...YES_REMEMBER }),
+      see: c => effortOf(c, DEBUG, '{"level":"xhigh","model":"same","type":"refactor"}'),
       set: 'high',
       def: 'xhigh',
     },
-    { key: 'lowerRule', value: 'lower automatically', start: { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES } }, see: c => asking(c, LOOKUP, LOWER), set: { asked: [], effort: 'low' }, def: { asked: ['Lowering'], effort: 'medium' } },
-    { key: 'raiseRule', value: 'raise automatically', start: OPUS, see: c => asking(c, DEBUG, RAISE_HIGH), set: { asked: [], effort: 'high' }, def: { asked: ['Raising'], effort: 'medium' } },
-    { key: 'upRule', value: 'always send', start: OPUS, see: c => handOff(c, DEBUG, NEEDS_FABLE), set: { asked: [], to: 'fable' }, def: { asked: ['Stronger'], to: undefined } },
-    { key: 'downRule', value: 'always send', start: FABLE, warm: true, see: c => handOff(c, SEARCH, HAIKU_SEARCH), set: { asked: [], to: 'haiku' }, def: { asked: ['Cheaper'], to: undefined } },
+    // A rule row left at not set means the profile decides (Balanced: automatically), with nothing asked: the scenarios set the other value.
+    { key: 'lowerRule', value: 'never lower', start: { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES } }, see: c => asking(c, LOOKUP, LOWER), set: { asked: [], effort: 'medium' }, def: { asked: [], effort: 'low' } },
+    { key: 'raiseRule', value: 'never raise', start: OPUS, see: c => asking(c, DEBUG, RAISE_HIGH), set: { asked: [], effort: 'medium' }, def: { asked: [], effort: 'high' } },
+    { key: 'upRule', value: 'stay, raise effort only', start: OPUS, see: c => handOff(c, DEBUG, NEEDS_FABLE), set: { asked: [], to: undefined }, def: { asked: [], to: 'fable' } },
+    { key: 'downRule', value: 'stay, lower effort only', start: FABLE, warm: true, see: c => handOff(c, SEARCH, HAIKU_SEARCH), set: { asked: [], to: undefined }, def: { asked: [], to: 'haiku' } },
     {
       key: 'remember',
       value: 'this session',
       start: { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES } },
       see: async c => {
-        const from = c.h.asked.length
-        c.h.rating = LOWER
-        c.h.answers = { Lowering: 'Lower automatically (Recommended)', Remember: 'Every session' }
-        await c.d.submit(LOOKUP)
+        // Nothing is asked for the profile's answers: Remember follows a rule the person sets, here from the band's ⋯ menu.
+        c.h.rating = RAISE_HIGH
+        await c.d.submit(DEBUG)
         const t = c.turn()
         await c.d.step(t)
+        c.h.answers = { Options: 'Never raise', Remember: 'Every session' }
+        const before = c.h.asked.length
+        const ui = await mount(c.$, c.surface)
+        await ui.press({ key: 'mode' })
+        await untilAsked(c.h, before)
+        await ui.unmount()
         // Remember waits on the band for the turn to end.
         await c.d.complete(t)
         await settle()
-        return { asked: c.h.asked.slice(from).map(a => a.header), saved: c.h.store.choices, remembered: c.h.store.remember }
+        return { asked: c.h.asked.slice(before).map(a => a.header).filter(x => x === 'Remember'), saved: c.h.store.choices, remembered: c.h.store.remember }
       },
-      set: { asked: ['Lowering'], saved: undefined, remembered: undefined },
-      def: { asked: ['Lowering', 'Remember'], saved: { lower: 'auto' }, remembered: true },
+      set: { asked: [], saved: undefined, remembered: undefined },
+      def: { asked: ['Remember'], saved: { raise: 'never' }, remembered: true },
     },
-    { key: 'handOff', value: '80%', start: { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES } }, see: async c => (await handOff(c, SEARCH, NEAR, CHEAPER_AUTO)).to, set: 'haiku', def: undefined },
-    { key: 'lowering', value: '70%', start: { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES } }, see: c => effortOf(c, LOOKUP, LOWER_300, { Lowering: 'Lower automatically (Recommended)', ...YES_REMEMBER }), set: 'medium', def: 'low' },
-    { key: 'useHaiku', value: 'off', start: FABLE, warm: true, see: async c => (await handOff(c, SEARCH, FIT_LOW, CHEAPER_AUTO)).to, set: 'sonnet', def: 'haiku' },
-    { key: 'useFable', value: 'off', start: OPUS, see: async c => (await handOff(c, DEBUG, NEEDS_FABLE, { Stronger: 'Use the stronger model automatically (Recommended)', ...YES_REMEMBER })).to, set: undefined, def: 'fable' },
+    { key: 'handOff', value: '80%', start: { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES } }, see: async c => (await handOff(c, SEARCH, NEAR)).to, set: 'haiku', def: undefined },
+    { key: 'lowering', value: '70%', start: { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES } }, see: c => effortOf(c, LOOKUP, LOWER_300), set: 'medium', def: 'low' },
+    { key: 'useHaiku', value: 'off', start: FABLE, warm: true, see: async c => (await handOff(c, SEARCH, FIT_LOW)).to, set: 'sonnet', def: 'haiku' },
+    { key: 'useFable', value: 'off', start: OPUS, see: async c => (await handOff(c, DEBUG, NEEDS_FABLE)).to, set: undefined, def: 'fable' },
     {
       key: 'subagents',
       value: 'off',
@@ -2993,7 +3075,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
       see: async c => {
         const asked = c.h.asked.length
         c.h.rating = NO_CHANGE
-        c.h.answers = { Workflow: 'Pause rightsize for workflows (recommended)', Stronger: 'Use the stronger model automatically (Recommended)', ...YES_REMEMBER }
+        c.h.answers = { Workflow: 'Pause rightsize for workflows (recommended)' }
         await c.d.submit(LOOKUP)
         const t = c.turn()
         await c.d.step(t)
@@ -3011,7 +3093,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
       value: 'on',
       start: { ...FABLE, store: { [CAL_STORE]: { ...tieCal(0.9), ...FREE_SWITCHES }, ties: 4 } },
       warm: true,
-      see: async c => (await handOff(c, SEARCH, TIE_RATING, CHEAPER_AUTO)).to,
+      see: async c => (await handOff(c, SEARCH, TIE_RATING)).to,
       set: 'opus',
       def: 'sonnet',
     },
@@ -3021,11 +3103,11 @@ for (const surface of ['desktop', 'terminal'] as const) {
       start: { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES } },
       // Wrong on 2 of 6 lookups on Opus: 33%.
       setup: h => void (h.files[RUNS] = lookupLog(h, 2)),
-      see: c => effortOf(c, LOOKUP, LOWER, { Lowering: 'Lower automatically (Recommended)', ...YES_REMEMBER }),
+      see: c => effortOf(c, LOOKUP, LOWER),
       set: 'low',
       def: 'medium',
     },
-    { key: 'pacing', value: 'off', start: { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES } }, setup: h => void (h.rateLimits = hotWindows(h)), see: async c => (await handOff(c, SEARCH, NEAR, CHEAPER_AUTO)).to, set: undefined, def: 'haiku' },
+    { key: 'pacing', value: 'off', start: { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES } }, setup: h => void (h.rateLimits = hotWindows(h)), see: async c => (await handOff(c, SEARCH, NEAR)).to, set: undefined, def: 'haiku' },
     {
       key: 'escalation',
       value: 'off',
@@ -3105,14 +3187,15 @@ for (const surface of ['desktop', 'terminal'] as const) {
       value: 'over $1',
       start: OPUS,
       see: async c => {
+        // A conversation that costs $0.63 to write again: over the default bar of $0.50, under $1. The prompt is never held.
+        c.h.stepUsage = BIG_TURN
         const t = c.turn()
         await c.d.step(t)
         await c.d.complete(t)
         c.h.now += 3 * 60 * MIN
         c.h.rating = NO_CHANGE
-        c.h.answers = { Idle: 'Send it' }
         await c.d.submit('continue')
-        return c.h.asked.some(a => a.header === 'Idle')
+        return (await bandText(c.$, c.surface)).includes('Idle 3 hours')
       },
       set: false,
       def: true,
@@ -3127,9 +3210,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
         const t = c.turn()
         await c.d.step(t)
         await c.d.complete(t)
-        // The default asks, in the band, 5 minutes after the end of a big turn.
-        await c.h.advance(5 * MIN)
-        return (await bandText(c.$, c.surface)).startsWith('Goes cold at ')
+        // Balanced keeps warm until the usual start with no question, from the end of a big turn.
+        return (await bandText(c.$, c.surface)).startsWith('Keeping warm until ')
       },
       set: false,
       def: true,
@@ -3139,7 +3221,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
       value: 'subscription',
       start: OPUS,
       see: async c => {
-        await prompt(c, DEBUG, NEEDS_FABLE, { Stronger: 'Ask before using it', Subagent: 'Send it to a Fable subagent', ...YES_REMEMBER })
+        await c.d.config('upRule', 'ask first')
+        await prompt(c, DEBUG, NEEDS_FABLE, { Subagent: 'Send it to a Fable subagent' })
         const q = c.h.asked.find(a => a.header === 'Subagent')?.question ?? ''
         return /That uses/.test(q) ? 'usage' : /About \$/.test(q) ? 'dollars' : q
       },
@@ -3179,19 +3262,17 @@ for (const surface of ['desktop', 'terminal'] as const) {
     {
       key: 'share',
       value: 'on',
-      start: OPUS,
+      start: { ...OPUS, store: { shareInstall: 'b'.repeat(32), sharedUpTo: '2020-01-01T00:00:00.000Z' } },
       setup: h => void (h.files[RUNS] = shareLog(h.now, 20)),
+      early: true,
       see: async c => {
-        c.h.rating = NO_CHANGE
-        c.h.answers = { Share: "Don't share" }
-        await c.d.submit(LOOKUP)
-        const t = c.turn()
-        await c.d.step(t)
-        await c.d.complete(t)
-        return c.h.asked.filter(a => a.header === 'Share').length
+        // On, the numbers go out at the start of a session; off (and never asked), nothing leaves.
+        await c.d.start(c.surface)
+        await settle()
+        return c.h.posts.length > 0
       },
-      set: 0,
-      def: 1,
+      set: true,
+      def: false,
     },
     {
       key: 'priceCheck',
@@ -3334,7 +3415,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t0')
     await d.complete('t0')
     h.rating = HAIKU_SEARCH
-    h.answers = { Cheaper: 'Ask before sending it', Subagent: 'Send it to a Haiku subagent', ...YES_REMEMBER }
+    await d.config('downRule', 'ask first')
+    h.answers = { Subagent: 'Send it to a Haiku subagent' }
     await d.submit(SEARCH)
     expect(h.asked.find(a => a.header === 'Subagent')?.question ?? '').toMatch(/That uses about \d+% of the usage vs staying on Fable \(estimated\)\./)
     h.subModel = 'claude-haiku-5-5'
@@ -3410,7 +3492,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   // ---- Your setting wins ----------------------------------------------------------------------------
 
   const REPORTS_DOLLARS = /About \$[\d.]+ that way/
-  const askAboutFable = { Stronger: 'Ask before using it', Subagent: 'Send it to a Fable subagent', ...YES_REMEMBER }
+  const askAboutFable = { Subagent: 'Send it to a Fable subagent' }
 
   test(`Reports set in /config is yours: rate limits that show a subscription change nothing, and /rightsize says they disagree (${surface})`, { timeoutMs: 30000, options: { billing: 'api' } }, async ($, on) => {
     const h = engine(on, { ...OPUS, stored: { billing: 'api' } })
@@ -3420,6 +3502,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t0')
     await d.complete('t0')
     h.rating = NEEDS_FABLE
+    await d.config('upRule', 'ask first')
     h.answers = askAboutFable
     await d.submit(DEBUG)
     expect(h.store.billing, 'a reading was never saved over it').toBeUndefined()
@@ -3512,7 +3595,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
   const handedOffUnder = async (h: ReturnType<typeof engine>, d: ReturnType<typeof drive>, rating = NEAR) => {
     await d.start(surface)
     h.rating = rating
-    h.answers = CHEAPER_AUTO
     await d.submit(SEARCH)
     return handedTo(h)
   }
@@ -3554,7 +3636,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
       const d = drive($, h)
       await d.start(surface)
       h.rating = SMALL
-      h.answers = { Lowering: 'Lower automatically (Recommended)', ...YES_REMEMBER }
       await d.submit(LOOKUP)
       await d.step('t1')
       expect(last(h.sent)?.effort).toBe(row.effort)
@@ -3575,7 +3656,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
       const d = drive($, h)
       await d.start(surface)
       h.rating = SMALL
-      h.answers = { Lowering: 'Lower automatically (Recommended)', ...YES_REMEMBER }
       await d.submit(LOOKUP)
       await d.step('t1')
       expect(last(h.sent)?.effort, '94% is over the default 90% bar: not lowered, and not at 80% either').toBe('medium')
@@ -3584,8 +3664,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
   }
 
   const NOTE_ROWS: { name: string; stored: Record<string, string>; band: string | RegExp }[] = [
-    { name: 'both left at their defaults: moved', stored: {}, band: /so rightsize saves harder\.$/ },
-    { name: 'one of them yours: the other moved', stored: { handOff: '70%' }, band: /so rightsize saves harder\.$/ },
+    { name: 'both left at their defaults: moved', stored: {}, band: /so rightsize saves harder\. \(hand-off bar 70% → 85%, lowering bar 90% → 97%\)$/ },
+    { name: 'one of them yours: the other moved', stored: { handOff: '70%' }, band: /so rightsize saves harder\. \(lowering bar 90% → 97%\)$/ },
     { name: 'both yours: nothing moved, nothing said', stored: { handOff: '70%', lowering: '90%' }, band: 'No change: medium on Opus fits this prompt.' },
   ]
   for (const row of NOTE_ROWS) {
@@ -3735,7 +3815,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
       const d = drive($, h)
       await d.start(surface)
       h.rating = LOWER
-      h.answers = { Lowering: 'Lower automatically (Recommended)', ...YES_REMEMBER }
       await d.submit(LOOKUP)
       await d.step('t1')
       expect(last(h.sent)?.effort).toBe(row.effort)
@@ -3777,7 +3856,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     })
   }
 
-  test(`a rule row set back to "not set" clears the rule, in this session and in the saved copy: the question comes back (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`a rule row set back to "not set" clears the rule, in this session and in the saved copy: the profile decides again (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES, remember: true, choices: { lower: 'auto', raise: 'auto' } } })
     const d = drive($, h)
     await d.start(surface)
@@ -3786,38 +3865,51 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await settingsText(d)).not.toContain('Lowering:')
     expect(h.store.choices, 'the saved copy keeps only the other rule').toEqual({ raise: 'auto' })
     h.rating = LOWER
-    h.answers = { Lowering: 'Never lower' }
     await d.submit(LOOKUP)
-    expect(h.asked.map(a => a.header), 'asked again').toEqual(['Lowering'])
+    expect(h.asked, 'nothing is asked: the profile decides').toEqual([])
+    expect(h.files[LOG_PATH] ?? '', 'no rule is set, so the profile decides').toContain('Lowering: no rule set, the Balanced profile decides (lower automatically)')
+    expect(await bandText($, surface)).toMatch(/Your Balanced profile decided \(Lowering\); ⋯ changes it\.$/)
     // A new session keeps the other rule.
     await d.start(surface)
     expect(await settingsText(d)).toContain('Raising: raise automatically')
   })
 
-  const KEEP_ROWS: { name: string; mode?: string; remember: string; asked: string[]; kept: boolean; remembered?: boolean }[] = [
-    { name: 'ask, yes: kept, and Remember choices becomes every session', remember: 'Every session', asked: ['Lowering', 'Remember'], kept: true, remembered: true },
-    { name: 'ask, just this session: kept for the session only', remember: 'This session', asked: ['Lowering', 'Remember'], kept: false },
-    { name: 'every session: kept without asking', mode: 'every session', remember: 'This session', asked: ['Lowering'], kept: true },
-    { name: 'this session: never asked, never kept', mode: 'this session', remember: 'Every session', asked: ['Lowering'], kept: false },
+  // Remember follows a rule the person sets, here from the band's ⋯ menu on a raise (the profile's own answers are not asked about).
+  /** A prompt rated for a raise (Balanced raises on its own), and the person picks "Never raise" in the band's ⋯ menu. */
+  const setRaiseFromBand = async ($: unknown, h: ReturnType<typeof engine>, d: ReturnType<typeof drive>, answers: Record<string, string> = {}) => {
+    h.rating = RAISE_HIGH
+    await d.submit(DEBUG)
+    h.answers = { Options: 'Never raise', ...answers }
+    const before = h.asked.length
+    const ui = await mount($, surface)
+    await ui.press({ key: 'mode' })
+    await untilAsked(h, before)
+    await ui.unmount()
+  }
+
+  const KEEP_ROWS: { name: string; mode?: string; remember: string; asked: string[]; kept: boolean; row: boolean; remembered?: boolean }[] = [
+    { name: 'ask, yes: kept, and Remember choices becomes every session', remember: 'Every session', asked: ['Options', 'Remember'], kept: true, row: true, remembered: true },
+    // The band button is the person's own choice: the row shows it at once, kept or not.
+    { name: 'ask, just this session: kept for the session only', remember: 'This session', asked: ['Options', 'Remember'], kept: false, row: true },
+    { name: 'every session: kept without asking', mode: 'every session', remember: 'This session', asked: ['Options'], kept: true, row: true },
+    { name: 'this session: never asked, never kept', mode: 'this session', remember: 'Every session', asked: ['Options'], kept: false, row: false },
   ]
   for (const row of KEEP_ROWS) {
     test(`Remember choices, ${row.name} (${surface})`, { timeoutMs: 30000, ...(row.mode ? { options: { remember: row.mode } } : {}) }, async ($, on) => {
       const h = engine(on, { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES }, ...(row.mode ? { stored: { remember: row.mode } } : {}) })
       const d = drive($, h)
       await d.start(surface)
-      h.rating = LOWER
-      h.answers = { Lowering: 'Lower automatically (Recommended)', Remember: row.remember }
-      await d.submit(LOOKUP)
+      await setRaiseFromBand($, h, d, { Remember: row.remember })
       // Remember waits on the band for the turn to end.
       await d.step('t1')
       await d.complete('t1')
       await settle()
       expect(h.asked.map(a => a.header)).toEqual(row.asked)
-      expect(h.store.choices, 'the store').toEqual(row.kept ? { lower: 'auto' } : undefined)
-      expect(h.stored.lowerRule, 'the Lowering row').toBe(row.kept ? 'lower automatically' : undefined)
+      expect(h.store.choices, 'the store').toEqual(row.kept ? { raise: 'never' } : undefined)
+      expect(h.stored.raiseRule, 'the Raising row').toBe(row.row ? 'never raise' : undefined)
       expect(h.store.remember).toBe(row.remembered ? true : undefined)
       if (row.remembered) expect(h.stored.remember, 'the Remember choices row').toBe('every session')
-      expect(await settingsText(d), 'the answer is yours either way').toContain('Lowering: lower automatically')
+      expect(await settingsText(d), 'the rule is the person\'s either way').toContain('Raising: never raise')
     })
   }
 
@@ -3825,13 +3917,11 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const h = engine(on, { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES } })
     const d = drive($, h)
     await d.start(surface)
-    h.rating = LOWER
-    h.answers = { Lowering: 'Lower automatically (Recommended)', ...YES_REMEMBER }
-    await d.submit(LOOKUP)
+    await setRaiseFromBand($, h, d)
     expect(h.store.choices, 'not kept yet').toBeUndefined()
     await d.config('remember', 'every session')
-    expect(h.store.choices).toEqual({ lower: 'auto' })
-    expect(h.stored.lowerRule).toBe('lower automatically')
+    expect(h.store.choices).toEqual({ raise: 'never' })
+    expect(h.stored.raiseRule).toBe('never raise')
     await d.config('remember', 'ask')
     expect(h.store.remember, 'ask again').toBe(false)
   })
@@ -3840,25 +3930,88 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const h = engine(on, { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES } })
     const d = drive($, h)
     await d.start(surface)
-    h.rating = LOWER
-    h.answers = { Lowering: 'Lower automatically (Recommended)', ...YES_REMEMBER }
-    await d.submit(LOOKUP)
-    const ui = await mount($, surface)
-    h.answers = { Options: 'Never lower' }
-    const asked = h.asked.length
-    await ui.press({ key: 'mode' })
-    await untilAsked(h, asked)
-    await ui.unmount()
-    expect(h.stored.lowerRule).toBe('never lower')
-    expect(h.sets.find(x => x.key === 'rightsize.lowerRule')?.value).toBe('never lower')
+    await setRaiseFromBand($, h, d)
+    expect(h.stored.raiseRule).toBe('never raise')
+    expect(h.sets.find(x => x.key === 'rightsize.raiseRule')?.value).toBe('never raise')
 
     // /rightsize settings asks the four questions again and writes every row.
-    h.answers = { Lowering: 'Ask me each time', Raising: 'Never raise', Stronger: 'Use the stronger model automatically (Recommended)', Cheaper: 'Ask before sending it', ...YES_REMEMBER }
+    h.answers = { Lowering: 'Ask me each time', Raising: 'Raise automatically (Recommended)', Stronger: 'Use the stronger model automatically (Recommended)', Cheaper: 'Ask before sending it', ...YES_REMEMBER }
     const text = (await d.command('settings')).text ?? ''
-    expect(h.stored).toMatchObject({ lowerRule: 'ask me', raiseRule: 'never raise', upRule: 'always send', downRule: 'ask first' })
+    expect(h.asked.map(a => a.header).slice(-4), 'all four questions are asked, as before').toEqual(['Lowering', 'Raising', 'Stronger', 'Cheaper'])
+    expect(h.stored).toMatchObject({ lowerRule: 'ask me', raiseRule: 'raise automatically', upRule: 'always send', downRule: 'ask first' })
     expect(text).toContain('Lowering: ask me')
-    expect(text).toContain('Raising: never raise')
+    expect(text).toContain('Raising: raise automatically')
     expect(text).toContain('Cheaper model: ask first')
+  })
+
+  // ---- Mode: watch only rates and plans every prompt, applies nothing, and says what it would have done ----
+
+  const WATCH = { options: { mode: 'watch only' }, stored: { mode: 'watch only' } }
+
+  test(`watch only: a hand-off is planned and said, not applied: nothing is asked, no subagent note, and the run line carries what it would have done (${surface})`, { timeoutMs: 30000, options: WATCH.options }, async ($, on) => {
+    const h = engine(on, { ...FABLE, store: { [CAL_STORE]: FREE_SWITCHES }, stored: WATCH.stored })
+    h.now = Date.now()
+    const d = drive($, h)
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+    h.rating = HAIKU_SEARCH
+    await d.submit(SEARCH)
+    expect(await bandText($, surface)).toMatch(/^Watching: would send this to a Haiku subagent at low effort\. (\$[\d.]+ vs ~\$[\d.]+ on Fable|~\d+% of Fable usage)\. Mode in \/config turns it on\.$/)
+    expect(h.asked, 'nothing is asked').toEqual([])
+    expect(last(h.submitted)?.context ?? [], 'no hand-off note').toEqual([])
+    expect(h.files[LOG_PATH] ?? '', 'the profile decided nothing: no rule was consulted').not.toContain('Cheaper model: no rule set')
+    await d.step('t1')
+    expect(last(h.sent)?.effort, 'the turn runs as it would have without rightsize').toBe('high')
+    await d.complete('t1')
+    const run = readRuns(h).filter(l => l.kind === 'run').at(-1) as { change?: string; route?: string; would?: string; wouldTaken?: number; stay?: number }
+    expect(run).toMatchObject({ change: 'none', route: 'main', would: 'delegate-down' })
+    expect(typeof run.wouldTaken, 'what the planned route was estimated to cost').toBe('number')
+    expect(run.wouldTaken ?? 0, 'cheaper than staying, or it would not be planned').toBeLessThan(run.stay ?? 0)
+    const status = (await d.command('status')).text ?? ''
+    expect(status).toContain('Mode: watch only (rates and plans every prompt, changes nothing; Mode in /config turns it on)')
+    const report = ((await d.command('report')).text ?? '').replace(/\s+/g, ' ')
+    expect(report).toMatch(/Watch only: 1 prompt rated, 1 would have been changed, which would have saved ~\$[\d.]+ against staying \(estimates; nothing was applied\)\. Mode in \/config turns rightsize on\./)
+  })
+
+  test(`watch only: a lowering is said and not applied, a prompt that needs nothing says so, and nothing asks even when a rule says ask (${surface})`, { timeoutMs: 30000, options: { ...WATCH.options, band: 'always', lowerRule: 'ask me' } }, async ($, on) => {
+    const h = engine(on, { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES }, stored: { ...WATCH.stored, band: 'always', lowerRule: 'ask me' } })
+    const d = drive($, h)
+    await d.start(surface)
+    h.rating = LOWER
+    await d.submit(LOOKUP)
+    expect(h.asked, 'the Lowering rule says ask, and watch only never asks').toEqual([])
+    expect(await bandText($, surface)).toMatch(/^Watching: would lower effort to low on Opus\. (\$[\d.]+ vs ~\$[\d.]+ on Opus|~\d+% of Opus usage)\. Mode in \/config turns it on\.$/)
+    await d.step('t1')
+    expect(last(h.sent)?.effort, 'not lowered').toBe('medium')
+    expect(await buttons($), 'no Retry: nothing was changed').toEqual(['mode', 'close'])
+    await d.complete('t1')
+    h.rating = NO_CHANGE
+    await d.submit(LOOKUP)
+    expect(await bandText($, surface)).toBe('Watching: medium on Opus fits this prompt; nothing to change. Mode in /config turns it on.')
+    const runs = readRuns(h).filter(l => l.kind === 'run') as { would?: string }[]
+    expect(runs.map(r => r.would), 'one would have lowered, one needed nothing').toEqual(['lower'])
+  })
+
+  test(`watch only: Mode set to act in /config applies from the next prompt, with no restart (${surface})`, { timeoutMs: 30000, options: WATCH.options }, async ($, on) => {
+    const h = engine(on, { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES }, stored: WATCH.stored })
+    const d = drive($, h)
+    await d.start(surface)
+    h.rating = LOWER
+    await d.submit(LOOKUP)
+    await d.step('t1')
+    expect(last(h.sent)?.effort, 'watching: not lowered').toBe('medium')
+    await d.complete('t1')
+    await d.config('mode', 'act')
+    await d.submit(LOOKUP)
+    await d.step('t2')
+    expect(last(h.sent)?.effort, 'acting: lowered, the profile deciding').toBe('low')
+    await d.complete('t2')
+    expect(h.files[LOG_PATH] ?? '').toContain('Lowering: no rule set, the Balanced profile decides (lower automatically)')
+    await d.config('mode', 'watch only')
+    await d.submit(LOOKUP)
+    await d.step('t3')
+    expect(last(h.sent)?.effort, 'watching again').toBe('medium')
   })
 
   // ---- Price check: monthly or off ----------------------------------------------------------------
@@ -4182,16 +4335,17 @@ for (const surface of ['desktop', 'terminal'] as const) {
       expect(h.stored.billing).toBe('api')
       expect(h.store.choices, 'saved answers cleared').toBeNull()
       for (const key of ROWS_RESET) expect(h.store.resetFields, `${key} is on the list`).toContain(key)
-      // The saved answers are gone from this session too: the Raising question (saved as automatic) comes back.
+      // The saved answers are gone from this session too: Raising (saved as automatic) is no rule now, so the profile decides again.
       h.rating = RAISE_HIGH
-      h.answers = { Raising: 'Never raise' }
+      const asked = h.asked.length
       await d.submit(DEBUG)
-      expect(h.asked.map(a => a.header)).toContain('Raising')
-      // A new session still shows defaults: the stored values equal them.
+      expect(h.asked.slice(asked), 'nothing is asked').toEqual([])
+      expect(h.files[LOG_PATH] ?? '').toContain('Raising: no rule set, the Balanced profile decides (raise automatically)')
+      // A new session still shows defaults: the stored values equal them, and no answer was given since.
       await d.start(surface)
       const again = await settingsText(d)
-      expect(changedCount(again), 'only the answer given just now').toBe(1)
-      expect(again).toContain('Raising: never raise')
+      expect(changedCount(again), 'nothing is yours').toBe(0)
+      expect(again).toContain('are at their defaults')
       // Reports is read off the rate limits once a prompt went through, and saved: not yours either.
       for (const key of ROWS_RESET.filter(k => k !== 'billing')) expect(listed(again, plainTitle(SETTINGS[key as SettingKey].title)), key).toBe(false)
       expect(again).toContain('Reports: api (saved)')
@@ -4278,21 +4432,24 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.stored.handOff).toBe('50%')
   })
 
-  test(`/rightsize reset on a rule row forgets that answer, and its question comes back; the other answers stay (${surface})`, { timeoutMs: 30000, options: { lowerRule: 'never lower', raiseRule: 'never raise' } }, async ($, on) => {
+  test(`/rightsize reset on a rule row forgets that answer, and the profile decides that case again; the other answers stay (${surface})`, { timeoutMs: 30000, options: { lowerRule: 'never lower', raiseRule: 'never raise' } }, async ($, on) => {
     const h = engine(on, { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES }, stored: { lowerRule: 'never lower', raiseRule: 'never raise' } })
     const d = drive($, h)
     await d.start(surface)
     h.answers = { Confirm: 'Yes' }
     const out = await d.command('reset Lowering')
-    expect(h.asked[0]?.question).toBe("Reset Lowering? It goes back to its default, not set. Its question is asked again the next time it comes up. This can't be undone.")
+    expect(h.asked[0]?.question).toBe("Reset Lowering? It goes back to its default, not set. Your profile decides that case again. This can't be undone.")
     expect(out.text).toContain('Lowering is back to its default, not set.')
     const text = await settingsText(d)
     expect(text).not.toContain('Lowering:')
     expect(text).toContain('Raising: never raise')
     h.rating = LOWER
-    h.answers = { Lowering: 'Never lower' }
+    const asked = h.asked.length
     await d.submit(LOOKUP)
-    expect(h.asked.map(a => a.header)).toContain('Lowering')
+    expect(h.asked.slice(asked), 'the profile decides: nothing is asked').toEqual([])
+    expect(h.files[LOG_PATH] ?? '').toContain('Lowering: no rule set, the Balanced profile decides (lower automatically)')
+    await d.step('t1')
+    expect(last(h.sent)?.effort, 'lowered, as Balanced does').toBe('low')
   })
 
   test(`/rightsize reset on Reports forgets the answer, and the rate limits read the billing again (${surface})`, { timeoutMs: 30000, options: { billing: 'api' } }, async ($, on) => {
@@ -4321,14 +4478,13 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.answers = { Confirm: 'Yes' }
     await d.command('reset remember')
     expect(h.store.remember, 'the old yes is forgotten').toBe(false)
-    h.rating = LOWER
-    h.answers = { Lowering: 'Lower automatically (Recommended)', Remember: 'This session' }
     h.asked.length = 0
-    await d.submit(LOOKUP)
+    // A rule the person sets (here from the band) is followed by the Remember question again.
+    await setRaiseFromBand($, h, d, { Remember: 'This session' })
     await d.step('t1')
     await d.complete('t1')
     await settle()
-    expect(h.asked.map(a => a.header)).toEqual(['Lowering', 'Remember'])
+    expect(h.asked.map(a => a.header)).toEqual(['Options', 'Remember'])
   })
 
   test(`/rightsize reset on Share anonymous feedback turns sharing off and forgets the install id (${surface})`, { timeoutMs: 30000, options: { share: 'on' } }, async ($, on) => {
@@ -4337,7 +4493,10 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.start(surface)
     h.answers = { Confirm: 'Yes' }
     await d.command('reset share')
-    expect(await settingsText(d)).not.toContain('Share anonymous feedback:')
+    const text = await settingsText(d)
+    expect(text, 'the status line says it is off').toContain('Share anonymous feedback: off')
+    expect(text).not.toContain('Sharing install ID')
+    expect(h.stored.share).toBe('off')
     expect(h.store.shareInstall).toBeNull()
   })
 
@@ -4579,7 +4738,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
     // One timeout, then an answer: the retry rates the prompt, and nothing is logged as unrated.
     h.ratingQueue = ['timeout']
     h.rating = LOWER
-    h.answers = { Lowering: 'Lower automatically (Recommended)', Remember: 'This session' }
     const before = h.ratings
     await d.submit(LOOKUP)
     expect(h.ratings - before, 'two calls').toBe(2)
@@ -4685,8 +4843,9 @@ for (const surface of ['desktop', 'terminal'] as const) {
     for (let i = 0; i < 3; i++) await d.bash('env:curl: (6) Could not resolve host: registry.example.com', 'agent-helper')
     await d.step('t1', 1, 'agent-helper')
     expect(last(h.sent)?.effort, 'the network is down: effort would not help').toBe('low')
-    await d.bash('rejected git reset --hard')
-    await d.step('t1', 2)
+    // The person saying no at the permission prompt is not the work failing: the same refused call three times raises nothing.
+    for (let i = 0; i < 3; i++) await d.bash('rejected git reset --hard', 'agent-helper')
+    await d.step('t1', 2, 'agent-helper')
     expect(last(h.sent)?.effort, 'the person said no: the task is no harder').toBe('low')
     // The same successful call three times is a loop, but only blocked errors stand behind it: can't tell.
     for (let i = 0; i < 3; i++) await d.bash('ls', 'agent-helper')
@@ -4737,6 +4896,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: { remember: true, choices: { down: 'auto' } } })
     const d = drive($, h)
     await d.start(surface)
+    // Raising set to ask: the profile's own answer (auto) would raise without a question.
+    await d.config('raiseRule', 'ask me')
     await warm(d, h)
     h.rating = HAND_OFF()
     h.answers = { Stuck: 'Raise to medium' }
@@ -4772,6 +4933,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: { remember: true, choices: { down: 'auto' } } })
     const d = drive($, h)
     await d.start(surface)
+    // Raising set to ask: the profile's own answer (auto) would raise without a question.
+    await d.config('raiseRule', 'ask me')
     await warm(d, h)
     h.rating = HAND_OFF()
     h.answers = { Stuck: NO_ONE }
@@ -4788,6 +4951,33 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(helperLog(h)).toContain('no answer on the band to Stuck: helper agent-helper kept at low')
   })
 
+  test(`a stuck helper whose Stuck dialog gets no answer (Band set to Never) goes on at its effort: the text says so, and it is not sent back (${surface})`, { timeoutMs: 30000, options: { band: 'off' } }, async ($, on) => {
+    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: { remember: true, choices: { down: 'auto' } } })
+    const d = drive($, h)
+    await d.start(surface)
+    // Raising set to ask: the profile's own answer (auto) would raise without a question.
+    await d.config('raiseRule', 'ask me')
+    await warm(d, h)
+    h.rating = HAND_OFF()
+    h.answers = { Stuck: NO_ONE }
+    h.sleepEnds = true
+    await startHelper(d, h, 't1', 'helper')
+    await d.bash('fail a', 'agent-helper')
+    await d.bash('fail a', 'agent-helper')
+    await d.step('t1', 1, 'agent-helper')
+    expect(h.asked.map(a => a.header), 'the dialog: the band is off').toEqual(['Stuck'])
+    expect(h.asked[0]?.question).toContain("It uses one of this task's 2 retries. With no answer in 30 seconds it goes on at low.")
+    expect(h.question, 'not on the band').toBeNull()
+    await d.step('t1', 2, 'agent-helper')
+    expect(last(h.sent)?.effort, 'not raised').toBe('low')
+    expect(((await d.bash('ls', 'agent-helper')) as { deny?: string }).deny, 'not sent back to the main chat').toBeUndefined()
+    expect(helperLog(h)).toContain('helper agent-helper struggling (the same tool call failed twice): no answer in 30 seconds, goes on at low')
+    await d.complete('t1')
+    const run = readRuns(h).find(l => l.kind === 'run') as { helpers?: HelperEntry[]; retries?: number }
+    expect(run.helpers?.map(x => [x.returned, x.raises]), 'neither returned nor raised').toEqual([[undefined, undefined]])
+    expect('retries' in run, 'no chance used').toBe(false)
+  })
+
   // ---- Every question waits 30 seconds (Question wait), then takes the choice that changes nothing ----
 
   const until = async (done: () => boolean) => {
@@ -4795,44 +4985,46 @@ for (const surface of ['desktop', 'terminal'] as const) {
   }
   const NO_ANSWER = 'No answer in 30 seconds:'
 
-  test(`Lowering with nobody to answer: this prompt runs as it is, nothing is saved, and it is asked again next time (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`Lowering set to ask, with nobody to answer: this prompt runs as it is, nothing is saved, and it is asked again next time (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
     const d = drive($, h)
     await d.start(surface)
     await d.step('t0')
     await d.complete('t0')
+    await d.config('lowerRule', 'ask me')
     h.rating = LOWER
-    h.answers = { Lowering: NO_ONE }
+    h.answers = { Effort: NO_ONE }
     h.sleepEnds = true
     await d.submit(LOOKUP)
     await d.step('t1', 0)
-    expect(h.asked.map(a => a.header), 'no Remember question either').toEqual(['Lowering'])
-    expect(h.asked[0]?.question).toContain(`${NO_ANSWER} this prompt runs as it is.`)
+    expect(h.asked.map(a => a.header), 'the dialog is the Effort question; no Remember question either').toEqual(['Effort'])
+    expect(h.asked[0]?.question).toContain(`${NO_ANSWER} it stays as it is.`)
     expect(last(h.sent)?.effort, 'no change').toBe('medium')
     expect(h.store.choices, 'nothing saved').toBeUndefined()
-    expect(helperLog(h)).toContain('no answer in 30 seconds to Lowering: this prompt ran with no change; nothing saved')
+    expect(helperLog(h)).toContain('no answer in 30 seconds to Effort: kept medium')
     await d.complete('t1')
     await d.submit(LOOKUP)
-    expect(h.asked.map(a => a.header), 'asked again').toEqual(['Lowering', 'Lowering'])
+    expect(h.asked.map(a => a.header), 'asked again').toEqual(['Effort', 'Effort'])
   })
 
-  test(`Stronger model with nobody to answer: no switch and no hand-off, and nothing is saved (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`Stronger model set to ask, with nobody to answer: no switch and no hand-off, and nothing is saved (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
     const d = drive($, h)
     await d.start(surface)
     await d.step('t0')
     await d.complete('t0')
+    await d.config('upRule', 'ask first')
     h.rating = '{"level":"high","model":"fable","size":"small","type":"debug","read":30000,"write":4000,"steps":12,"reason":"subtle concurrency bug"}'
-    h.answers = { Stronger: NO_ONE }
+    h.answers = { Subagent: NO_ONE }
     h.sleepEnds = true
     await d.submit(DEBUG)
     await d.step('t1')
-    expect(h.asked.map(a => a.header)).toEqual(['Stronger'])
-    expect(h.asked[0]?.question).toContain(`${NO_ANSWER} this prompt runs as it is.`)
+    expect(h.asked.map(a => a.header)).toEqual(['Subagent'])
+    expect(h.asked[0]?.question).toContain(`${NO_ANSWER} it stays as it is.`)
     expect(handedTo(h), 'no hand-off').toBeUndefined()
     expect(last(h.sent)?.model, 'no switch').not.toBe('fable')
     expect(h.store.choices).toBeUndefined()
-    expect(helperLog(h)).toContain('no answer in 30 seconds to Stronger')
+    expect(helperLog(h)).toContain('no answer in 30 seconds to Subagent')
     await d.complete('t1')
   })
 
@@ -4842,16 +5034,15 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.start(surface)
     await d.step('t0')
     await d.complete('t0')
-    h.rating = LOWER
-    h.answers = { Lowering: 'Lower automatically (Recommended)', Remember: NO_ONE }
-    await d.submit(LOOKUP)
+    // The rule is the person's, set from the band: that is what the question follows.
+    await setRaiseFromBand($, h, d, { Remember: NO_ONE })
     await d.step('t1', 0)
-    expect(last(h.sent)?.effort, 'the prompt did not wait for Remember').toBe('low')
-    expect(h.asked.map(a => a.header), 'Remember waits for the turn to end').toEqual(['Lowering'])
+    expect(last(h.sent)?.effort, 'the prompt did not wait for Remember').toBe('high')
+    expect(h.asked.map(a => a.header), 'Remember waits for the turn to end').toEqual(['Options'])
     await d.complete('t1')
     await settle()
-    expect(h.asked.map(a => a.header)).toEqual(['Lowering', 'Remember'])
-    expect(h.asked[1]?.question).toBe('Keep your rules (Lowering: lower automatically) in every session? No answer: this session only.')
+    expect(h.asked.map(a => a.header)).toEqual(['Options', 'Remember'])
+    expect(h.asked[1]?.question).toBe('Keep your rules (Raising: never raise) in every session? No answer: this session only.')
     h.rating = NO_CHANGE
     await d.submit(LOOKUP)
     expect(h.question, 'the next prompt took it away').toBeNull()
@@ -4929,6 +5120,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
     const d = drive($, h)
     await d.start(surface)
+    // Raising set to ask: the profile's own answer (auto) would raise without a question.
+    await d.config('raiseRule', 'ask me')
     h.rating = NO_CHANGE
     await d.submit(LOOKUP)
     await d.step('t1', 0)
@@ -4982,30 +5175,32 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await settingsText(d), 'not saved').not.toContain('Workflows:')
   })
 
-  test(`a late answer to a rule question is saved for the next prompt, and the running one is unchanged (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`a late answer to the Effort question (Lowering set to ask) is too late: the running prompt is unchanged, a toast says so, and it is asked again next time (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
     const d = drive($, h)
     await d.start(surface)
     await d.step('t0')
     await d.complete('t0')
+    await d.config('lowerRule', 'ask me')
     let release = () => {}
-    h.answerGate = { Lowering: new Promise<void>(r => (release = r)) }
+    h.answerGate = { Effort: new Promise<void>(r => (release = r)) }
     h.rating = LOWER
-    h.answers = { Lowering: 'Lower automatically (Recommended)', Remember: 'This session' }
+    h.answers = { Effort: 'Lower for this prompt' }
     h.sleepEnds = true
     await d.submit(LOOKUP)
     await d.step('t1', 0)
     expect(last(h.sent)?.effort, 'this prompt: no change').toBe('medium')
     await d.complete('t1')
     release()
-    await until(() => h.toasts.some(t => t.includes('saved your answer')))
-    expect(last(h.toasts)).toBe('rightsize: saved your answer for next time.')
+    await until(() => h.toasts.some(t => t.includes('too late')))
+    expect(last(h.toasts)).toBe('rightsize: that answer came too late; nothing changed.')
+    expect(h.store.choices, 'nothing saved').toBeUndefined()
 
-    h.asked = []
+    h.answerGate = {}
     await d.submit(LOOKUP)
     await d.step('t2', 0)
-    expect(h.asked.filter(a => a.header === 'Lowering'), 'not asked again').toEqual([])
-    expect(last(h.sent)?.effort, 'the saved rule lowers it').toBe('low')
+    expect(h.asked.filter(a => a.header === 'Effort').length, 'asked again: the rule is still ask').toBe(2)
+    expect(last(h.sent)?.effort, 'and this one was answered in time').toBe('low')
   })
 
   // ---- On the terminal and the desktop app, a question that need not stop the work is a row on the band ----
@@ -5015,6 +5210,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
     const d = drive($, h)
     await d.start(surface)
+    await d.config('raiseRule', 'ask me')
     h.rating = NO_CHANGE
     h.answers = { Stuck: NO_ONE, Workflow: NO_ONE }
     await d.submit(LOOKUP)
@@ -5068,16 +5264,17 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.asked.map(a => a.header)).toEqual(['Stuck', 'Workflow'])
   })
 
-  test(`with Band set to Never a timed question is the dialog, and a late answer to a rule is still saved (${surface})`, { timeoutMs: 30000, options: { band: 'off' } }, async ($, on) => {
+  test(`with Band set to Never the Effort question is the same dialog, never on the band, and a late answer to it is too late (${surface})`, { timeoutMs: 30000, options: { band: 'off' } }, async ($, on) => {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
     const d = drive($, h)
     await d.start(surface)
     await d.step('t0')
     await d.complete('t0')
+    await d.config('lowerRule', 'ask me')
     let release = () => {}
-    h.answerGate = { Lowering: new Promise<void>(r => (release = r)) }
+    h.answerGate = { Effort: new Promise<void>(r => (release = r)) }
     h.rating = LOWER
-    h.answers = { Lowering: 'Lower automatically (Recommended)', Remember: 'This session' }
+    h.answers = { Effort: 'Lower for this prompt' }
     h.sleepEnds = true
     await d.submit(LOOKUP)
     await d.step('t1', 0)
@@ -5085,14 +5282,16 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(last(h.sent)?.effort, 'this prompt: no change').toBe('medium')
     await d.complete('t1')
     release()
-    await until(() => h.toasts.some(t => t.includes('saved your answer')))
-    expect(last(h.toasts)).toBe('rightsize: saved your answer for next time.')
+    await until(() => h.toasts.some(t => t.includes('too late')))
+    expect(last(h.toasts)).toBe('rightsize: that answer came too late; nothing changed.')
   })
 
   test(`with Band set to Never a late answer in the dialog to a one-time question gets a toast (${surface})`, { timeoutMs: 30000, options: { band: 'off' } }, async ($, on) => {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
     const d = drive($, h)
     await d.start(surface)
+    // Raising set to ask: the profile's own answer (auto) would raise without a question.
+    await d.config('raiseRule', 'ask me')
     h.rating = NO_CHANGE
     await d.submit(LOOKUP)
     await d.step('t1', 0)
@@ -5315,7 +5514,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t0')
     await d.complete('t0')
     h.rating = LOWER
-    h.answers = { Lowering: 'Lower automatically (Recommended)', Remember: 'This session' }
     await d.submit(LOOKUP)
     await d.step('t1')
     expect(last(h.sent)?.effort, 'the same rating lowers a request that is whole').toBe('low')
@@ -5330,7 +5528,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t2')
     expect(last(h.sent)?.effort, 'not lowered: the rater did not see all of it').toBe('medium')
     expect(h.files[LOG_PATH] ?? '').toContain('no downgrade: context cut')
-    expect(h.asked.map(a => a.header), 'and Lowering is not asked again').toEqual(['Lowering', 'Remember'])
+    expect(h.asked, 'nothing was asked: the profile decides Lowering, and a rule it decided is not kept').toEqual([])
     await d.complete('t2')
     expect(unsureOf(h)).toEqual([null, 'cut'])
   })
@@ -5341,7 +5539,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.start(surface)
     await d.step('t0')
     await d.complete('t0')
-    h.answers = { Lowering: 'Lower automatically (Recommended)', Raising: 'Raise automatically (Recommended)', Remember: 'This session' }
     // No task yet, so no reply is missing: the first prompt of a session is lowered as ever.
     h.messages = []
     h.rating = LOWER
@@ -5489,7 +5686,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t0')
     await d.complete('t0')
     h.rating = LOWER
-    h.answers = { Lowering: 'Lower automatically (Recommended)', Remember: 'This session' }
     await d.submit(LOOKUP)
     await d.step('t1', 0)
     await d.step('t1', 1)
@@ -5675,7 +5871,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.start(surface)
     h.ratingUsage = PAID
     h.rating = LOWER
-    h.answers = { Lowering: 'Lower automatically (Recommended)', Remember: 'This session' }
     h.dropNext = 'a hook refused it'
     const out = (await d.submit(LOOKUP)) as { drop?: string }
     expect(out.drop, 'the refusal is passed up as it came').toBe('a hook refused it')
@@ -5702,12 +5897,113 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(after[1]?.overhead, "its own rating call's cost, not the dropped one's").toBe(after[0]?.overhead)
   })
 
+  // ---- Outcomes rightsize measures itself: a test run's result, and a prompt that corrects the last reply ----
+
+  const runsOf = (h: ReturnType<typeof engine>) => readRuns(h).filter(l => (l.kind ?? 'run') === 'run') as { id?: string; task?: string; tests?: string; change?: string }[]
+
+  test(`a run line says tests: passed or failed when a test runner ran in the turn (the last run of the main chat), and says nothing when none did (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES } })
+    const d = drive($, h)
+    await d.start(surface)
+    h.rating = NO_CHANGE
+    await d.submit(LOOKUP)
+    await d.step('t1', 0)
+    await d.bash('npm test --red')
+    await d.bash('npm test')
+    await d.step('t1', 1)
+    await d.complete('t1')
+    await d.submit(LOOKUP)
+    await d.step('t2', 0)
+    await d.bash('npm test')
+    await d.bash('pytest --red')
+    await d.complete('t2')
+    await d.submit(LOOKUP)
+    await d.step('t3', 0)
+    await d.bash('ls')
+    await d.complete('t3')
+    expect(runsOf(h).map(r => r.tests ?? null), 'the last test run of each turn: green, red, none').toEqual(['passed', 'failed', null])
+  })
+
+  test(`a run line takes tests from a helper when the main chat ran none, and the main chat's own run wins when it ran one (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: HELPERS })
+    const d = drive($, h)
+    await d.start(surface)
+    await warm(d, h)
+    h.rating = HAND_OFF()
+    await startHelper(d, h, 't1', 'helper')
+    await d.bash('npm test --red', 'agent-helper')
+    await d.step('t1', 1, 'agent-helper')
+    await d.step('t1', 1)
+    await d.complete('t1')
+    // The next hand-off: the helper's run is red, the main chat checked it and its own run is green.
+    h.rating = HAND_OFF()
+    await startHelper(d, h, 't2', 'second')
+    await d.bash('npm test --red', 'agent-second')
+    await d.step('t2', 1, 'agent-second')
+    await d.bash('npm test')
+    await d.step('t2', 1)
+    await d.complete('t2')
+    expect(runsOf(h).map(r => r.tests ?? null)).toEqual(['failed', 'passed'])
+  })
+
+  /** A rating that says the prompt corrects Claude's last reply, and carries on the task (so the task's last run is the one it corrects). */
+  const CORRECTS = '{"fit":{"haiku":"no","sonnet":"medium","opus":"medium","fable":"medium"},"type":"lookup","read":2000,"write":300,"steps":1,"continues":true,"corrects":true,"reason":"it broke X"}'
+  const correctedLines = (h: ReturnType<typeof engine>) => readRuns(h).filter(l => l.kind === 'corrected')
+
+  test(`a prompt the rater says corrects the last reply writes one corrected line, for the task's last lowered run, once (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES } })
+    // The run log's lines are stamped with the real clock: the engine's clock has to be there for them to count (30 days back).
+    h.now = Date.now()
+    const d = drive($, h)
+    await d.start(surface)
+    // The first prompt is lowered by the profile; it starts the task.
+    h.rating = LOWER
+    await d.submit(LOOKUP)
+    await d.step('t1')
+    await d.complete('t1')
+    const first = runsOf(h)[0]
+    expect(first?.change).toBe('lower')
+    expect(correctedLines(h), 'nothing to correct yet').toEqual([])
+    // The next prompt says the reply was wrong: a miss for the lowering.
+    h.rating = CORRECTS
+    await d.submit('no, that broke the parser, undo it')
+    expect(correctedLines(h)).toMatchObject([{ kind: 'corrected', session: 'sess-1', task: first?.task, ref: first?.id }])
+    expect(typeof (correctedLines(h)[0] as { at?: unknown }).at).toBe('string')
+    expect(h.files[LOG_PATH] ?? '').toContain(`the prompt corrects the last reply: counted as a miss for run ${first?.id} (lower)`)
+    await d.step('t2')
+    await d.complete('t2')
+    // Correcting again does not count the same run twice.
+    h.rating = CORRECTS
+    await d.submit('still wrong')
+    expect(correctedLines(h).length, 'once for the run').toBe(1)
+    expect(h.asked, 'nothing is asked').toEqual([])
+  })
+
+  test(`a correcting prompt writes no corrected line when the task has no lowered or handed-down run, or no task (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES } })
+    h.now = Date.now()
+    const d = drive($, h)
+    await d.start(surface)
+    // No task in progress: nothing to correct.
+    h.rating = CORRECTS
+    await d.submit('no, that is wrong')
+    await d.step('t1')
+    await d.complete('t1')
+    expect(correctedLines(h), 'no task before it').toEqual([])
+    // A task whose run changed nothing: nothing cheaper to blame.
+    h.rating = CORRECTS
+    await d.submit('still wrong')
+    expect(runsOf(h)[0]?.change, 'the first run changed nothing').toBe('none')
+    expect(correctedLines(h), 'no cheaper route made it').toEqual([])
+  })
+
   test(`a session switch the person answered for a dropped prompt stays (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES } })
     const d = drive($, h)
     await d.start(surface)
     h.rating = '{"level":"high","model":"same","type":"debug","read":20000,"write":3000,"steps":8,"reason":"unknown cause"}'
-    h.answers = { Raising: 'Ask me each time', Effort: 'Raise for this session', Remember: 'This session' }
+    await d.config('raiseRule', 'ask me')
+    h.answers = { Effort: 'Raise for this session' }
     h.dropNext = 'refused'
     await d.submit(DEBUG)
     expect(readRuns(h).map(l => l.kind)).toEqual(['dropped'])
@@ -5916,7 +6212,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
     // Prompts 1 and 2: fewer than SESSION_TOTAL_FROM (3) rated prompts, so no total on the band.
     h.rating = LOWER
-    h.answers = { Lowering: 'Lower automatically (Recommended)', Remember: 'This session' }
     await d.submit(LOOKUP)
     expect(await bandText($, surface), 'prompt 1').not.toContain('Session:')
     await d.step('t1')
@@ -6081,34 +6376,97 @@ for (const surface of ['desktop', 'terminal'] as const) {
     })
   }
 
-  test(`the first option moves, the others keep their order, and each still stands for its own value (${surface})`, { timeoutMs: 30000, options: inProfile('Economy').options }, async ($, on) => {
+  test(`Economy decides Stronger model itself: it stays and raises effort only, with no question, and the band says so once (${surface})`, { timeoutMs: 30000, options: inProfile('Economy').options }, async ($, on) => {
     const h = engine(on, { ...OPUS, stored: inProfile('Economy').stored })
     const d = drive($, h)
     await d.start(surface)
     h.rating = NEEDS_FABLE
-    h.answers = { Stronger: 'Stay on Opus, raise effort only (Recommended)', ...YES_REMEMBER }
     await d.submit(DEBUG)
-    expect(h.asked.find(a => a.header === 'Stronger')?.options).toEqual(['Stay on Opus, raise effort only (Recommended)', 'Use the stronger model automatically', 'Ask before using it', 'Ask me each time'])
+    expect(h.asked, 'nothing is asked').toEqual([])
+    expect(h.files[LOG_PATH] ?? '').toContain('Stronger model: no rule set, the Economy profile decides (stay, raise effort only)')
+    expect(await bandText($, surface), 'every case of the prompt is named: the raise too').toMatch(/Your Economy profile decided \(Stronger model, Raising\); ⋯ changes it\.$/)
     expect(handedTo(h), 'stay: no hand-off').toBeUndefined()
     await d.submit(DEBUG)
-    expect(h.asked.filter(a => a.header === 'Stronger').length, 'asked once, and the answer stands').toBe(1)
+    expect(h.asked, 'still nothing').toEqual([])
+    expect(await bandText($, surface), 'said once per session').not.toContain('profile decided')
     expect(handedTo(h), 'still no hand-off').toBeUndefined()
+    expect(h.store.choices, 'nothing saved').toBeUndefined()
   })
 
-  test(`a question is asked once per case in every profile, and a rule you set is not asked at all (${surface})`, { timeoutMs: 30000, options: inProfile('Quality', { lowerRule: 'never lower' }).options }, async ($, on) => {
-    const h = engine(on, { ...OPUS, store: SEND, stored: inProfile('Quality', { lowerRule: 'never lower' }).stored })
+  test(`a case the profile decides is noted once per session on the band, with every case that came up in that prompt, and a rule you set is not asked or noted at all (${surface})`, { timeoutMs: 30000, options: inProfile('Balanced', { lowerRule: 'never lower' }).options }, async ($, on) => {
+    const h = engine(on, { ...OPUS, store: SEND, stored: inProfile('Balanced', { lowerRule: 'never lower' }).stored })
     const d = drive($, h)
     await d.start(surface)
     h.rating = LOWER
     await d.submit(LOOKUP)
     expect(h.asked, 'Lowering is yours').toEqual([])
+    expect(await bandText($, surface), 'Lowering is the person\'s: the profile did not decide it').not.toContain('profile decided')
     h.rating = RAISE_HIGH
-    h.answers = { Raising: 'Raise automatically (Recommended)', ...YES_REMEMBER }
     await d.submit(DEBUG)
+    expect(await bandText($, surface), 'Raising is decided by the profile: said').toMatch(/Your Balanced profile decided \(Raising\); ⋯ changes it\.$/)
     await d.submit(DEBUG)
-    expect(h.asked.filter(a => a.header === 'Raising').length, 'once').toBe(1)
-    expect(h.asked.find(a => a.header === 'Raising')?.options[0]).toBe('Raise automatically (Recommended)')
+    expect(h.asked, 'nothing is asked').toEqual([])
+    expect(await bandText($, surface), 'once per session').not.toContain('profile decided')
+    // A new session says it again.
+    await d.start(surface)
+    await d.submit(DEBUG)
+    expect(await bandText($, surface)).toMatch(/Your Balanced profile decided \(Raising\)/)
   })
+
+  // Quality needs 10 logged tasks of the kind before it lowers or hands down.
+  const lowered12 = (h: { now: number }) =>
+    Array.from({ length: 12 }, (_, i) => JSON.stringify({ at: new Date(h.now - (12 - i) * 60_000).toISOString(), kind: 'run', type: 'lookup', route: 'main', tier: 'opus', change: 'lower', steppedUp: false })).join('\n') + '\n'
+
+  test(`Quality decides Lowering as ask: the Effort dialog still opens, and the band says the profile asked (${surface})`, { timeoutMs: 30000, options: inProfile('Quality').options }, async ($, on) => {
+    const h = engine(on, { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES }, stored: inProfile('Quality').stored })
+    h.files[RUNS] = lowered12(h)
+    const d = drive($, h)
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+    h.rating = LOWER
+    h.answers = { Effort: 'Lower for this prompt' }
+    await d.submit(LOOKUP)
+    expect(h.asked.map(a => a.header), 'Lowering is ask under Quality: the Effort dialog').toEqual(['Effort'])
+    expect(h.files[LOG_PATH] ?? '').toContain('Lowering: no rule set, the Quality profile decides (ask me)')
+    expect(await bandText($, surface)).toMatch(/Your Quality profile decided \(Lowering\); ⋯ changes it\.$/)
+    await d.step('t1')
+    expect(last(h.sent)?.effort, 'answered Lower for this prompt').toBe('low')
+    expect(h.store.choices, 'nothing saved').toBeUndefined()
+  })
+
+  test(`Quality decides Cheaper model as ask: the Subagent dialog still opens, and the band says the profile asked (${surface})`, { timeoutMs: 30000, options: inProfile('Quality').options }, async ($, on) => {
+    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: { [CAL_STORE]: FREE_SWITCHES }, stored: inProfile('Quality').stored })
+    h.files[RUNS] = haikuLog(h, 12)
+    const d = drive($, h)
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+    h.rating = HAIKU_SEARCH
+    h.answers = { Subagent: 'Send it to a Haiku subagent' }
+    await d.submit(SEARCH)
+    expect(h.asked.map(a => a.header), 'Cheaper model is ask under Quality: the Subagent dialog').toEqual(['Subagent'])
+    expect(h.files[LOG_PATH] ?? '').toContain('Cheaper model: no rule set, the Quality profile decides (ask first)')
+    expect(handedTo(h), 'answered yes').toBe('haiku')
+    expect(await bandText($, surface)).toMatch(/Your Quality profile decided \(Cheaper model\); ⋯ changes it\.$/)
+  })
+
+  const REVIEW_XHIGH = REVIEW.replace('"level":"high"', '"level":"xhigh"')
+
+  for (const [profile, level] of [['Balanced', 'xhigh'], ['Economy', 'high']] as const) {
+    test(`${profile}: a switched review rated for xhigh runs on Opus at ${level}${profile === 'Economy' ? ', the profile\'s cap' : ''} (${surface})`, { timeoutMs: 30000, options: inProfile(profile, { upRule: 'always send' }).options }, async ($, on) => {
+      const h = engine(on, { model: 'claude-sonnet-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES }, stored: inProfile(profile, { upRule: 'always send' }).stored })
+      const d = drive($, h)
+      await d.start(surface)
+      await d.step('t0')
+      await d.complete('t0')
+      h.rating = REVIEW_XHIGH
+      await d.submit(DEBUG)
+      await d.step('t1')
+      expect(last(h.sent), 'the turn runs on Opus').toMatchObject({ model: 'opus', effort: level })
+      await d.complete('t1')
+    })
+  }
 
   // Exploring close calls is off in every profile.
   for (const profile of PROFILE_NAMES) {
@@ -6201,7 +6559,10 @@ for (const surface of ['desktop', 'terminal'] as const) {
   const EVENING = new Date(2027, 0, 15, 18, 0, 0, 0).getTime()
   const GROUNDWORK = [{ name: 'groundwork:groundwork', description: 'Groundwork', source: 'plugin', plugin: 'groundwork' }]
   type ColdOver = {
+    /** The rows the person set (settings.json); Before the cache goes cold is "ask" unless these say otherwise, since only that row offers. */
     stored?: Record<string, string>
+    /** True: leave Before the cache goes cold unset, so the profile decides. */
+    unset?: boolean
     commands?: typeof GROUNDWORK
     prices?: string
     usage?: typeof BIG_TURN
@@ -6212,7 +6573,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
   }
   // Opus: 80,500 tokens in the conversation, $0.63 to come back cold.
   const coldSession = async ($: unknown, on: Parameters<TestBody>[1], over: ColdOver = {}) => {
-    const h = engine(on, { model: over.model ?? 'claude-opus-5-5', effort: 'medium', ...(over.stored ? { stored: over.stored } : {}), ...(over.store ? { store: over.store } : {}) })
+    const stored = over.unset ? over.stored : { beforeCold: 'ask', ...over.stored }
+    const h = engine(on, { model: over.model ?? 'claude-opus-5-5', effort: 'medium', ...(stored ? { stored } : {}), ...(over.store ? { store: over.store } : {}) })
     if (over.rateLimits) h.rateLimits = over.rateLimits
     h.now = EVENING
     h.virtual = true
@@ -6261,8 +6623,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await ui.unmount()
     return h.asked.slice(before)
   }
-  /** The cache offer's cache-only menu: the first level, then the cache choices (4 at most each: a fifth is under More…). */
-  const CACHE_MENU = { Options: 'More cache choices…', Cache: 'More…' }
+  /** The cache offer's ⋯ menu is one paged list (the cache choices, then the band setting): the first 3 and More… on page 1 (header Options), the rest on the next page (header More options). */
+  const CACHE_MENU = { Options: 'More…' }
   const warmLines = (h: ReturnType<typeof engine>) =>
     (h.files[RUNS_FILE] ?? '').split('\n').filter(Boolean).map(l => JSON.parse(l) as { kind?: string; overhead?: number; session?: string; tier?: string; context?: number }).filter(l => l.kind === 'warm')
   const coldLog = (h: ReturnType<typeof engine>) => h.files[LOG_PATH] ?? ''
@@ -6284,13 +6646,13 @@ for (const surface of ['desktop', 'terminal'] as const) {
       ['mode', '⋯'],
       ['close', '×'],
     ])
-    // $.ui.ask takes 4 options at most: the menu has the band setting and a way down to the cache choices; five of them are 4 and "More…".
-    const asks = await openMenu($, h, CACHE_MENU, 3)
+    // $.ui.ask takes 4 options at most: the menu is one list, the cache choices and then the band setting, three to a page with More….
+    const asks = await openMenu($, h, CACHE_MENU, 2)
     expect(asks.map(a => a.options)).toEqual([
-      ['More cache choices…', 'When the band shows…'],
       ['Keep warm to 2:00 tomorrow ($0.13)', 'Keep warm to 9:00 tomorrow ($0.24)', 'Compact now', 'More…'],
-      ['Let it go cold', "Don't offer again"],
+      ['Let it go cold', "Don't offer again", 'When the band shows…'],
     ])
+    expect(asks[1]?.options.length, 'a page is 4 options at most').toBeLessThanOrEqual(4)
     expect(asks[0]?.question, 'the menu says what the dollars are').toContain('API-equivalent')
     await h.advance(3 * HOUR)
     expect(NOTHING_DONE(h), 'the cache goes cold').toEqual(NONE)
@@ -6332,8 +6694,21 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await rowText(ui, 'Prompt'), 'row 1 is the route text alone').toMatch(/^Effort lowered/)
     expect(await coldRow($)).toBe('Goes cold at 19:00 · coming back after costs about $0.63')
     await ui.unmount()
-    expect((await bandButtons($)).map(b => b[0]), '⋯ and × on the header; the route buttons; then the cache button').toEqual(['mode', 'close', 'retry', 'good', 'bad', 'cold-2h'])
-    expect((await openMenu($, h))[0]?.options, 'the rule options, the way down to the cache choices, the band setting').toEqual(['Ask me each time', 'Never lower', 'More cache choices…', 'When the band shows…'])
+    expect((await bandButtons($)).map(b => b[0]), '⋯ and × on the header; the route buttons; then the cache button').toEqual(['mode', 'close', 'retry', 'cold-2h'])
+  })
+
+  test(`ask: with a route band above, the ⋯ menu lists the rule options first, then the cache choices, then the band setting, paged (${surface})`, { timeoutMs: 30000, options: { raiseRule: 'raise automatically' } }, async ($, on) => {
+    // A raise has no 👍 or 👎 in the menu, so the first list is the rule's other two options, the way down, and the band setting.
+    const { h, d } = await coldSession($, on, { stored: { raiseRule: 'raise automatically' } })
+    await coldTurn(d, 't0')
+    h.rating = RAISE_HIGH
+    await d.submit(DEBUG)
+    await d.step('t1')
+    await d.complete('t1')
+    await h.advance(5 * MIN)
+    expect(await coldRow($)).toBe('Goes cold at 19:00 · coming back after costs about $0.63')
+    expect((await bandButtons($)).map(b => b[0]), '⋯ and × on the header, then the cache button').toEqual(['mode', 'close', 'cold-2h'])
+    expect((await openMenu($, h))[0]?.options, 'the rule options, then the cache choices, three to a page').toEqual(['Ask me each time', 'Never raise', 'Keep warm to 2:00 tomorrow ($0.13)', 'More…'])
   })
 
   test(`ask: with Groundwork installed the offer says Save a handoff, and the usual start time comes from the run log (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -6344,9 +6719,9 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.start(surface)
     await coldOffer(h, d, 't1')
     expect((await bandButtons($)).map(b => b[1])).toEqual(['Keep warm to 20:00 ($0.03)', '⋯', '×'])
-    const asks = await openMenu($, h, CACHE_MENU, 3)
-    expect(asks[1]?.options).toEqual(['Keep warm to 2:00 tomorrow ($0.13)', 'Keep warm to 8:30 tomorrow ($0.24)', 'Save a handoff', 'More…'])
-    expect(asks[2]?.options).toEqual(['Let it go cold', "Don't offer again"])
+    const asks = await openMenu($, h, CACHE_MENU, 2)
+    expect(asks[0]?.options).toEqual(['Keep warm to 2:00 tomorrow ($0.13)', 'Keep warm to 8:30 tomorrow ($0.24)', 'Save a handoff', 'More…'])
+    expect(asks[1]?.options).toEqual(['Let it go cold', "Don't offer again", 'When the band shows…'])
     expect(coldLog(h)).toContain('offered 2h, 8h, start')
   })
 
@@ -6388,7 +6763,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   test(`Don't offer again saves the row as yours, says where it is, and no profile offers again (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const { h, d } = await coldSession($, on)
     await coldOffer(h, d, 't1')
-    await openMenu($, h, { ...CACHE_MENU, 'More cache': "Don't offer again" }, 3)
+    await openMenu($, h, { ...CACHE_MENU, 'More options': "Don't offer again" }, 2)
     expect(last(h.sets)).toMatchObject({ key: 'rightsize.beforeCold', value: 'off' })
     expect(h.stored.beforeCold, 'written to settings.json as the person\'s own').toBe('off')
     expect(last(h.toasts)).toBe('Rightsize: Before the cache goes cold is now "off". It is the row in /config; set it back any time.')
@@ -6409,14 +6784,14 @@ for (const surface of ['desktop', 'terminal'] as const) {
   test(`Let it go cold closes the offer and does nothing; Compact now runs at once, while the cache is warm (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const { h, d } = await coldSession($, on)
     await coldOffer(h, d, 't1')
-    await openMenu($, h, { ...CACHE_MENU, 'More cache': 'Let it go cold' }, 3)
+    await openMenu($, h, { ...CACHE_MENU, 'More options': 'Let it go cold' }, 2)
     expect(await bandText($, surface)).toBe('')
     expect(NOTHING_DONE(h)).toEqual(NONE)
     expect(coldLog(h)).toContain('let it go cold')
     await coldOffer(h, d, 't2')
     // Let it go cold is the one button now (the choice picked most); Compact now is on the second page of the menu.
     expect((await bandButtons($)).map(b => b[1]).slice(0, 1)).toEqual(['Let it go cold'])
-    await openMenu($, h, { Options: 'More cache choices…', Cache: 'More…', 'More cache': 'Compact now' }, 3)
+    await openMenu($, h, { ...CACHE_MENU, 'More options': 'Compact now' }, 2)
     expect(h.compactions, 'right away').toBe(1)
     expect(await bandText($, surface)).toBe('Compacted while the cache was warm.')
     await h.advance(3 * HOUR)
@@ -6426,7 +6801,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   test(`Save a handoff from the offer submits "wrap up" at once, and the turn it starts does not bring the offer back (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const { h, d } = await coldSession($, on, { commands: GROUNDWORK })
     await coldOffer(h, d, 't1')
-    await openMenu($, h, { Options: 'More cache choices…', Cache: 'Save a handoff' }, 2)
+    await openMenu($, h, { Options: 'Save a handoff' }, 1)
     expect(h.submitted.map(s => s.text)).toEqual(['wrap up'])
     expect(await bandText($, surface)).toBe('Saved a handoff with Groundwork before the cache went cold.')
     expect(h.ratings, 'rightsize\'s own prompt is not rated').toBe(0)
@@ -6440,7 +6815,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.rating = NO_CHANGE
     await d.submit('continue')
     await coldOffer(h, d, 't3')
-    expect(await bandText($, surface)).toContain('Goes cold at ')
+    expect(await coldRow($), 'the offer is its own row under the prompt\'s').toContain('Goes cold at ')
   })
 
   test(`an offered keep-warm time starts at once and counts from the turn's end (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -6731,8 +7106,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
       'Goes cold at 18:05 · coming back after costs about $0.72. Keeping warm past 19:36 costs more.',
     )
     expect((await bandButtons($)).map(b => b[1]), 'one button').toEqual(['Keep warm to 18:30 ($0.21)', '⋯', '×'])
-    const asks = await openMenu($, h, { Options: 'More cache choices…' }, 2)
-    expect(asks.map(a => a.options), 'four choices fit one list').toEqual([['More cache choices…', 'When the band shows…'], ['Keep warm to 19:00 ($0.42)', 'Compact now', 'Let it go cold', "Don't offer again"]])
+    const asks = await openMenu($, h, { Options: 'More…' }, 2)
+    expect(asks.map(a => a.options), 'four choices and the band setting: three to a page, then the rest').toEqual([['Keep warm to 19:00 ($0.42)', 'Compact now', 'Let it go cold', 'More…'], ["Don't offer again", 'When the band shows…']])
   })
 
   const WARM8_5M = inProfile('Balanced', { beforeCold: 'keep warm 8 h' })
@@ -6876,24 +7251,79 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await bandText($, surface)).toBe('')
   })
 
-  test(`profiles: Quality keeps warm for 8 hours when the row is not set (${surface})`, { timeoutMs: 30000, options: inProfile('Quality').options }, async ($, on) => {
-    const { h, d } = await coldSession($, on, { stored: inProfile('Quality').stored })
+  const PROFILE_COLD = (profile: string) => ({ options: inProfile(profile).options, over: { stored: inProfile(profile).stored, unset: true } })
+
+  test(`profiles: Quality keeps warm for 8 hours when the row is not set (${surface})`, { timeoutMs: 30000, options: PROFILE_COLD('Quality').options }, async ($, on) => {
+    const { h, d } = await coldSession($, on, PROFILE_COLD('Quality').over)
     await coldTurn(d, 't1')
     expect(await bandText($, surface)).toBe('Keeping warm until 2:00 · nothing used yet')
     await h.advance(57 * MIN)
     expect(NOTHING_DONE(h)).toEqual({ forks: 1, submitted: 0, compactions: 0 })
   })
 
-  test(`profiles: Balanced asks when the row is not set (${surface})`, { timeoutMs: 30000, options: inProfile('Balanced').options }, async ($, on) => {
-    const { h, d } = await coldSession($, on, { stored: inProfile('Balanced').stored })
-    await coldOffer(h, d, 't1')
-    expect(await bandText($, surface)).toContain('Goes cold at 19:00')
-    await h.advance(3 * HOUR)
-    expect(NOTHING_DONE(h)).toEqual(NONE)
+  test(`profiles: Balanced keeps warm until your usual start when the row is not set: at once, with no question, at most 8 hours (${surface})`, { timeoutMs: 30000, options: PROFILE_COLD('Balanced').options }, async ($, on) => {
+    const { h, d } = await coldSession($, on, PROFILE_COLD('Balanced').over)
+    await coldTurn(d, 't1')
+    // 18:00: the usual start (9:00 with nothing in the log) is 15 hours away, so the 8-hour cap ends it.
+    expect(await bandText($, surface), 'no offer, no wait: it starts at the turn\'s end').toBe('Keeping warm until 2:00 · nothing used yet')
+    expect(await bandButtons($)).toEqual([['cold-stop', 'Stop keeping warm'], ['mode', '⋯'], ['close', '×']])
+    expect(h.asked, 'no question').toEqual([])
+    await h.advance(57 * MIN)
+    expect(NOTHING_DONE(h)).toEqual({ forks: 1, submitted: 0, compactions: 0 })
+    await h.advance(8 * HOUR)
+    expect(h.forks.length, 'eight in eight hours, none after the end').toBe(8)
+    expect(await bandText($, surface)).toBe('Kept the cache warm until 2:00 · $0.13.')
+    expect(coldLog(h)).toContain('keep warm ended at 2:00: 8 pings')
   })
 
-  test(`profiles: Economy asks when the row is not set (${surface})`, { timeoutMs: 30000, options: inProfile('Economy').options }, async ($, on) => {
-    const { h, d } = await coldSession($, on, { stored: inProfile('Economy').stored })
+  test(`profiles: Balanced keeps warm until your usual start when that is under 8 hours away, and the usual start comes from the run log (${surface})`, { timeoutMs: 30000, options: PROFILE_COLD('Balanced').options }, async ($, on) => {
+    const { h, d } = await coldSession($, on, PROFILE_COLD('Balanced').over)
+    // Six days whose first prompt was at 8:21, 8:22 ... 8:26: the median, 8:23.5, rounds to 8:30.
+    const day = (n: number) => JSON.stringify({ at: new Date(2027, 0, 15 - n, 9, 30).toISOString(), submittedAt: new Date(2027, 0, 15 - n, 8, 20 + n).toISOString(), kind: 'run' })
+    h.files[LEGACY_RUNS] = `${[1, 2, 3, 4, 5, 6].map(day).join('\n')}\n`
+    await d.start(surface)
+    h.now = new Date(2027, 0, 16, 4, 0, 0, 0).getTime()
+    await coldTurn(d, 't1')
+    expect(await bandText($, surface), '4:00: 4.5 hours to 8:30, under the 8-hour cap').toBe('Keeping warm until 8:30 · nothing used yet')
+    await h.advance(57 * MIN)
+    expect(h.forks.length).toBe(1)
+    await h.advance(6 * HOUR)
+    expect(h.forks.length, 'pings at 57-minute steps while the end time is ahead').toBe(4)
+    expect(coldLog(h)).toContain('keep warm ended at 8:30')
+  })
+
+  test(`profiles: Balanced's Stop keeping warm stops it, and Don't keep warm again in ⋯ turns the row off as yours (${surface})`, { timeoutMs: 30000, options: PROFILE_COLD('Balanced').options }, async ($, on) => {
+    const { h, d } = await coldSession($, on, PROFILE_COLD('Balanced').over)
+    await coldTurn(d, 't1')
+    await h.advance(57 * MIN)
+    await pressBand($, 'cold-stop')
+    expect(await bandText($, surface)).toBe('Stopped keeping warm · $0.02.')
+    await h.advance(4 * HOUR)
+    expect(h.forks.length, 'no more').toBe(1)
+    // Next turn: keeping warm starts again; Don't keep warm again is in the ⋯ menu.
+    await coldTurn(d, 't2')
+    expect(await bandText($, surface), 'it is 22:57: the 8-hour cap ends it at 6:57').toBe('Keeping warm until 6:57 · nothing used yet')
+    const asks = await openMenu($, h, { Options: "Don't keep warm again" })
+    expect(asks[0]?.options, 'the menu: the cache choice, and the band setting').toEqual(["Don't keep warm again", 'When the band shows…'])
+    expect(last(h.sets)).toMatchObject({ key: 'rightsize.beforeCold', value: 'off' })
+    expect(h.stored.beforeCold, 'the person\'s own now').toBe('off')
+    await h.advance(4 * HOUR)
+    expect(h.forks.length, 'and it stopped').toBe(1)
+  })
+
+  test(`profiles: Economy lets the cache go cold when the row is not set: no offer, no pings (${surface})`, { timeoutMs: 30000, options: PROFILE_COLD('Economy').options }, async ($, on) => {
+    const { h, d } = await coldSession($, on, PROFILE_COLD('Economy').over)
+    await coldTurn(d, 't1')
+    await h.advance(5 * MIN)
+    expect(await bandText($, surface)).toBe('')
+    expect(h.asked, 'no question').toEqual([])
+    await h.advance(9 * HOUR)
+    expect(NOTHING_DONE(h)).toEqual(NONE)
+    expect(h.afters, 'no timer was armed').toEqual([])
+  })
+
+  test(`profiles: the ask value still offers, for Balanced and Economy too, when the row is set to it (${surface})`, { timeoutMs: 30000, options: inProfile('Economy', { beforeCold: 'ask' }).options }, async ($, on) => {
+    const { h, d } = await coldSession($, on, { stored: inProfile('Economy', { beforeCold: 'ask' }).stored })
     await coldOffer(h, d, 't1')
     expect(await bandText($, surface)).toContain('Goes cold at 19:00')
     expect((await bandButtons($)).map(b => b[1])[0], 'the keep-warm offer').toMatch(/^Keep warm to /)
@@ -6937,13 +7367,13 @@ for (const surface of ['desktop', 'terminal'] as const) {
     // No run has shown the window rate yet: dollars, said to be API-equivalent.
     expect(await bandText($, surface)).toBe('Goes cold at 19:00 · coming back after costs about $0.63 API-equivalent')
     expect((await bandButtons($)).map(b => b[1]).slice(0, 1)).toEqual(['Keep warm to 20:00 (~$0.03)'])
-    expect((await openMenu($, h, { Options: 'More cache choices…' }, 2))[1]?.options.slice(0, 2)).toEqual(['Keep warm to 2:00 tomorrow (~$0.13)', 'Keep warm to 9:00 tomorrow (~$0.24)'])
+    expect((await openMenu($, h))[0]?.options.slice(0, 2)).toEqual(['Keep warm to 2:00 tomorrow (~$0.13)', 'Keep warm to 9:00 tomorrow (~$0.24)'])
     // 5% of the window for $1 of one turn, give or take a point: $0.63 is 2.5–3.8%, written in whole percent.
     h.files[LEGACY_RUNS] = `${JSON.stringify({ at: new Date(h.now).toISOString(), kind: 'run', actual: 1, before: { five_hour: 10 }, after: { five_hour: 15 } })}\n`
     await coldOffer(h, d, 't2')
     expect(await bandText($, surface)).toBe('Goes cold at 19:05 · coming back after costs ~3–4%')
     expect((await bandButtons($)).map(b => b[1]).slice(0, 1)).toEqual(['Keep warm to 20:05 (~0.1–0.2%)'])
-    expect((await openMenu($, h, { Options: 'More cache choices…' }, 2))[1]?.options.slice(0, 2)).toEqual(['Keep warm to 2:05 tomorrow (~0.5–0.8%)', 'Keep warm to 9:00 tomorrow (~1%)'])
+    expect((await openMenu($, h))[0]?.options.slice(0, 2)).toEqual(['Keep warm to 2:05 tomorrow (~0.5–0.8%)', 'Keep warm to 9:00 tomorrow (~1%)'])
     // Keeping warm says what it cost in the window too.
     await pressBand($, 'cold-2h')
     await h.advance(57 * MIN)
@@ -6970,7 +7400,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.files[LEGACY_RUNS] = `${[1, 2, 3, 4].map(day).join('\n')}\n`
     await d.start(surface)
     await coldOffer(h, d, 't1')
-    expect((await openMenu($, h, { Options: 'More cache choices…' }, 2))[1]?.options, 'four days: 9:00, not 6:00').toContain('Keep warm to 9:00 tomorrow ($0.24)')
+    expect((await openMenu($, h))[0]?.options, 'four days: 9:00, not 6:00').toContain('Keep warm to 9:00 tomorrow ($0.24)')
     expect(coldLog(h)).toContain('usual start 9:00 by default, 4 days of runs')
   })
 
@@ -6993,13 +7423,13 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(line, 'a cold line names the session and the choice, and nothing else but its time').toEqual({ at: expect.any(String), kind: 'cold', session: 'sess-1', choice: '2h' })
     // Keep warm until 2:00 tomorrow and Until the usual start, then the handoff, Let it go cold and Don't offer again, from the ⋯ menu.
     await coldOffer(h, d, 't2')
-    await openMenu($, h, { Options: 'More cache choices…', Cache: 'Keep warm to 2:05 tomorrow ($0.13)' }, 2)
+    await openMenu($, h, { Options: 'Keep warm to 2:05 tomorrow ($0.13)' }, 1)
     await coldOffer(h, d, 't3')
-    await openMenu($, h, { Options: 'More cache choices…', Cache: 'Save a handoff' }, 2)
+    await openMenu($, h, { Options: 'Save a handoff' }, 1)
     h.rating = NO_CHANGE
     await d.submit('continue')
     await coldOffer(h, d, 't4')
-    await openMenu($, h, { Options: 'More cache choices…', Cache: 'More…', 'More cache': 'Let it go cold' }, 3)
+    await openMenu($, h, { ...CACHE_MENU, 'More options': 'Let it go cold' }, 2)
     expect(coldChoices(h)).toEqual(['2h', '8h', 'handoff', 'let-go'])
   })
 
@@ -7047,11 +7477,10 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await coldOffer(h, d, 't1')
     expect(await bandButtons($), 'the one picked most').toEqual([['cold-8h', 'Keep warm to 2:00 tomorrow ($0.13)'], ['mode', '⋯'], ['close', '×']])
     expect(await bandText($, surface), 'the line is the same').toBe('Goes cold at 19:00 · coming back after costs about $0.63')
-    const asks = await openMenu($, h, { Options: 'More cache choices…', Cache: 'More…' }, 3)
+    const asks = await openMenu($, h, CACHE_MENU, 2)
     expect(asks.map(a => a.options), 'the others, in the fixed order, without the one on the row').toEqual([
-      ['More cache choices…', 'When the band shows…'],
       ['Keep warm to 20:00 ($0.03)', 'Keep warm to 9:00 tomorrow ($0.24)', 'Compact now', 'More…'],
-      ['Let it go cold', "Don't offer again"],
+      ['Let it go cold', "Don't offer again", 'When the band shows…'],
     ])
     await pressBand($, 'cold-8h')
     expect(await bandText($, surface)).toBe('Keeping warm until 2:00 · nothing used yet')
@@ -7177,8 +7606,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await bandText($, surface)).toBe('Stop offering to keep the cache warm?')
     expect((await bandButtons($)).map(b => b[1])).toEqual(['Yes', 'No', '⋯', '×'])
     // The menu still has every choice, the one that would have been the button too.
-    const asks = await openMenu($, h, { Options: 'More cache choices…', Cache: 'More…' }, 3)
-    expect(asks[1]?.options.slice(0, 2)).toEqual(['Keep warm to 6:25 ($0.03)', 'Keep warm to 12:25 ($0.13)'])
+    const asks = await openMenu($, h, CACHE_MENU, 2)
+    expect(asks[0]?.options.slice(0, 2)).toEqual(['Keep warm to 6:25 ($0.03)', 'Keep warm to 12:25 ($0.13)'])
     await pressBand($, 'cold-ask-yes')
     expect(last(h.sets)).toMatchObject({ key: 'rightsize.beforeCold', value: 'off' })
     expect(h.stored.beforeCold).toBe('off')
@@ -7201,7 +7630,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await h.advance(2 * HOUR)
     await coldOffer(h, d, 't3')
     expect(await bandText($, surface)).toContain('Goes cold')
-    expect(h.stored.beforeCold).toBeUndefined()
+    expect(h.stored.beforeCold, 'still the person\'s ask').toBe('ask')
   })
 
   test(`4 ignored offers, or 5 with an answer among them, ask nothing (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -7245,12 +7674,12 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.paneCloses).toEqual([])
     const status = (await d.command('status')).text ?? ''
     expect(status.startsWith('Profile: Balanced')).toBe(true)
-    expect(status).toContain('All 29 settings are at their defaults')
+    expect(status).toContain(`All ${KEYS.length} settings are at their defaults`)
     expect(status.endsWith('Commands: /rightsize help')).toBe(true)
     expect(h.paneOpens.length, 'status opens no pane').toBe(1)
   })
 
-  test(`the pane lists every row of the settings table in order, Profile first, the Advanced ones under a heading, each with its value (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`the pane lists every row of the settings table in order, Profile and Mode first, the Advanced ones under a heading, each with its value (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const { d } = await start($, on)
     await d.command('')
     const ui = await mountPane($, surface)
@@ -7265,9 +7694,10 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const order = await drawn(ui)
     expect(order[0], 'the keys, above the rows').toContain('Tab: next setting · ↑↓: choose a value · Enter: set · Esc: close.')
     expect(order.indexOf('row-profile'), 'Profile first, above the heading').toBe(1)
-    expect(order[2], 'the heading').toBe('Advanced')
+    expect(order.indexOf('row-mode'), 'Mode second, above the heading: it is not an Advanced row').toBe(2)
+    expect(order[3], 'the heading').toBe('Advanced')
     expect(order.filter(x => x === 'Advanced').length).toBe(1)
-    expect(order.slice(3), 'the Advanced rows follow it, in order').toEqual(KEYS.slice(1).map(k => `row-${k}`))
+    expect(order.slice(4), 'the Advanced rows follow it, in order').toEqual(KEYS.slice(2).map(k => `row-${k}`))
     await ui.unmount()
   })
 
@@ -7348,15 +7778,15 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await ui.unmount()
   })
 
-  const BAND_PAGE = [...Array<string>(7).fill('More…'), 'Band: when it acts']
+  const BAND_PAGE = [...Array<string>(8).fill('More…'), 'Band: when it acts']
   test(`with no pane placed it asks instead: pick a row shown as Row: value (paged), pick its value, back to the rows, until Done (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const { h, d } = await start($, on)
     h.panePlaced = false
     h.answerQueue = { Setting: ['More…', 'Done'], 'More rows': BAND_PAGE, Value: ['off'] }
     const r = (await d.command('')).text ?? ''
     expect(h.paneCloses, 'the unplaced pane is closed, not left open').toEqual([PANE_ID])
-    expect(h.asked[0]?.options, 'Done first, then the rows as Row: value, three to a page').toEqual(['Done', 'Profile: Balanced', 'Lowest effort: low', 'More…'])
-    expect(h.asked[1]?.options).toEqual(['Highest effort: max', 'Lowering: not set', 'Raising: not set', 'More…'])
+    expect(h.asked[0]?.options, 'Done first, then the rows as Row: value, three to a page').toEqual(['Done', 'Profile: Balanced', 'Mode: act', 'More…'])
+    expect(h.asked[1]?.options).toEqual(['Lowest effort: low', 'Highest effort: max', 'Lowering: not set', 'More…'])
     const value = h.asked.find(a => a.options.includes('off (current)') || a.options.includes('when it acts (current)'))
     expect(value?.options, 'the values of the row, the current one marked').toEqual(['when it acts (current)', 'always', 'off'])
     expect(value?.question).toContain('Band: now when it acts (default)')

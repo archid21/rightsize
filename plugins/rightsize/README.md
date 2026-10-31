@@ -102,7 +102,7 @@ A row you set under Advanced replaces what the profile supplies for it: **Hand-o
 
 ## Commands and settings
 
-- `/rightsize` opens a settings pane that lists every setting in `/config` with its value (Profile first, then Mode, then the Advanced ones). A row you set is marked `(yours)`, one you have not `(default)`. A pick takes effect at once. Where no pane can be drawn, or on the mobile app, it asks instead.
+- `/rightsize` opens a settings pane that lists every setting in `/config` with its value (Profile first, then Mode, Routing, Hand-offs and Cache, then the Advanced ones). A row you set is marked `(yours)`, one you have not `(default)`. A pick takes effect at once. Where no pane can be drawn, or on the mobile app, it asks instead.
 - `/rightsize status` shows your profile on its first line, the settings you changed, what your profile and settings add up to, the session switch, the measured runs and the cache-switch results. When Share is on it shows your install ID.
 - `/rightsize help` lists every command. `/rightsize share` prints a message you can paste to tell others about rightsize; it sends nothing.
 - `/rightsize report` shows what rightsize did, as plain text in the terminal and as Markdown in the desktop app. Sections, left out when empty: a headline for the last 30 days; a table for this session, 7 days and 30 days (Total saved after rating costs, window shares on a subscription as ranges, share of cost saved, Extra spent on harder prompts, then what was kept, lowered, raised and sent); Watch only (when Mode is watch only: how many prompts would have changed and the estimated saving); Starting point; Fixed context (the tokens every request carries, largest part first); Accuracy (miss rate, spot-checks, paused hand-downs, estimate error); Not counted as savings; Keep warm; Time (per task: Claude's time, time to done, the rating's delay, cheaper routes against staying; reported, never used to choose a route); Whole tasks (from 5 finished tasks); Next steps; and a footer. Savings are estimates against the baseline, can be negative, and on a subscription dollar amounts are API-equivalent: what the same use would cost on the API, not your bill. The footer also shows how Share anonymous feedback is set.
@@ -110,9 +110,12 @@ A row you set under Advanced replaces what the profile supplies for it: **Hand-o
 - `/rightsize reset` asks what to reset (Settings, Cost measurement, Both or Cancel) and confirms. `/rightsize reset <setting>` resets one, named by key (`handOff`) or title.
 - `/mods` turns the mod on or off.
 - Changing settings: in a terminal, `/config` applies a change at once. The desktop app has no `/config` menu: change settings from a terminal (`echo '{"handOff":"60%"}' | claude plugin configure rightsize@archid21 --values-stdin`), then quit the app and reopen it.
-- `/config`, then rightsize. Every row is a picker. Every row except Profile and Mode is titled "Advanced · ..." in `/config`; the list gives the name.
+- `/config`, then rightsize. Every row is a picker. Every row except Profile, Mode, Routing, Hand-offs and Cache is titled "Advanced · ..." in `/config`; the list gives the name.
   - **Profile** (Quality, Balanced or Economy, default Balanced): how much evidence a cheaper route needs; what the four cases do while their rows are not set. See **Profiles**.
   - **Mode** (act or watch only, default act): watch only rates and plans every prompt, applies nothing, and the band says what it would have done. Use it for a week to see rightsize's calls on your own work.
+  - **Routing** (on or off, default on): effort changes on your main chat (lowering, raising, a session switch), the review switch to Opus for one turn, and raising effort mid-turn when Claude looks stuck. Off: none of those, and **Raise when stuck** is not used. With Routing and Hand-offs both off, no prompt is rated and nothing is spent on rating.
+  - **Hand-offs** (on or off, default on): handing work to a helper subagent, and moving Claude's own subagents to a cheaper model. Off: neither; with Routing on, an effort change takes the place of a hand-off. With Routing and Hand-offs both off, no prompt is rated and nothing is spent on rating.
+  - **Cache** (on or off, default on): keep warm, the cache offer, a handoff or compaction before the cache goes cold, and the idle warning. Off: none of those, a keep-warm run stops at once, and **Idle warning** and **Before the cache goes cold** are not used.
   - **Lowest effort** (low, medium or high, default low): how far rightsize lowers.
   - **Highest effort** (high, xhigh or max, default max): never raises above it: not for a prompt, not mid-turn, not for a helper. A model whose rated level is above it gets no route (a review still runs on Opus, at this level at most). A level you are already on above it is left alone.
   - **Lowering** (ask me, lower automatically, never lower or not set, default not set): not set means your profile decides.
@@ -146,7 +149,7 @@ Every row in full, with the profile table: [docs/SETTINGS.md](../../docs/SETTING
 
 ## Turn it off or remove it
 
-- `/mods` pauses it; `/config` turns off single features.
+- `/mods` pauses it; `/config` turns off single features: **Routing**, **Hand-offs** and **Cache** each switch one off (with Routing and Hand-offs both off, no prompt is rated).
 - `claude plugin disable rightsize@archid21` stops it loading and keeps its settings and learning; `claude plugin enable rightsize@archid21` brings it back.
 - `claude plugin uninstall rightsize@archid21` removes it and the settings saved in `/config`. Its stored data and logs stay on disk: `rm -r ~/.claude/plugins/store/rightsize_*.json ~/.claude/mods-logs/rightsize*` deletes them. If sharing was on, copy your install ID from `/rightsize status` first and email rightsize@aivalue.blog to have shared data deleted.
 

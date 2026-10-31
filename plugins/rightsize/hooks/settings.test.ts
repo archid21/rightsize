@@ -36,7 +36,7 @@ import {
 const set = (...keys: SettingKey[]) => new Set<SettingKey>(keys)
 
 test('every row is a picker: a title, two or more options, and a default among them', async () => {
-  expect(KEYS.length).toBe(30)
+  expect(KEYS.length).toBe(33)
   for (const k of KEYS) {
     const row = SETTINGS[k]
     expect(row.title.length, k).toBeGreaterThan(0)
@@ -237,9 +237,24 @@ test('Mode is the second row: act or watch only, act by default, a plain row wit
   expect(valueOf('mode', 'off'), 'not an option: act').toBe('act')
 })
 
-test('every other row is titled Advanced, so /config lists the profile and mode first and the rest as advanced', async () => {
+test('Routing, Hand-offs and Cache are rows 3 to 5: on or off, on by default, plain rows without the Advanced prefix', async () => {
+  expect(KEYS.slice(0, 5)).toEqual(['profile', 'mode', 'routing', 'handOffs', 'cache'])
+  const titles = { routing: 'Routing', handOffs: 'Hand-offs', cache: 'Cache' } as const
+  for (const [k, title] of Object.entries(titles) as [keyof typeof titles, string][]) {
+    expect(SETTINGS[k].title).toBe(title)
+    expect([...SETTINGS[k].options], k).toEqual(['on', 'off'])
+    expect(SETTINGS[k].default, k).toBe('on')
+    expect(plainTitle(SETTINGS[k].title), k).toBe(title)
+    expect(settingNamed(title), `${k} by title`).toBe(k)
+    expect(settingNamed(k), `${k} by key`).toBe(k)
+    expect(valueOf(k, 'maybe'), `${k}: not an option, on`).toBe('on')
+  }
+  expect(settingNamed('hand-off threshold'), 'the threshold row keeps its own name').toBe('handOff')
+})
+
+test('every other row is titled Advanced, so /config lists the five plain rows first and the rest as advanced', async () => {
   expect(ADVANCED).toBe('Advanced · ')
-  for (const k of KEYS.filter(k => k !== 'profile' && k !== 'mode')) {
+  for (const k of KEYS.filter(k => !['profile', 'mode', 'routing', 'handOffs', 'cache'].includes(k))) {
     expect(SETTINGS[k].title.startsWith(ADVANCED), k).toBe(true)
     expect(plainTitle(SETTINGS[k].title).length, `${k} has a title after the prefix`).toBeGreaterThan(0)
   }

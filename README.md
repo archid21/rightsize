@@ -59,7 +59,7 @@ rightsize keeps questions off your prompt. What it asks, and when:
 | A rule you set to "ask" | That question, before the prompt runs, with a 30-second wait | Dialog |
 | Claude gets stuck, a workflow starts, or no rate limit shows how you pay | One question each, on the band; the work does not wait | Band |
 
-Change any of it in `/config` (Profile and Mode first; the rest are Advanced) or with `/rightsize settings`, which still asks the four questions for anyone who prefers to set rules that way.
+Change any of it in `/config` (Profile, Mode, Routing, Hand-offs and Cache first; the rest are Advanced) or with `/rightsize settings`, which still asks the four questions for anyone who prefers to set rules that way.
 
 ## Profiles
 
@@ -90,10 +90,13 @@ The rules in full, with every number and default: [docs/HOW-IT-DECIDES.md](docs/
 
 ## Commands and settings
 
-Every row below is a picker in `/config`. Every row except Profile and Mode is titled "Advanced · ..." there. Options and defaults are those of the plugin; the full text of each row is in [docs/SETTINGS.md](docs/SETTINGS.md).
+Every row below is a picker in `/config`. Every row except Profile, Mode, Routing, Hand-offs and Cache is titled "Advanced · ..." there. Options and defaults are those of the plugin; the full text of each row is in [docs/SETTINGS.md](docs/SETTINGS.md).
 
 - **Profile** (Quality, Balanced or Economy, default Balanced): how much evidence a cheaper route needs, and what the four cases do while their rows are not set.
 - **Mode** (act or watch only, default act): watch only rates and plans every prompt, applies nothing, and the band and report say what it would have done.
+- **Routing** (on or off, default on): effort changes on your main chat, the review switch to Opus and raises when Claude looks stuck. Off: none of those. With Routing and Hand-offs both off, no prompt is rated.
+- **Hand-offs** (on or off, default on): handing work to a helper subagent, and moving Claude's own subagents to a cheaper model. Off: neither. With Routing and Hand-offs both off, no prompt is rated.
+- **Cache** (on or off, default on): keep warm, the cache offer, a handoff or compaction before the cache goes cold, and the idle warning. Off: none of those.
 - **Lowest effort** (low, medium or high, default low): how far rightsize lowers effort.
 - **Highest effort** (high, xhigh or max, default max): the most it raises to, for a prompt, mid-turn and for a helper.
 - **Lowering** (ask me, lower automatically, never lower or not set, default not set): the rule for a prompt that needs less effort. Not set: your profile decides.
@@ -133,7 +136,7 @@ Logs stay on your machine. Nothing is sent to the author unless you turn **Share
 
 ## Turn it off or remove it
 
-- `/mods` pauses it. `claude plugin disable rightsize@archid21` keeps your settings and what it learned.
+- `/mods` pauses it. In `/config`, **Routing**, **Hand-offs** and **Cache** each turn one feature off. `claude plugin disable rightsize@archid21` keeps your settings and what it learned.
 - `claude plugin uninstall rightsize@archid21` removes it. `rm -r ~/.claude/plugins/store/rightsize_*.json ~/.claude/mods-logs/rightsize*` deletes its data. If Share was on, copy your install ID from `/rightsize status` first; see [docs/PRIVACY.md](docs/PRIVACY.md).
 
 ## Update

@@ -3,11 +3,11 @@
 //   node scripts/check-settings.mjs
 //
 // Plugin tests cannot read files (they run with no fs), so this is the check that can:
-//   - plugin.json: each row is a string picker with a title, a description, a default and options. Profile is first and Mode second; the others are titled "Advanced · ...".
+//   - plugin.json: each row is a string picker with a title, a description, a default and options. Profile is first, Mode second and Routing, Hand-offs and Cache third to fifth; the others are titled "Advanced · ...".
 //   - hooks/settings.ts: each row has an entry with the same title, default and (when written out) options.
 //   - hooks/register.tsx: each row has a `case '<key>'` in applyOption, the parse that applies it.
 //   - README.md: each row's title is in the `/config` list under "Commands and settings" (a bullet that opens with a bold title).
-//     Every row but Profile and Mode is titled "Advanced · <name>" in /config; the list gives the name, under its note that the rest are Advanced.
+//     Every row but the five plain ones (Profile, Mode, Routing, Hand-offs, Cache) is titled "Advanced · <name>" in /config; the list gives the name, under its note that the rest are Advanced.
 //   - plugins/rightsize/README.md: each row's title is in its `/config` list.
 //   - hooks/register.test.ts: each row has a scenario that names its key.
 // It exits 1 and lists everything missing.
@@ -43,10 +43,13 @@ const problems = []
 const fail = (key, what) => problems.push(`${key}: ${what}`)
 const rows = Object.entries(manifest.userConfig ?? {})
 if (rows.length === 0) problems.push('plugin.json declares no userConfig rows')
-// /config has no row groups: Profile comes first, Mode second, and every other row is titled "Advanced · ...".
-const PLAIN = ['profile', 'mode']
+// /config has no row groups: Profile comes first, Mode second, the three feature switches (Routing, Hand-offs, Cache) third to fifth, and every other row is titled "Advanced · ...".
+const PLAIN = ['profile', 'mode', 'routing', 'handOffs', 'cache']
 if (rows[0]?.[0] !== 'profile') problems.push(`profile: not the first row of plugin.json (it is ${rows[0]?.[0]})`)
 if (rows[1]?.[0] !== 'mode') problems.push(`mode: not the second row of plugin.json (it is ${rows[1]?.[0]})`)
+for (const [i, key] of [[2, 'routing'], [3, 'handOffs'], [4, 'cache']]) {
+  if (rows[i]?.[0] !== key) problems.push(`${key}: not row ${i + 1} of plugin.json (it is ${rows[i]?.[0]})`)
+}
 for (const [key, row] of rows) if (!PLAIN.includes(key) && !String(row.title).startsWith('Advanced · ')) fail(key, `title ${JSON.stringify(row.title)} does not start with "Advanced · "`)
 
 // `  key: { title: 'T', options: ['a', 'b'], default: 'a' },` as written in settings.ts.

@@ -2,7 +2,7 @@
 
 Every row is a picker in `/config` (rightsize section). In a terminal session a change applies at once. In the desktop app there is no `/config` menu: change values from a terminal (`echo '{"handOff":"60%"}' | claude plugin configure rightsize@archid21 --values-stdin`), then quit the app and reopen it. `/rightsize` opens the same list as a pane, and `/rightsize reset <key>` resets one row by its key.
 
-**Profile** is the first row and **Mode** the second. Every other row is titled "Advanced · ..." in `/config`; the names below leave that off. **Your setting wins:** a row you set always beats what your profile supplies for it, and automatic behavior (pacing, the profile) acts only on rows you left alone. Rows marked "not set" mean your profile decides.
+**Profile** is the first row, **Mode** the second, and **Routing**, **Hand-offs** and **Cache** the third to fifth: each of these three turns one feature on or off. Every other row is titled "Advanced · ..." in `/config`; the names below leave that off. **Your setting wins:** a row you set always beats what your profile supplies for it, and automatic behavior (pacing, the profile) acts only on rows you left alone. Rows marked "not set" mean your profile decides.
 
 ## Profiles
 
@@ -28,7 +28,7 @@ An "ask" answer opens its own timed dialog (see **Question wait**); every other 
 - Key: `profile`
 - Options: Quality · Balanced · Economy
 - Default: Balanced
-- How much evidence rightsize needs before it picks a cheaper route, and what each of the four cases does while its rule row is not set (the profile decides; nothing asks). Quality: cheaper routes only with strong evidence (at least 10 logged tasks of that kind on that route, under 10% misses, and the route under 50% of staying), asks before lowering effort or using a cheaper model, gives a struggling helper 1 retry, keeps a big session's cache warm for 8 hours. Balanced (default): a cheaper route when the rating says it fits and it is under 70% of staying; pauses a kind of work at 20% misses; 2 retries; lowers, raises, switches and hands off without asking; keeps the cache warm until your usual start time (at most 8 hours). Economy: cheaper routes on fit alone, under 85% of staying, paused only at 30% misses; 3 retries; stays on your model and raises effort instead of a stronger model; reviews on Opus stop at high effort; lets the cache go cold. A profile also sets how often Sonnet checks Haiku's ratings (every 10, 20 or 30). Every row below is Advanced: a row you set always wins over the profile.
+- How much evidence rightsize needs before it picks a cheaper route, and what each of the four cases does while its rule row is not set (the profile decides; nothing asks). Quality: cheaper routes only with strong evidence (at least 10 logged tasks of that kind on that route, under 10% misses, and the route under 50% of staying), asks before lowering effort or using a cheaper model, gives a struggling helper 1 retry, keeps a big session's cache warm for 8 hours. Balanced (default): a cheaper route when the rating says it fits and it is under 70% of staying; pauses a kind of work at 20% misses; 2 retries; lowers, raises, switches and hands off without asking; keeps the cache warm until your usual start time (at most 8 hours). Economy: cheaper routes on fit alone, under 85% of staying, paused only at 30% misses; 3 retries; stays on your model and raises effort instead of a stronger model; reviews on Opus stop at high effort; lets the cache go cold. A profile also sets how often Sonnet checks Haiku's ratings (every 10, 20 or 30). Every Advanced row below is yours to set: a row you set always wins over the profile.
 
 ### Mode
 
@@ -36,6 +36,27 @@ An "ask" answer opens its own timed dialog (see **Question wait**); every other 
 - Options: act · watch only
 - Default: act
 - act (default): rightsize changes effort, switches reviews to Opus and hands work to helpers as your profile and rules say. watch only: it rates and plans every prompt, applies nothing, and the band says what it would have done; /rightsize report sums what that would have saved. Use it for a week to see rightsize's calls on your own work before turning it on.
+
+### Routing
+
+- Key: `routing`
+- Options: on · off
+- Default: on
+- on (default): rightsize changes effort on your main chat (lowering for easy prompts, raising for hard ones, a session switch you pick), runs a review on Opus for one turn, and raises effort mid-turn when Claude looks stuck, as your profile and rules say. off: none of those happen; your effort and model stay as you set them. With Routing and Hand-offs both off, rightsize rates no prompt and spends nothing on rating (the cache features still work). A row below that belongs to Routing, such as Raise when stuck, is then not used.
+
+### Hand-offs
+
+- Key: `handOffs`
+- Options: on · off
+- Default: on
+- on (default): rightsize hands work to a helper subagent (a cheaper model for routine work, a stronger one for hard work) that your main chat briefs and checks, and runs Claude's own subagents on the cheapest model that fits. off: no hand-offs, and Claude's subagents stay on their model; when Routing is on, an effort change replaces the hand-off. With Routing and Hand-offs both off, rightsize rates no prompt and spends nothing on rating (the cache features still work).
+
+### Cache
+
+- Key: `cache`
+- Options: on · off
+- Default: on
+- on (default): rightsize keeps an eye on the prompt cache: the offer to keep it warm, keep warm itself, a handoff or a compaction before it goes cold, and the idle warning when you return to a cold cache. off: none of those; a keep-warm run in progress stops at once. The rows Idle warning and Before the cache goes cold fine-tune it while Cache is on, and are not used while it is off.
 
 ### Lowest effort
 

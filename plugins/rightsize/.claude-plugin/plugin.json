@@ -12,7 +12,7 @@
     "profile": {
       "type": "string",
       "title": "Profile",
-      "description": "How much evidence rightsize needs before it picks a cheaper route, and what each of the four cases does while its rule row is not set (the profile decides; nothing asks). Quality: cheaper routes only with strong evidence (at least 10 logged tasks of that kind on that route, under 10% misses, and the route under 50% of staying), asks before lowering effort or using a cheaper model, gives a struggling helper 1 retry, keeps a big session's cache warm for 8 hours. Balanced (default): a cheaper route when the rating says it fits and it is under 70% of staying; pauses a kind of work at 20% misses; 2 retries; lowers, raises, switches and hands off without asking; keeps the cache warm until your usual start time (at most 8 hours). Economy: cheaper routes on fit alone, under 85% of staying, paused only at 30% misses; 3 retries; stays on your model and raises effort instead of a stronger model; reviews on Opus stop at high effort; lets the cache go cold. A profile also sets how often Sonnet checks Haiku's ratings (every 10, 20 or 30). Every row below is Advanced: a row you set always wins over the profile.",
+      "description": "How much evidence rightsize needs before it picks a cheaper route, and what each of the four cases does while its rule row is not set (the profile decides; nothing asks). Quality: cheaper routes only with strong evidence (at least 10 logged tasks of that kind on that route, under 10% misses, and the route under 50% of staying), asks before lowering effort or using a cheaper model, gives a struggling helper 1 retry, keeps a big session's cache warm for 8 hours. Balanced (default): a cheaper route when the rating says it fits and it is under 70% of staying; pauses a kind of work at 20% misses; 2 retries; lowers, raises, switches and hands off without asking; keeps the cache warm until your usual start time (at most 8 hours). Economy: cheaper routes on fit alone, under 85% of staying, paused only at 30% misses; 3 retries; stays on your model and raises effort instead of a stronger model; reviews on Opus stop at high effort; lets the cache go cold. A profile also sets how often Sonnet checks Haiku's ratings (every 10, 20 or 30). Every Advanced row below is yours to set: a row you set always wins over the profile.",
       "default": "Balanced",
       "options": [
         "Quality",
@@ -28,6 +28,36 @@
       "options": [
         "act",
         "watch only"
+      ]
+    },
+    "routing": {
+      "type": "string",
+      "title": "Routing",
+      "description": "on (default): rightsize changes effort on your main chat (lowering for easy prompts, raising for hard ones, a session switch you pick), runs a review on Opus for one turn, and raises effort mid-turn when Claude looks stuck, as your profile and rules say. off: none of those happen; your effort and model stay as you set them. With Routing and Hand-offs both off, rightsize rates no prompt and spends nothing on rating (the cache features still work). A row below that belongs to Routing, such as Raise when stuck, is then not used.",
+      "default": "on",
+      "options": [
+        "on",
+        "off"
+      ]
+    },
+    "handOffs": {
+      "type": "string",
+      "title": "Hand-offs",
+      "description": "on (default): rightsize hands work to a helper subagent (a cheaper model for routine work, a stronger one for hard work) that your main chat briefs and checks, and runs Claude's own subagents on the cheapest model that fits. off: no hand-offs, and Claude's subagents stay on their model; when Routing is on, an effort change replaces the hand-off. With Routing and Hand-offs both off, rightsize rates no prompt and spends nothing on rating (the cache features still work).",
+      "default": "on",
+      "options": [
+        "on",
+        "off"
+      ]
+    },
+    "cache": {
+      "type": "string",
+      "title": "Cache",
+      "description": "on (default): rightsize keeps an eye on the prompt cache: the offer to keep it warm, keep warm itself, a handoff or a compaction before it goes cold, and the idle warning when you return to a cold cache. off: none of those; a keep-warm run in progress stops at once. The rows Idle warning and Before the cache goes cold fine-tune it while Cache is on, and are not used while it is off.",
+      "default": "on",
+      "options": [
+        "on",
+        "off"
       ]
     },
     "floor": {

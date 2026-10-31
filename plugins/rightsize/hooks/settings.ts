@@ -8,7 +8,8 @@ import { DEFAULT_RULES, MISS_BLOCK, parseShare } from './cost'
 // values are yours. Claude Code hands the module every value with defaults filled
 // in, so it cannot tell them apart; it reads them off settings.json instead, and
 // follows the changes made in /config. The first row, Profile, supplies the defaults of a few of
-// the others (PROFILES); the rest are Advanced, as their titles say, since /config has no groups.
+// the others (PROFILES). Mode and the three feature switches (Routing, Hand-offs, Cache) follow it as plain rows; the
+// rest are Advanced, as their titles say, since /config has no groups.
 // Pure functions, no engine calls.
 
 type Spec = { title: string; options: readonly string[]; default: string }
@@ -31,6 +32,9 @@ export const RULE_KEYS = { lower: 'lowerRule', raise: 'raiseRule', up: 'upRule',
 export const SETTINGS = {
   profile: { title: 'Profile', options: ['Quality', 'Balanced', 'Economy'], default: 'Balanced' },
   mode: { title: 'Mode', options: ['act', 'watch only'], default: 'act' },
+  routing: { title: 'Routing', options: ['on', 'off'], default: 'on' },
+  handOffs: { title: 'Hand-offs', options: ['on', 'off'], default: 'on' },
+  cache: { title: 'Cache', options: ['on', 'off'], default: 'on' },
   floor: { title: 'Advanced · Lowest effort', options: ['low', 'medium', 'high'], default: 'low' },
   ceiling: { title: 'Advanced · Highest effort', options: ['high', 'xhigh', 'max'], default: 'max' },
   lowerRule: { title: 'Advanced · Lowering', options: ruleOptions('lower'), default: NOT_SET },
@@ -61,7 +65,7 @@ export const SETTINGS = {
   priceCheck: { title: 'Advanced · Price check', options: ['monthly', 'off'], default: 'monthly' },
 } as const satisfies Record<string, Spec>
 
-/** Every row but Profile is titled with this prefix, so /config lists Profile first and the rest as Advanced. */
+/** Every row but the first five (Profile, Mode, Routing, Hand-offs, Cache) is titled with this prefix, so /config lists those first and the rest as Advanced. */
 export const ADVANCED = 'Advanced · '
 /** The row's title without the prefix: what /rightsize and its messages call it. */
 export const plainTitle = (title: string) => (title.startsWith(ADVANCED) ? title.slice(ADVANCED.length) : title)

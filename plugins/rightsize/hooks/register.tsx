@@ -456,6 +456,15 @@ let answers = PROFILES.Balanced.answers
 let reviewCeiling: Level = PROFILES.Balanced.reviewCeiling
 /** Mode: watch only rates and plans every prompt, applies nothing, and says what it would have done. */
 let watching = false
+/**
+ * The three feature switches (Routing, Hand-offs, Cache), on unless the row says off. Routing: effort changes on the main chat,
+ * the review switch to Opus and mid-turn raises. Hand-offs: a helper subagent, and right-sizing Claude's own subagents.
+ * Cache: keep warm, the cold offer, what runs before the cache goes cold, and the idle warning. With Routing and Hand-offs
+ * both off no prompt is rated.
+ */
+let routing = true
+let handOffs = true
+let cacheOn = true
 /** The cases the profile decided for the prompt being rated (no rule set), and those the band has already said so for this session. */
 let profileChose: (keyof Choices)[] = []
 const profileNoted = new Set<keyof Choices>()
@@ -484,6 +493,8 @@ const paceText = (acts: boolean, moved?: { from: Rules; to: Rules }) => {
 }
 /** Raise effort mid-turn when the turn shows it is struggling. */
 let escalation = true
+/** A stuck turn is raised: Raise when stuck is on, and so is Routing. */
+const raising = () => escalation && routing
 /** Days between suggestions of a different starting model and level; null: off. */
 let startEvery: number | null = START_CHECK_DAYS.weekly
 /** Ask Sonnet for a second opinion on every this many Haiku ratings, in the background; null: off. */
@@ -757,6 +768,9 @@ async function sessionEffort($: EngineInterface) {
   const v = (await $.state.get({ plugin: 'rightsize', key: 'sessionEffort' }).catch(() => undefined))?.value
   return isLevel(v) ? v : null
 }
+
+/** The session switch in force: none while Routing is off (a switch made earlier is left stored, and applies again when Routing is back on). */
+const sessionEffortInUse = async ($: EngineInterface) => (routing ? sessionEffort($) : null)
 
 async function seenEffort($: EngineInterface) {
   const v = (await $.state.get({ plugin: 'rightsize', key: 'seenEffort' }).catch(() => undefined))?.value
@@ -1121,6 +1135,9 @@ function writeSetting($: EngineInterface, key: SettingKey, value: string): Promi
   switch (key) {
     case 'profile': return $.config.set({ key: 'rightsize.profile', value: value })
     case 'mode': return $.config.set({ key: 'rightsize.mode', value: value })
+    case 'routing': return $.config.set({ key: 'rightsize.routing', value: value })
+    case 'handOffs': return $.config.set({ key: 'rightsize.handOffs', value: value })
+    case 'cache': return $.config.set({ key: 'rightsize.cache', value: value })
     case 'floor': return $.config.set({ key: 'rightsize.floor', value: value })
     case 'ceiling': return $.config.set({ key: 'rightsize.ceiling', value: value })
     case 'lowerRule': return $.config.set({ key: 'rightsize.lowerRule', value: value })
@@ -1286,7 +1303,7 @@ async function situation($: EngineInterface): Promise<Situation> {
     tier = 'opus'
     await log($, `session model unknown (live ${JSON.stringify(live ?? null)}, seen ${JSON.stringify(seen ?? null)}, no usable model setting): planned as Opus`)
   }
-  let level = (await sessionEffort($)) ?? (await seenEffort($))
+  let level = (await sessionEffortInUse($)) ?? (await seenEffort($))
   if (!level) {
     const set = await $.settings.read({ key: 'effortLevel' }).catch(() => undefined)
     level = isLevel(set) ? set : DEFAULT_LEVEL[tier]
@@ -1465,7 +1482,7 @@ async function askRater($: EngineInterface, model: Rater, tier: Tier, level: Lev
 // so they are left as they are; so are forks, resumes and teammates, and workflow agents
 // unless Workflows says to right-size every agent.
 async function sizeSpawn($: EngineInterface, e: AgentSpawnInput, run: Run | null) {
-  if (off || subagentMode === 'off') return undefined
+  if (off || !handOffs || subagentMode === 'off') return undefined
   if (e.parentAgentId !== undefined || e.fork || e.isTeammate || e.resume) return undefined
   if (e.workflow && workflows !== 'right-size every agent') return undefined
   if (e.subagentType !== 'general-purpose' || (e.model !== undefined && e.model !== 'inherit')) return undefined
@@ -1494,6 +1511,21 @@ const bandCost = (d: number, stay: number, cur: string) =>
   billing === 'api' ? `${money(d)} vs ~${money(stay)} on ${cur}.` : `${usageVs(d, stay, cur)}.`
 
 type Decision = { level?: Level; session?: Level; auto?: boolean; delegate?: Run['delegate']; model?: Run['switchTo'] }
+
+/** The effort-only plan a hand-off falls back to (Workflows, Hand-offs off, a declined question): nothing while Routing is off. */
+const effortOnly = (r: Rating, s: Situation): Plan => (routing ? effortPlan(r, s, floor) : { kind: 'none', why: 'Routing is off' })
+
+/**
+ * A plan after the feature switches. Routing off: an effort change and a review switch become no change. Hand-offs off: a hand-off
+ * becomes the effort-only plan (no change while Routing is off). `dropped` is the log line for a plan that was dropped, else undefined.
+ * Pure but for the switches themselves: the learning note runs it too, so only the real plan logs.
+ */
+function gate(p: Plan, r: Rating, s: Situation): { plan: Plan; dropped?: string } {
+  if (p.kind === 'delegate' && !handOffs) return { plan: effortOnly(r, s), dropped: 'hand-off skipped: Hand-offs is off' }
+  if (!routing && p.kind === 'switch') return { plan: { kind: 'none', why: 'Routing is off' }, dropped: 'review switch skipped: Routing is off' }
+  if (!routing && p.kind === 'effort') return { plan: { kind: 'none', why: 'Routing is off' }, dropped: 'effort change skipped: Routing is off' }
+  return { plan: p }
+}
 
 async function resolveEffort($: EngineInterface, p: Plan, r: Rating, s: Situation): Promise<Decision> {
   if (p.kind !== 'effort') return {}
@@ -1527,7 +1559,7 @@ async function resolve($: EngineInterface, p: Plan, r: Rating, s: Situation): Pr
   if (p.kind === 'switch') {
     const c = await choice($, 'up', qUp(cur, to))
     const send: Decision = { model: { tier: p.tier, level: p.level } }
-    const stay = () => resolveEffort($, effortPlan(r, s, floor), r, s)
+    const stay = () => resolveEffort($, effortOnly(r, s), r, s)
     if (c === 'auto') return send
     if (c === 'stay') return stay()
     if (c !== 'ask' && c !== 'each') return {}
@@ -1538,7 +1570,7 @@ async function resolve($: EngineInterface, p: Plan, r: Rating, s: Situation): Pr
   }
   const c = p.dir === 'up' ? await choice($, 'up', qUp(cur, to)) : await choice($, 'down', qDown(cur, to))
   const send: Decision = { delegate: { tier: p.tier, level: p.level, dir: p.dir } }
-  const stay = () => resolveEffort($, effortPlan(r, s, floor), r, s)
+  const stay = () => resolveEffort($, effortOnly(r, s), r, s)
   if (c === 'auto') return send
   if (c === 'stay') return stay()
   if (c !== 'ask' && c !== 'each') return {}
@@ -1550,7 +1582,7 @@ async function resolve($: EngineInterface, p: Plan, r: Rating, s: Situation): Pr
     if (a === TIMED_OUT) await logTimeout($, 'Subagent', `stayed on ${cur}`)
     return a === 'send' ? send : a === 'stay' ? stay() : {}
   }
-  const ep = effortPlan(r, s, floor)
+  const ep = effortOnly(r, s)
   const options: (readonly [string, 'send' | 'effort' | 'keep'])[] = [[`Send it to a ${to} subagent`, 'send']]
   if (ep.kind === 'effort') options.push([`${ep.dir === 'lower' ? 'Lower' : 'Raise'} effort on ${cur} to ${ep.level}`, 'effort'])
   options.push([ep.kind === 'effort' ? 'Keep as is' : `Stay on ${cur}`, 'keep'])
@@ -1687,7 +1719,7 @@ async function showStatus($: EngineInterface) {
   if (run?.steppedUp) return $.ui.status(`Effort: back to ${run.normal} (the task got harder)`)
   if (run?.level) return $.ui.status(run.auto ? `Effort: ${run.level} (auto) · /rightsize retry` : `Effort: ${run.level} (this prompt)`)
   if (!run && lastAuto?.kind === 'lower') return $.ui.status(`Last prompt ran at ${lastAuto.level} (auto) · /rightsize retry`)
-  const session = await sessionEffort($)
+  const session = await sessionEffortInUse($)
   $.ui.status(session ? `Effort: ${session} (this session)` : undefined)
 }
 
@@ -2241,7 +2273,7 @@ function coldCostText(d: number, rates: Awaited<ReturnType<typeof windowPerDolla
 // /compact would have cost, so the person knows for next time.
 async function noteIdle($: EngineInterface) {
   idleNote = ''
-  if (idleWarning === null || billingBy === null) return
+  if (!cacheOn || idleWarning === null || billingBy === null) return
   const last: LastTurn | undefined = lastTurnAt ? { at: lastTurnAt, context: lastContext } : (await lastTurns($))[sessionId]
   if (!last || last.at === idleWarnedFor) return
   // Keep-warm requests refreshed the cache after the turn ended: it went cold an hour after the last of them.
@@ -2329,6 +2361,24 @@ function cancelCold($: EngineInterface, why: string) {
   if (w) void log($, `keep warm stopped (${why}): ${pingsText(w.pings)}, ${money(w.spent)}`)
 }
 
+/** Takes the Cache row off the band, and leaves the prompt's row as it was. */
+async function clearColdRow($: EngineInterface) {
+  const band = (await $.state.get(BAND).catch(() => undefined))?.value
+  if (!band || (!band.coldText && !band.cold && !band.coldMore)) return
+  const { coldText: _t, cold: _c, coldMore: _m, ...route } = band
+  await setBand($, route.text ? route : null)
+}
+
+/** Everything of the cache path stops: the pending timer or keep-warm run, the offer (closed with no outcome: nobody answered it) and its row. */
+async function dropCache($: EngineInterface, why: string) {
+  cancelCold($, why)
+  coldTurn = null
+  offerOpen = false
+  warmReturn = null
+  idleNote = ''
+  await clearColdRow($)
+}
+
 /**
  * The band for this turn's offer or keep-warm line: `text` goes on the cache row, with `cold` as its button and `more`
  * as the offer's other choices (the ⋯ menu lists them). With `join`, the row sits under what the band said before (a
@@ -2367,7 +2417,7 @@ async function armCold($: EngineInterface, gen: number, at: number, fn: () => Pr
   })
 }
 
-// At a main turn's end, in the session's own model's prices. Skipped: rightsize off, the row off, no conversation
+// At a main turn's end, in the session's own model's prices. Skipped: rightsize off, Cache or the row off, no conversation
 // to speak of (a cold return under $0.50), one over 200K tokens (Claude Code compacts those itself),
 // and a round already done after the person's last prompt.
 async function coldCheck($: EngineInterface) {
@@ -2376,7 +2426,7 @@ async function coldCheck($: EngineInterface) {
   coldTurn = null
   // An offer for an earlier turn is stale now: this turn gets its own, or none.
   if ((await $.state.get(BAND).catch(() => undefined))?.value?.cold) await setBand($, null)
-  if (off || coldDone || coldMode === 'off') return
+  if (off || !cacheOn || coldDone || coldMode === 'off') return
   const context = lastContext
   if (!context || context > IDLE_MAX_CONTEXT) return
   const tier = (await situation($)).tier
@@ -2896,6 +2946,7 @@ async function summary($: EngineInterface) {
     ...(sw ? [`  Effort switches that missed the cache: ${Math.round(sw.ratio * 100)}% of ${sw.n} (each one in ~/.claude/mods-logs/rightsize/<session>/switches.jsonl)`] : []),
     ...(typeof install === 'string' ? [`  Sharing install ID: ${install} (quote it to rightsize@aivalue.blog to ask about or delete your shared data)`] : []),
     `  Mode: ${watching ? 'watch only (rates and plans every prompt, changes nothing; Mode in /config turns it on)' : 'act'}`,
+    `  Features: Routing ${routing ? 'on' : 'off'} · Hand-offs ${handOffs ? 'on' : 'off'} · Cache ${cacheOn ? 'on' : 'off'}`,
     `  Share anonymous feedback: ${sharing ? 'on' : 'off (the row in /config turns it on; it sends numbers only, never prompts, code or paths)'}`,
     '',
     'Commands: /rightsize help',
@@ -3267,6 +3318,15 @@ function applyOption(key: SettingKey) {
     case 'mode':
       watching = watchOnly(v)
       return
+    case 'routing':
+      routing = v !== 'off'
+      return
+    case 'handOffs':
+      handOffs = v !== 'off'
+      return
+    case 'cache':
+      cacheOn = v !== 'off'
+      return
     case 'profile':
     case 'handOff':
     case 'lowering':
@@ -3341,6 +3401,10 @@ async function followRow($: EngineInterface, key: SettingKey, value: string) {
       // The row changed: what was waiting or pinging under the old value stops. The next big turn's end follows the new one.
       cancelCold($, 'Before the cache goes cold changed')
       coldTurn = null
+      return
+    case 'cache':
+      // Cache off: a keep-warm run, a waiting offer and a timed handoff or compaction stop at once, and the Cache row goes. Back on, the next big turn's end follows it.
+      if (value === 'off') await dropCache($, 'Cache turned off')
       return
     case 'billing':
       // Reports set in /config by the person counts as the answer to the billing question.
@@ -3615,6 +3679,18 @@ export const register: Register = (on, options) => {
     // The session is idle, so no running turn can still take a prompt that has not started: it never will.
     if (e.turnId === undefined) await releaseStale($)
 
+    // Routing and Hand-offs both off: there is nothing to plan, so the prompt is not rated (no rating call, no run line, no
+    // task) and goes through as typed. The cache path does not need a rating: it reads the conversation's size from the
+    // main chat's steps (lastContext) and the turn's end (rememberTurn), and the idle note is shown here, on a band of its own.
+    if (!routing && !handOffs) {
+      if (cacheOn) await knowBilling($, true)
+      lastAuto = null
+      const idle = idleNote
+      idleNote = ''
+      if (idle) await setBand($, { text: idle, acted: true })
+      await showStatus($)
+      return next(e)
+    }
     await knowBilling($, true)
     $.ui.status('Rating the prompt...')
     let out = e
@@ -3645,7 +3721,10 @@ export const register: Register = (on, options) => {
         // While Claude fans work out to workflows, a single hand-off would only cut across it. After one,
         // Workflows says whether hand-offs go on (follow my rules, right-size every agent) or wait (the default).
         const planned = plan(r, s, floor)
-        const fanned = workflowSeen && planned.kind === 'delegate' && (workflows === 'ask' || workflows === 'pause rightsize') ? effortPlan(r, s, floor) : planned
+        const afterWorkflow = workflowSeen && planned.kind === 'delegate' && (workflows === 'ask' || workflows === 'pause rightsize') ? effortPlan(r, s, floor) : planned
+        // A switched-off feature (Routing, Hand-offs) drops its plans: nothing of it is asked, applied or described on the band.
+        const gated = gate(afterWorkflow, r, s)
+        const fanned = gated.plan
         // A request that was cut, or a task whose last reply the rater could not read, may be harder than it looks:
         // that is no ground to lower effort or hand work to a cheaper model. Raising and stronger models are left alone.
         const noDowngrade = unsure !== undefined && ((fanned.kind === 'effort' && fanned.dir === 'lower') || (fanned.kind === 'delegate' && fanned.dir === 'down'))
@@ -3670,7 +3749,8 @@ export const register: Register = (on, options) => {
         try {
           const learnG = stepState.g
           run.learnG = learnG
-          run.learning = learningNote(planned, plan(r, { ...s, stepExp: learnG }, floor), learnG, stepState.applied)
+          const learnS = { ...s, stepExp: learnG }
+          run.learning = learningNote(gate(planned, r, s).plan, gate(plan(r, learnS, floor), r, learnS).plan, learnG, stepState.applied)
           const note = run.learning
           if (run.change === 'delegate-down' && note.differs && !note.plan.startsWith('delegate-down')) {
             run.handedOff = { actingStay: run.stay / Math.max(1, r.steps) ** run.stepExp, ruleShare: (s.rules ?? DEFAULT_RULES).handOff }
@@ -3692,7 +3772,7 @@ export const register: Register = (on, options) => {
         run.rater = by
         run.ratingMs = ratingMs
         // A close call the guide broke: kept on the run for the log, and counted so every fifth explores.
-        if (planned.kind === 'delegate' && planned.tie) {
+        if (handOffs && planned.kind === 'delegate' && planned.tie) {
           run.tie = planned.tie
           await countTie($)
         }
@@ -3717,7 +3797,8 @@ export const register: Register = (on, options) => {
         const did = d.delegate ? `delegate ${d.delegate.tier}` : d.model ? `switch to ${d.model.tier} at ${d.model.level} for the turn` : d.level ? `${d.auto ? 'auto ' : ''}${d.level} for the prompt` : d.session ? `${d.session} for the session` : 'no change'
         const fit = TIERS.map(t => `${t[0]}:${r.fit[t] ?? (r.fit[t] === null ? 'no' : '?')}`).join(' ')
         if (noDowngrade) await log($, `no downgrade: context ${unsure}`)
-        if (fanned !== planned) await log($, `hand-off to ${planned.kind === 'delegate' ? planned.tier : '?'} skipped: a workflow ran this session`)
+        if (afterWorkflow !== planned) await log($, `hand-off to ${planned.kind === 'delegate' ? planned.tier : '?'} skipped: a workflow ran this session`)
+        if (gated.dropped) await log($, gated.dropped)
         const paced = paceNow.mode === 'normal' ? '' : `, ${paceNow.mode} pace on ${paceNow.window}${paceNow.pace === undefined ? '' : ` (${paceNow.pace.toFixed(2)})`}`
         await log($, `${r.type}${ratedType ? ` (rated ${ratedType}, continues the ${r.type} task)` : ''} on ${s.tier}/${s.level}${paced}: rated ${fit}, plan ${p.kind}${'dir' in p ? ` ${p.dir}` : ''}${run.tie ? ` (tie ${run.tie.by} over ${run.tie.over})` : ''}: ${did}`)
         // Every 50th Haiku rating gets Sonnet's second opinion, in the background. A Sonnet rating is not checked
@@ -3803,7 +3884,7 @@ export const register: Register = (on, options) => {
       const watch = await helperWatch($, e.agentId)
       if (watch) {
         watch.steps += 1
-        if (escalation && !off && !watch.returned) {
+        if (raising() && !off && !watch.returned) {
           const sign = struggle(watch.signals, watch.steps, watch.rated, limits, Infinity)
           if (sign) await escalateHelper($, e.agentId, watch, sign)
         }
@@ -3831,7 +3912,7 @@ export const register: Register = (on, options) => {
     }
     const run = active?.turnId === e.turnId ? active : null
     if (isLevel(e.effort)) await $.state.set({ plugin: 'rightsize', key: 'seenEffort' }, e.effort)
-    const session = await sessionEffort($)
+    const session = await sessionEffortInUse($)
     const own = session ?? (isLevel(e.effort) ? e.effort : undefined)
     // A switched turn (a review on Opus) runs every step on that model at its level, and only that turn.
     const sw = run?.switchTo
@@ -3846,7 +3927,7 @@ export const register: Register = (on, options) => {
       }
     }
     // A hand-off's main chat only briefs and checks: its struggle is the subagent's.
-    if (run && !run.delegate && escalation && !off) {
+    if (run && !run.delegate && raising() && !off) {
       const sign = struggle(run.signals, e.index, run.rating.steps, limits)
       if (sign) await escalate($, run, sign, level ?? own, e.index)
     }
@@ -3906,7 +3987,8 @@ export const register: Register = (on, options) => {
     // Until Workflows is answered, the person is asked: on the band while it runs, paused, or in the dialog before it starts.
     if (String(e.tool) === 'Workflow' && !off) {
       if (askingWorkflow) await askingWorkflow
-      if (workflows === 'ask') {
+      // With Routing and Hand-offs both off, rightsize has nothing to pause or follow: no question.
+      if (workflows === 'ask' && (routing || handOffs)) {
         const id = (e as { tool_use_id?: unknown }).tool_use_id
         askingWorkflow = askWorkflow($, typeof id === 'string' && id ? id : undefined).finally(() => {
           askingWorkflow = null

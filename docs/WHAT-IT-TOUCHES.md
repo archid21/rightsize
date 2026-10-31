@@ -18,6 +18,8 @@ rightsize is a mod: it runs inside Claude Code and hooks some of its events. Thi
 - `turn.complete`: measures the turn. Before a big session's cache goes cold (see **Before the cache goes cold**), it may start a timer. The timer sends one small request through Claude Code over the same conversation, submits the prompt `wrap up` for Groundwork, or compacts the conversation. It lists the session's commands to find Groundwork. It starts nothing while a turn runs.
 - `command.run` (`/rightsize`), `session.start` and `ui.render` (the band above the prompt) serve its own command, start-up and display.
 
+The **Routing**, **Hand-offs** and **Cache** rows turn off the matching actions of these hooks: Routing the effort changes, the review switch and the mid-turn raises, Hand-offs the hand-off note and the move of Claude's subagents, Cache the keep-warm requests, the offer, the handoff or compaction and the idle warning. With Routing and Hand-offs both off, `prompt.submit` rates nothing and passes the prompt through.
+
 ## Settings it writes
 
 Only its own `rightsize.*` rows in `/config`: when you answer one of its questions, pick a rule in the band's ⋯ menu, choose "Don't keep warm again", or run `/rightsize reset`. It never writes the permission mode or any other setting, and it sets no environment variables.

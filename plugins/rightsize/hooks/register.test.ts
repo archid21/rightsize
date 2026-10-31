@@ -3025,6 +3025,26 @@ for (const surface of ['desktop', 'terminal'] as const) {
       set: { effort: 'medium', watching: true },
       def: { effort: 'low', watching: false },
     },
+    // Routing off: the lowering is not applied (the other effects, the review switch and the mid-turn raise, have scenarios of their own below).
+    { key: 'routing', value: 'off', start: { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES } }, see: c => effortOf(c, LOOKUP, LOWER), set: 'medium', def: 'low' },
+    // Hand-offs off, Routing on: the hand-off to Fable gives way to an effort-only plan.
+    { key: 'handOffs', value: 'off', start: OPUS, see: async c => (await handOff(c, DEBUG, NEEDS_FABLE)).to, set: undefined, def: 'fable' },
+    {
+      key: 'cache',
+      value: 'off',
+      start: OPUS,
+      see: async c => {
+        c.h.stepUsage = BIG_TURN
+        c.h.virtual = true
+        const t = c.turn()
+        await c.d.step(t)
+        await c.d.complete(t)
+        // Balanced keeps warm until the usual start from the end of a big turn; with Cache off there is no keep-warm line.
+        return (await bandText(c.$, c.surface)).startsWith('Warm until ')
+      },
+      set: false,
+      def: true,
+    },
     { key: 'floor', value: 'medium', start: { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES } }, see: c => effortOf(c, LOOKUP, LOWER), set: 'medium', def: 'low' },
     {
       key: 'ceiling',
@@ -3357,6 +3377,263 @@ for (const surface of ['desktop', 'terminal'] as const) {
       expect(await settingsText(s.d)).toContain(`${plainTitle(title)}: ${c.value}`)
     })
   }
+
+  // ---- The three feature switches: Routing, Hand-offs, Cache ----------------------------------------------------------
+  const switches = (more: Record<string, string>) => ({ options: more, stored: more })
+  const ROUTING_OFF = switches({ routing: 'off' })
+  const HANDOFFS_OFF = switches({ handOffs: 'off' })
+  const BOTH_OFF = switches({ routing: 'off', handOffs: 'off' })
+  const logOf = (h: ReturnType<typeof engine>) => h.files[LOG_PATH] ?? ''
+  const KEEP8 = { profile: 'Balanced', beforeCold: 'keep warm 8 h' }
+
+  test(`Routing off: a lowering is not applied, nothing is asked, the band says nothing, and the log says why (${surface})`, { timeoutMs: 30000, options: ROUTING_OFF.options }, async ($, on) => {
+    const h = engine(on, { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES }, stored: ROUTING_OFF.stored })
+    const d = drive($, h)
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+    h.rating = LOWER
+    await d.submit(LOOKUP)
+    expect(h.asked, 'no Lowering question').toEqual([])
+    await d.step('t1')
+    expect(last(h.sent)?.effort, 'stays at medium').toBe('medium')
+    await d.complete('t1')
+    expect(await bandText($, surface), 'nothing to say about a feature that is off').toBe('')
+    expect(logOf(h)).toContain('effort change skipped: Routing is off')
+    expect(logOf(h), 'the profile decided nothing').not.toContain('Lowering: no rule set')
+    expect(h.ratings, 'the prompt is still rated: Hand-offs is on').toBe(1)
+    expect(runLines(h).find(l => l.type === 'lookup')).toMatchObject({ change: 'none' })
+  })
+
+  test(`Routing off: a raise, a session switch and a review on Opus are not set either, and a stuck turn is not raised (${surface})`, { timeoutMs: 30000, options: ROUTING_OFF.options }, async ($, on) => {
+    // Raising set to ask: the question would offer a session switch.
+    const h = engine(on, { model: 'claude-sonnet-5-5', effort: 'medium', store: { ...AUTO_RAISE, choices: { raise: 'ask' }, [CAL_STORE]: FREE_SWITCHES }, stored: ROUTING_OFF.stored })
+    const d = drive($, h)
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+    h.answers = { Effort: 'Raise for this session' }
+    h.rating = RAISE_HIGH
+    await d.submit(DEBUG)
+    expect(h.asked, 'no Effort question').toEqual([])
+    expect((await settingsText(d)), 'no session switch').toContain('Session switch: none')
+    await d.step('t1')
+    expect(last(h.sent)?.effort).toBe('medium')
+    await d.complete('t1')
+    // A review from a Sonnet session stays on Sonnet.
+    h.rating = REVIEW
+    await d.submit('review the auth changes on this branch for subtle bugs please')
+    await d.step('t2', 0)
+    expect(last(h.sent)?.model, 'no switch to Opus').toBe('claude-sonnet-5-5')
+    expect(logOf(h)).toContain('review switch skipped: Routing is off')
+    // Stuck: two failures of one command would raise effort with Raise when stuck on.
+    await d.bash('fail npm test')
+    await d.bash('fail npm test')
+    await d.step('t2', 1)
+    expect(last(h.sent)?.effort, 'not raised mid-turn').toBe('medium')
+    await d.complete('t2')
+    expect(await bandText($, surface)).toBe('')
+  })
+
+  test(`Routing on, Raise when stuck on: the same stuck turn is raised (the control for the test above) (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-sonnet-5-5', effort: 'medium', store: { ...AUTO_RAISE, [CAL_STORE]: FREE_SWITCHES } })
+    const d = drive($, h)
+    await d.start(surface)
+    h.rating = NO_CHANGE
+    await d.submit(LOOKUP)
+    await d.step('t1', 0)
+    await d.bash('fail npm test')
+    await d.bash('fail npm test')
+    await d.step('t1', 1)
+    expect(last(h.sent)?.effort).toBe('high')
+  })
+
+  test(`Routing off, a session switch made earlier is not applied while it is off (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { ...OPUS, store: { remember: true, choices: { raise: 'ask' } } })
+    const d = drive($, h)
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+    h.answers = { Effort: 'Raise for this session' }
+    h.rating = RAISE_HIGH
+    await d.submit(DEBUG)
+    await d.step('t1')
+    expect(last(h.sent)?.effort, 'raised for the session').toBe('high')
+    await d.complete('t1')
+    await d.config('routing', 'off')
+    await d.step('t2')
+    expect(last(h.sent)?.effort, 'the switch is not applied while Routing is off').toBe('medium')
+    await d.config('routing', 'on')
+    await d.step('t3')
+    expect(last(h.sent)?.effort, 'and applies again when Routing is on').toBe('high')
+  })
+
+  test(`Hand-offs off, Routing on: a hand-off gives way to the effort-only plan, no note goes to the main chat, and the log says why (${surface})`, { timeoutMs: 30000, options: HANDOFFS_OFF.options }, async ($, on) => {
+    const h = engine(on, { ...OPUS, stored: HANDOFFS_OFF.stored })
+    const d = drive($, h)
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+    h.rating = NEEDS_FABLE
+    await d.submit(DEBUG)
+    expect(h.asked, 'no Subagent question').toEqual([])
+    expect(h.submitted.at(-1)?.context ?? [], 'no hand-off note').toEqual([])
+    await d.step('t1')
+    expect(last(h.sent)?.effort, 'the effort plan took its place: raised to high').toBe('high')
+    await d.complete('t1')
+    expect(logOf(h)).toContain('hand-off skipped: Hand-offs is off')
+    expect(runLines(h).find(l => l.type === 'debug')).toMatchObject({ change: 'raise' })
+    expect(await bandText($, surface), 'the band describes the raise, not a hand-off').toMatch(/^Effort raised: medium → high/)
+  })
+
+  test(`Hand-offs off: Claude's own subagents stay on their model (${surface})`, { timeoutMs: 30000, options: HANDOFFS_OFF.options }, async ($, on) => {
+    const h = engine(on, { ...OPUS, stored: HANDOFFS_OFF.stored })
+    const d = drive($, h)
+    await d.start(surface)
+    h.rating = NO_CHANGE
+    await d.submit(SEARCH)
+    await d.step('t1')
+    const rated = h.ratings
+    h.rating = LISTING
+    await d.spawn('lister')
+    expect(h.spawned[0]?.model, 'left alone').toBeUndefined()
+    expect(h.ratings, 'its brief is not rated').toBe(rated)
+  })
+
+  test(`Hand-offs on, Routing off: the hand-off still goes, and a "stay" answer changes no effort (${surface})`, { timeoutMs: 30000, options: ROUTING_OFF.options }, async ($, on) => {
+    const h = engine(on, { ...OPUS, stored: ROUTING_OFF.stored })
+    const d = drive($, h)
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+    h.rating = NEEDS_FABLE
+    await d.submit(DEBUG)
+    expect(handedTo(h), 'sent to Fable').toBe('fable')
+    await d.step('t1')
+    await d.complete('t1')
+    // With the rule on stay, raise effort only: Routing off means no raise.
+    await d.config('upRule', 'stay, raise effort only')
+    h.rating = NEEDS_FABLE
+    await d.submit(DEBUG)
+    expect(h.submitted.at(-1)?.context ?? [], 'no note').toEqual([])
+    await d.step('t2')
+    expect(last(h.sent)?.effort, 'effort unchanged').toBe('medium')
+  })
+
+  test(`Routing and Hand-offs both off: no prompt is rated, no run line, no task, and the prompt goes through as typed (${surface})`, { timeoutMs: 30000, options: BOTH_OFF.options }, async ($, on) => {
+    const h = engine(on, { ...OPUS, stored: BOTH_OFF.stored })
+    const d = drive($, h)
+    await d.start(surface)
+    h.rating = NEEDS_FABLE
+    await d.submit(DEBUG)
+    expect(h.ratings, 'no rating call').toBe(0)
+    expect(h.completions, 'no model call at all').toEqual([])
+    expect(h.statuses, 'no "Rating the prompt..."').not.toContain('Rating the prompt...')
+    expect(h.submitted.at(-1)).toMatchObject({ text: DEBUG })
+    expect(h.submitted.at(-1)?.context ?? [], 'nothing added to the prompt').toEqual([])
+    expect(h.asked).toEqual([])
+    await d.step('t1')
+    expect(last(h.sent)?.effort, 'effort as it was').toBe('medium')
+    await d.complete('t1')
+    await d.submit(LOOKUP)
+    await d.spawn('lister')
+    expect(h.ratings, 'a subagent is not rated either').toBe(0)
+    expect(h.files[RUNS_FILE], 'no run line').toBeUndefined()
+    expect(logOf(h), 'no rating line').not.toMatch(/rated|prompt not rated/)
+    expect(await bandText($, surface)).toBe('')
+  })
+
+  test(`Routing and Hand-offs both off, a workflow starts: nothing is asked (${surface})`, { timeoutMs: 30000, options: BOTH_OFF.options }, async ($, on) => {
+    const h = engine(on, { ...OPUS, stored: BOTH_OFF.stored })
+    const d = drive($, h)
+    await d.start(surface)
+    await d.submit(LOOKUP)
+    await d.step('t1')
+    await d.workflow()
+    expect(h.asked.map(a => a.header)).not.toContain('Workflow')
+  })
+
+  test(`Routing and Hand-offs both off, Cache on: the cold check still reads the conversation's size, and keeps warm (${surface})`, { timeoutMs: 30000, options: { ...BOTH_OFF.options, ...KEEP8 } }, async ($, on) => {
+    const { h, d } = await coldSession($, on, { stored: { ...BOTH_OFF.stored, ...KEEP8 } })
+    await d.submit(LOOKUP)
+    await coldTurn(d, 't1')
+    expect(h.ratings, 'nothing was rated').toBe(0)
+    expect(await bandText($, surface)).toBe('Warm until 2:00 · $0.00 so far')
+    await h.advance(57 * MIN)
+    expect(h.forks.length, 'the first keep-warm request').toBe(1)
+    expect(logOf(h)).toContain('keeping warm until 2:00')
+  })
+
+  test(`Routing and Hand-offs both off, Cache on: the idle warning still shows, on a band of its own, without a rating (${surface})`, { timeoutMs: 30000, options: BOTH_OFF.options }, async ($, on) => {
+    const h = engine(on, { ...OPUS, stored: BOTH_OFF.stored })
+    const d = drive($, h)
+    await d.start(surface)
+    h.stepUsage = BIG_TURN
+    await d.step('t1')
+    await d.complete('t1')
+    h.now += 3 * 60 * MIN
+    await d.submit('continue')
+    expect(h.ratings, 'nothing was rated').toBe(0)
+    expect(await bandText($, surface)).toMatch(/^Idle 3 hours: the cache went cold, so this prompt writes the conversation \(~81K tokens\) again/)
+    expect(logOf(h)).toContain('idle 3 hours with 80500 tokens: noted on the band')
+    // And it is said once: the next prompt carries no note.
+    await d.submit('and again')
+    expect(await bandText($, surface)).toBe('')
+  })
+
+  test(`Routing and Hand-offs both off, Cache off too: a prompt passes through and nothing runs (${surface})`, { timeoutMs: 30000, options: { ...BOTH_OFF.options, cache: 'off' } }, async ($, on) => {
+    const h = engine(on, { ...OPUS, stored: { ...BOTH_OFF.stored, cache: 'off' } })
+    const d = drive($, h)
+    h.stepUsage = BIG_TURN
+    await d.start(surface)
+    await d.step('t1')
+    await d.complete('t1')
+    h.now += 3 * 60 * MIN
+    await d.submit('continue')
+    expect(h.ratings).toBe(0)
+    expect(await bandText($, surface)).toBe('')
+    expect(h.forks).toEqual([])
+  })
+
+  test(`Hand-offs off, watch only: the band says what the switched-on features would do, a raise and no hand-off (${surface})`, { timeoutMs: 30000, options: { ...HANDOFFS_OFF.options, mode: 'watch only' } }, async ($, on) => {
+    const h = engine(on, { ...OPUS, stored: { ...HANDOFFS_OFF.stored, mode: 'watch only' } })
+    const d = drive($, h)
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+    h.rating = NEEDS_FABLE
+    await d.submit(DEBUG)
+    expect(await bandText($, surface)).toMatch(/^Watching: would raise effort to high on Opus\./)
+    expect(h.submitted.at(-1)?.context ?? [], 'nothing applied').toEqual([])
+    await d.step('t1')
+    expect(last(h.sent)?.effort).toBe('medium')
+  })
+
+  test(`/rightsize status lists the three switches after the Mode line (${surface})`, { timeoutMs: 30000, options: switches({ cache: 'off' }).options }, async ($, on) => {
+    const h = engine(on, { ...OPUS, stored: switches({ cache: 'off' }).stored })
+    const d = drive($, h)
+    await d.start(surface)
+    const lines = (await settingsText(d)).split('\n')
+    const mode = lines.findIndex(l => l.startsWith('  Mode: '))
+    expect(mode).toBeGreaterThan(-1)
+    expect(lines[mode + 1]).toBe('  Features: Routing on · Hand-offs on · Cache off')
+    await d.config('routing', 'off')
+    await d.config('handOffs', 'off')
+    await d.config('cache', 'on')
+    expect((await settingsText(d)).split('\n')).toContain('  Features: Routing off · Hand-offs off · Cache on')
+  })
+
+  test(`a row that belongs to a switched-off feature keeps its value (${surface})`, { timeoutMs: 30000, options: { escalation: 'off', cache: 'off', beforeCold: 'compact' } }, async ($, on) => {
+    const h = engine(on, { ...OPUS, stored: { escalation: 'off', cache: 'off', beforeCold: 'compact' } })
+    const d = drive($, h)
+    await d.start(surface)
+    await d.config('cache', 'off')
+    await d.config('routing', 'off')
+    const text = await settingsText(d)
+    expect(text).toContain('Raise when stuck: off')
+    expect(text).toContain('Before the cache goes cold: compact')
+    expect(text).toContain('Cache: off')
+  })
 
   // The row exists as plugin.json declares it: its default, and each of its options. Claude Code fills the
   // default in and drops a stored value that is not an option, so rightsize reading a value back is the
@@ -7102,6 +7379,81 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.forks.length).toBe(1)
   })
 
+  test(`Cache off: no offer, no keep-warm request, no handoff and no compaction, whatever Before the cache goes cold says (${surface})`, { timeoutMs: 30000, options: { ...WARM8.options, cache: 'off' } }, async ($, on) => {
+    const { h, d } = await coldSession($, on, { stored: { ...WARM8.stored, cache: 'off' } })
+    await coldTurn(d, 't1')
+    expect(await bandText($, surface)).toBe('')
+    expect(h.afters, 'no timer').toEqual([])
+    await h.advance(8 * HOUR)
+    expect(NOTHING_DONE(h)).toEqual(NONE)
+    expect(coldLog(h)).not.toContain('keep warm')
+    expect(h.files[RUNS_FILE], 'no warm line').toBeUndefined()
+  })
+
+  test(`Cache off: a compaction row does nothing before the cache goes cold (${surface})`, { timeoutMs: 30000, options: { cache: 'off', beforeCold: 'compact' } }, async ($, on) => {
+    const { h, d } = await coldSession($, on, { stored: { cache: 'off', beforeCold: 'compact' } })
+    await coldTurn(d, 't1')
+    await h.advance(3 * HOUR)
+    expect(NOTHING_DONE(h)).toEqual(NONE)
+    expect(h.afters).toEqual([])
+  })
+
+  test(`Cache off: no offer on a 1-hour cache, with Before the cache goes cold on ask (${surface})`, { timeoutMs: 30000, options: { cache: 'off' } }, async ($, on) => {
+    const { h, d } = await coldSession($, on, { stored: { cache: 'off' } })
+    await coldTurn(d, 't1')
+    await h.advance(5 * MIN)
+    expect(await bandText($, surface)).toBe('')
+    expect(h.afters).toEqual([])
+  })
+
+  test(`Cache off: the idle warning adds no note (${surface})`, { timeoutMs: 30000, options: { cache: 'off' } }, async ($, on) => {
+    const h = engine(on, { ...OPUS, stored: { cache: 'off' } })
+    const d = drive($, h)
+    await d.start(surface)
+    h.stepUsage = BIG_TURN
+    await d.step('t1')
+    await d.complete('t1')
+    h.now += 3 * 60 * MIN
+    h.rating = NO_CHANGE
+    await d.submit('continue')
+    expect(await bandText($, surface)).toBe('')
+    expect(logOf(h)).not.toContain('idle 3 hours')
+  })
+
+  test(`Cache turned off while keep warm runs: it stops at once, the Cache row goes, and its value is the only thing that changed (${surface})`, { timeoutMs: 30000, options: WARM8.options }, async ($, on) => {
+    const { h, d } = await coldSession($, on, { stored: WARM8.stored })
+    await coldTurn(d, 't1')
+    await h.advance(57 * MIN)
+    expect(h.forks.length).toBe(1)
+    expect(await bandText($, surface)).toBe('Warm until 2:00 · $0.02 so far')
+    const result = await d.config('cache', 'off')
+    expect(result.deny).toBeUndefined()
+    await flush()
+    expect(await bandText($, surface), 'the Cache row is gone').toBe('')
+    expect(await bandButtons($), 'and its buttons').toEqual([])
+    expect(coldLog(h)).toContain('keep warm stopped (Cache turned off): 1 ping')
+    await h.advance(4 * HOUR)
+    expect(h.forks.length, 'no more requests').toBe(1)
+    expect(await settingsText(d), 'Before the cache goes cold keeps its value').toContain('Before the cache goes cold: keep warm 8 h')
+    // Back on: the next big turn's end follows the row again.
+    await d.config('cache', 'on')
+    await coldTurn(d, 't2')
+    expect(await bandText($, surface), 'a new keep-warm run').toMatch(/^Warm until \d+:\d\d · \$0\.00 so far$/)
+  })
+
+  test(`Cache turned off with the offer showing: the offer goes and is not logged as ignored (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const { h, d } = await coldSession($, on)
+    await coldTurn(d, 't1')
+    await h.advance(5 * MIN)
+    expect(await coldRow($)).toContain('Goes cold in 55 min')
+    await d.config('cache', 'off')
+    await flush()
+    expect(await coldRow($)).toBe('')
+    await h.advance(3 * HOUR)
+    expect((h.files[RUNS_FILE] ?? '').includes('"kind":"cold"'), 'nobody answered it').toBe(false)
+    expect(NOTHING_DONE(h)).toEqual(NONE)
+  })
+
   const WARM2 = inProfile('Balanced', { beforeCold: 'keep warm 2 h' })
   test(`keep warm 2 h ends at its end time (${surface})`, { timeoutMs: 30000, options: WARM2.options }, async ($, on) => {
     const { h, d } = await coldSession($, on, { stored: WARM2.stored })
@@ -7708,7 +8060,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.paneOpens.length, 'status opens no pane').toBe(1)
   })
 
-  test(`the pane lists every row of the settings table in order, Profile and Mode first, the Advanced ones under a heading, each with its value (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`the pane lists every row of the settings table in order, Profile, Mode, Routing, Hand-offs and Cache first, the Advanced ones under a heading, each with its value (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const { d } = await start($, on)
     await d.command('')
     const ui = await mountPane($, surface)
@@ -7724,9 +8076,10 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(order[0], 'the keys, above the rows').toContain('Tab: next setting · ↑↓: choose a value · Enter: set · Esc: close.')
     expect(order.indexOf('row-profile'), 'Profile first, above the heading').toBe(1)
     expect(order.indexOf('row-mode'), 'Mode second, above the heading: it is not an Advanced row').toBe(2)
-    expect(order[3], 'the heading').toBe('Advanced')
+    expect(order.slice(3, 6), 'the three switches follow, above the heading: they are not Advanced rows').toEqual(['row-routing', 'row-handOffs', 'row-cache'])
+    expect(order[6], 'the heading').toBe('Advanced')
     expect(order.filter(x => x === 'Advanced').length).toBe(1)
-    expect(order.slice(4), 'the Advanced rows follow it, in order').toEqual(KEYS.slice(2).map(k => `row-${k}`))
+    expect(order.slice(7), 'the Advanced rows follow it, in order').toEqual(KEYS.slice(5).map(k => `row-${k}`))
     await ui.unmount()
   })
 
@@ -7807,7 +8160,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await ui.unmount()
   })
 
-  const BAND_PAGE = [...Array<string>(8).fill('More…'), 'Band: when it acts']
+  const BAND_PAGE = [...Array<string>(9).fill('More…'), 'Band: when it acts']
   test(`with no pane placed it asks instead: pick a row shown as Row: value (paged), pick its value, back to the rows, until Done (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const { h, d } = await start($, on)
     h.panePlaced = false
@@ -7815,7 +8168,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const r = (await d.command('')).text ?? ''
     expect(h.paneCloses, 'the unplaced pane is closed, not left open').toEqual([PANE_ID])
     expect(h.asked[0]?.options, 'Done first, then the rows as Row: value, three to a page').toEqual(['Done', 'Profile: Balanced', 'Mode: act', 'More…'])
-    expect(h.asked[1]?.options).toEqual(['Lowest effort: low', 'Highest effort: max', 'Lowering: not set', 'More…'])
+    expect(h.asked[1]?.options, 'the three switches fill the second page').toEqual(['Routing: on', 'Hand-offs: on', 'Cache: on', 'More…'])
+    expect(h.asked[2]?.options).toEqual(['Lowest effort: low', 'Highest effort: max', 'Lowering: not set', 'More…'])
     const value = h.asked.find(a => a.options.includes('off (current)') || a.options.includes('when it acts (current)'))
     expect(value?.options, 'the values of the row, the current one marked').toEqual(['when it acts (current)', 'always', 'off'])
     expect(value?.question).toContain('Band: now when it acts (default)')

@@ -73,7 +73,8 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
     submitted: [] as { text: string; context?: readonly string[] }[],
     logs: [] as string[],
     filled: [] as string[],
-    store: { ...(start.store ?? {}) } as Record<string, unknown>,
+    /** startDayOne: the day-one tip was shown already, so a session on Opus does not open with its band (the tests of the tip clear it). */
+    store: { startDayOne: true, ...(start.store ?? {}) } as Record<string, unknown>,
     ratings: 0,
     now: 1_800_000_000_000,
     page: '',
@@ -570,7 +571,7 @@ const setBand = ($: unknown, value: string) => ($ as { config: { set: (x: unknow
 const LOWER = '{"level":"low","model":"same","size":"small","type":"lookup","read":2000,"write":3000,"steps":1,"reason":"one function lookup"}'
 
 for (const surface of ['desktop', 'terminal'] as const) {
-  test(`asks Q1 once, lowers on its own after, steps up when the turn gets long, and retries at the original effort (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`Q1 is the profile's: Balanced lowers on its own with no question, says so on the band once, steps up when the turn gets long, and retries at the original effort (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES } })
     const d = drive($, h)
     await d.start(surface)
@@ -578,22 +579,27 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.complete('t0')
 
     h.rating = '{"level":"low","model":"same","size":"small","type":"lookup","read":2000,"write":3000,"steps":1,"reason":"one function lookup"}'
-    h.answers = { Lowering: 'Lower automatically (Recommended)', Remember: 'This session' }
     await d.submit(LOOKUP)
-    expect(h.asked.map(a => a.header), 'Q1; Remember waits for the turn to end').toEqual(['Lowering'])
+    expect(h.asked, 'no Lowering question: the profile decides').toEqual([])
+    expect(h.files[LOG_PATH] ?? '').toContain('Lowering: no rule set, the Balanced profile decides (lower automatically)')
+    expect(await bandText($, surface), 'the band says who decided, once').toMatch(/^Effort lowered: medium → low for this prompt \(automatically\)\..* Your Balanced profile decided \(Lowering\); ⋯ changes it\.$/)
     await d.step('t1', 0)
     expect(last(h.sent)?.effort, 'runs low').toBe('low')
     await d.step('t1', 5)
     expect(last(h.sent)?.effort, 'back to medium on step 6').toBe('medium')
     await d.complete('t1')
-    expect(h.store.remember, 'just this session: not saved').toBeUndefined()
+    expect(h.store.remember, 'nothing is saved: the profile decided').toBeUndefined()
+    expect(h.store.choices, 'no rule is kept either').toBeUndefined()
+    expect(h.asked, 'Remember follows only a rule the person set').toEqual([])
 
-    // Same situation again: no question, lowered on its own.
+    // Same situation again: no question, lowered on its own, and the band does not say it again.
     await d.submit(LOOKUP)
-    expect(h.asked.length, 'no new question').toBe(2)
+    expect(h.asked.length, 'no new question').toBe(0)
+    expect(await bandText($, surface), 'said once per session').not.toContain('profile decided')
     await d.step('t2')
     expect(last(h.sent)?.effort).toBe('low')
     await d.complete('t2')
+    expect((h.files[LOG_PATH] ?? '').split('Lowering: no rule set').length - 1, 'the log has the line each time').toBe(2)
 
     // Retry puts the prompt back; sending it again runs it unrated at medium.
     const undo = await d.command('retry')
@@ -618,7 +624,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(cal['lookup:main']?.n, 'one measured lookup turn').toBe(1)
   })
 
-  test(`asks Q2 for more effort, and does not lower when the cache would cost more (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`Q2 is the profile's: Balanced raises effort with no question, and does not lower when the cache would cost more (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
     const d = drive($, h)
     await d.start(surface)
@@ -626,32 +632,34 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.complete('t0')
 
     h.rating = '{"level":"high","model":"same","type":"debug","read":20000,"write":3000,"steps":8,"reason":"unknown cause"}'
-    h.answers = { Raising: 'Raise automatically (Recommended)', Remember: 'Every session' }
     await d.submit(DEBUG)
-    expect(h.asked.map(a => a.header), 'Remember waits for the turn to end').toEqual(['Raising'])
+    expect(h.asked, 'no Raising question: the profile decides').toEqual([])
+    expect(h.files[LOG_PATH] ?? '').toContain('Raising: no rule set, the Balanced profile decides (raise automatically)')
+    expect(await bandText($, surface)).toMatch(/Your Balanced profile decided \(Raising\); ⋯ changes it\.$/)
     await d.step('t1')
     expect(last(h.sent)?.effort).toBe('high')
     await d.complete('t1')
-    // Remember waits on the band for the turn to end, and is answered there.
     await settle()
-    expect(h.store.remember, 'saved for every session').toBe(true)
-    expect(h.store.choices).toEqual({ raise: 'auto' })
+    expect(h.store.remember, 'nothing was answered, so nothing is kept').toBeUndefined()
+    expect(h.store.choices).toBeUndefined()
+    expect(h.asked, 'no Remember question: no rule of the person\'s').toEqual([])
 
-    // A lookup with the prior "switches miss the cache": not worth lowering, so no Q1.
+    // A lookup with the prior "switches miss the cache": not worth lowering, so nothing changes.
     h.rating = '{"level":"low","model":"same","type":"lookup","read":2000,"write":300,"steps":1}'
     await d.submit(LOOKUP)
-    expect(h.asked.length, 'no question when nothing would change').toBe(2)
+    expect(h.asked.length, 'no question when nothing would change').toBe(0)
     await d.step('t2')
     expect(last(h.sent)?.effort).toBe('medium')
     await d.complete('t2')
 
-    // A new session loads the saved answers: Q2 is not asked again.
+    // A new session decides the same way, and says so again: nothing was kept from this one.
     await d.start(surface)
     await d.step('t3')
     await d.complete('t3')
     h.rating = '{"level":"xhigh","model":"same","type":"refactor"}'
     await d.submit(DEBUG)
-    expect(h.asked.length).toBe(2)
+    expect(h.asked.length).toBe(0)
+    expect(await bandText($, surface), 'the band says it again in a new session').toMatch(/Your Balanced profile decided \(Raising\)/)
     await d.step('t4')
     expect(last(h.sent)?.effort).toBe('xhigh')
     await d.complete('t4')
@@ -665,10 +673,12 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.complete('t0')
 
     h.rating = '{"level":"high","model":"fable","size":"small","type":"debug","read":30000,"write":4000,"steps":12,"reason":"subtle concurrency bug"}'
-    h.answers = { Stronger: 'Ask before using it', Remember: 'This session', Subagent: 'Send it to a Fable subagent' }
+    // Balanced would send it on its own: the person's rule row says ask first, and that is the one question left.
+    await d.config('upRule', 'ask first')
+    h.answers = { Subagent: 'Send it to a Fable subagent' }
     await d.submit(DEBUG)
-    expect(h.asked.map(a => a.header), 'Remember waits for the turn to end').toEqual(['Stronger', 'Subagent'])
-    expect(h.asked[1]?.question ?? '', 'the question carries both costs').toMatch(/About \$[\d.]+ that way vs \$[\d.]+ staying on Opus/)
+    expect(h.asked.map(a => a.header), 'only the Subagent question: the rule is already the person\'s').toEqual(['Subagent'])
+    expect(h.asked[0]?.question ?? '', 'the question carries both costs').toMatch(/About \$[\d.]+ that way vs \$[\d.]+ staying on Opus/)
     const note = last(h.submitted)?.context?.join('\n') ?? ''
     expect(note).toContain('[rightsize]')
     expect(note).toContain('model "fable", effort "high"')
@@ -697,9 +707,9 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.complete('t0')
 
     h.rating = REVIEW
-    h.answers = { Stronger: 'Use the stronger model automatically (Recommended)', Remember: 'This session' }
     await d.submit(DEBUG)
-    expect(h.asked.map(a => a.header), 'Q3; Remember waits for the turn to end').toEqual(['Stronger'])
+    expect(h.asked, 'no Stronger question: the Balanced profile switches on its own').toEqual([])
+    expect(h.files[LOG_PATH] ?? '').toContain('Stronger model: no rule set, the Balanced profile decides (always send)')
     expect(h.submitted.at(-1)?.context ?? [], 'no subagent note').toEqual([])
     await d.step('t1', 0)
     await d.step('t1', 1)
@@ -707,7 +717,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(turn.map(s => s.model), 'every step on Opus').toEqual(['opus', 'opus'])
     expect(turn.map(s => s.effort), 'at high').toEqual(['high', 'high'])
     await d.complete('t1')
-    expect(await bandText($, surface)).toMatch(/^Running this review on Opus at high effort, then back to Sonnet\. \$[\d.]+ vs ~\$[\d.]+ on Sonnet\./)
+    expect(await bandText($, surface)).toMatch(/^Running this review on Opus at high effort, then back to Sonnet\. \$[\d.]+ vs ~\$[\d.]+ on Sonnet\..* Your Balanced profile decided \(Stronger model\); ⋯ changes it\.$/)
 
     // The next prompt goes back to the session's model and level.
     h.rating = NO_CHANGE
@@ -774,13 +784,12 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(runs[2]?.id).not.toBe(runs[0]?.id)
   })
 
-  test(`a continuing prompt in a review task is still a review; a continuing prompt with no task kept takes its own type (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`a continuing prompt in a review task that the rater typed as something else is planned as that, with no review switch; one typed review is still a review (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { model: 'claude-sonnet-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES } })
     const d = drive($, h)
     await d.start(surface)
     await d.step('t0')
     await d.complete('t0')
-    h.answers = { Stronger: 'Use the stronger model automatically (Recommended)', Remember: 'This session' }
 
     // The session has kept no task yet: "continues" has nothing to continue, so the rated type stands and becomes the task.
     h.rating = rated('review', true)
@@ -789,20 +798,35 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(last(h.sent)?.model, 'a review').toBe('opus')
     await d.complete('t1')
 
-    // A follow-up typed lookup carries on the review: it gets the review rule.
-    h.rating = rated('lookup', true)
+    // A follow-up typed review carries on the review: it gets the review rule.
+    h.rating = rated('review', true)
     await d.submit(FOLLOW_UP)
     await d.step('t2')
-    expect(last(h.sent)?.model, 'the review rule holds for the follow-up').toBe('opus')
+    expect(last(h.sent)?.model, 'the review rule holds for a follow-up that is a review').toBe('opus')
     await d.complete('t2')
+
+    // A follow-up typed lookup is a lookup: planned as that, with no switch to Opus, and the log says why.
+    h.rating = rated('lookup', true)
+    await d.submit(FOLLOW_UP)
+    await d.step('t3')
+    expect(last(h.sent)?.model, 'no review switch for a lookup in a review task').toBe('claude-sonnet-5-5')
+    await d.complete('t3')
+    expect(h.files[LOG_PATH] ?? '').toContain('the prompt continues a review task but is a lookup: planned as that, no review switch')
 
     // A new goal ends the task.
     h.rating = rated('lookup', false)
     await d.submit(LOOKUP)
-    await d.step('t3')
+    await d.step('t4')
     expect(last(h.sent)?.model).toBe('claude-sonnet-5-5')
-    await d.complete('t3')
-    expect(readRuns(h).map(r => [r.type, r.ratedType ?? null])).toEqual([['review', null], ['review', 'lookup'], ['lookup', null]])
+    await d.complete('t4')
+    const runs = readRuns(h)
+    expect(runs.map(r => [r.type, r.ratedType ?? null, r.switched ?? null]), 'a lookup in a review task is a lookup of its own: no retyping, no switch').toEqual([
+      ['review', null, 'opus'],
+      ['review', null, 'opus'],
+      ['lookup', null, null],
+      ['lookup', null, null],
+    ])
+    expect(runs.map(r => r.task), 'the follow-ups stay in the review task').toEqual([runs[0]?.id, runs[0]?.id, runs[0]?.id, runs[3]?.id])
   })
 
   test(`a review in a Sonnet session stays on Sonnet when Stronger model is Stay (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -813,8 +837,9 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.complete('t0')
 
     h.rating = REVIEW
-    h.answers = { Stronger: 'Stay on Sonnet, raise effort only', Raising: 'Raise automatically (Recommended)', Remember: 'This session' }
+    await d.config('upRule', 'stay, raise effort only')
     await d.submit(DEBUG)
+    expect(h.asked, 'the rule is the person\'s: no question').toEqual([])
     await d.step('t1')
     await d.complete('t1')
     expect(last(h.sent)?.model, 'no model rewrite').toBe('claude-sonnet-5-5')
@@ -847,9 +872,10 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.complete('t0')
 
     h.rating = '{"level":"low","model":"haiku","size":"bulky","type":"search","read":150000,"write":3000,"steps":30,"reason":"repo-wide search"}'
-    h.answers = { Cheaper: 'Send it to a cheaper subagent (Recommended)', Remember: 'This session' }
     await d.submit(SEARCH)
-    expect(h.asked.map(a => a.header), 'Remember waits for the turn to end').toEqual(['Cheaper'])
+    expect(h.asked, 'no Cheaper question: the Balanced profile sends it on its own').toEqual([])
+    expect(h.files[LOG_PATH] ?? '').toContain('Cheaper model: no rule set, the Balanced profile decides (always send)')
+    expect(await bandText($, surface)).toMatch(/Your Balanced profile decided \(Cheaper model\); ⋯ changes it\.$/)
     const note = last(h.submitted)?.context?.join('\n') ?? ''
     expect(note).toContain('model "haiku"')
     expect(note).toContain('finish the task yourself')
@@ -863,7 +889,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
     // Next time: no question, and the subagent's cost is counted.
     await d.submit(SEARCH)
-    expect(h.asked.length).toBe(2)
+    expect(h.asked.length, 'still no question').toBe(0)
     await d.step('t2', 0)
     await d.agent('haiku')
     await d.step('t2', 0, 'a2')
@@ -989,9 +1015,10 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.complete('t0')
 
     h.rating = '{"fit":{"haiku":"high","sonnet":"high","opus":"high","fable":"medium"},"size":"small","type":"feature","read":20000,"write":2000,"steps":6,"reason":"small helper with tests"}'
-    h.answers = { Cheaper: 'Send it to a cheaper subagent (Recommended)', Remember: 'This session' }
     await d.submit(DEBUG)
-    expect(h.asked.map(a => a.header), 'Q4, not Q2: a cheaper model, not more effort').toEqual(['Cheaper'])
+    expect(h.asked, 'no question: Cheaper model is the profile\'s, and it is the one that decided, not Raising').toEqual([])
+    expect(h.files[LOG_PATH] ?? '', 'Q4, not Q2: a cheaper model, not more effort').toContain('Cheaper model: no rule set, the Balanced profile decides')
+    expect(h.files[LOG_PATH] ?? '').not.toContain('Raising: no rule set')
     const note = last(h.submitted)?.context?.join('\n') ?? ''
     expect(note).toContain('model "haiku", effort "high"')
     expect(await bandText($, surface)).toMatch(/^Sending this to a Haiku subagent at high effort instead of raising Opus to high\. \$[\d.]+ vs ~\$[\d.]+ on Opus\./)
@@ -1220,7 +1247,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.asked.length, 'no raise to ask about').toBe(0)
     await d.step('t1')
     expect(last(h.sent)?.effort).toBe('medium')
-    expect(await bandText($, surface)).toBe('Kept medium on Opus instead of raising to high. 93% of the 5-hour window is used, so rightsize saves all it can.')
+    expect(await bandText($, surface)).toBe('Kept medium on Opus instead of raising to high. 93% of the 5-hour window is used, so rightsize saves all it can. (hand-off bar 70% → 95%, lowering bar 90% → 100%)')
   })
 
   test(`budget pacing: with Reports set to the API, the band shows no window share (${surface})`, { timeoutMs: 30000, options: { billing: 'api' } }, async ($, on) => {
@@ -1247,9 +1274,10 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t0')
     await d.complete('t0')
     h.rating = '{"fit":{"haiku":"no","sonnet":"no","opus":"high","fable":"medium"},"size":"small","type":"debug","read":8000,"write":800,"steps":6,"reason":"race"}'
-    h.answers = { Raising: 'Ask me each time', Remember: 'This session', Effort: 'Keep medium' }
+    await d.config('raiseRule', 'ask me')
+    h.answers = { Effort: 'Keep medium' }
     await d.submit(DEBUG)
-    expect(h.asked.map(a => a.header), 'the Raising rule asks, as it always does; Remember waits for the turn to end').toEqual(['Raising', 'Effort'])
+    expect(h.asked.map(a => a.header), 'the Raising rule is the person\'s and says ask, so it asks, as it always does').toEqual(['Effort'])
     await d.step('t1')
     expect(last(h.sent)?.effort, 'kept: "Ask" never raises on its own').toBe('medium')
     expect(last(h.asked)?.question ?? '', 'the question names the raise').toContain('Raise from medium to high?')
@@ -1463,40 +1491,41 @@ for (const surface of ['desktop', 'terminal'] as const) {
     return { h, d }
   }
 
-  test(`idle past the cache: asks before a prompt rewrites the whole cache, and can hold it (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`idle past the cache: the prompt is never held; the band notes what rewriting the cache costs, once per idle gap (${surface})`, { timeoutMs: 30000, options: { idleWarning: 'over $0.10' } }, async ($, on) => {
     const { h, d } = await idleSetup($, on, surface)
     h.now += 30 * MIN
     await d.submit('continue')
     expect(h.asked.length, 'inside the hour the cache lives').toBe(0)
+    expect(await bandText($, surface)).not.toContain('Idle')
     await d.step('t1')
     await d.complete('t1')
 
     h.now += 2 * 60 * MIN
-    h.answers = { Idle: 'Hold it: I will /clear or /compact first' }
     const sent = h.submitted.length
     const out = (await d.submit('continue')) as { drop?: string }
-    expect(h.asked.map(a => a.question)).toEqual([
-      'This session sat idle for 2 hours, so its cache has likely expired. Sending writes the whole conversation (~21K tokens) to the cache again: about $0.16 more on Opus than a warm cache. /clear costs nothing; /compact about $0.08.',
-    ])
-    expect(out.drop).toBe('rightsize held this prompt and put it back in the box. Run /clear or /compact, then send it.')
-    expect(h.submitted.length, 'held: nothing entered').toBe(sent)
-    expect(last(h.filled)).toBe('continue')
+    expect(h.asked, 'no question: the Idle dialog is gone').toEqual([])
+    expect(out.drop, 'never held').toBeUndefined()
+    expect(h.submitted.length, 'the prompt entered').toBe(sent + 1)
+    expect(h.filled, 'and nothing was put back in the box').toEqual([])
+    expect(await bandText($, surface)).toContain('Idle 2 hours: the cache went cold, so this prompt writes the conversation (~21K tokens) again, about $0.16 more than warm; /compact first would have cost about $0.08.')
+    expect(h.files[LOG_PATH] ?? '').toContain('idle 2 hours with 20500 tokens: noted on the band ($0.16 to write again)')
 
     await d.submit('continue')
-    expect(h.asked.length, 'one question per idle gap').toBe(1)
-    expect(h.submitted.length).toBe(sent + 1)
+    expect(await bandText($, surface), 'one note per idle gap').not.toContain('Idle')
+    expect(h.asked.length).toBe(0)
   })
 
-  test(`idle guard after a resume reads the last turn from the store (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`idle note after a resume reads the last turn from the store (${surface})`, { timeoutMs: 30000, options: { idleWarning: 'over $0.10' } }, async ($, on) => {
     const { h, d } = await idleSetup($, on, surface)
     // Claude Code exits and the session is resumed 3 days later.
     await d.start(surface)
     h.now += 3 * 24 * 60 * MIN
-    h.answers = { Idle: 'Send it' }
-    await d.submit('continue')
-    expect(h.asked[0]?.question).toContain('sat idle for 3 days')
-    expect(h.asked[0]?.question).not.toContain('1 minutes')
+    const out = (await d.submit('continue')) as { drop?: string }
+    expect(await bandText($, surface)).toContain('Idle 3 days: the cache went cold')
+    expect(await bandText($, surface)).not.toContain('1 minutes')
+    expect(out.drop).toBeUndefined()
     expect(last(h.submitted)?.text, 'sent').toBe('continue')
+    expect(h.asked.length, 'no question').toBe(0)
   })
 
   test(`no idle guard past 200K tokens: Claude Code compacts those itself (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -1513,7 +1542,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.asked.length).toBe(0)
   })
 
-  test(`idle on a subscription: gives the cost in API-equivalent dollars, then in the 5-hour window once runs show it (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`idle on a subscription: the note gives the cost in API-equivalent dollars, then in the 5-hour window once runs show it (${surface})`, { timeoutMs: 30000, options: { idleWarning: 'over $0.10' } }, async ($, on) => {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
     h.rateLimits = [{ kind: 'five_hour', percentUsed: 10 }]
     const d = drive($, h)
@@ -1522,11 +1551,11 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t0')
     await d.complete('t0')
     h.now += 3 * 60 * MIN
-    h.answers = { Idle: 'Send it' }
     await d.submit('continue')
-    expect(h.asked.map(a => a.question)).toEqual([
-      'This session sat idle for 3 hours, so its cache has likely expired. Sending writes the whole conversation (~21K tokens) to the cache again: about $0.16 API-equivalent more on Opus than a warm cache. /clear costs nothing; /compact about $0.08 API-equivalent.',
-    ])
+    expect(h.asked, 'nothing is asked').toEqual([])
+    expect(await bandText($, surface)).toContain(
+      'Idle 3 hours: the cache went cold, so this prompt writes the conversation (~21K tokens) again, about $0.16 API-equivalent more than warm; /compact first would have cost about $0.08 API-equivalent.',
+    )
     await d.step('t1')
     await d.complete('t1')
 
@@ -1535,9 +1564,24 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.files[LEGACY_RUNS] = `${JSON.stringify({ at, kind: 'run', actual: 1, before: { five_hour: 10 }, after: { five_hour: 15 } })}\n`
     h.now += 3 * 60 * MIN
     await d.submit('continue')
-    expect(last(h.asked)?.question).toContain(
-      '~0.6–1.0% of your 5-hour window ($0.16 API-equivalent) more on Opus than a warm cache. /clear costs nothing; /compact ~0.3–0.5% of your 5-hour window ($0.08 API-equivalent).',
+    expect(await bandText($, surface)).toContain(
+      '~0.6–1.0% of your 5-hour window ($0.16 API-equivalent) more than warm; /compact first would have cost ~0.3–0.5% of your 5-hour window ($0.08 API-equivalent).',
     )
+  })
+
+  test(`Idle warning is over $0.50 by default: $0.16 is not noted, a conversation that costs $0.63 to write again is (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const { h, d } = await idleSetup($, on, surface)
+    h.now += 3 * 60 * MIN
+    await d.submit('continue')
+    expect(await bandText($, surface), '$0.16 is under $0.50').not.toContain('Idle')
+    h.stepUsage = BIG_TURN
+    await d.step('t1')
+    await d.complete('t1')
+    h.now += 3 * 60 * MIN
+    const out = (await d.submit('continue')) as { drop?: string }
+    expect(out.drop, 'never held').toBeUndefined()
+    expect(h.asked, 'nothing asked').toEqual([])
+    expect(await bandText($, surface)).toContain('Idle 3 hours: the cache went cold, so this prompt writes the conversation (~81K tokens) again, about $0.63 more than warm; /compact first would have cost about $0.32.')
   })
 
   test(`Idle warning in /config sets the bar (${surface})`, { timeoutMs: 30000, options: { idleWarning: 'over $1' } }, async ($, on) => {
@@ -1545,6 +1589,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.now += 3 * 60 * MIN
     await d.submit('continue')
     expect(h.asked.length, '$0.16 is under $1').toBe(0)
+    expect(await bandText($, surface), '$0.16 is under $1: no note').not.toContain('Idle')
   })
 
   test(`a workflow pauses hand-offs and learning for the session, and the report lists it (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -1572,9 +1617,9 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
     // A task that would go to Haiku stays here; the turn after the workflow teaches nothing either.
     h.rating = '{"level":"low","model":"haiku","size":"bulky","type":"search","read":150000,"write":3000,"steps":30}'
-    h.answers = { Lowering: 'Never lower', Cheaper: 'Send it to a cheaper subagent (Recommended)', Remember: 'This session' }
+    await d.config('lowerRule', 'never lower')
     await d.submit(SEARCH)
-    expect(h.asked.map(a => a.header), 'no hand-off question').not.toContain('Cheaper')
+    expect(h.files[LOG_PATH] ?? '', 'the profile did not decide a hand-off').not.toContain('Cheaper model: no rule set')
     expect(last(h.submitted)?.context ?? [], 'no hand-off note').toEqual([])
     await d.step('t3')
     await d.complete('t3')
@@ -1590,9 +1635,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.start(surface)
     await d.step('t4')
     await d.complete('t4')
-    const before = h.asked.length
     await d.submit(SEARCH)
-    expect(h.asked.slice(before).map(q => q.header)).toContain('Cheaper')
+    expect(h.files[LOG_PATH] ?? '').toContain('Cheaper model: no rule set, the Balanced profile decides (always send)')
     expect(last(h.submitted)?.context?.join('\n') ?? '').toContain('model "haiku"')
   })
 
@@ -1605,31 +1649,31 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await bandText($, surface), 'nothing to show yet').toBe('')
 
     h.rating = LOWER
-    h.answers = { Lowering: 'Lower automatically (Recommended)', Remember: 'This session' }
     await d.submit(LOOKUP)
-    expect(await bandText($, surface), 'what was done, why, and how confident').toBe('Effort lowered: medium → low for this prompt (automatically). Why: One function lookup. Confidence: low.')
+    expect(await bandText($, surface), 'what was done, why, how confident, and who decided').toBe('Effort lowered: medium → low for this prompt (automatically). Why: One function lookup. Confidence: low. Your Balanced profile decided (Lowering); ⋯ changes it.')
     const ui = await mount($, surface)
-    expect((await ui.findAll({ type: 'Button' })).map(b => b.key), 'a lowering can be marked 👍 or 👎').toEqual(['retry', 'good', 'bad', 'mode', 'close'])
+    expect((await ui.findAll({ type: 'Button' })).map(b => b.key), '👍 and 👎 are in the ⋯ menu now, not buttons').toEqual(['retry', 'mode', 'close'])
 
-    // The ⋯ menu lists the rule options for this band; one pick changes the answer to Q1.
-    h.answers = { Options: 'Ask me each time' }
+    // The ⋯ menu lists the rule options for this band (none is the person's yet), the marks, and the band setting.
+    h.answers = { Options: 'Ask me each time', Remember: 'This session' }
     let asked = h.asked.length
     await ui.press({ key: 'mode' })
     await untilAsked(h, asked)
-    expect(h.asked.at(-1)?.options, 'the current rule is not offered; the band setting is last').toEqual(['Ask me each time', 'Never lower', 'When the band shows…'])
+    expect(h.asked.at(-1)?.options, 'the rules, the two marks, the band setting').toEqual(['Lower automatically', 'Ask me each time', 'Never lower', 'Mark this 👍 (right call)', 'Mark this 👎 (wrong call)', 'When the band shows…'])
     expect(h.asked.at(-1)?.question, 'the menu says what the dollars are').toContain('API-equivalent')
     expect(h.asked.at(-1)?.question, 'and the detail behind the band\'s confidence').toMatch(/^Confidence: low, none of your tasks yet\. Options for this band\./)
     expect(last(h.toasts)).toBe('Rightsize: Lowering is now "Ask me each time".')
     expect((await d.command('status')).text ?? '').toContain('Lowering: ask me')
     expect(h.stored.lowerRule, 'the button sets the /config row too').toBe('ask me')
     expect(h.sets.filter(x => x.key === 'rightsize.lowerRule').length, 'once').toBe(1)
-    expect((await ui.findAll({ type: 'Button' })).map(b => b.key), 'the row keeps Retry, the marks, ⋯ and ×').toEqual(['retry', 'good', 'bad', 'mode', 'close'])
+    expect(h.asked.map(a => a.header), 'a rule the person set is followed by Remember').toContain('Remember')
+    expect((await ui.findAll({ type: 'Button' })).map(b => b.key), 'the row keeps Retry, ⋯ and ×').toEqual(['retry', 'mode', 'close'])
     // Dismissing the menu (no answer) does nothing.
     h.answers = {}
     asked = h.asked.length
     await ui.press({ key: 'mode' })
     await untilAsked(h, asked)
-    expect(h.asked.at(-1)?.options, 'the new rule is not offered again').toEqual(['Lower automatically', 'Never lower', 'When the band shows…'])
+    expect(h.asked.at(-1)?.options, 'the new rule is not offered again').toEqual(['Lower automatically', 'Never lower', 'Mark this 👍 (right call)', 'Mark this 👎 (wrong call)', 'When the band shows…'])
     expect(h.stored.lowerRule, 'dismissed: unchanged').toBe('ask me')
     expect(h.sets.filter(x => x.key === 'rightsize.lowerRule').length).toBe(1)
 
@@ -3601,7 +3645,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     {
       name: 'Raising at its default: skipped, nothing asked',
       stored: {},
-      want: { effort: 'medium', asked: [], band: 'Kept medium on Opus instead of raising to high. 93% of the 5-hour window is used, so rightsize saves all it can.' },
+      want: { effort: 'medium', asked: [], band: 'Kept medium on Opus instead of raising to high. 93% of the 5-hour window is used, so rightsize saves all it can. (hand-off bar 70% → 95%, lowering bar 90% → 100%)' },
     },
     {
       name: 'Raising set in /config to automatic: followed, and the band only says how full the window is',
@@ -4641,6 +4685,9 @@ for (const surface of ['desktop', 'terminal'] as const) {
     for (let i = 0; i < 3; i++) await d.bash('env:curl: (6) Could not resolve host: registry.example.com', 'agent-helper')
     await d.step('t1', 1, 'agent-helper')
     expect(last(h.sent)?.effort, 'the network is down: effort would not help').toBe('low')
+    await d.bash('rejected git reset --hard')
+    await d.step('t1', 2)
+    expect(last(h.sent)?.effort, 'the person said no: the task is no harder').toBe('low')
     // The same successful call three times is a loop, but only blocked errors stand behind it: can't tell.
     for (let i = 0; i < 3; i++) await d.bash('ls', 'agent-helper')
     await d.step('t1', 2, 'agent-helper')
@@ -4959,30 +5006,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t2', 0)
     expect(h.asked.filter(a => a.header === 'Lowering'), 'not asked again').toEqual([])
     expect(last(h.sent)?.effort, 'the saved rule lowers it').toBe('low')
-  })
-
-  test(`Idle is not timed: after 30 seconds the band says the prompt is held, and an answer still works (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const { h, d } = await idleSetup($, on, surface)
-    h.now += 2 * 60 * MIN
-    let release = () => {}
-    h.answerGate = { Idle: new Promise<void>(r => (release = r)) }
-    h.answers = { Idle: 'Hold it: I will /clear or /compact first' }
-    h.sleepEnds = true
-    const sent = h.submitted.length
-    const pending = d.submit('continue') as Promise<{ drop?: string }>
-    let settled = false
-    void pending.then(() => (settled = true))
-    await until(() => h.asked.length > 0)
-    // The engine draws nothing while the prompt hook is open, so the log carries the band's text.
-    await until(() => helperLog(h).includes('Held:'))
-    expect(helperLog(h)).toContain('no answer in 30 seconds to Idle: the prompt stays held; band: Held: sending now costs about $0.16 more than a warm cache. Answer to go on.')
-    expect(settled, 'still waiting for the answer').toBe(false)
-    expect(h.submitted.length, 'not sent').toBe(sent)
-    release()
-    const out = await pending
-    expect(out.drop).toContain('rightsize held this prompt')
-    expect(h.submitted.length).toBe(sent)
-    expect(await bandText($, surface), 'the band clears').toBe('')
   })
 
   // ---- On the terminal and the desktop app, a question that need not stop the work is a row on the band ----

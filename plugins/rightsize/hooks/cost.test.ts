@@ -36,6 +36,7 @@ import {
   subagentKeys,
   subWork,
   switchCost,
+  switchMissShare,
   rawMainCost,
   tierOf,
   tieBand,
@@ -998,4 +999,21 @@ test('the pace note says what pacing did: nothing to say when it moved nothing, 
   expect(paceNote(hot, false), 'nothing moved').toBe('')
   expect(paceNote(max, false), 'only reported').toBe('93% of the 5-hour window is used.')
   expect(paceNote({ mode: 'normal' }, true)).toBe('')
+})
+
+test('an effort switch is priced as free once enough measured switches have kept the cache', async () => {
+  const kept = (n: number, ratio: number) => ({ [SWITCH_KEY]: { n, ratio } })
+  expect(switchMissShare(kept(20, 0.05)), '20 switches, 5% missed: free').toBe(0)
+  expect(switchMissShare(kept(19, 0)), 'one short of 20: still the learned share, blended with the prior').toBeGreaterThan(0)
+  expect(switchMissShare(kept(19, 0.02)), 'one short of 20: the learned share, blended').toBeGreaterThan(0)
+  expect(Math.round(switchMissShare(kept(40, 0.1)) * 1000), 'too many misses: the learned share').toBe(100)
+  expect(switchMissShare({}), 'nothing measured: the prior').toBe(SWITCH_MISS_PRIOR)
+})
+
+test('the profile caps a switched review: Economy stops at high, the others at Highest effort', async () => {
+  const sonnet: Situation = { tier: 'sonnet', level: 'medium', context: 50_000, prices: DEFAULT_PRICES, cal: {} }
+  const r = review({ sonnet: 'high', opus: 'xhigh' }, 'high')
+  expect(plan(r, sonnet, 'low')).toMatchObject({ kind: 'switch', tier: 'opus', level: 'xhigh' })
+  expect(plan(r, { ...sonnet, reviewCeiling: 'high' }, 'low'), 'Economy: capped at high').toMatchObject({ kind: 'switch', tier: 'opus', level: 'high' })
+  expect(plan(r, { ...sonnet, reviewCeiling: 'max', ceiling: 'high' }, 'low'), 'Highest effort still caps').toMatchObject({ kind: 'switch', tier: 'opus', level: 'high' })
 })

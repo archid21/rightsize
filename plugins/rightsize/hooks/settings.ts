@@ -1,4 +1,4 @@
-import type { RightsizeChoices as Choices } from '../types'
+import type { RightsizeChoices as Choices, RightsizeLevel as Level } from '../types'
 import { DEFAULT_RULES, MISS_BLOCK, parseShare } from './cost'
 
 // The settings in /config, in one table: each row's title, its options and its
@@ -30,6 +30,7 @@ export const RULE_KEYS = { lower: 'lowerRule', raise: 'raiseRule', up: 'upRule',
 
 export const SETTINGS = {
   profile: { title: 'Profile', options: ['Quality', 'Balanced', 'Economy'], default: 'Balanced' },
+  mode: { title: 'Mode', options: ['act', 'watch only'], default: 'act' },
   floor: { title: 'Advanced · Lowest effort', options: ['low', 'medium', 'high'], default: 'low' },
   ceiling: { title: 'Advanced · Highest effort', options: ['high', 'xhigh', 'max'], default: 'max' },
   lowerRule: { title: 'Advanced · Lowering', options: ruleOptions('lower'), default: NOT_SET },
@@ -51,8 +52,8 @@ export const SETTINGS = {
   rater: { title: 'Advanced · Rater', options: ['sonnet', 'haiku'], default: 'sonnet' },
   raterCheck: { title: 'Advanced · Rater check', options: ['every 25', 'every 50', 'every 100', 'off'], default: 'every 50' },
   startTips: { title: 'Advanced · Start suggestions', options: ['weekly', 'monthly', 'off'], default: 'weekly' },
-  idleWarning: { title: 'Advanced · Idle warning', options: ['over $0.10', 'over $0.50', 'over $1', 'off'], default: 'over $0.10' },
-  beforeCold: { title: 'Advanced · Before the cache goes cold', options: ['ask', 'keep warm 2 h', 'keep warm 8 h', 'save a handoff', 'compact', 'off'], default: 'ask' },
+  idleWarning: { title: 'Advanced · Idle warning', options: ['over $0.10', 'over $0.50', 'over $1', 'off'], default: 'over $0.50' },
+  beforeCold: { title: 'Advanced · Before the cache goes cold', options: ['ask', 'keep warm 2 h', 'keep warm 8 h', 'keep warm until my usual start', 'save a handoff', 'compact', 'off'], default: 'ask' },
   billing: { title: 'Advanced · Reports', options: ['api', 'subscription'], default: 'api' },
   band: { title: 'Advanced · Band', options: ['when it acts', 'always', 'off'], default: 'when it acts' },
   questionWait: { title: 'Advanced · Question wait', options: ['30 seconds', '1 minute', '2 minutes'], default: '30 seconds' },
@@ -241,12 +242,16 @@ export type ProfileValues = {
   chances: number
   answers: Answers
   /** What a big session does before its cache goes cold, while Before the cache goes cold is not yours. */
-  beforeCold: 'ask' | 'keep warm 8 h'
+  beforeCold: 'keep warm 8 h' | 'keep warm until my usual start' | 'off'
+  /** The highest level a review switched to Opus runs at: Economy stops at high, the others at Highest effort. */
+  reviewCeiling: Level
 }
 
 // What each profile stands for. The Quality and Balanced values are starting points, to be recalibrated
 // after the benchmark; Economy's follow from them. Values outside a row's options (a 10% miss pause, an
 // 85% hand-off threshold, a spot-check every 20) are profile values: a row can only hold its own options.
+// The answers are what the four cases do while their rule rows are not set: the profile decides, and
+// nothing asks (an 'ask' answer opens that case's own dialog, by the profile's choice).
 export const PROFILES: Record<Profile, ProfileValues> = {
   Quality: {
     evidence: { minTasks: 10, maxMiss: 0.1 },
@@ -255,6 +260,7 @@ export const PROFILES: Record<Profile, ProfileValues> = {
     chances: 1,
     answers: { lower: 'ask', raise: 'auto', up: 'auto', down: 'ask' },
     beforeCold: 'keep warm 8 h',
+    reviewCeiling: 'max',
   },
   Balanced: {
     evidence: { minTasks: 0, maxMiss: 0.2 },
@@ -262,7 +268,8 @@ export const PROFILES: Record<Profile, ProfileValues> = {
     raterEvery: 20,
     chances: 2,
     answers: { lower: 'auto', raise: 'auto', up: 'auto', down: 'auto' },
-    beforeCold: 'ask',
+    beforeCold: 'keep warm until my usual start',
+    reviewCeiling: 'max',
   },
   Economy: {
     evidence: { minTasks: 0, maxMiss: 0.3 },
@@ -270,7 +277,8 @@ export const PROFILES: Record<Profile, ProfileValues> = {
     raterEvery: 30,
     chances: 3,
     answers: { lower: 'auto', raise: 'auto', up: 'stay', down: 'auto' },
-    beforeCold: 'ask',
+    beforeCold: 'off',
+    reviewCeiling: 'high',
   },
 }
 
@@ -278,7 +286,7 @@ export const PROFILES: Record<Profile, ProfileValues> = {
 export const profileOf = (v: unknown): Profile => (isProfile(v) ? v : 'Balanced')
 
 /** What the profile governs, as it applies now. */
-export type InUse = { handOff: number; minTasks: number; maxMiss: number | null; raterEvery: number | null; chances: number; answers: Answers; beforeCold: string }
+export type InUse = { handOff: number; minTasks: number; maxMiss: number | null; raterEvery: number | null; chances: number; answers: Answers; beforeCold: string; reviewCeiling: Level }
 
 /**
  * The profile's values, each replaced by its row where the row is yours: your setting wins. The evidence rule
@@ -297,5 +305,9 @@ export function inUse(profile: Profile, values: Readonly<Record<string, string>>
     chances: p.chances,
     answers: p.answers,
     beforeCold: yours.has('beforeCold') ? (values.beforeCold ?? p.beforeCold) : p.beforeCold,
+    reviewCeiling: p.reviewCeiling,
   }
 }
+
+/** Mode: true when rightsize only watches (rates and plans every prompt, applies nothing, and says what it would have done). */
+export const watchOnly = (v: unknown) => v === 'watch only'

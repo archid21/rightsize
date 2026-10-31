@@ -67,8 +67,8 @@ import { type FreshRun, type HandedOff, NO_STEPS, type StepState, actingExp, mer
 import { type LearningNote, learningNote } from './learning'
 import { PRICING_URL, applyPrices, diffPrices, isDue, parsePricingPage } from './prices'
 import { confidence, missCounts, missMap, ownTasks, pauseRates } from './misses'
-import { SHARE_ASK_AFTER, SHARE_EVERY_MS, SHARE_URL, newInstall, nextBatch } from './share'
-import { START_CHECK_DAYS, START_SNOOZE_DAYS, adviseStart, startBlock, startKey, startTip } from './start'
+import { SHARE_EVERY_MS, SHARE_URL, newInstall, nextBatch } from './share'
+import { START_CHECK_DAYS, START_MIN_PROMPTS, START_SNOOZE_DAYS, adviseStart, startBlock, startKey, startTip } from './start'
 import {
   ADVANCED,
   KEYS,
@@ -95,12 +95,13 @@ import {
   settingNamed,
   stillReset,
   valuesOf,
+  watchOnly,
 } from './settings'
 import { BRIEF_MAX, cutRequest, parseRating, ratingPrompt, ratingSystem } from './rate'
 import { isApprovalStep } from './approval'
-import { LIMITS, type Limits, type Signals, type Struggle, blockedError, callKey, isSensitivity, isTestCommand, noSignals, noteCall, oneUp, refusedByPerson, struggle } from './struggle'
+import { LIMITS, type Limits, type Signals, type Struggle, blockedError, callKey, isSensitivity, isTestCommand, noSignals, noteCall, oneUp, refusedByPerson, struggle, testsOutcome } from './struggle'
 import { type Change, type HelperLine, type RunLine, type SwitchLine, type Windows, SESSION_TOTAL, SESSION_TOTAL_FROM, bandShareText, buildReport, costTag, parseLines, ratedInSession, sessionTotal, shareMessage, shareOf, usedTag, windowCostText, windowRates } from './report'
-import { COLD_MIN, PING_PROMPT, ROW_OF, WRAP_UP, alwaysText, breakEvenMs, cacheHeld, clockText, coldPlan, ignoredLately, isGroundwork, keepWarmChoices, leadMs, learnedChoice, offerAt, offerText, pingCost, pingEvery, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText } from './warm'
+import { COLD_MIN, PING_PROMPT, ROW_OF, WRAP_UP, alwaysText, breakEvenMs, cacheHeld, clockText, coldPlan, ignoredLately, isGroundwork, keepWarmChoices, leadMs, learnedChoice, nextStart, offerAt, offerText, pingCost, pingEvery, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText } from './warm'
 
 // Before a prompt is sent, a quick Haiku call rates the effort, the model and
 // the work needs on each model, and the cost model prices each route that fits. The first time
@@ -306,6 +307,9 @@ type Run = {
   handedOff?: HandedOff
   /** The step exponent this turn's estimates were priced with. */
   stepExp: number
+  /** Watch only: the change rightsize would have made, and the estimate of that route. Nothing was applied. */
+  would?: Change
+  wouldTaken?: number
   /** Uncalibrated estimates of the route taken, for calibration. */
   rawMain: number
   rawDelegate?: number
@@ -446,6 +450,15 @@ let ownCounts: Record<string, number> = {}
 let chances = PROFILES.Balanced.chances
 /** The first option of each of the four questions. */
 let answers = PROFILES.Balanced.answers
+/** The highest level a review switched to Opus runs at: the profile's. */
+let reviewCeiling: Level = PROFILES.Balanced.reviewCeiling
+/** Mode: watch only rates and plans every prompt, applies nothing, and says what it would have done. */
+let watching = false
+/** The cases the profile decided for the prompt being rated (no rule set), and those the band has already said so for this session. */
+let profileChose: (keyof Choices)[] = []
+const profileNoted = new Set<keyof Choices>()
+/** A note for the prompt's band: the cache went cold, so this prompt writes the conversation again. */
+let idleNote = ''
 /** One close call in five takes the route the guide did not pick. Off in every profile. */
 let explore = false
 /** What happens to the answers to the four questions: ask whether to keep them, keep them, or forget them at the end of the session. */
@@ -455,7 +468,18 @@ let limits: Limits = LIMITS.normal
 /** The pace the prompt being rated was decided at. */
 let paceNow: Pace = NORMAL_PACE
 /** The pace note, for a subscription only: it quotes how full a usage window is, and a window share is never shown on the API. */
-const paceText = (acts: boolean) => (billing === 'subscription' ? paceNote(paceNow, acts) : '')
+/** The band's pacing note, with the bars it moved ("hand-off bar 70% → 85%, lowering 90% → 97%") when it moved them. */
+const paceText = (acts: boolean, moved?: { from: Rules; to: Rules }) => {
+  if (billing !== 'subscription') return ''
+  const note = paceNote(paceNow, acts)
+  if (!note || !moved) return note
+  const pct = (x: number) => `${Math.round(x * 100)}%`
+  const bars = [
+    ...(moved.from.handOff !== moved.to.handOff ? [`hand-off bar ${pct(moved.from.handOff)} → ${pct(moved.to.handOff)}`] : []),
+    ...(moved.from.lower !== moved.to.lower ? [`lowering bar ${pct(moved.from.lower)} → ${pct(moved.to.lower)}`] : []),
+  ]
+  return bars.length ? `${note} (${bars.join(', ')})` : note
+}
 /** Raise effort mid-turn when the turn shows it is struggling. */
 let escalation = true
 /** Days between suggestions of a different starting model and level; null: off. */
@@ -957,7 +981,6 @@ const QUESTION = { plugin: 'rightsize', key: 'question' } as const
 type BandWhy =
   | { kind: 'billing' }
   | { kind: 'remember' }
-  | { kind: 'share'; at: number; last: boolean; next: number | undefined }
   | { kind: 'workflow' }
   | { kind: 'stuck'; run: Run; cur: Level; to: Level; sign: Struggle; step: number }
   | { kind: 'helper'; id: string; w: Watch; cur: Level; to: Level; sign: Struggle }
@@ -1029,9 +1052,6 @@ async function bandAnswered($: EngineInterface, why: BandWhy, v: unknown) {
       // ×: asked again after the next answer.
       else if (v === undefined) await $.state.set({ plugin: 'rightsize', key: 'rememberAsked' }, false)
       return
-    case 'share':
-      if (v === undefined) return bandUnanswered($, why)
-      return answerShare($, v === true)
     case 'workflow':
       await log($, `workflow question: ${v ?? 'dismissed'}`)
       if (isWorkflowMode(v)) await putConfig($, 'workflows', v)
@@ -1062,10 +1082,6 @@ async function bandUnanswered($: EngineInterface, why: BandWhy) {
       return logUnanswered($, 'Billing', 'reports use API prices for this session; not saved')
     case 'remember':
       return logUnanswered($, 'Remember', 'these choices stay for this session only')
-    case 'share':
-      await log($, `share question: no answer at ${why.at} rated prompts; ${why.next === undefined ? 'not asked again' : `asked again at ${why.next}`}`)
-      if (why.last) await $.store.set('shareAsked', true).catch(() => undefined)
-      return
     case 'workflow':
       return logUnanswered($, 'Workflow', 'rightsize paused for this workflow; not saved')
     case 'stuck':
@@ -1102,6 +1118,7 @@ const RULE_IDS = Object.keys(RULE_KEYS) as (keyof Choices)[]
 function writeSetting($: EngineInterface, key: SettingKey, value: string): Promise<ConfigSetResult> {
   switch (key) {
     case 'profile': return $.config.set({ key: 'rightsize.profile', value: value })
+    case 'mode': return $.config.set({ key: 'rightsize.mode', value: value })
     case 'floor': return $.config.set({ key: 'rightsize.floor', value: value })
     case 'ceiling': return $.config.set({ key: 'rightsize.ceiling', value: value })
     case 'lowerRule': return $.config.set({ key: 'rightsize.lowerRule', value: value })
@@ -1242,22 +1259,15 @@ async function followRuleRow($: EngineInterface, rule: keyof Choices, label: str
   if (saved && typeof saved === 'object' && !Array.isArray(saved)) await $.store.set('choices', change(saved as Choices)).catch(() => undefined)
 }
 
-// The answer for one situation: a rule you set, or the saved answer, or the question, the first time it comes up.
-async function choice<K extends keyof Choices>($: EngineInterface, key: K, q: Question<NonNullable<Choices[K]>>) {
+// The answer for one situation: a rule you set, or the saved answer, else the profile's answer. Nothing asks and nothing
+// is saved: a rule row left at "not set" means the profile decides, and the band says so the first time each case comes up
+// in a session, with the other rules in its ⋯ menu. The question itself (`q`) is kept for /rightsize settings.
+async function choice<K extends keyof Choices>($: EngineInterface, key: K, _q: Question<NonNullable<Choices[K]>>) {
   const have = (await choices($))[key]
   if (have) return have
-  // No answer in time: this prompt runs with no change, nothing is saved, and the question comes back next time.
-  // An answer that comes later is saved as the rule, unless a newer answer is already there.
-  const v = await askWithin($, withWait(q, 'this prompt runs as it is'), async late => {
-    if ((await choices($))[key]) return void $.ui.toast('rightsize: that answer came too late; nothing changed.')
-    await saveChoices($, { ...(await choices($)), [key]: late })
-    $.ui.toast('rightsize: saved your answer for next time.')
-  })
-  if (v === TIMED_OUT) {
-    await logTimeout($, q.header, 'this prompt ran with no change; nothing saved')
-    return undefined
-  }
-  if (v !== undefined) await saveChoices($, { ...(await choices($)), [key]: v })
+  const v = answers[key] as NonNullable<Choices[K]>
+  if (!profileChose.includes(key)) profileChose.push(key)
+  await log($, `${RULE_NAME[key]}: no rule set, the ${profile} profile decides (${ruleLabel(key, v)})`)
   return v
 }
 
@@ -1284,7 +1294,7 @@ async function situation($: EngineInterface): Promise<Situation> {
   const have = typeof kept === 'number' && kept > 0
   const reported = have ? undefined : (await usageNow($))?.context?.tokens
   const context = have ? kept : typeof reported === 'number' && reported > 0 ? reported : DEFAULT_CONTEXT
-  return { tier, level, context, prices, cal, rules, ties: await tiesSeen($), misses, missBlock, minTasks, counts, ceiling, without, explore, stepExp: actingExp(stepState) }
+  return { tier, level, context, prices, cal, rules, ties: await tiesSeen($), misses, missBlock, minTasks, counts, ceiling, reviewCeiling, without, explore, stepExp: actingExp(stepState) }
 }
 
 // Close calls seen so far, kept in the store so the one-in-five exploration holds across sessions.
@@ -1572,6 +1582,34 @@ export function delegateNote(d: NonNullable<Run['delegate']>, rounds = PROFILES.
 
 const planChange = (p: Plan): Change => (p.kind === 'none' ? 'none' : p.kind === 'effort' ? p.dir : p.kind === 'switch' ? 'switch-up' : `delegate-${p.dir}`)
 
+/** What the plan's route is estimated to cost, for watch-only mode: what rightsize would have taken. */
+function wouldCost(p: Plan, r: Rating, s: Situation) {
+  if (p.kind === 'delegate') return p.delegateCost
+  if (p.kind === 'switch') return p.cost
+  if (p.kind === 'effort') return mainCost(r, s, p.level, 2)
+  return mainCost(r, s, s.level, 0)
+}
+
+/** The band in watch-only mode: what rightsize would have done, and what that would have used. */
+export function watchBand(run: Pick<Run, 'tier' | 'normal' | 'stay' | 'rating'>, p: Plan, s: Situation): Band {
+  const cur = TIER_NAME[run.tier]
+  const off = 'Mode in /config turns it on.'
+  if (p.kind === 'none') return { text: `Watching: ${run.normal} on ${cur} fits this prompt; nothing to change. ${off}`, acted: false }
+  if (p.kind === 'delegate') return { text: `Watching: would send this to a ${TIER_NAME[p.tier]} subagent at ${p.level} effort. ${bandCost(p.delegateCost, p.mainCost, cur)} ${off}`, acted: true }
+  if (p.kind === 'switch') return { text: `Watching: would run this review on ${TIER_NAME[p.tier]} at ${p.level} effort, then go back to ${cur}. ${bandCost(p.cost, p.mainCost, cur)} ${off}`, acted: true }
+  const what = p.dir === 'lower' ? `lower effort to ${p.level}` : `raise effort to ${p.level}`
+  const cost = p.dir === 'lower' ? ` ${bandCost(mainCost(run.rating, s, p.level, 2), run.stay, cur)}` : ''
+  return { text: `Watching: would ${what} on ${cur}.${cost} ${off}`, acted: true }
+}
+
+/** The person's prompt says the last reply was wrong: one `corrected` line for the task's last run on a cheaper route, once. */
+async function noteCorrection($: EngineInterface, task: string) {
+  const last = [...runLog].reverse().find(l => (l.kind ?? 'run') === 'run' && l.task === task && (l.change === 'lower' || l.change === 'delegate-down'))
+  if (!last?.id || runLog.some(l => l.kind === 'corrected' && l.ref === last.id)) return
+  await appendRun($, { at: new Date().toISOString(), kind: 'corrected', session: sessionId, task, ref: last.id })
+  await log($, `the prompt corrects the last reply: counted as a miss for run ${last.id} (${last.change})`)
+}
+
 /** `base` is the person's own level, before any session switch rightsize made: the level savings are counted against. */
 function startRun(r: Rating, s: Situation, d: Decision, p: Plan, base: Level, overhead: number, entered: { text: string; at: number; during?: string }): Run {
   const sw = d.model
@@ -1796,7 +1834,7 @@ async function giveFeedback($: EngineInterface, ref: string, value: 'up' | 'down
     const { rate: _, ...rest } = band
     await setBand($, rest)
   }
-  $.ui.toast('Rightsize: thanks — this tunes its choices on this machine.')
+  $.ui.toast(`Rightsize: thanks — this tunes its choices on this machine${sharing ? ', and is shared as an anonymous number' : ''}.`)
 }
 
 // 👍 and 👎 are for the result in front of the person: their next prompt takes them off the band.
@@ -1814,7 +1852,7 @@ async function chooseBandMode($: EngineInterface) {
   await putConfig($, 'band', v)
 }
 
-type MenuChoice = { rule: string } | { cold: string } | { tip: string } | { cache: true } | { mode: true }
+type MenuChoice = { rule: string } | { cold: string } | { tip: string } | { cache: true } | { mode: true } | { rate: 'up' | 'down' }
 
 const MENU_NOTE = 'Dollar amounts on a subscription are API-equivalent: what the same use would cost on the API.'
 
@@ -1825,6 +1863,7 @@ async function bandMenu($: EngineInterface, band: Band) {
   const have = rule ? (await choices($))[rule] : undefined
   const own: (readonly [string, MenuChoice])[] = []
   if (rule) for (const [value, label] of RULES[rule]) if (value !== have) own.push([label, { rule: value }])
+  if (band.rate) own.push(['Mark this 👍 (right call)', { rate: 'up' }], ['Mark this 👎 (wrong call)', { rate: 'down' }])
   if (band.tip) own.push(['Stop suggesting', { tip: band.tip }])
   const cache: (readonly [string, MenuChoice])[] = (band.coldMore ?? []).map(c => [c.label, { cold: c.id }])
   const mode: readonly [string, MenuChoice] = ['When the band shows…', { mode: true }]
@@ -1839,6 +1878,7 @@ async function bandMenu($: EngineInterface, band: Band) {
   }
   if (!v) return
   if ('rule' in v && rule) await setRule($, rule, v.rule)
+  else if ('rate' in v && band.rate) await giveFeedback($, band.rate, v.rate)
   else if ('tip' in v) await stopStartTips($)
   else if ('cold' in v) await pressCold($, v.cold)
   else if ('mode' in v) await chooseBandMode($)
@@ -1888,6 +1928,7 @@ async function fixedContext($: EngineInterface) {
 async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs: number) {
   const r = run.rating
   const delegated = run.delegate !== undefined && run.delegated
+  const tests = testsOutcome(run.signals) ?? run.subAgents.map(id => watches.get(id)).map(w => (w ? testsOutcome(w.signals) : undefined)).find(t => t !== undefined)
   const tokens = run.mainCost + run.subCost
   // The ledger prices each response as /cost does, with the cache TTL it was really
   // written at; a background agent from an earlier turn finishing now counts in it too.
@@ -1973,6 +2014,9 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
       taken: round(delegated ? (run.takenDelegate ?? run.takenMain) : run.takenMain),
       change: run.change,
       offered: run.offered,
+      ...(run.would ? { would: run.would, wouldTaken: round(run.wouldTaken ?? 0) } : {}),
+      // The objective outcome: how the last test run ended, in the main chat, else in one of the turn's helpers.
+      ...(tests ? { tests } : {}),
       aborted,
       ...(run.rater ? { rater: run.rater } : {}),
       overhead: round(run.overhead),
@@ -2102,7 +2146,11 @@ async function escalateHelper($: EngineInterface, id: string, w: Watch, sign: St
       await log($, `helper ${id} struggling (${sign.why}): kept at ${cur}, as you chose`)
       return
     }
-    if (a === 'timeout') why = `no answer in ${questionWait}`
+    // No answer: the helper goes on at its effort, as on the band. Sending it back on silence would make a quality risk out of a missed dialog.
+    if (a === 'timeout') {
+      await log($, `helper ${id} struggling (${sign.why}): no answer in ${questionWait}, goes on at ${cur}`)
+      return
+    }
   }
   if (to && !why && !(await useChance($, w.task))) why = 'the task has no retry left'
   if (to && !why) return raiseHelper($, id, w, cur, to, sign)
@@ -2121,20 +2169,20 @@ async function raiseHelper($: EngineInterface, id: string, w: Watch, cur: Level,
 }
 
 // The Stuck question for a helper, in the dialog. A dismissed question is a no, as for the main chat. An answer
-// that comes after the wait is too late: the helper is already back with the main chat.
+// that comes after the wait is too late: the helper went on at its effort.
 async function askHelper($: EngineInterface, sign: Struggle, cur: Level, to: Level): Promise<'yes' | 'no' | 'timeout'> {
   const a = await askWithin(
     $,
     {
       header: 'Stuck',
-      question: `A helper looks stuck: ${sign.why}. Raise its effort from ${cur} to ${to}? It uses one of this task's ${chances} retries. With no answer in ${questionWait} it goes back to the main chat.`,
+      question: `A helper looks stuck: ${sign.why}. Raise its effort from ${cur} to ${to}? It uses one of this task's ${chances} retries. With no answer in ${questionWait} it goes on at ${cur}.`,
       options: [
         [`Raise to ${to}`, 'yes'],
         [`Keep ${cur}`, 'no'],
       ],
     },
     late => {
-      if (late === 'yes') $.ui.toast('rightsize: too late, the helper already went back to the main chat.')
+      if (late === 'yes') $.ui.toast(`rightsize: too late, the helper went on at ${cur}.`)
     },
   )
   return a === TIMED_OUT ? 'timeout' : a === 'yes' ? 'yes' : 'no'
@@ -2185,44 +2233,25 @@ function coldCostText(d: number, rates: Awaited<ReturnType<typeof windowPerDolla
 
 // After the cache expired, the next request writes the whole conversation again. Past
 // 200K tokens Claude Code compacts an idle session before the cache expires, so this is
-// for sessions under that. A subscriber is told the cost in their 5-hour window.
-async function holdIdle($: EngineInterface): Promise<boolean> {
-  if (idleWarning === null || billingBy === null) return false
+// for sessions under that. The prompt is never held: the band notes the cost (as a share of
+// the 5-hour window on a subscription) beside what rightsize did with the prompt, and what
+// /compact would have cost, so the person knows for next time.
+async function noteIdle($: EngineInterface) {
+  idleNote = ''
+  if (idleWarning === null || billingBy === null) return
   const last: LastTurn | undefined = lastTurnAt ? { at: lastTurnAt, context: lastContext } : (await lastTurns($))[sessionId]
-  if (!last || last.at === idleWarnedFor) return false
+  if (!last || last.at === idleWarnedFor) return
   // Keep-warm requests refreshed the cache after the turn ended: it went cold an hour after the last of them.
   const idle = (await $.clock.now()) - Math.max(last.at, lastWarmAt)
   const context = lastContext || last.context
-  if (idle < cacheTtl || !context || context >= IDLE_MAX_CONTEXT) return false
+  if (idle < cacheTtl || !context || context >= IDLE_MAX_CONTEXT) return
   const s = await situation($)
   const c = idleCost(prices[s.tier], context)
-  if (c.resend < idleWarning) return false
+  if (c.resend < idleWarning) return
   idleWarnedFor = last.at
   const rates = billing === 'subscription' ? await windowPerDollar($) : undefined
-  // Not timed: sending would cost more than a warm cache, so the prompt stays held until the person answers.
-  // After the wait the band says so; the question stays open.
-  const cost = usageCostText(c.resend, rates)
-  let answered = false
-  let shown = false
-  void $.clock.sleep(QUESTION_WAITS[questionWait]).then(async () => {
-    if (answered) return
-    shown = true
-    const text = `Held: sending now costs ${cost} more than a warm cache. Answer to go on.`
-    await setBand($, { acted: true, text })
-    await log($, `no answer in ${questionWait} to Idle: the prompt stays held; band: ${text}`)
-  }, () => undefined)
-  const a = await pick($, {
-    header: 'Idle',
-    question: `This session sat idle for ${idleFor(idle)}, so its cache has likely expired. Sending writes the whole conversation (~${Math.round(context / 1000)}K tokens) to the cache again: ${usageCostText(c.resend, rates)} more on ${TIER_NAME[s.tier]} than a warm cache. /clear costs nothing; /compact ${usageCostText(c.compact, rates)}.`,
-    options: [
-      ['Send it', false],
-      ['Hold it: I will /clear or /compact first', true],
-    ],
-  })
-  answered = true
-  if (shown) await setBand($, null)
-  await log($, `idle ${idleFor(idle)} with ${context} tokens: ${a ? 'held' : 'sent'}`)
-  return a === true
+  idleNote = `Idle ${idleFor(idle)}: the cache went cold, so this prompt writes the conversation (~${Math.round(context / 1000)}K tokens) again, ${usageCostText(c.resend, rates)} more than warm; /compact first would have cost ${usageCostText(c.compact, rates)}.`
+  await log($, `idle ${idleFor(idle)} with ${context} tokens: noted on the band (${money(c.resend)} to write again)`)
 }
 
 // ---- Before the cache goes cold ----------------------------------------------
@@ -2357,7 +2386,10 @@ async function coldCheck($: EngineInterface) {
   coldTurn = turn
   const gen = coldGen
   if (plan.action === 'warm') {
-    await startWarm($, turn, (plan.hours ?? 8) * 60 * 60_000, coldMode)
+    // Until the usual start: to the next time the person usually sends their first prompt, at most 8 hours.
+    const hours = (plan.hours ?? 8) * 60 * 60_000
+    const ms = plan.untilStart ? Math.min(hours, nextStart(turn.endedAt, usualStart(runLog, await $.clock.now()).minutes).at - turn.endedAt) : hours
+    await startWarm($, turn, ms, coldMode)
   } else if (plan.action === 'handoff' || plan.action === 'compact') {
     await log($, `before the cache goes cold: ${plan.action} ${Math.round(leadMs(cacheTtl) / 60_000)} min before it expires (${money(cold)} cold, ${Math.round(context / 1000)}K tokens on ${TIER_NAME[tier]})`)
     await armCold($, gen, turn.endedAt + cacheTtl - leadMs(cacheTtl), () => atCold($, turn, plan.action as 'handoff' | 'compact'))
@@ -2455,7 +2487,8 @@ async function closeOffer($: EngineInterface, choice: string) {
 /** What the run has used, in the band's one unit; undefined before the first request. */
 const usedText = (w: Warming) => (w.pings === 0 && w.spent === 0 ? undefined : usedTag(w.spent, billing === 'subscription', w.rates))
 
-const showWarming = ($: EngineInterface, w: Warming) => showCold($, warmingText({ until: w.until, used: usedText(w) }), [{ id: 'stop', label: 'Stop keeping warm' }], true)
+/** The keep-warm status row: one Stop button; "Don't keep warm again" (the row set to off) waits in the ⋯ menu. */
+const showWarming = ($: EngineInterface, w: Warming) => showCold($, warmingText({ until: w.until, used: usedText(w) }), [{ id: 'stop', label: 'Stop keeping warm' }], true, [{ id: 'off', label: "Don't keep warm again" }])
 
 /** The keep-warm run ends: `what` is the band's last word on it, without a full stop. */
 async function endWarm($: EngineInterface, w: Warming, what: string) {
@@ -2848,6 +2881,8 @@ async function summary($: EngineInterface) {
     `  Measured runs: ${runs}`,
     ...(sw ? [`  Effort switches that missed the cache: ${Math.round(sw.ratio * 100)}% of ${sw.n} (each one in ~/.claude/mods-logs/rightsize/<session>/switches.jsonl)`] : []),
     ...(typeof install === 'string' ? [`  Sharing install ID: ${install} (quote it to rightsize@aivalue.blog to ask about or delete your shared data)`] : []),
+    `  Mode: ${watching ? 'watch only (rates and plans every prompt, changes nothing; Mode in /config turns it on)' : 'act'}`,
+    `  Share anonymous feedback: ${sharing ? 'on' : 'off (the row in /config turns it on; it sends numbers only, never prompts, code or paths)'}`,
     '',
     'Commands: /rightsize help',
   ].join('\n')
@@ -3075,19 +3110,9 @@ async function runReset($: EngineInterface, name: string): Promise<string> {
 
 // ---- Sharing -------------------------------------------------------------------
 
-// Opt-in only. After 20 rated prompts, rightsize asks once whether to share anonymous
-// numbers (share.ts says exactly which) with its author. On a yes it sends what the
-// log gains from then on, at most once an hour; it never sends what came before.
-
-const qShare: Question<boolean> = {
-  header: 'Share',
-  question:
-    'Help improve rightsize? Share anonymous numbers with its author: task types, models, effort levels, estimated and real costs, what went wrong, and your 👍 and 👎. Never your prompts, code, file names or paths. Turn it off any time with Share anonymous feedback in /config.',
-  options: [
-    ['Share anonymous numbers', true],
-    ["Don't share", false],
-  ],
-}
+// Opt-in only, from the Share anonymous feedback row in /config (rightsize never asks): on a yes it sends
+// anonymous numbers (share.ts says exactly which) with its author, what the log gains from then on, at most
+// once an hour; it never sends what came before. /rightsize status and the report say whether it is on.
 
 async function setShare($: EngineInterface, enabled: boolean) {
   sharing = enabled
@@ -3100,34 +3125,6 @@ async function setShare($: EngineInterface, enabled: boolean) {
   if (typeof install === 'string' && /^[a-f0-9]{32}$/.test(install)) return
   await $.store.set('shareInstall', newInstall()).catch(() => undefined)
   await $.store.set('sharedUpTo', new Date(await $.clock.now()).toISOString()).catch(() => undefined)
-}
-
-/** Share is asked after this many rated prompts. Not answered, it is asked again at the next; after the last, never again. */
-const SHARE_ASKS = [SHARE_ASK_AFTER, 50, 100]
-
-async function askShare($: EngineInterface) {
-  // `shareAsked`: answered, or asked for the last time.
-  if (sharing || onBand('Share') || (await $.store.get('shareAsked').catch(() => undefined)) === true) return
-  const stored = await $.store.get('shareAsks').catch(() => undefined)
-  const asks = typeof stored === 'number' ? stored : 0
-  const at = SHARE_ASKS[asks]
-  if (at === undefined || runLog.filter(l => (l.kind ?? 'run') === 'run').length < at) return
-  await $.store.set('shareAsks', asks + 1).catch(() => undefined)
-  const why: BandWhy = { kind: 'share', at, last: asks + 1 >= SHARE_ASKS.length, next: SHARE_ASKS[asks + 1] }
-  if (await bandCanAsk($)) return askBand($, qShare, 'prompt', false, why)
-  const yes = await pick($, qShare)
-  if (yes === undefined) await bandUnanswered($, why)
-  else await answerShare($, yes)
-}
-
-/** The answer to Share, yes or no: either way it is not asked again. */
-async function answerShare($: EngineInterface, yes: boolean) {
-  await $.store.set('shareAsked', true).catch(() => undefined)
-  await log($, `share question: ${yes ? 'yes' : 'no'}`)
-  if (!yes) return
-  await setShare($, true)
-  await putConfig($, 'share', 'on')
-  $.ui.toast('Rightsize: thanks. Anonymous numbers will be shared; Share anonymous feedback in /config turns it off.')
 }
 
 async function sendShare($: EngineInterface) {
@@ -3181,6 +3178,31 @@ async function checkStart($: EngineInterface) {
   else await setBand($, { text, acted: true, tip: key })
 }
 
+/** The day-one tip is shown once per install; the store remembers it. */
+const DAY_ONE_KEY = 'startDayOne'
+
+// On the first session on an Opus start, before the log can say anything (fewer than START_MIN_PROMPTS rated prompts),
+// the band gives the research-backed recommendation once: start on Sonnet 5.5 at medium. The weekly check (checkStart)
+// confirms or reverses it later from the person's own log. rightsize never switches the model itself.
+async function dayOneTip($: EngineInterface) {
+  if (off || startEvery === null || bandMode === 'off') return
+  if ((await $.store.get(DAY_ONE_KEY).catch(() => undefined)) === true) return
+  if (runLog.filter(l => (l.kind ?? 'run') === 'run').length >= START_MIN_PROMPTS) return
+  const s = await situation($)
+  if (s.tier !== 'opus') return
+  await $.store.set(DAY_ONE_KEY, true).catch(() => undefined)
+  const text = `Starting tip: most work runs as well on Sonnet 5.5 at medium for well under half the usage of ${TIER_NAME[s.tier]}. Reviews still run on Opus, and work Sonnet would struggle with goes to a stronger helper. Switch with /model sonnet.`
+  await log($, 'day-one start tip shown: Sonnet 5.5 at medium')
+  await setBand($, { text, acted: true, tip: 'sonnet:medium', tipSwitch: '/model sonnet' })
+}
+
+/** The tip's Switch button: puts the command in the prompt box; the person presses Enter. */
+async function fillSwitch($: EngineInterface, cmd: string) {
+  const filled = await $.prompt.fill({ text: cmd, mode: 'replace' }).catch(() => null)
+  await setBand($, null)
+  $.ui.toast(filled?.isFilled ? `Rightsize: press Enter to run ${cmd}.` : `Rightsize: could not fill the prompt box; type ${cmd}.`)
+}
+
 async function snoozeStart($: EngineInterface, key: string) {
   await $.store.set('startSnooze', { key, until: (await $.clock.now()) + START_SNOOZE_DAYS * DAY_MS }).catch(() => undefined)
   await setBand($, null)
@@ -3206,6 +3228,7 @@ function applyProfile() {
   chances = u.chances
   answers = u.answers
   coldMode = u.beforeCold
+  reviewCeiling = u.reviewCeiling
 }
 
 // Sets the module's variable for one row from `cfg`: at load, when /config changes it, and when rightsize writes it itself.
@@ -3226,6 +3249,9 @@ function applyOption(key: SettingKey) {
       return
     case 'remember':
       rememberMode = v === 'every session' || v === 'this session' ? v : 'ask'
+      return
+    case 'mode':
+      watching = watchOnly(v)
       return
     case 'profile':
     case 'handOff':
@@ -3473,7 +3499,9 @@ export const register: Register = (on, options) => {
     ratedRuns.clear()
     await refreshMisses($)
     off = (await readSwitches($))[NAME] === false
+    profileNoted.clear()
     await checkStart($).catch(() => undefined)
+    await dayOneTip($).catch(() => undefined)
     try {
       version = String((JSON.parse(await readText($, `${$.plugin.root}/.claude-plugin/plugin.json`)) as { version?: unknown }).version ?? '')
     } catch {
@@ -3506,7 +3534,7 @@ export const register: Register = (on, options) => {
       const start = startBlock(adviseStart(runs, await startContext($), now), billing === 'subscription', money)
       // The desktop app (any surface but the terminal) renders the report as Markdown.
       const markdown = (await $.session.surfaces()).some(x => x !== 'terminal')
-      return { text: buildReport(runs, switches, { now, session: sessionId, subscription: billing === 'subscription', start, pause: missBlock, markdown, ...(measureFrom ? { measureFrom: new Date(measureFrom).toISOString() } : {}) }) }
+      return { text: buildReport(runs, switches, { now, session: sessionId, subscription: billing === 'subscription', start, pause: missBlock, markdown, sharing, watching, ...(measureFrom ? { measureFrom: new Date(measureFrom).toISOString() } : {}) }) }
     }
     if (arg === 'share') {
       const runs = await readRuns($)
@@ -3567,10 +3595,8 @@ export const register: Register = (on, options) => {
     if (text.startsWith('/')) return next(e)
     // When the prompt came in, before any rating or question: the start of the task's time to done.
     const submittedAt = await $.clock.now()
-    if (await holdIdle($)) {
-      await $.prompt.fill({ text: e.text, mode: 'replace' }).catch(() => null)
-      return { drop: 'rightsize held this prompt and put it back in the box. Run /clear or /compact, then send it.' }
-    }
+    await noteIdle($).catch(() => undefined)
+    profileChose = []
     // The session is idle, so no running turn can still take a prompt that has not started: it never will.
     if (e.turnId === undefined) await releaseStale($)
 
@@ -3591,9 +3617,16 @@ export const register: Register = (on, options) => {
       const { rating: rated, overhead, ratingMs, prompt, failed, by, task: kept, unsure } = await rate($, text, s)
       // A rating that continues the task is planned as the task's type; any other starts a task of its own type.
       const follows = rated !== undefined && rated.continues === true && kept !== null
-      const ratedType = follows && kept.type !== rated.type ? rated.type : undefined
-      const r = rated && follows && kept.type !== rated.type ? { ...rated, type: kept.type } : rated
+      // Except in a review task: a follow-up the rater typed as something else (a lookup, a fix) is planned as what it
+      // is. The review rule is for the review, not for the prompts around it, and the switch costs several times the turn.
+      const reviewAside = follows && kept.type === 'review' && rated.type !== 'review'
+      const retyped = follows && kept.type !== rated.type && !reviewAside
+      const ratedType = retyped ? rated.type : undefined
+      const r = rated && retyped ? { ...rated, type: kept.type } : rated
+      // The prompt says the last reply was wrong: an outcome for the cheaper route that made it, if one did.
+      if (rated?.corrects && kept) await noteCorrection($, kept.id).catch(() => undefined)
       if (r) {
+        if (reviewAside) await log($, `the prompt continues a review task but is a ${r.type}: planned as that, no review switch`)
         // While Claude fans work out to workflows, a single hand-off would only cut across it. After one,
         // Workflows says whether hand-offs go on (follow my rules, right-size every agent) or wait (the default).
         const planned = plan(r, s, floor)
@@ -3609,10 +3642,15 @@ export const register: Register = (on, options) => {
         const followsYou = unfanned.kind === 'effort' ? mine.raise !== undefined : mine.up !== undefined
         const skipped = paceNow.mode === 'max' && costlier && !followsYou
         const p: Plan = skipped ? { kind: 'none', why: 'the usage window is nearly used up' } : unfanned
-        const d = await resolve($, p, r, s)
+        // Watch only: the plan is made and logged, nothing is applied and nothing is asked.
+        const d = watching ? {} : await resolve($, p, r, s)
         if (d.session) await $.state.set({ plugin: 'rightsize', key: 'sessionEffort' }, d.session)
         if (d.delegate) out = { ...e, context: [...(e.context ?? []), delegateNote(d.delegate, chances)] }
         run = startRun(r, s, d, p, (await seenEffort($)) ?? s.level, overhead, { text, at: submittedAt, ...(e.turnId !== undefined ? { during: e.turnId } : {}) })
+        if (watching && p.kind !== 'none') {
+          run.would = planChange(p)
+          run.wouldTaken = wouldCost(p, r, s)
+        }
         // Learning mode: the same plan with the learned step exponent applied, logged beside the real one. Nothing acts on it.
         try {
           const learnG = stepState.g
@@ -3644,13 +3682,23 @@ export const register: Register = (on, options) => {
           await countTie($)
         }
         const was = base.rules ?? DEFAULT_RULES
-        const note = paceText(skipped || movedRules.handOff !== was.handOff || movedRules.lower !== was.lower)
-        const band = noDowngrade
+        const moved = movedRules.handOff !== was.handOff || movedRules.lower !== was.lower
+        const note = paceText(skipped || moved, moved ? { from: was, to: movedRules } : undefined)
+        const band = watching
+          ? watchBand(run, p, s)
+          : noDowngrade
           ? { text: 'No change: the context was cut or missing, so rightsize did not lower this or hand it to a cheaper model.', acted: false }
           : p !== unfanned
           ? { text: `Kept ${s.level} on ${TIER_NAME[s.tier]} instead of ${unfanned.kind === 'delegate' ? `a ${TIER_NAME[unfanned.tier]} subagent` : unfanned.kind === 'switch' ? `running on ${TIER_NAME[unfanned.tier]}` : `raising to ${unfanned.kind === 'effort' ? unfanned.level : ''}`}.`, acted: true }
           : bandFor(run, d, p)
-        await setBand($, note ? { ...band, text: `${band.text} ${note}` } : band, true)
+        // The first time a case comes up in a session with no rule set, the band says the profile decided it.
+        const fresh = profileChose.filter(k => !profileNoted.has(k))
+        for (const k of fresh) profileNoted.add(k)
+        const byProfile = fresh.length ? `Your ${profile} profile decided (${fresh.map(k => RULE_NAME[k]).join(', ')}); ⋯ changes it.` : ''
+        const extras = [note, byProfile, idleNote].filter(Boolean).join(' ')
+        const hadIdle = idleNote !== ''
+        idleNote = ''
+        await setBand($, extras ? { ...band, text: `${band.text} ${extras}`, acted: band.acted || hadIdle } : band, true)
         const did = d.delegate ? `delegate ${d.delegate.tier}` : d.model ? `switch to ${d.model.tier} at ${d.model.level} for the turn` : d.level ? `${d.auto ? 'auto ' : ''}${d.level} for the prompt` : d.session ? `${d.session} for the session` : 'no change'
         const fit = TIERS.map(t => `${t[0]}:${r.fit[t] ?? (r.fit[t] === null ? 'no' : '?')}`).join(' ')
         if (noDowngrade) await log($, `no downgrade: context ${unsure}`)
@@ -3947,11 +3995,11 @@ export const register: Register = (on, options) => {
         const tip = band.tip
         buttons.push({ key: 'tip-later', label: 'Not now', press: () => snoozeStart($, tip) })
       }
-      if (band.rate) {
-        const ref = band.rate
-        buttons.push({ key: 'good', label: '👍', press: () => giveFeedback($, ref, 'up') })
-        buttons.push({ key: 'bad', label: '👎', press: () => giveFeedback($, ref, 'down') })
+      if (band.tipSwitch) {
+        const cmd = band.tipSwitch
+        buttons.push({ key: 'tip-switch', label: `Switch: ${cmd}`, press: () => fillSwitch($, cmd) })
       }
+      // 👍 and 👎 wait in the ⋯ menu: the outcomes rightsize measures itself (rework, tests, corrections) carry the weight.
     }
     // Number keys 1-9 run down the rows in order.
     let keys = 0
@@ -4062,7 +4110,6 @@ export const register: Register = (on, options) => {
       const run = active
       active = null
       await finish($, run, e.isAborted, e.durationMs)
-      await askShare($).catch(() => undefined)
     }
     // The turn's own questions go, unanswered; those asked while its prompt was sent show now.
     if (e.agentId === undefined) await endBand($, 'turn')

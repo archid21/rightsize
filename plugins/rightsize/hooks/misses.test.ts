@@ -178,3 +178,17 @@ test('ownTasks counts the log\'s own tasks, not the research priors that missCou
   expect(ownTasks([])).toEqual({})
   expect(missCounts([])['lookup:haiku'], 'missCounts still stands for the prior').toBe(PRIOR_N)
 })
+
+test('a test run that failed at the end of the turn is a miss for a lowering or a hand-down', async () => {
+  expect(rates([handDown({ tests: 'failed' }), handDown({ tests: 'passed' })])).toEqual({ 'search:haiku': { n: 2, misses: 1 } })
+  expect(rates([lowered({ tests: 'failed' }), lowered({ tests: 'passed' })])).toEqual({ 'lookup:opus': { n: 2, misses: 1 } })
+  expect(rates([run({ tests: 'failed' })]), 'an unchanged turn: the rater made no cheaper call').toEqual({})
+})
+
+test('a corrected line is a miss for the cheaper route of the run it names, once, unless the person gave a verdict', async () => {
+  const corrected = (ref: string): RunLine => ({ at, kind: 'corrected', ref })
+  expect(rates([handDown({ id: 'r1' }), corrected('r1')])).toEqual({ 'search:haiku': { n: 2, misses: 1 } })
+  expect(rates([lowered({ id: 'r2' }), corrected('r2'), corrected('r2')]), 'counted once').toEqual({ 'lookup:opus': { n: 2, misses: 1 } })
+  expect(rates([run({ id: 'r3' }), corrected('r3')]), 'an unchanged run is not the rater\'s miss').toEqual({})
+  expect(rates([handDown({ id: 'r4' }), corrected('r4'), { at, kind: 'feedback', ref: 'r4', value: 'up' }]), 'a 👍 stands over the correction').toEqual({ 'search:haiku': { n: 2, misses: 0 } })
+})

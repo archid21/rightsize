@@ -16,7 +16,12 @@ export type Signals = {
   calls: Record<string, { n: number; errors: number; test?: true }>
   /** Kinds that have already raised effort this turn. */
   fired: Kind[]
+  /** How the last test run in the turn ended: the objective outcome of the work, where there was one. */
+  lastTest?: 'passed' | 'failed'
 }
+
+/** What the turn's test runs say about the work: how the last one ended, or nothing when none ran. */
+export const testsOutcome = (s: Signals) => s.lastTest
 
 export type Kind = 'errors' | 'repeat-fail' | 'loop' | 'long'
 export type Struggle = { kind: Kind; why: string }
@@ -116,10 +121,12 @@ export function isTestCommand(tool: string, input: Record<string, unknown>): boo
 /** A test run that fails does not add to `errors`, but its repeats are still counted, one more allowed. */
 export function noteCall(s: Signals, key: string, isError: boolean, test = false): Signals {
   const c = s.calls[key] ?? { n: 0, errors: 0 }
+  const isTest = test || c.test === true
   return {
     ...s,
     errors: s.errors + (isError && !test ? 1 : 0),
-    calls: { ...s.calls, [key]: { n: c.n + 1, errors: c.errors + (isError ? 1 : 0), ...(test || c.test ? { test: true as const } : {}) } },
+    calls: { ...s.calls, [key]: { n: c.n + 1, errors: c.errors + (isError ? 1 : 0), ...(isTest ? { test: true as const } : {}) } },
+    ...(isTest ? { lastTest: isError ? ('failed' as const) : ('passed' as const) } : {}),
   }
 }
 

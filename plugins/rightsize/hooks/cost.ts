@@ -134,6 +134,8 @@ export type Rating = {
   approval?: boolean
   /** The prompt carries on the task in the last reply rather than starting a new goal. */
   continues?: boolean
+  /** The prompt says the last reply was wrong or must be undone: an outcome for the route that made it. */
+  corrects?: boolean
   reason: string
 }
 
@@ -156,6 +158,13 @@ export const CAL_FULL = 20
 export const SWITCH_KEY = 'cache:effort-switch'
 /** The share assumed to miss before any switch is measured. Measured switches almost all kept the cache, so the prior is low, rounded up to stay cautious. */
 export const SWITCH_MISS_PRIOR = 0.1
+/**
+ * Anthropic's docs say an effort change keeps the cache on the current models. Once this many measured switches
+ * have missed at most SWITCH_KEPT_MAX of the time, a switch is priced as free: the rare miss is noise, and pricing it
+ * would stop every small lowering on a big conversation.
+ */
+export const SWITCH_KEPT_N = 20
+export const SWITCH_KEPT_MAX = 0.05
 /** main: the main chat. delegate: rightsize's hand-off. subagent: a subagent Claude started, moved to a cheaper model. */
 export type CalRoute = 'main' | 'delegate' | 'subagent'
 export const calKey = (type: TaskType, route: CalRoute) => `${type}:${route}`
@@ -289,6 +298,8 @@ export type Situation = {
   minTasks?: number
   /** The highest effort rightsize raises to (Highest effort); max when absent. A ceiling under the level in use stops raises; it never lowers. */
   ceiling?: Level
+  /** The highest level a review switched to Opus runs at (the profile's; Economy stops at high); the ceiling when absent. */
+  reviewCeiling?: Level
   /** Models rightsize sends no work to: hand-offs and Claude's subagents never go to them (Use Haiku, Use Fable). */
   without?: readonly Tier[]
   /** False: a close call always takes the guide's pick (Explore close calls). True when absent. */
@@ -322,7 +333,14 @@ export function rawMainCost(r: Rating, s: Situation, level: Level) {
 export function switchCost(s: Situation, switches: number) {
   const p = s.prices[s.tier]
   const miss = dollars(p, { cacheWrite: s.context }) - dollars(p, { cacheRead: s.context })
-  return switches * factor(s.cal, SWITCH_KEY, SWITCH_MISS_PRIOR) * miss
+  return switches * switchMissShare(s.cal) * miss
+}
+
+/** The share of effort switches priced as a cache miss: the learned share, or none once enough measured switches have kept the cache. */
+export function switchMissShare(cal: Calibration) {
+  const e = cal[SWITCH_KEY]
+  if (e && e.n >= SWITCH_KEPT_N && e.ratio <= SWITCH_KEPT_MAX) return 0
+  return factor(cal, SWITCH_KEY, SWITCH_MISS_PRIOR)
 }
 
 export function mainCost(r: Rating, s: Situation, level: Level, switches: number) {
@@ -594,7 +612,9 @@ const atLeast = (l: Level, min: Level) => (levelRank(l) < levelRank(min) ? min :
 function reviewPlan(r: Rating, s: Situation, floor: Level): Plan | undefined {
   // Unlike a route in plan(), a ceiling below high does not drop this one: the review must still run,
   // so the switch is capped at the ceiling on purpose, though it then runs below the level a review needs.
-  const level = clampCeiling(clampFloor(atLeast(r.fit[REVIEW_TIER] ?? REVIEW_LEVEL, REVIEW_LEVEL), floor), ceilingOf(s))
+  // The profile's review ceiling (Economy: high) caps it too.
+  const top = s.reviewCeiling && levelRank(s.reviewCeiling) < levelRank(ceilingOf(s)) ? s.reviewCeiling : ceilingOf(s)
+  const level = clampCeiling(clampFloor(atLeast(r.fit[REVIEW_TIER] ?? REVIEW_LEVEL, REVIEW_LEVEL), floor), top)
   if (tierRank(s.tier) < tierRank(REVIEW_TIER)) {
     if (s.without?.includes(REVIEW_TIER)) return undefined
     // The main chat on Opus for one turn: its work at that level, plus writing the conversation to Opus's cache once.

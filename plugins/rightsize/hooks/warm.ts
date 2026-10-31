@@ -264,8 +264,8 @@ export const ignoredLately = (lines: readonly Answered[]) => {
   return last.length === BACK_OFF_AFTER && last.every(c => c === 'ignored')
 }
 
-/** What a row value does at a turn's end: `warm` has the hours. A handoff without Groundwork is a compaction. */
-export type ColdPlan = { action: 'ask' | 'warm' | 'handoff' | 'compact' | 'off'; hours?: number }
+/** What a row value does at a turn's end: `warm` has the hours, or `untilStart` (the usual start time, at most the hours). A handoff without Groundwork is a compaction. */
+export type ColdPlan = { action: 'ask' | 'warm' | 'handoff' | 'compact' | 'off'; hours?: number; untilStart?: true }
 
 export function coldPlan(value: string, groundwork: boolean): ColdPlan {
   switch (value) {
@@ -273,6 +273,8 @@ export function coldPlan(value: string, groundwork: boolean): ColdPlan {
       return { action: 'warm', hours: 2 }
     case 'keep warm 8 h':
       return { action: 'warm', hours: 8 }
+    case 'keep warm until my usual start':
+      return { action: 'warm', hours: 8, untilStart: true }
     case 'save a handoff':
       return { action: groundwork ? 'handoff' : 'compact' }
     case 'compact':

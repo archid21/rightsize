@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { SESSION_TOTAL, accuracyRows, type RunLine, bandShareText, buildReport, costTag, counterfactual, fixedBlock, keepWarmLine, parseLines, problems, sessionTotal, shareMessage, shareText, span, taskActual, taskEstimated, taskExtra, taskStay, tieCounts, totals, usedTag, wholeTaskRows, wholeTasks, windowCostText, windowRates } from './report'
+import { SESSION_TOTAL, accuracyRows, type RunLine, bandShareText, buildReport, costTag, counterfactual, fixedBlock, keepWarmLine, parseLines, problems, sessionTotal, shareMessage, shareText, span, taskActual, taskEstimated, taskExtra, taskStay, tieCounts, totals, usedTag, watchLine, wholeTaskRows, wholeTasks, windowCostText, windowRates } from './report'
 import type { StartBlock } from './start'
 
 const NOW = Date.parse('2026-10-23T18:00:00.000Z')
@@ -1026,4 +1026,12 @@ test('the report shows the Keep warm line, and Total saved and the session total
   const sub = report(lines, { subscription: true })
   const at = sub.split('\n').findIndex(l => l.startsWith('Keep warm'))
   expect(sub.split('\n').slice(at, at + 2).join(' ').replace(/\s+/g, ' ')).toContain('Keep warm: 1 run · saved ~$0.60 on 1 return · cost ~$0.10 · net ~$0.50 saved (API-equivalent)')
+})
+
+test('the watch-only line sums what the planned routes would have saved against staying', async () => {
+  const w = (would: RunLine['would'], stay: number, wouldTaken: number): RunLine => ({ at: new Date(NOW - 1000).toISOString(), kind: 'run', type: 'search', route: 'main', tier: 'opus', change: 'none', would, stay, wouldTaken })
+  expect(watchLine([], false, false)).toBe('')
+  expect(watchLine([], false, true)).toContain('Nothing to show yet')
+  const line = watchLine([w('delegate-down', 1, 0.3), w('none', 0.5, 0.5), w('lower', 0.2, 0.1)], true, true)
+  expect(line).toBe('Watch only: 3 prompts rated, 2 would have been changed, which would have saved ~$0.80 API-equivalent against staying (estimates; nothing was applied). Mode in /config turns rightsize on.')
 })

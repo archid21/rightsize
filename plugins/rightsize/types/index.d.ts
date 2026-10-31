@@ -41,6 +41,8 @@ export type RightsizeBand = {
   canClear?: boolean
   /** A suggested starting model and level (`sonnet:high`): the band offers Not now and Stop suggesting. */
   tip?: string
+  /** The command that makes the suggested switch (`/model sonnet`): the band offers a button that puts it in the prompt box. */
+  tipSwitch?: string
   /** The id of the run this band is about: the band offers 👍 and 👎, which tune rightsize on this machine only. */
   rate?: string
   /** The confidence behind the band's `Confidence: high.`, for the ⋯ menu: `Confidence: high, 42 of your tasks, 4% missed.` Set only on a move to a cheaper model. */

@@ -277,3 +277,7 @@ test('the cache held when the first request read at least 80% of the kept conver
   expect(cacheHeld(0, 80_500), 'a whole rewrite').toBe(false)
   expect(cacheHeld(10, 0), 'no known context').toBe(false)
 })
+
+test('keep warm until my usual start is a warm plan of at most 8 hours, cut to the usual start by the caller', async () => {
+  expect(coldPlan('keep warm until my usual start', false)).toEqual({ action: 'warm', hours: 8, untilStart: true })
+})

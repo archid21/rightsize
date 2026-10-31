@@ -1,0 +1,60 @@
+# What rightsize touches
+
+rightsize is a mod: it runs inside Claude Code and hooks some of its events. This is everything it does outside the chat. Nothing in your project is read or written.
+
+## Hooks
+
+- `prompt.submit`: rates the prompt (Sonnet by default), may change the effort level, and adds the hidden hand-off note. Your text is not changed. With **Mode** set to watch only, it rates and plans the prompt, logs the plan, and applies nothing.
+- `turn.start`: matches a turn that is starting to the prompt it was rated for (by its text), so a prompt typed while another turn runs is measured in its own turn. It changes nothing.
+- `turn.step`: watches each step to see when Claude is stuck and raises effort under your Raising rule.
+- `agent.spawn`: may move a general-purpose subagent that names no model to a cheaper model (see **Claude's subagents**).
+- `tool.call`: notes whether each tool call failed and whether a test command passed or failed (for stuck turns and for the miss rate), and asks before a workflow starts, at each Workflow call until you answer. It denies three things:
+  - steps only you can approve (shell commands that push, publish, release, deploy or merge; MCP tools whose action name starts with send, publish, deploy, merge or post) inside a hand-off helper;
+  - the calls of a helper that was stopped and sent back to the main chat;
+  - rework past the task's retry budget (the main chat then finishes the work).
+
+  It never approves a call and never changes a permission decision anywhere else.
+- `config.set`: watches its own `rightsize.*` rows in `/config`, to know which values you set. The write goes through as you made it.
+- `turn.complete`: measures the turn. Before a big session's cache goes cold (see **Before the cache goes cold**), it may start a timer. The timer sends one small request through Claude Code over the same conversation, submits the prompt `wrap up` for Groundwork, or compacts the conversation. It lists the session's commands to find Groundwork. It starts nothing while a turn runs.
+- `command.run` (`/rightsize`), `session.start` and `ui.render` (the band above the prompt) serve its own command, start-up and display.
+
+## Settings it writes
+
+Only its own `rightsize.*` rows in `/config`: when you answer one of its questions, pick a rule in the band's ⋯ menu, choose "Don't keep warm again", or run `/rightsize reset`. It never writes the permission mode or any other setting, and it sets no environment variables.
+
+## Programs it runs
+
+- `mkdir` and `chmod`, with fixed arguments, to create its log folders under `~/.claude/mods-logs` and make them readable by you alone (folders 700, files 600).
+- `rm -f` and `rmdir` on a session's folder inside `~/.claude/mods-logs/rightsize/` once nothing in it has changed for 45 days (never the current session's).
+
+It downloads and runs nothing else.
+
+## Files it writes
+
+- The logs listed below.
+- Its own store in Claude Code's plugin store (your answers, calibration and counters), `~/.claude/plugins/store/rightsize_*.json`.
+- `prices.json` in its own folder, keeping the old file as `prices.json.bak`.
+
+## What it reads
+
+Your prompt, the session's usage and rate limits, your `model` and `effortLevel` settings, its own `/config` rows, and two environment variables (`HOME` and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`), to rate and price each turn. For each tool call in a turn it reads the tool, its arguments and whether it failed, to spot a stuck turn, a blocked step or a failing test run. It reads no credentials: model calls go through Claude Code with your existing sign-in.
+
+## Network
+
+It contacts two places, plus the Sonnet and Haiku calls Claude Code makes for it:
+
+- `platform.claude.com`, Anthropic's pricing page, every 30 days (**Price check**, can be turned off).
+- `feedback.aivalue.blog`, only when **Share anonymous feedback** is on (off by default). What it sends is in [PRIVACY.md](PRIVACY.md). No prompt, code, path or conversation text is ever sent.
+
+rightsize sends nothing while Claude Code's `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` is set.
+
+## Logs
+
+Each session writes its own folder, `~/.claude/mods-logs/rightsize/<session ID>/`, and no other session writes to it. Two sessions running at once never overwrite each other's lines. `/rightsize report`, the start suggestion and the miss rates read every session's folder together. A folder whose files have all gone unchanged for 45 days is removed when a session starts. Logs that older versions wrote to `~/.claude/mods-logs/rightsize-runs.jsonl` and `rightsize-switches.jsonl` are still read, and no longer written. In each session's folder:
+
+- `rightsize.log`: each decision.
+- `runs.jsonl`: each rated turn, changed or not and stopped or not. Each line has an `id`, the session ID, the change made and the change suggested, the estimated and actual cost (and whether the actual cost came from the `ledger` or from `tokens`), the rating call's cost, the rate-limit windows before and after, the turn's duration and its subagent calls, each model's rated level (`fit`), whether the prompt carried on its task (`continues`) and, when it was planned as its task's type, the type the rater gave it (`ratedType`), tool errors from the environment (`blocked`), the rater's guesses of tokens read and written and tool calls (`read`, `write`, `steps`), for a hand-off the level its helper ran at (`subLevel`), Claude's own subagents it moved (`resized`), how a close call was decided (`tie`), the usage pace when it moved the bars (`pace`), mid-turn raises with their step and reason (`escalations`), main-chat requests (`requests`), the fixed context every request carried (`fixed`), and its workflow calls (`workflows`, and `afterWorkflow`). A turn's line carries its turn (`turnId`) and, when the prompt was typed while another turn was running, `queued`. The turn's duration (`durationMs`), how long the rating attempts took (`ratingMs`) and when the prompt was submitted (`submittedAt`) feed the report's Time section.
+- Other lines in `runs.jsonl`: `unrated` (a prompt that could not be rated, with its `reason` and the rating calls' cost as `overhead`); `dropped` (something else in Claude Code refused a rated prompt) and `unbound` (it was delivered into a turn already running, or cancelled before it started); `check` (one per Sonnet spot-check: Haiku's `fit`, Sonnet's `fit` and Sonnet's cost); `feedback` (one per 👍 or 👎, with the run's `id` as `ref` and `value` up or down); `warm` (each keep-warm request: its model, the conversation's size, its task, its run and its cost as `overhead`); `warmSaved` (a return the keep-warm run earned and the cache proved, with what coming back cold would have cost as `saved`); `cold` (your answer, or none, to a keep-warm offer); `subagent` (each of Claude's subagents rightsize moved, when it answers). The report counts rating, check and keep-warm costs as rightsize's own cost. `cold` and `warmSaved` lines are never shared.
+- `switches.jsonl`: each measured effort switch, and whether the cache was kept.
+
+To delete everything rightsize stored: see "Turn it off or remove it" in the [README](../README.md) and [PRIVACY.md](PRIVACY.md).

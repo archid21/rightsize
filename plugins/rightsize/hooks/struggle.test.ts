@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { ERRORS, LIMITS, LONG_MIN, LONG_X, LOOP, REPEAT, blockedError, callKey, isSensitivity, isTestCommand, noSignals, noteCall, oneUp, refusedByPerson, struggle } from './struggle'
+import { ERRORS, LIMITS, LONG_MIN, LONG_X, LOOP, REPEAT, blockedError, callKey, isSensitivity, isTestCommand, noSignals, noteCall, oneUp, refusedByPerson, struggle, testsOutcome } from './struggle'
 
 // Claude labels each Bash call afresh, so the description differs between runs of one command.
 const bash = (command: string) => callKey('Bash', { tool: 'Bash', tool_use_id: Math.random().toString(), command, description: `run ${command} (${Math.random()})` })
@@ -221,4 +221,14 @@ test('refusedByPerson: a call the person said no to at the permission prompt, in
   expect(refusedByPerson("The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). To tell you how to proceed, the user said:\nuse the other branch")).toBe(true)
   expect(refusedByPerson('User rejected tool use')).toBe(true)
   for (const text of ['boom', 'rm: cannot remove build: Permission denied', 'error: the user rejected the merge request in review', '']) expect(refusedByPerson(text), text).toBe(false)
+})
+
+test('the last test run in a turn is its objective outcome', async () => {
+  let s = noteCall(noSignals(), bash('npm test'), true, true)
+  expect(testsOutcome(s)).toBe('failed')
+  s = noteCall(s, bash('ls'), false)
+  expect(testsOutcome(s), 'a later non-test call changes nothing').toBe('failed')
+  s = noteCall(s, bash('npm test'), false, true)
+  expect(testsOutcome(s)).toBe('passed')
+  expect(testsOutcome(noteCall(noSignals(), bash('ls'), true)), 'no test run: no outcome').toBeUndefined()
 })

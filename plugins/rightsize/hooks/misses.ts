@@ -54,18 +54,20 @@ type Counted = [Outcome, string, 'auto' | 'verdict']
 /** The model a run's work ran on: a hand-off's subagent, else the main chat. */
 const workedOn = (l: RunLine) => delegateTier(l) ?? (isTier(l.tier) ? l.tier : undefined)
 
-// What one run line says about the rater, apart from feedback.
+// What one run line says about the rater, apart from feedback. A test run that failed at the turn's end is a miss on a
+// cheaper route (the objective outcome); one that passed is not read as a hit on its own, since rework may have come first.
 function ofRun(l: RunLine): Outcome | undefined {
   if (l.aborted || !isTaskType(l.type)) return undefined
   const type = l.type
   const tier = isTier(l.tier) ? l.tier : undefined
   const raised = (l.escalations?.length ?? 0) > 0
+  const failed = l.tests === 'failed'
   // Handed to a cheaper model: more than one subagent call is rework.
   const sub = delegateTier(l)
-  if (sub && l.change === 'delegate-down') return { type, tier: sub, miss: (l.agentCalls ?? 0) > 1 }
+  if (sub && l.change === 'delegate-down') return { type, tier: sub, miss: (l.agentCalls ?? 0) > 1 || failed }
   if (!tier) return undefined
   // Lowered: it had to step back up, or was raised mid-turn.
-  if (l.change === 'lower') return { type, tier, miss: l.steppedUp === true || raised }
+  if (l.change === 'lower') return { type, tier, miss: l.steppedUp === true || raised || failed }
   // Left in the main chat unchanged: only a mid-turn raise says the rating was wrong.
   if (!sub && (l.change ?? 'none') === 'none' && raised) return { type, tier, miss: true }
   return undefined
@@ -102,6 +104,8 @@ function counted(lines: readonly RunLine[]): Counted[] {
   const out: Counted[] = []
   const runs = new Map<string, RunLine>()
   const verdicts = new Map<string, 'up' | 'down'>()
+  // A correction counts once per run, and a verdict on that run stands over it.
+  const corrected = new Map<string, Counted>()
   const taskOf = (l: RunLine, i: number) => l.task ?? l.id ?? `line ${i}`
   lines.forEach((l, i) => {
     const kind = l.kind ?? 'run'
@@ -112,10 +116,18 @@ function counted(lines: readonly RunLine[]): Counted[] {
     } else if (kind === 'feedback') {
       // A person who changed their mind is counted once, on the last verdict.
       if (l.ref && (l.value === 'up' || l.value === 'down')) verdicts.set(l.ref, l.value)
+    } else if (kind === 'corrected') {
+      // The person's next prompt said the reply was wrong: one miss on the cheaper route that made it, however many times it is said.
+      const run = l.ref ? runs.get(l.ref) : undefined
+      const tier = run ? workedOn(run) : undefined
+      if (run && l.ref && tier && isTaskType(run.type) && (run.change === 'lower' || run.change === 'delegate-down') && !corrected.has(l.ref)) {
+        corrected.set(l.ref, [{ type: run.type, tier, miss: true }, run.task ?? l.ref, 'auto'])
+      }
     } else if (kind === 'check') {
       for (const o of ofCheck(l)) out.push([o, `check ${i}`, 'auto'])
     }
   })
+  for (const [ref, c] of corrected) if (!verdicts.has(ref)) out.push(c)
   for (const [ref, value] of verdicts) {
     const run = runs.get(ref)
     const tier = run ? workedOn(run) : undefined

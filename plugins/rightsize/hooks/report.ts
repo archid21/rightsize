@@ -29,7 +29,12 @@ export type RunLine = {
    * 'warmSaved': the person came back to a kept-warm cache after the time it would have gone cold without keep warm, and the returning prompt's first request read the cache (at least ~80% of the kept conversation); `saved` is what coming back cold would have cost. It carries no `overhead`, is never shared, and `totals` counts `saved` toward Total saved.
    * `totals` adds the `overhead` of every line, so these pings count as rightsize's own cost and lower Total saved.
    */
-  kind?: 'run' | 'overhead' | 'subagent' | 'check' | 'feedback' | 'unrated' | 'dropped' | 'unbound' | 'warm' | 'warmSaved' | 'cold'
+  kind?: 'run' | 'overhead' | 'subagent' | 'check' | 'feedback' | 'corrected' | 'unrated' | 'dropped' | 'unbound' | 'warm' | 'warmSaved' | 'cold'
+  /** A run line: how the turn's last test run ended (the main chat's, else a helper's): the objective outcome of the work. */
+  tests?: 'passed' | 'failed'
+  /** A run line in watch-only mode: the change rightsize would have made, and the estimate of the route it would have taken. Nothing was applied. */
+  would?: Change
+  wouldTaken?: number
   /** A 'warmSaved' line: what coming back cold would have cost (the conversation written again, less a read), in dollars (API-equivalent on a subscription). */
   saved?: number
   /** A 'warm' line: the keep-warm run it belongs to, the ISO time of the turn that run kept warm. Lines of one run share it. */
@@ -896,7 +901,7 @@ export function fixedBlock(lines: readonly RunLine[], subscription = false) {
 export function buildReport(
   lines: readonly RunLine[],
   switches: readonly SwitchLine[],
-  opts: { now: number; session: string; subscription: boolean; start?: StartBlock; pause?: number | null; measureFrom?: string; markdown?: boolean },
+  opts: { now: number; session: string; subscription: boolean; start?: StartBlock; pause?: number | null; measureFrom?: string; markdown?: boolean; sharing?: boolean; watching?: boolean },
 ) {
   const since = (days: number) => (l: { at: string }) => opts.now - Date.parse(l.at) <= days * DAY
   const month = lines.filter(since(30))
@@ -918,6 +923,9 @@ export function buildReport(
   // Keep warm's own line: its saving is in Total saved above, and so is the cost of its requests.
   const kept = keepWarmLine(month, sub)
   if (kept) out.push('', ...(md ? [kept] : wrap(kept, '', '  ')))
+  // Watch only: what rightsize would have done, and what that would have saved, against staying. Nothing was applied.
+  const watched = watchLine(month, sub, opts.watching === true)
+  if (watched) out.push('', ...(md ? [watched] : wrap(watched, '', '  ')))
 
   const start = opts.start
   if (start) out.push('', `STARTING POINT  ${start.head}`, ...indent(grid(start.rows)), ...(start.note ? (md ? ['', start.note] : wrap(start.note, '  ', '  ')) : []))
@@ -946,9 +954,24 @@ export function buildReport(
     ...(sub && cols.some(s => s.kept) ? ['Window shares are ranges because the rate limits report whole percents.'] : []),
     ...(nothing ? [] : [stepLine(lines, opts.measureFrom ? Date.parse(opts.measureFrom) : 0)]),
     ...(sub ? ['Dollar amounts are API-equivalent: what the same use would cost on the API.', 'You only pay for your subscription.'] : []),
+    ...(opts.sharing === undefined ? [] : [opts.sharing ? 'Share anonymous feedback is on: numbers only, never prompts, code or paths.' : 'Share anonymous feedback is off. The row in /config turns it on; it sends numbers only (task types, models, levels, costs, outcomes), never prompts, code or paths.']),
   ]
   out.push('', ...(md ? foot : foot.flatMap(f => wrap(f, '', '', 78))))
   return out.join('\n')
+}
+
+/**
+ * The report's line for watch-only runs: how many prompts rightsize would have changed, and what those changes were
+ * estimated to save against staying (the estimate of the route it would have taken, against the estimate of staying).
+ * `watching` says whether the mode is on now; the line still shows for a month with watched runs.
+ */
+export function watchLine(lines: readonly RunLine[], subscription: boolean, watching: boolean) {
+  const runs = lines.filter(l => (l.kind ?? 'run') === 'run' && !l.aborted && l.would !== undefined)
+  if (!runs.length) return watching ? 'Watch only is on: every prompt is rated and planned, nothing is applied. Nothing to show yet.' : ''
+  const changed = runs.filter(l => l.would !== 'none')
+  const saving = changed.reduce((s, l) => s + ((l.stay ?? 0) - (l.wouldTaken ?? 0)), 0)
+  const what = `would have ${saving >= 0 ? 'saved' : 'spent'} ~${money(Math.abs(saving))}${subscription ? ' API-equivalent' : ''}`
+  return `Watch only: ${plural(runs.length, 'prompt')} rated, ${changed.length} would have been changed, which ${what} against staying (estimates; nothing was applied).${watching ? ' Mode in /config turns rightsize on.' : ''}`
 }
 
 export const SHARE_MIN_RATED = 20

@@ -2,7 +2,7 @@
   "name": "rightsize",
   "displayName": "rightsize",
   "version": "0.7.4",
-  "description": "Stop paying Opus prices for Haiku work. rightsize matches each Claude Code prompt to the right model and effort, so your budget and usage limits go further. It learns from how you work, and you can configure every part of it. You stay in charge: it asks before it acts, shows each change it makes, and /rightsize report shows whether it's paying off.",
+  "description": "Make your Claude plan go further, and keep Opus where it matters. rightsize rates each Claude Code prompt and runs it on the cheapest model and effort that will do it well: reviews go to Opus, routine work goes to a cheaper helper that your main chat briefs and checks, and the band above the prompt shows what it did and what it saved as a share of your usage window. It learns from your own log, and a watch-only mode shows what it would do before it changes anything. Savings are estimates against a stated baseline.",
   "types": "./types/index.d.ts",
   "author": {
     "name": "Archi Dubey",
@@ -12,12 +12,22 @@
     "profile": {
       "type": "string",
       "title": "Profile",
-      "description": "How much evidence rightsize needs before it picks a cheaper route. Quality: cheaper routes only with strong evidence (at least 10 logged tasks of that kind on that route, under 10% misses, and the route under 50% of staying), raises readily, gives a struggling helper 1 retry. Balanced (default): a cheaper route when the rating says it fits and it is under 70% of staying; pauses a kind of work at 20% misses; 2 retries. Economy: cheaper routes on fit alone, under 85% of staying, paused only at 30% misses; 3 retries. A profile also sets how often Sonnet checks Haiku's ratings (every 10, 20 or 30), which answer each of the four questions lists first, marked (Recommended), and what happens before a big session's cache goes cold (Quality keeps it warm for 8 hours; Balanced and Economy ask). Every row below is Advanced: a row you set always wins over the profile.",
+      "description": "How much evidence rightsize needs before it picks a cheaper route, and what each of the four cases does while its rule row is not set (the profile decides; nothing asks). Quality: cheaper routes only with strong evidence (at least 10 logged tasks of that kind on that route, under 10% misses, and the route under 50% of staying), asks before lowering effort or using a cheaper model, gives a struggling helper 1 retry, keeps a big session's cache warm for 8 hours. Balanced (default): a cheaper route when the rating says it fits and it is under 70% of staying; pauses a kind of work at 20% misses; 2 retries; lowers, raises, switches and hands off without asking; keeps the cache warm until your usual start time (at most 8 hours). Economy: cheaper routes on fit alone, under 85% of staying, paused only at 30% misses; 3 retries; stays on your model and raises effort instead of a stronger model; reviews on Opus stop at high effort; lets the cache go cold. A profile also sets how often Sonnet checks Haiku's ratings (every 10, 20 or 30). Every row below is Advanced: a row you set always wins over the profile.",
       "default": "Balanced",
       "options": [
         "Quality",
         "Balanced",
         "Economy"
+      ]
+    },
+    "mode": {
+      "type": "string",
+      "title": "Mode",
+      "description": "act (default): rightsize changes effort, switches reviews to Opus and hands work to helpers as your profile and rules say. watch only: it rates and plans every prompt, applies nothing, and the band says what it would have done; /rightsize report sums what that would have saved. Use it for a week to see rightsize's calls on your own work before turning it on.",
+      "default": "act",
+      "options": [
+        "act",
+        "watch only"
       ]
     },
     "floor": {
@@ -45,7 +55,7 @@
     "lowerRule": {
       "type": "string",
       "title": "Advanced · Lowering",
-      "description": "What to do when a prompt needs less effort. ask me: ask each time. lower automatically: lower without asking. never lower: never. not set: ask the first time it comes up (the default). A rule set here is used as it is and its question is never asked. The band's buttons and /rightsize settings set it too; set it back to not set to be asked again. Which answer the question lists first, marked (Recommended), depends on your Profile.",
+      "description": "When a prompt needs less effort. ask me: ask each time. lower automatically: lower without asking. never lower: never. not set (the default): your Profile decides, and the band says so the first time the case comes up in a session, with the other rules in its ⋯ menu. A rule set here is used as it is. The band's ⋯ menu and /rightsize settings set it too; set it back to not set to let the profile decide again.",
       "default": "not set",
       "options": [
         "ask me",
@@ -57,7 +67,7 @@
     "raiseRule": {
       "type": "string",
       "title": "Advanced · Raising",
-      "description": "What to do when a prompt needs more effort on the same model. ask me: ask each time. raise automatically: raise without asking. never raise: never. not set: ask the first time it comes up (the default). This rule also decides raises mid-turn when Claude looks stuck. A rule set here is used as it is and its question is never asked, even when a usage window is nearly used up. Which answer the question lists first, marked (Recommended), depends on your Profile.",
+      "description": "When a prompt needs more effort on the same model. ask me: ask each time. raise automatically: raise without asking. never raise: never. This rule also decides raises mid-turn when Claude looks stuck. not set (the default): your Profile decides, and the band says so the first time the case comes up in a session, with the other rules in its ⋯ menu. A rule set here is used as it is. The band's ⋯ menu and /rightsize settings set it too; set it back to not set to let the profile decide again.",
       "default": "not set",
       "options": [
         "ask me",
@@ -69,7 +79,7 @@
     "upRule": {
       "type": "string",
       "title": "Advanced · Stronger model",
-      "description": "What to do when a stronger model than yours would do better. ask first: ask before sending the work to a subagent on it. always send: send it without asking. stay, raise effort only: stay on your model and raise effort. ask each time: ask what to do each time. not set: ask the first time it comes up (the default). A rule set here is used as it is and its question is never asked, even when a usage window is nearly used up. Which answer the question lists first, marked (Recommended), depends on your Profile.",
+      "description": "When a stronger model than yours would do better, or a review runs on Opus for one turn. ask first: ask before it. always send: do it without asking. stay, raise effort only: stay on your model and raise effort. ask each time: ask what to do each time. not set (the default): your Profile decides, and the band says so the first time the case comes up in a session, with the other rules in its ⋯ menu. A rule set here is used as it is. The band's ⋯ menu and /rightsize settings set it too; set it back to not set to let the profile decide again.",
       "default": "not set",
       "options": [
         "ask first",
@@ -82,7 +92,7 @@
     "downRule": {
       "type": "string",
       "title": "Advanced · Cheaper model",
-      "description": "What to do when a task could run on a cheaper model than yours. ask first: ask before sending it to a subagent on that model. always send: send it without asking. stay, lower effort only: stay on your model and lower effort. ask each time: ask what to do each time. not set: ask the first time it comes up (the default). A rule set here is used as it is and its question is never asked. Which answer the question lists first, marked (Recommended), depends on your Profile.",
+      "description": "When a task could run on a cheaper model than yours. ask first: ask before sending it to a subagent on that model. always send: send it without asking. stay, lower effort only: stay on your model and lower effort. ask each time: ask what to do each time. not set (the default): your Profile decides, and the band says so the first time the case comes up in a session, with the other rules in its ⋯ menu. A rule set here is used as it is. The band's ⋯ menu and /rightsize settings set it too; set it back to not set to let the profile decide again.",
       "default": "not set",
       "options": [
         "ask first",
@@ -95,7 +105,7 @@
     "remember": {
       "type": "string",
       "title": "Advanced · Remember choices",
-      "description": "What happens to your answers to the four questions above. ask: after your first answer, ask whether to use your choices in every session (the default). every session: keep every answer for later sessions, without asking. this session: never keep an answer and never ask; answers last until the session ends. A rule set in its row above is always kept.",
+      "description": "What happens to rules you set from the band's ⋯ menu or /rightsize settings. ask: after your first such rule, ask on the band whether to keep your rules in every session (the default). every session: keep every rule for later sessions, without asking. this session: never keep a rule and never ask; rules last until the session ends. A rule set in its row above is always kept.",
       "default": "ask",
       "options": [
         "ask",
@@ -161,7 +171,7 @@
     "workflows": {
       "type": "string",
       "title": "Advanced · Workflows",
-      "description": "What rightsize does once Claude starts a workflow (ultracode, or asked for): many helper agents at once, often 10 or more, each picking its own model. ask: ask on the band when the first workflow starts (the default); until you answer, rightsize pauses for it. pause rightsize: hand nothing off for the rest of the session, and leave the workflow's agents alone. follow my rules: hand-offs follow your Stronger model and Cheaper model rules as usual; the workflow's agents are left alone. right-size every agent: as follow my rules, and each workflow agent that names no model is rated by Haiku (one rating call each) and runs on the cheapest model that fits, under Claude's subagents, Use Haiku, Use Fable and Pause after misses. Claude's subagents set to off keeps the agents alone in every case. Whichever you pick, measurement stays paused after a workflow: calibration learns nothing and no saving is claimed.",
+      "description": "What rightsize does once Claude starts a workflow (ultracode, or asked for): many helper agents at once, often 10 or more, each picking its own model. ask: ask on the band when the first workflow starts (the default); until you answer, rightsize pauses for it. pause rightsize: hand nothing off for the rest of the session, and leave the workflow's agents alone. follow my rules: hand-offs follow your Stronger model and Cheaper model rules as usual; the workflow's agents are left alone. right-size every agent: as follow my rules, and each workflow agent that names no model is rated by the Rater (one rating call each) and runs on the cheapest model that fits, under Claude's subagents, Use Haiku, Use Fable and Pause after misses. Claude's subagents set to off keeps the agents alone in every case. Whichever you pick, measurement stays paused after a workflow: calibration learns nothing and no saving is claimed.",
       "default": "ask",
       "options": [
         "ask",
@@ -183,7 +193,7 @@
     "missPause": {
       "type": "string",
       "title": "Advanced · Pause after misses",
-      "description": "Haiku's rating is scored against what happens: rework on hand-offs, lowered turns that stepped back up, mid-turn raises, your 👍 and 👎, and Sonnet's checks. When its miss rate for a kind of work on a model reaches this share, rightsize stops handing that work down to that model and stops lowering effort on it, until the rate falls back under it. off: never pause. Left alone, your Profile sets it: Quality pauses at 10% misses and also needs at least 10 logged tasks of that kind on that model before it uses a cheaper route, Balanced pauses at 20%, Economy at 30%. A value you set here replaces the whole rule.",
+      "description": "The rating is scored against what happens: rework on hand-offs, lowered turns that stepped back up, mid-turn raises, a test run that failed at the turn's end, a next prompt that corrects the reply, your 👍 and 👎 (in the band's ⋯ menu), and Sonnet's checks. When the miss rate for a kind of work on a model reaches this share, rightsize stops handing that work down to that model and stops lowering effort on it, until the rate falls back under it. off: never pause. Left alone, your Profile sets it: Quality pauses at 10% misses and also needs at least 10 logged tasks of that kind on that model before it uses a cheaper route, Balanced pauses at 20%, Economy at 30%. A value you set here replaces the whole rule.",
       "default": "30%",
       "options": [
         "off",
@@ -196,7 +206,7 @@
     "pacing": {
       "type": "string",
       "title": "Advanced · Budget pacing",
-      "description": "on: on a subscription, move the thresholds by how fast the 5-hour and 7-day windows are being used. Running out early: hand off and lower more readily. Much left near a reset: hand off only for big savings. Over 90% used: save all it can, which skips raises and stronger models while Raising and Stronger model are not set. A threshold or rule you set stays as you set it: pacing moves only what is left at its default. off: always use the thresholds above.",
+      "description": "on: on a subscription, move the thresholds by how fast the 5-hour and 7-day windows are being used. Running out early: hand off and lower more readily, and the band says which bars moved. Much left near a reset: nothing changes. Over 90% used: save all it can, which skips raises and stronger models while Raising and Stronger model are not set. A threshold or rule you set stays as you set it: pacing moves only what is left at its default. off: always use the thresholds above.",
       "default": "on",
       "options": [
         "on",
@@ -260,8 +270,8 @@
     "idleWarning": {
       "type": "string",
       "title": "Advanced · Idle warning",
-      "description": "When a session under 200K tokens sat idle past the cache's life (1 hour, or 5 minutes when prices.json says 5m), ask before the next prompt writes the whole conversation to the cache again, when that costs over this much more than a warm cache. You can send it or hold it to /clear or /compact first. On a subscription the bar is in API-equivalent dollars, and the question gives the cost as a share of the 5-hour window once runs show the rate.",
-      "default": "over $0.10",
+      "description": "When a session under 200K tokens sat idle past the cache's life (1 hour, or 5 minutes when prices.json says 5m), the next prompt writes the whole conversation to the cache again. When that costs over this much more than a warm cache, the band notes the cost beside what rightsize did with the prompt (as a share of the 5-hour window on a subscription, once runs show the rate), and what /compact first would have cost. The prompt is never held.",
+      "default": "over $0.50",
       "options": [
         "over $0.10",
         "over $0.50",
@@ -272,12 +282,13 @@
     "beforeCold": {
       "type": "string",
       "title": "Advanced · Before the cache goes cold",
-      "description": "What rightsize does when a session that ends a turn with a big conversation (a cold return would cost $0.50 or more, API-equivalent on a subscription; under 200K tokens) is about to lose its prompt cache. ask: offer the choices in the band, each with its cost, and do nothing if you do not pick. keep warm 2 h, keep warm 8 h: send one tiny request just before each expiry to keep the cache warm until then, and stop when you type, press Stop, a request fails, or keeping warm would cost more than coming back cold. save a handoff: run Groundwork's wrap-up once before expiry (compact when Groundwork is not installed). compact: compact once before expiry. off: nothing. Nothing runs during a turn. Not set here, Profile decides: Quality keeps warm for 8 hours; Balanced and Economy ask.",
+      "description": "What rightsize does when a session that ends a turn with a big conversation (a cold return would cost $0.50 or more, API-equivalent on a subscription; under 200K tokens) is about to lose its prompt cache. keep warm 2 h, keep warm 8 h, keep warm until my usual start (the time you usually send your first prompt, at most 8 hours): send one tiny request just before each expiry to keep the cache warm until then, with a status row on the band (Stop keeping warm; Don't keep warm again in ⋯), and stop when you type, press Stop, a request fails, or keeping warm would cost more than coming back cold. ask: offer the choices on the band 5 minutes after the turn, each with its cost, and do nothing if you do not pick. save a handoff: run Groundwork's wrap-up once before expiry (compact when Groundwork is not installed). compact: compact once before expiry. off: nothing. Nothing runs during a turn. Not set here, your Profile decides: Quality keeps warm 8 hours, Balanced until your usual start, Economy lets it go cold.",
       "default": "ask",
       "options": [
         "ask",
         "keep warm 2 h",
         "keep warm 8 h",
+        "keep warm until my usual start",
         "save a handoff",
         "compact",
         "off"
@@ -296,7 +307,7 @@
     "band": {
       "type": "string",
       "title": "Advanced · Band",
-      "description": "The row above the prompt that shows what rightsize did, with buttons to retry it at the original effort, mark a hand-off or lowering 👍 or 👎 (kept on this machine) or change the rule. when it acts: only when it changes something. always: on every rated prompt, no change included. off: status line only.",
+      "description": "The row above the prompt that shows what rightsize did, with buttons to retry it at the original effort or run it on your model, and a ⋯ menu to change the rule, mark a hand-off or lowering 👍 or 👎 (kept on this machine; shared only as a number when Share is on), or change cache choices. when it acts: only when it changes something. always: on every rated prompt, no change included. off: status line only.",
       "default": "when it acts",
       "options": [
         "when it acts",
@@ -307,7 +318,7 @@
     "questionWait": {
       "type": "string",
       "title": "Advanced · Question wait",
-      "description": "How long a question that must be answered before your prompt runs waits for your answer: the four rule questions the first time, and Effort, Stronger and Subagent when a rule is ask (with Band set to Never, or on the mobile app, every question). With no answer, rightsize takes the choice that changes nothing and costs nothing. Questions on the band do not hold up the work and have no wait. The Idle question is not timed: after this wait the band says the prompt is held.",
+      "description": "How long a question that must be answered before your prompt runs waits for your answer: Effort, Stronger and Subagent when a rule is ask (with Band set to off, or on the mobile app, every question). With no answer, rightsize takes the choice that changes nothing and costs nothing. Questions on the band do not hold up the work and have no wait.",
       "default": "30 seconds",
       "options": [
         "30 seconds",
@@ -318,7 +329,7 @@
     "share": {
       "type": "string",
       "title": "Advanced · Share anonymous feedback",
-      "description": "on: send anonymous numbers to the rightsize author, at most once an hour, to tune its defaults: task types, models, effort levels, rated levels, token guesses, estimated and real costs, what went wrong, Sonnet checks, and your 👍 and 👎, with a random install id. Never prompts, code, file names, paths, tool or server names, or session ids. Only what is logged after you turn it on is sent. off (default): nothing is sent; turning it off and on again starts a new install id.",
+      "description": "on: send anonymous numbers to the rightsize author, at most once an hour, to tune its defaults: the plugin version and billing kind, task types, models, effort levels, rated levels, token guesses, conversation size, estimated and real costs, turn and rating times, what went wrong, Sonnet checks, and your 👍 and 👎, with a random install id. Never prompts, code, file names, paths, tool or server names, or session ids. Only what is logged after you turn it on is sent. rightsize never asks: this row, /rightsize status and the report are where it shows. off (default): nothing is sent; turning it off and on again starts a new install id.",
       "default": "off",
       "options": [
         "off",

@@ -193,11 +193,11 @@ export const OFFER_AFTER_MS = 5 * MIN
 export const offerAt = (endedAt: number, ttl: number) => (ttl >= HOUR ? endedAt + OFFER_AFTER_MS : endedAt)
 
 /**
- * The band while keeping warm: "Keeping warm until 14:05 · ~0.1% used so far", "· ~$0.04 so far", "· $0.04 so far".
- * `used` is what the requests cost, as the caller writes it ("~0.1% used", "~$0.04", "$0.04"); none before the first request.
+ * The band while keeping warm: "Warm until 14:05 · ~0.1% used so far", "· ~$0.04 so far", "· $0.04 so far", "· $0.00 so far".
+ * `used` is what the requests cost, as the caller writes it ("~0.1% used", "~$0.04", "$0.04", or the zero text before the first request).
  */
-export function warmingText(o: { until: number; used: string | undefined }) {
-  return `Keeping warm until ${clockText(o.until)} · ${o.used === undefined ? 'nothing used yet' : `${o.used} so far`}`
+export function warmingText(o: { until: number; used: string }) {
+  return `Warm until ${clockText(o.until)} · ${o.used} so far`
 }
 
 /** How a keep-warm run ends on the band: "Stopped keeping warm · ~0.1% used." `what` is the end's words, without a full stop. */

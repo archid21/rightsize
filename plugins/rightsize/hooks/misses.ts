@@ -66,8 +66,8 @@ function ofRun(l: RunLine): Outcome | undefined {
   const sub = delegateTier(l)
   if (sub && l.change === 'delegate-down') return { type, tier: sub, miss: (l.agentCalls ?? 0) > 1 || failed }
   if (!tier) return undefined
-  // Lowered: it had to step back up, or was raised mid-turn.
-  if (l.change === 'lower') return { type, tier, miss: l.steppedUp === true || raised || failed }
+  // Lowered: it had to step back up after a tool error, or was raised mid-turn. Stepping up on the 5-step rule alone is not a miss.
+  if (l.change === 'lower') return { type, tier, miss: (l.steppedUp === true && l.steppedUpBy !== 'steps') || raised || failed }
   // Left in the main chat unchanged: only a mid-turn raise says the rating was wrong.
   if (!sub && (l.change ?? 'none') === 'none' && raised) return { type, tier, miss: true }
   return undefined

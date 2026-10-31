@@ -58,6 +58,8 @@ export type RunLine = {
   /** What the plan suggested; differs from `change` when the person kept their level. */
   offered?: Change
   steppedUp?: boolean
+  /** Why it stepped up: the 5-step rule alone ('steps', not a miss) or a tool error ('error', a miss). Absent on older lines. */
+  steppedUpBy?: 'steps' | 'error'
   /** Raised mid-turn when the turn showed it was struggling. */
   escalations?: { step: number; from: string; to: string; why: string }[]
   aborted?: boolean

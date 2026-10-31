@@ -21,6 +21,12 @@ test('a lowered run is a miss for its own model when it stepped back up or was r
   expect(rates([lowered(), lowered({ steppedUp: true }), lowered({ escalations: raised }), lowered({ aborted: true, steppedUp: true })])).toEqual({ 'lookup:opus': { n: 3, misses: 2 } })
 })
 
+test('a step-up on the 5-step rule alone is an outcome but not a miss; one after a tool error is a miss', async () => {
+  expect(rates([lowered({ steppedUp: true, steppedUpBy: 'steps' })]), 'the task was long, not harder').toEqual({ 'lookup:opus': { n: 1, misses: 0 } })
+  expect(rates([lowered({ steppedUp: true, steppedUpBy: 'error' })]), 'a tool error stepped it up').toEqual({ 'lookup:opus': { n: 1, misses: 1 } })
+  expect(rates([lowered({ steppedUp: true })]), 'older lines without the field keep counting').toEqual({ 'lookup:opus': { n: 1, misses: 1 } })
+})
+
 test('a main-chat run with no change counts only when it was raised mid-turn', async () => {
   const raised = [{ step: 3, from: 'medium', to: 'high', why: 'x' }]
   expect(rates([run({}), run({}), run({ escalations: raised })])).toEqual({ 'search:opus': { n: 1, misses: 1 } })

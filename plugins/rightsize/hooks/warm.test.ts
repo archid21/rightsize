@@ -168,10 +168,11 @@ test('the offer shows 5 minutes after the turn on a cache of 1 hour or more, and
 
 test('the keep-warm line says until when and what it used so far, with no ping count', async () => {
   const until = local(15, 22, 5)
-  expect(warmingText({ until, used: undefined })).toBe('Keeping warm until 22:05 · nothing used yet')
-  expect(warmingText({ until, used: '~0.1% used' })).toBe('Keeping warm until 22:05 · ~0.1% used so far')
-  expect(warmingText({ until, used: '~$0.04' })).toBe('Keeping warm until 22:05 · ~$0.04 so far')
-  expect(warmingText({ until, used: '$0.04' })).toBe('Keeping warm until 22:05 · $0.04 so far')
+  expect(warmingText({ until, used: '$0.00' })).toBe('Warm until 22:05 · $0.00 so far')
+  expect(warmingText({ until, used: '~0% used' })).toBe('Warm until 22:05 · ~0% used so far')
+  expect(warmingText({ until, used: '~0.1% used' })).toBe('Warm until 22:05 · ~0.1% used so far')
+  expect(warmingText({ until, used: '~$0.04' })).toBe('Warm until 22:05 · ~$0.04 so far')
+  expect(warmingText({ until, used: '$0.04' })).toBe('Warm until 22:05 · $0.04 so far')
   expect(warmEndText('Stopped keeping warm', '~0.1% used')).toBe('Stopped keeping warm · ~0.1% used.')
   expect(warmEndText('Kept the cache warm until 22:05', '$0.04')).toBe('Kept the cache warm until 22:05 · $0.04.')
   expect(warmEndText('Stopped keeping warm', undefined)).toBe('Stopped keeping warm · nothing used.')

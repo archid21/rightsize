@@ -332,6 +332,8 @@ type Run = {
   /** The rating may rest on too little context, so no lowering or hand-down was made on it. */
   unsure?: Unsure
   steppedUp: boolean
+  /** Why the turn stepped back up: the 5-step rule alone ('steps'), or a tool error ('error', which counts as a miss). */
+  steppedUpBy?: 'steps' | 'error'
   delegated: boolean
   change: Change
   offered: Change
@@ -2002,6 +2004,7 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
       ...(run.pace.mode !== 'normal' ? { pace: { ...run.pace, ...(run.pace.pace === undefined ? {} : { pace: Number(run.pace.pace.toFixed(2)) }) } } : {}),
       auto: run.auto,
       steppedUp: run.steppedUp,
+      ...(run.steppedUpBy ? { steppedUpBy: run.steppedUpBy } : {}),
       ...(run.escalations.length ? { escalations: run.escalations } : {}),
       estimate: Number((delegated ? (run.rawDelegate ?? 0) : run.rawMain).toFixed(5)),
       actual: round(actual),
@@ -2498,8 +2501,8 @@ async function closeOffer($: EngineInterface, choice: string) {
 /** What the run has used, in the band's one unit; undefined before the first request. */
 const usedText = (w: Warming) => (w.pings === 0 && w.spent === 0 ? undefined : usedTag(w.spent, billing === 'subscription', w.rates))
 
-/** The keep-warm status row: one Stop button; "Don't keep warm again" (the row set to off) waits in the ⋯ menu. */
-const showWarming = ($: EngineInterface, w: Warming) => showCold($, warmingText({ until: w.until, used: usedText(w) }), [{ id: 'stop', label: 'Stop keeping warm' }], true, [{ id: 'off', label: "Don't keep warm again" }])
+/** The keep-warm status row: one Stop button; "Don't keep warm again" (the row set to off) waits in the ⋯ menu. Before the first request it shows the zero text in the band's unit. */
+const showWarming = ($: EngineInterface, w: Warming) => showCold($, warmingText({ until: w.until, used: usedText(w) ?? (billing === 'subscription' ? '~0% used' : '$0.00') }), [{ id: 'stop', label: 'Stop keeping warm' }], true, [{ id: 'off', label: "Don't keep warm again" }])
 
 /** The keep-warm run ends: `what` is the band's last word on it, without a full stop. */
 async function endWarm($: EngineInterface, w: Warming, what: string) {
@@ -3837,6 +3840,7 @@ export const register: Register = (on, options) => {
       level = own
       if (!run.steppedUp) {
         run.steppedUp = true
+        run.steppedUpBy = run.errors > 0 ? 'error' : 'steps'
         await setBand($, { text: `Effort back to ${run.normal}: the task got harder.`, acted: true, rule: 'lower' })
         await showStatus($)
       }

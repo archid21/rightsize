@@ -79,8 +79,10 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
     now: 1_800_000_000_000,
     page: '',
     fetches: 0,
-    /** POST requests: the sharing sends. */
+    /** POST requests: rightsize sends none. */
     posts: [] as { url: string; body: string }[],
+    /** The address of every GET: only the pricing page. */
+    urls: [] as string[],
     env: {} as Record<string, string>,
     hold: null as Promise<void> | null,
     fetchFails: false,
@@ -299,6 +301,7 @@ function engine(on: Parameters<TestBody>[1], start: { model: string; effort: str
       return { value: { status: 200, ok: true, headers: {}, text: '{"accepted":1}' } } as never
     }
     h.fetches += 1
+    h.urls.push(url)
     if (h.hold) await h.hold
     if (h.fetchFails) return { value: { status: 503, ok: false, headers: {}, text: '' } } as never
     return { value: { status: 200, ok: true, headers: {}, text: h.page } } as never
@@ -1772,78 +1775,32 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await bandText($, surface), 'the 14 days are over').toContain('Starting on Sonnet')
   })
 
-  const shareLog = (now: number, n: number) =>
-    Array.from({ length: n }, (_, i) =>
-      JSON.stringify({ at: new Date(now - (n - i) * 60_000).toISOString(), kind: 'run', id: `sess-0:${i}`, session: 'sess-0', type: 'lookup', route: 'main', tier: 'opus', level: 'medium', normal: 'medium', fit: { haiku: 'low', sonnet: 'low', opus: 'low', fable: 'low' }, read: 800, write: 60, steps: 2, actual: 0.1, fixed: { tokens: 1000, servers: { secret_server: 500 } }, escalations: [{ step: 2, from: 'low', to: 'medium', why: 'Bash failed on /Users/x' }] }),
-    ).join('\n')
-
-  test(`Share is a row, not a question: nothing is asked at 20, 50 or 100 rated prompts, and the row in /config still turns it on (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`rightsize sends nothing anywhere: no POST, no Share row or install ID, and the only address it fetches is Anthropic's pricing page (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
     const d = drive($, h)
     h.rating = NO_CHANGE
     let n = 0
-    const turn = async () => {
+    for (const runs of [20, 100]) {
+      h.files[RUNS] = easyLog(h.now).split('\n').slice(0, runs).join('\n')
+      await d.start(surface)
+      await flush()
       const t = `t${++n}`
       await d.submit(LOOKUP)
       await d.step(t)
       await d.complete(t)
       await settle()
+      expect(h.asked.filter(a => a.header === 'Share'), 'no Share question').toEqual([])
     }
-    for (const runs of [20, 50, 100, 200]) {
-      h.files[RUNS] = shareLog(h.now, runs)
-      await d.start(surface)
-      await flush()
-      await turn()
-      await turn()
-      expect(h.asked.filter(a => a.header === 'Share'), `no Share question at ${runs} rated prompts`).toEqual([])
-    }
-    expect(h.store.shareAsked, 'no store key for it').toBeUndefined()
-    expect(h.posts.length, 'off by default: nothing sent').toBe(0)
-    const off = (await d.command('status')).text ?? ''
-    expect(off).toContain('Share anonymous feedback: off')
-    expect(off, 'no install ID while off').not.toContain('Sharing install ID')
-    // The row in /config still works.
-    await d.config('share', 'on')
-    expect(h.stored.share).toBe('on')
-    expect(String(h.store.shareInstall)).toMatch(/^[a-f0-9]{32}$/)
-    const on1 = (await d.command('status')).text ?? ''
-    expect(on1).toContain('Share anonymous feedback: on')
-    expect(on1).toContain(`Sharing install ID: ${String(h.store.shareInstall)}`)
-    await turn()
-    expect(h.asked.filter(a => a.header === 'Share'), 'and still no question').toEqual([])
-  })
-
-  test(`sharing sends only new, anonymous numbers, at most once an hour (${surface})`, { timeoutMs: 30000, options: { share: 'on' } }, async ($, on) => {
-    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { shareInstall: 'b'.repeat(32), sharedUpTo: new Date(1_800_000_000_000 - 3 * 60_000).toISOString() } })
-    h.files[RUNS] = shareLog(h.now, 10)
-    const d = drive($, h)
-    await d.start(surface)
-    while (!h.posts.length) await flush()
-    expect(h.posts.length).toBe(1)
-    expect(h.posts[0]?.url).toBe('https://feedback.aivalue.blog/api/v1/events')
-    const body = JSON.parse(h.posts[0]?.body ?? '{}') as { install: string; events: Record<string, unknown>[] }
-    expect(body.install).toBe('b'.repeat(32))
-    expect(body.events.length, 'only the lines after the last send').toBe(2)
-    const text = h.posts[0]?.body ?? ''
-    for (const secret of ['sess-0', 'secret_server', '/Users/x', 'Bash failed']) expect(text, secret).not.toContain(secret)
-    expect(body.events[0]?.escalations, 'a count, not the reasons').toBe(1)
-
-    await d.start(surface)
-    h.now += 10 * MIN
-    await d.step('t0')
-    await d.complete('t0')
-    await flush()
-    expect(h.posts.length, 'within the hour: nothing more').toBe(1)
-  })
-
-  test(`sharing sends nothing while Claude Code's nonessential traffic is off (${surface})`, { timeoutMs: 30000, options: { share: 'on' } }, async ($, on) => {
-    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { shareInstall: 'b'.repeat(32), sharedUpTo: '2020-01-01T00:00:00.000Z' } })
-    h.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = '1'
-    h.files[RUNS] = shareLog(h.now, 5)
-    const d = drive($, h)
+    h.now += 31 * 24 * 60 * MIN
     await d.start(surface)
     await flush()
-    expect(h.posts.length).toBe(0)
+    expect(h.posts, 'no POST, ever').toEqual([])
+    expect(new Set(h.urls).size === 0 || [...new Set(h.urls)].every(u => u === 'https://platform.claude.com/docs/en/about-claude/pricing.md'), 'a GET goes only to the pricing page').toBe(true)
+    const text = (await d.command('status')).text ?? ''
+    expect(text).not.toContain('Share anonymous feedback')
+    expect(text).not.toContain('install ID')
+    expect(h.store.shareInstall, 'no install ID is made').toBeUndefined()
+    expect(h.store.sharedUpTo).toBeUndefined()
   })
 
   test(`Stop suggesting turns start suggestions off in /config (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -2957,7 +2914,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   const disagree = (h: ReturnType<typeof engine>) => (h.files[LOG] ?? '').includes('plugin.json and the settings table disagree')
   const settingsText = async (d: ReturnType<typeof drive>) => (await d.command('status')).text ?? ''
   // A row in the "you changed" list: indented, with no (default) or (detected) mark after it.
-  // Only the list of changed rows counts: the Now section below it has a Mode line and a Share line of its own.
+  // Only the list of changed rows counts: the Now section below it has a Mode line of its own.
   const listed = (t: string, title: string) => new RegExp(`^  ${title}: [^(\\n]+$`, 'm').test(t.split('\nNow\n')[0] ?? t)
   const changedCount = (t: string) => Number(/You changed (\d+) setting/.exec(t)?.[1] ?? 0)
   const OPUS = { model: 'claude-opus-5-5', effort: 'medium' }
@@ -3292,21 +3249,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
       },
       set: ['2 minutes', true],
       def: ['30 seconds', false],
-    },
-    {
-      key: 'share',
-      value: 'on',
-      start: { ...OPUS, store: { shareInstall: 'b'.repeat(32), sharedUpTo: '2020-01-01T00:00:00.000Z' } },
-      setup: h => void (h.files[RUNS] = shareLog(h.now, 20)),
-      early: true,
-      see: async c => {
-        // On, the numbers go out at the start of a session; off (and never asked), nothing leaves.
-        await c.d.start(c.surface)
-        await settle()
-        return c.h.posts.length > 0
-      },
-      set: true,
-      def: false,
     },
     {
       key: 'priceCheck',
@@ -4776,19 +4718,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.complete('t1')
     await settle()
     expect(h.asked.map(a => a.header)).toEqual(['Options', 'Remember'])
-  })
-
-  test(`/rightsize reset on Share anonymous feedback turns sharing off and forgets the install id (${surface})`, { timeoutMs: 30000, options: { share: 'on' } }, async ($, on) => {
-    const h = engine(on, { ...OPUS, store: { shareInstall: 'b'.repeat(32) }, stored: { share: 'on' } })
-    const d = drive($, h)
-    await d.start(surface)
-    h.answers = { Confirm: 'Yes' }
-    await d.command('reset share')
-    const text = await settingsText(d)
-    expect(text, 'the status line says it is off').toContain('Share anonymous feedback: off')
-    expect(text).not.toContain('Sharing install ID')
-    expect(h.stored.share).toBe('off')
-    expect(h.store.shareInstall).toBeNull()
   })
 
   test(`/rightsize reset with a name it does not know says so and lists the keys, and asks nothing (${surface})`, { timeoutMs: 30000 }, async ($, on) => {

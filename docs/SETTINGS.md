@@ -231,7 +231,7 @@ An "ask" answer opens its own timed dialog (see **Question wait**); every other 
 - Key: `band`
 - Options: when it acts · always · off
 - Default: when it acts
-- The row above the prompt that shows what rightsize did, with buttons to retry it at the original effort or run it on your model, and a ⋯ menu to change the rule, mark a hand-off or lowering 👍 or 👎 (kept on this machine; shared only as a number when Share is on), or change cache choices. when it acts: only when it changes something. always: on every rated prompt, no change included. off: status line only.
+- The row above the prompt that shows what rightsize did, with buttons to retry it at the original effort or run it on your model, and a ⋯ menu to change the rule, mark a hand-off or lowering 👍 or 👎 (kept on this machine), or change cache choices. when it acts: only when it changes something. always: on every rated prompt, no change included. off: status line only.
 
 ### Question wait
 
@@ -239,13 +239,6 @@ An "ask" answer opens its own timed dialog (see **Question wait**); every other 
 - Options: 30 seconds · 1 minute · 2 minutes
 - Default: 30 seconds
 - How long a question that must be answered before your prompt runs waits for your answer: Effort, Stronger and Subagent when a rule is ask (with Band set to off, or on the mobile app, every question). With no answer, rightsize takes the choice that changes nothing and costs nothing. Questions on the band do not hold up the work and have no wait.
-
-### Share anonymous feedback
-
-- Key: `share`
-- Options: off · on
-- Default: off
-- on: send anonymous numbers to the rightsize author, at most once an hour, to tune its defaults: the plugin version and billing kind, task types, models, effort levels, rated levels, token guesses, conversation size, estimated and real costs, turn and rating times, what went wrong, Sonnet checks, and your 👍 and 👎, with a random install id. Never prompts, code, file names, paths, tool or server names, or session ids. Only what is logged after you turn it on is sent. rightsize never asks: this row, /rightsize status and the report are where it shows. off (default): nothing is sent; turning it off and on again starts a new install id.
 
 ### Price check
 

@@ -65,9 +65,8 @@ import {
 } from './cost'
 import { type FreshRun, type HandedOff, NO_STEPS, type StepState, actingExp, mergeSteps, medians, parseStepState, STEP_PROVE, typicalShrink } from './steps'
 import { type LearningNote, learningNote } from './learning'
-import { PRICING_URL, applyPrices, diffPrices, isDue, parsePricingPage } from './prices'
+import { applyPrices, diffPrices, isDue, parsePricingPage } from './prices'
 import { confidence, missCounts, missMap, ownTasks, pauseRates } from './misses'
-import { SHARE_EVERY_MS, SHARE_URL, newInstall, nextBatch } from './share'
 import { START_CHECK_DAYS, START_MIN_PROMPTS, START_SNOOZE_DAYS, adviseStart, startBlock, startKey, startTip } from './start'
 import {
   ADVANCED,
@@ -501,12 +500,6 @@ let startEvery: number | null = START_CHECK_DAYS.weekly
 let spotEvery: number | null = PROFILES.Balanced.raterEvery
 /** The model that rates first (Rater). The other one is the fallback. */
 let rater: Rater = 'sonnet'
-/** Send anonymous numbers to the rightsize author: off until the person says yes. */
-let sharing = false
-/** When this process last sent, or tried to: at most one send an hour. */
-let sharedAt = 0
-/** The mod's version, sent with each batch. */
-let version = ''
 /** The run log's last 30 days, kept in memory to score the rater (misses.ts) without re-reading the file. */
 let runLog: RunLine[] = []
 /** How often the rater was wrong, by `${type}:${tier}`: what plan() skips hand-downs and lowerings on. */
@@ -627,7 +620,9 @@ function append($: EngineInterface, name: string, line: string, max: number) {
   return turn
 }
 
-const log = ($: EngineInterface, line: string) => append($, 'rightsize.log', `${new Date().toISOString()} ${line}`, 50_000)
+function log($: EngineInterface, line: string) {
+  return append($, 'rightsize.log', `${new Date().toISOString()} ${line}`, 50_000)
+}
 
 const atOf = (l: { at: string }) => Date.parse(l.at) || 0
 
@@ -644,8 +639,12 @@ async function readAll<T extends { at: string }>($: EngineInterface, name: strin
   return parts.flat().sort((a, b) => atOf(a) - atOf(b))
 }
 
-const readRuns = ($: EngineInterface) => readAll<RunLine>($, 'runs.jsonl', LEGACY_RUNS)
-const readSwitchLines = ($: EngineInterface) => readAll<SwitchLine>($, 'switches.jsonl', LEGACY_SWITCHES)
+function readRuns($: EngineInterface): Promise<RunLine[]> {
+  return readAll($, 'runs.jsonl', LEGACY_RUNS)
+}
+function readSwitchLines($: EngineInterface): Promise<SwitchLine[]> {
+  return readAll($, 'switches.jsonl', LEGACY_SWITCHES)
+}
 
 // Removes the folders of sessions that have not written for 45 days. Only a folder inside the
 // sessions folder, never this session's, and only when every entry in it is a file that old.
@@ -725,7 +724,8 @@ async function checkPrices($: EngineInterface, why: 'monthly' | 'manual', claime
   }
   let text = ''
   try {
-    const res = await $.http.fetch(PRICING_URL)
+    // The address is written out at the call so a reader sees where it goes; prices.ts PRICING_URL holds the same text (scripts/check-settings.mjs checks they match).
+    const res = await $.http.fetch('https://platform.claude.com/docs/en/about-claude/pricing.md')
     if (!res.ok) throw new Error(`the pricing page answered ${res.status}`)
     text = res.text
   } catch (err) {
@@ -755,7 +755,7 @@ async function checkPrices($: EngineInterface, why: 'monthly' | 'manual', claime
 }
 
 // One check at a time; a second ask waits for the first.
-const runCheck = ($: EngineInterface, why: 'monthly' | 'manual', claimedFrom?: unknown) => {
+function runCheck($: EngineInterface, why: 'monthly' | 'manual', claimedFrom?: unknown) {
   checking ??= checkPrices($, why, claimedFrom).finally(() => {
     checking = null
   })
@@ -770,7 +770,9 @@ async function sessionEffort($: EngineInterface) {
 }
 
 /** The session switch in force: none while Routing is off (a switch made earlier is left stored, and applies again when Routing is back on). */
-const sessionEffortInUse = async ($: EngineInterface) => (routing ? sessionEffort($) : null)
+async function sessionEffortInUse($: EngineInterface) {
+  return routing ? sessionEffort($) : null
+}
 
 async function seenEffort($: EngineInterface) {
   const v = (await $.state.get({ plugin: 'rightsize', key: 'seenEffort' }).catch(() => undefined))?.value
@@ -873,7 +875,7 @@ async function mergeCal($: EngineInterface) {
 }
 
 // One save at a time, so two saves in this session never read the same stored copy.
-const saveCal = ($: EngineInterface) => {
+function saveCal($: EngineInterface) {
   saving = saving.then(() => mergeCal($))
   return saving
 }
@@ -948,7 +950,8 @@ const ASK_MAX = 4
 async function pickFrom<V>($: EngineInterface, q: Question<V>, header = q.header, moreHeader = 'More cache'): Promise<V | undefined> {
   if (q.options.length <= ASK_MAX) return pick($, { ...q, header })
   const more = Symbol('more')
-  const v = await pick<V | typeof more>($, { ...q, header, options: [...q.options.slice(0, ASK_MAX - 1), ['More…', more]] })
+  const asking: Question<V | typeof more> = { ...q, header, options: [...q.options.slice(0, ASK_MAX - 1), ['More…', more]] }
+  const v = await pick($, asking)
   return v === more ? pickFrom($, { ...q, options: q.options.slice(ASK_MAX - 1) }, moreHeader, moreHeader) : v
 }
 
@@ -987,7 +990,7 @@ async function askWithin<V>($: EngineInterface, q: Question<V>, onLate?: (v: V) 
 // A question that need not stop the work is a row on the band, under what rightsize did, and nobody waits for it:
 // the work goes on with the question's safe default, and the answer is applied when it comes. Nothing has a hook
 // open then, so the band can draw it and its buttons answer it. A question lasts until the main chat's turn ends
-// (`turn`: Stuck, a stuck helper) or until the next prompt (`prompt`: Remember choices, Reports, Share, Workflow).
+// (`turn`: Stuck, a stuck helper) or until the next prompt (`prompt`: Remember choices, Reports, Workflow).
 // Unanswered by then, its `gone` applies the default. Without the band (Band "Never", or a surface that does not
 // draw it, such as the mobile app) the caller asks in the engine's dialog, as before.
 
@@ -1122,10 +1125,14 @@ async function showQuestion($: EngineInterface) {
 }
 
 /** One log line for a band question that went unanswered. */
-const logUnanswered = ($: EngineInterface, header: string, did: string) => log($, `no answer on the band to ${header}: ${did}`)
+function logUnanswered($: EngineInterface, header: string, did: string) {
+  return log($, `no answer on the band to ${header}: ${did}`)
+}
 
 /** One log line for a dialog question nobody answered in time. */
-const logTimeout = ($: EngineInterface, header: string, did: string) => log($, `no answer in ${questionWait} to ${header}: ${did}`)
+function logTimeout($: EngineInterface, header: string, did: string) {
+  return log($, `no answer in ${questionWait} to ${header}: ${did}`)
+}
 
 const RULE_IDS = Object.keys(RULE_KEYS) as (keyof Choices)[]
 
@@ -1164,7 +1171,6 @@ function writeSetting($: EngineInterface, key: SettingKey, value: string): Promi
     case 'billing': return $.config.set({ key: 'rightsize.billing', value: value })
     case 'band': return $.config.set({ key: 'rightsize.band', value: value })
     case 'questionWait': return $.config.set({ key: 'rightsize.questionWait', value: value })
-    case 'share': return $.config.set({ key: 'rightsize.share', value: value })
     case 'priceCheck': return $.config.set({ key: 'rightsize.priceCheck', value: value })
   }
 }
@@ -1740,7 +1746,7 @@ function bandRows(band: Band | null | undefined, mode: BandMode) {
 let bandNote: string | null = null
 
 /** `rating` is true for the band of a prompt being rated now: its run line is not in the log yet, so it counts as one more rated prompt toward SESSION_TOTAL_FROM. */
-const setBand = ($: EngineInterface, band: Band | null, rating = false) => {
+function setBand($: EngineInterface, band: Band | null, rating = false) {
   if (!band) return $.state.set(BAND, null).catch(() => undefined).then(() => showQuestion($))
   // A band built from an earlier band's text already carries a total: drop it, and add the current one last.
   let text = band.text.replace(SESSION_TOTAL, '')
@@ -1847,8 +1853,12 @@ async function runAsIs($: EngineInterface, kind: 'lower' | 'route', none: string
     : `Could not fill the prompt box. Send the prompt again and it runs ${back}.`
 }
 
-const retry = ($: EngineInterface) => runAsIs($, 'lower', 'Nothing to retry: the last prompt was not lowered automatically.')
-const runOnCurrent = ($: EngineInterface) => runAsIs($, 'route', 'Nothing to run again: the last prompt was not handed off or run on another model.')
+function retry($: EngineInterface) {
+  return runAsIs($, 'lower', 'Nothing to retry: the last prompt was not lowered automatically.')
+}
+function runOnCurrent($: EngineInterface) {
+  return runAsIs($, 'route', 'Nothing to run again: the last prompt was not handed off or run on another model.')
+}
 
 async function clearSession($: EngineInterface) {
   const level = await sessionEffort($)
@@ -1868,7 +1878,7 @@ async function giveFeedback($: EngineInterface, ref: string, value: 'up' | 'down
     const { rate: _, ...rest } = band
     await setBand($, rest)
   }
-  $.ui.toast(`Rightsize: thanks — this tunes its choices on this machine${sharing ? ', and is shared as an anonymous number' : ''}.`)
+  $.ui.toast('Rightsize: thanks — this tunes its choices on this machine.')
 }
 
 // 👍 and 👎 are for the result in front of the person: their next prompt takes them off the band.
@@ -2552,7 +2562,9 @@ async function closeOffer($: EngineInterface, choice: string) {
 const usedText = (w: Warming) => (w.pings === 0 && w.spent === 0 ? undefined : usedTag(w.spent, billing === 'subscription', w.rates))
 
 /** The keep-warm status row: one Stop button; "Don't keep warm again" (the row set to off) waits in the ⋯ menu. Before the first request it shows the zero text in the band's unit. */
-const showWarming = ($: EngineInterface, w: Warming) => showCold($, warmingText({ until: w.until, used: usedText(w) ?? (billing === 'subscription' ? '~0% used' : '$0.00') }), [{ id: 'stop', label: 'Stop keeping warm' }], true, [{ id: 'off', label: "Don't keep warm again" }])
+function showWarming($: EngineInterface, w: Warming) {
+  return showCold($, warmingText({ until: w.until, used: usedText(w) ?? (billing === 'subscription' ? '~0% used' : '$0.00') }), [{ id: 'stop', label: 'Stop keeping warm' }], true, [{ id: 'off', label: "Don't keep warm again" }])
+}
 
 /** The keep-warm run ends: `what` is the band's last word on it, without a full stop. */
 async function endWarm($: EngineInterface, w: Warming, what: string) {
@@ -2618,8 +2630,9 @@ async function startWarm($: EngineInterface, c: ColdTurn, ms: number, how: strin
 }
 
 /** Arms the timer for ping `k` of `count`: the first is one cache life less the lead after the turn ended, and each one arms the next. */
-const armPing = ($: EngineInterface, gen: number, c: ColdTurn, w: Warming, k: number, count: number) =>
-  armCold($, gen, c.endedAt + k * pingEvery(cacheTtl), () => sendPing($, gen, c, w, k, count))
+function armPing($: EngineInterface, gen: number, c: ColdTurn, w: Warming, k: number, count: number) {
+  return armCold($, gen, c.endedAt + k * pingEvery(cacheTtl), () => sendPing($, gen, c, w, k, count))
+}
 
 // Ping `k` of `count`, when its timer fires. A turn running keeps the cache warm itself, and its end starts the next round.
 async function sendPing($: EngineInterface, gen: number, c: ColdTurn, w: Warming, k: number, count: number) {
@@ -2915,7 +2928,6 @@ async function summary($: EngineInterface) {
   const runs = Object.entries(cal).filter(([k]) => k !== SWITCH_KEY && k.split(':').length === 2).reduce((n, [, e]) => n + e.n, 0)
   const sw = cal[SWITCH_KEY]
   const sees = detectedBilling === 'subscription' ? 'a subscription' : 'API billing'
-  const install = sharing ? await $.store.get('shareInstall').catch(() => undefined) : undefined
   // Only the settings you set in /config or answered: the rest are defaults, and /config shows them.
   const changed: string[] = []
   const cur = inUse(profile, cfg, yours)
@@ -2944,10 +2956,8 @@ async function summary($: EngineInterface) {
     ...(pacing && paceText(true) ? [`  ${paceText(true)}`] : []),
     `  Measured runs: ${runs}`,
     ...(sw ? [`  Effort switches that missed the cache: ${Math.round(sw.ratio * 100)}% of ${sw.n} (each one in ~/.claude/mods-logs/rightsize/<session>/switches.jsonl)`] : []),
-    ...(typeof install === 'string' ? [`  Sharing install ID: ${install} (quote it to rightsize@aivalue.blog to ask about or delete your shared data)`] : []),
     `  Mode: ${watching ? 'watch only (rates and plans every prompt, changes nothing; Mode in /config turns it on)' : 'act'}`,
     `  Features: Routing ${routing ? 'on' : 'off'} · Hand-offs ${handOffs ? 'on' : 'off'} · Cache ${cacheOn ? 'on' : 'off'}`,
-    `  Share anonymous feedback: ${sharing ? 'on' : 'off (the row in /config turns it on; it sends numbers only, never prompts, code or paths)'}`,
     '',
     'Commands: /rightsize help',
   ].join('\n')
@@ -3001,12 +3011,8 @@ async function openSettings($: EngineInterface) {
 async function askSettings($: EngineInterface) {
   const changed: string[] = []
   for (;;) {
-    const rows = await pickFrom<SettingKey | 'done'>(
-      $,
-      { header: 'Setting', question: 'Which setting? A change takes effect at once.', options: [['Done', 'done'], ...KEYS.map(k => [`${plainTitle(SETTINGS[k].title)}: ${cfg[k]}`, k] as const)] },
-      'Setting',
-      'More rows',
-    )
+    const asking: Question<SettingKey | 'done'> = { header: 'Setting', question: 'Which setting? A change takes effect at once.', options: [['Done', 'done'], ...KEYS.map(k => [`${plainTitle(SETTINGS[k].title)}: ${cfg[k]}`, k] as const)] }
+    const rows = await pickFrom($, asking, 'Setting', 'More rows')
     if (rows === undefined || rows === 'done') break
     const key = rows
     const title = plainTitle(SETTINGS[key].title)
@@ -3173,49 +3179,6 @@ async function runReset($: EngineInterface, name: string): Promise<string> {
   return out.join(' ')
 }
 
-// ---- Sharing -------------------------------------------------------------------
-
-// Opt-in only, from the Share anonymous feedback row in /config (rightsize never asks): on a yes it sends
-// anonymous numbers (share.ts says exactly which) with its author, what the log gains from then on, at most
-// once an hour; it never sends what came before. /rightsize status and the report say whether it is on.
-
-async function setShare($: EngineInterface, enabled: boolean) {
-  sharing = enabled
-  if (!enabled) {
-    // A new yes later starts a new install id.
-    await $.store.set('shareInstall', null).catch(() => undefined)
-    return
-  }
-  const install = await $.store.get('shareInstall').catch(() => undefined)
-  if (typeof install === 'string' && /^[a-f0-9]{32}$/.test(install)) return
-  await $.store.set('shareInstall', newInstall()).catch(() => undefined)
-  await $.store.set('sharedUpTo', new Date(await $.clock.now()).toISOString()).catch(() => undefined)
-}
-
-async function sendShare($: EngineInterface) {
-  try {
-    if (!sharing || off) return
-    const now = await $.clock.now()
-    if (now - sharedAt < SHARE_EVERY_MS) return
-    if (await $.env.get('CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC').catch(() => undefined)) return
-    const install = await $.store.get('shareInstall').catch(() => undefined)
-    if (typeof install !== 'string') return
-    const after = await $.store.get('sharedUpTo').catch(() => undefined)
-    const { events, upTo } = nextBatch(runLog, install, typeof after === 'string' ? after : undefined)
-    if (!upTo) return
-    sharedAt = now
-    if (events.length) {
-      const body = JSON.stringify({ install, version, billing, events })
-      const res = await $.http.fetch(SHARE_URL, { method: 'POST', headers: { 'content-type': 'application/json' }, body })
-      if (!res.ok) return log($, `share: the server answered ${res.status}; sent again later`)
-      await log($, `share: sent ${events.length} event(s)`)
-    }
-    await $.store.set('sharedUpTo', upTo).catch(() => undefined)
-  } catch (err) {
-    await log($, `share failed: ${err instanceof Error ? err.message : String(err)}`)
-  }
-}
-
 // ---- Starting point ----------------------------------------------------------
 
 // Once a week at session start, replay the last 30 days of rated prompts from each
@@ -3224,7 +3187,9 @@ async function sendShare($: EngineInterface) {
 
 const DAY_MS = 24 * 60 * 60_000
 
-const startContext = async ($: EngineInterface) => ({ prices, cal, rules, floor, choices: await choices($), ceiling, without, from: measureFrom })
+async function startContext($: EngineInterface) {
+  return { prices, cal, rules, floor, choices: await choices($), ceiling, without, from: measureFrom }
+}
 
 async function checkStart($: EngineInterface) {
   if (off || startEvery === null) return
@@ -3375,9 +3340,6 @@ function applyOption(key: SettingKey) {
     case 'questionWait':
       if (isQuestionWait(v)) questionWait = v
       return
-    case 'share':
-      sharing = v === 'on'
-      return
     case 'priceCheck':
       if (v === 'monthly' || v === 'off') priceCheck = v
       return
@@ -3393,9 +3355,6 @@ async function followRow($: EngineInterface, key: SettingKey, value: string) {
   switch (key) {
     case 'band':
       await setBandMode($, bandMode)
-      return
-    case 'share':
-      await setShare($, value === 'on')
       return
     case 'beforeCold':
       // The row changed: what was waiting or pinging under the old value stops. The next big turn's end follows the new one.
@@ -3580,13 +3539,6 @@ export const register: Register = (on, options) => {
     profileNoted.clear()
     await checkStart($).catch(() => undefined)
     await dayOneTip($).catch(() => undefined)
-    try {
-      version = String((JSON.parse(await readText($, `${$.plugin.root}/.claude-plugin/plugin.json`)) as { version?: unknown }).version ?? '')
-    } catch {
-      version = ''
-    }
-    sharedAt = 0
-    void sendShare($)
     $.clock.every(3000, () => {
       void readSwitches($).then(json => {
         off = json[NAME] === false
@@ -3613,7 +3565,7 @@ export const register: Register = (on, options) => {
       const start = startBlock(adviseStart(runs, await startContext($), now), billing === 'subscription', money)
       // The desktop app (any surface but the terminal) renders the report as Markdown.
       const markdown = (await $.session.surfaces()).some(x => x !== 'terminal')
-      return { text: buildReport(runs, switches, { now, session: sessionId, subscription: billing === 'subscription', start, pause: missBlock, markdown, sharing, watching, ...(measureFrom ? { measureFrom: new Date(measureFrom).toISOString() } : {}) }) }
+      return { text: buildReport(runs, switches, { now, session: sessionId, subscription: billing === 'subscription', start, pause: missBlock, markdown, watching, ...(measureFrom ? { measureFrom: new Date(measureFrom).toISOString() } : {}) }) }
     }
     if (arg === 'share') {
       const runs = await readRuns($)
@@ -4211,7 +4163,6 @@ export const register: Register = (on, options) => {
     }
     // The turn's own questions go, unanswered; those asked while its prompt was sent show now.
     if (e.agentId === undefined) await endBand($, 'turn')
-    if (e.agentId === undefined) void sendShare($)
     // A person who interrupted is at the keyboard: no offer for an aborted turn.
     if (e.agentId === undefined && !e.isAborted) await coldCheck($).catch(err => log($, `before the cache goes cold failed: ${err instanceof Error ? err.message : String(err)}`))
     return result

@@ -5,14 +5,13 @@
 Report it in private. Do not open a public issue.
 
 - On this repo, open the Security tab and press "Report a vulnerability" (GitHub private vulnerability reporting), or
-- email [rightsize@aivalue.blog](mailto:rightsize@aivalue.blog).
+- email [hello@aivalue.blog](mailto:hello@aivalue.blog?subject=rightsize) (subject: rightsize).
 
 You get a reply within 7 days.
 
 ## In scope
 
 - The rightsize plugin code in this repo.
-- The feedback endpoint, `feedback.aivalue.blog`.
 
 ## Supported versions
 

@@ -1,8 +1,8 @@
 {
   "name": "rightsize",
   "displayName": "rightsize",
-  "version": "0.8.0",
-  "description": "Make your Claude plan go further, and keep Opus where it matters. rightsize rates each Claude Code prompt and runs it on the cheapest model and effort that will do it well: reviews go to Opus, routine work goes to a cheaper helper that your main chat briefs and checks, and the band above the prompt shows what it did and what it saved as a share of your usage window. It learns from your own log, and a watch-only mode shows what it would do before it changes anything. Savings are estimates against a stated baseline.",
+  "version": "0.8.1",
+  "description": "Opus where it counts, rightsize everywhere else. rightsize picks the model and effort for each Claude Code prompt: routine work stays on Sonnet, reviews switch to Opus for one turn, and big routine jobs from an Opus session can go to a cheaper helper. A band shows what it did and what it cost, and watch-only mode lets you see its calls before it changes anything.",
   "types": "./types/index.d.ts",
   "author": {
     "name": "Archi Dubey",
@@ -337,7 +337,7 @@
     "band": {
       "type": "string",
       "title": "Advanced · Band",
-      "description": "The row above the prompt that shows what rightsize did, with buttons to retry it at the original effort or run it on your model, and a ⋯ menu to change the rule, mark a hand-off or lowering 👍 or 👎 (kept on this machine; shared only as a number when Share is on), or change cache choices. when it acts: only when it changes something. always: on every rated prompt, no change included. off: status line only.",
+      "description": "The row above the prompt that shows what rightsize did, with buttons to retry it at the original effort or run it on your model, and a ⋯ menu to change the rule, mark a hand-off or lowering 👍 or 👎 (kept on this machine), or change cache choices. when it acts: only when it changes something. always: on every rated prompt, no change included. off: status line only.",
       "default": "when it acts",
       "options": [
         "when it acts",
@@ -356,16 +356,6 @@
         "2 minutes"
       ]
     },
-    "share": {
-      "type": "string",
-      "title": "Advanced · Share anonymous feedback",
-      "description": "on: send anonymous numbers to the rightsize author, at most once an hour, to tune its defaults: the plugin version and billing kind, task types, models, effort levels, rated levels, token guesses, conversation size, estimated and real costs, turn and rating times, what went wrong, Sonnet checks, and your 👍 and 👎, with a random install id. Never prompts, code, file names, paths, tool or server names, or session ids. Only what is logged after you turn it on is sent. rightsize never asks: this row, /rightsize status and the report are where it shows. off (default): nothing is sent; turning it off and on again starts a new install id.",
-      "default": "off",
-      "options": [
-        "off",
-        "on"
-      ]
-    },
     "priceCheck": {
       "type": "string",
       "title": "Advanced · Price check",
@@ -377,11 +367,12 @@
       ]
     }
   },
-  "homepage": "https://github.com/archid21/rightsize",
+  "homepage": "https://aivalue.blog/rightsize",
   "repository": "https://github.com/archid21/rightsize",
-  "documentationUrl": "https://github.com/archid21/rightsize#readme",
+  "documentationUrl": "https://github.com/archid21/rightsize#quickstart",
   "supportUrl": "https://github.com/archid21/rightsize/issues",
-  "privacyPolicyUrl": "https://github.com/archid21/rightsize#privacy",
+  "privacyPolicyUrl": "https://github.com/archid21/rightsize/blob/main/docs/PRIVACY.md",
+  "termsOfServiceUrl": "https://github.com/archid21/rightsize/blob/main/LICENSE",
   "license": "MIT",
   "keywords": [
     "effort",

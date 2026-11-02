@@ -25,8 +25,8 @@ export type RunLine = {
    * 'unbound': a rated prompt that never got a turn of its own, because it was delivered into a running turn or cancelled before its turn started; `reason` says which and `overhead` what its rating cost.
    * 'dropped' and 'unbound' are not rated runs: the report counts only their overhead.
    * 'warm': one keep-warm request that kept the prompt cache from expiring (Before the cache goes cold); `overhead` is what it cost, `tier` its model and `context` the conversation it re-read.
-   * 'cold': how the person answered one offer before the cache goes cold; `choice` is the id they pressed, or 'ignored'. It carries no cost, is never shared, and is no part of any total.
-   * 'warmSaved': the person came back to a kept-warm cache after the time it would have gone cold without keep warm, and the returning prompt's first request read the cache (at least ~80% of the kept conversation); `saved` is what coming back cold would have cost. It carries no `overhead`, is never shared, and `totals` counts `saved` toward Total saved.
+   * 'cold': how the person answered one offer before the cache goes cold; `choice` is the id they pressed, or 'ignored'. It carries no cost and is no part of any total.
+   * 'warmSaved': the person came back to a kept-warm cache after the time it would have gone cold without keep warm, and the returning prompt's first request read the cache (at least ~80% of the kept conversation); `saved` is what coming back cold would have cost. It carries no `overhead`, and `totals` counts `saved` toward Total saved.
    * `totals` adds the `overhead` of every line, so these pings count as rightsize's own cost and lower Total saved.
    */
   kind?: 'run' | 'overhead' | 'subagent' | 'check' | 'feedback' | 'corrected' | 'unrated' | 'dropped' | 'unbound' | 'warm' | 'warmSaved' | 'cold'
@@ -903,7 +903,7 @@ export function fixedBlock(lines: readonly RunLine[], subscription = false) {
 export function buildReport(
   lines: readonly RunLine[],
   switches: readonly SwitchLine[],
-  opts: { now: number; session: string; subscription: boolean; start?: StartBlock; pause?: number | null; measureFrom?: string; markdown?: boolean; sharing?: boolean; watching?: boolean },
+  opts: { now: number; session: string; subscription: boolean; start?: StartBlock; pause?: number | null; measureFrom?: string; markdown?: boolean; watching?: boolean },
 ) {
   const since = (days: number) => (l: { at: string }) => opts.now - Date.parse(l.at) <= days * DAY
   const month = lines.filter(since(30))
@@ -956,7 +956,6 @@ export function buildReport(
     ...(sub && cols.some(s => s.kept) ? ['Window shares are ranges because the rate limits report whole percents.'] : []),
     ...(nothing ? [] : [stepLine(lines, opts.measureFrom ? Date.parse(opts.measureFrom) : 0)]),
     ...(sub ? ['Dollar amounts are API-equivalent: what the same use would cost on the API.', 'You only pay for your subscription.'] : []),
-    ...(opts.sharing === undefined ? [] : [opts.sharing ? 'Share anonymous feedback is on: numbers only, never prompts, code or paths.' : 'Share anonymous feedback is off. The row in /config turns it on; it sends numbers only (task types, models, levels, costs, outcomes), never prompts, code or paths.']),
   ]
   out.push('', ...(md ? foot : foot.flatMap(f => wrap(f, '', '', 78))))
   return out.join('\n')
@@ -982,7 +981,7 @@ const SHARE_LINK = 'https://aivalue.blog/rightsize'
 
 /**
  * /rightsize share: a message to paste anywhere, with the last 30 days' estimated saving once there is enough data.
- * Prints only; unrelated to the anonymous-feedback setting. Same totals and percentage as the report.
+ * Prints only, sends nothing. Same totals and percentage as the report.
  */
 export function shareMessage(lines: readonly RunLine[], opts: { now: number; subscription: boolean; measureFrom?: string }) {
   const from = opts.measureFrom ? Date.parse(opts.measureFrom) : 0

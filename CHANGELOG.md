@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.8.1 (2026-11-01)
+
+- **Share anonymous feedback is removed; rightsize sends nothing to the author.** The `/config` row, the install ID, the hourly upload to `feedback.aivalue.blog` and the code behind them are gone. rightsize's only web request is now a plain GET of Anthropic's pricing page every 30 days (**Price check**, which can be turned off). 👍 and 👎 stay: they are written to the run log on your machine and tune rightsize's choices there. `/rightsize status` and the report footer no longer have a Share line. `docs/PRIVACY.md` says it all in one page, including what to do if you had Share on in 0.7 or 0.8 (your install ID is the `shareInstall` value in `~/.claude/plugins/store/rightsize_*.json`). There is one setting fewer (32 rows). `/rightsize share`, the message you can paste to tell others, is unchanged: it only prints text.
+- **Feedback by issue.** A "Feedback on rightsize" issue template asks what you use, what rightsize did well or got wrong, and optionally your `/rightsize report`; the README links to it.
+- **What it runs, writes and sends, in one place.** The plugin README has a section of that name, checked against the code: the four programs it runs (`mkdir`, `chmod`, `rm`, `rmdir`, only on its own log folders), where it writes (its log folders, its store, its own `prices.json`), the one web address it contacts, the one fixed text it submits (`wrap up`), that it sets only its own `rightsize.*` settings, that it reads no credential, and that its `tool.call` hook only ever denies and passes every call on unchanged. The root README has a short version; `docs/WHAT-IT-TOUCHES.md` matches.
+- **The code is easier for the Claude plugin directory's automatic check to read.** `$` is now passed only to plain `function` declarations (a few small helpers were arrow functions, and three calls named a type argument). The pricing address is written out at its call, and `scripts/check-settings.mjs` checks it matches `PRICING_URL` and that it is the only `$.http.fetch` call.
+- **A new description** for the plugin and the marketplace: "Opus where it counts, rightsize everywhere else."
+- **Listing links in `plugin.json`:** homepage (aivalue.blog/rightsize), documentation (the README quickstart), support (GitHub issues), privacy policy (`docs/PRIVACY.md`) and a terms link (the MIT license).
+- **Contact address:** security reports go to hello@aivalue.blog with the subject "rightsize".
+- Removed two stray `.DS_Store` files that were committed under `plugins/`.
+
 ## 0.8.0 (2026-11-01)
 
 - **Hand-downs start only from Opus or Fable.** A helper on a cheaper model is used only when your session runs on Opus or Fable. From Sonnet, the brief and the check cost more than Haiku saves, so the work stays in your chat. Hand-ups and moving Claude's own subagents are unchanged.

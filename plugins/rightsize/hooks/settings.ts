@@ -61,7 +61,6 @@ export const SETTINGS = {
   billing: { title: 'Advanced · Reports', options: ['api', 'subscription'], default: 'api' },
   band: { title: 'Advanced · Band', options: ['when it acts', 'always', 'off'], default: 'when it acts' },
   questionWait: { title: 'Advanced · Question wait', options: ['30 seconds', '1 minute', '2 minutes'], default: '30 seconds' },
-  share: { title: 'Advanced · Share anonymous feedback', options: ['off', 'on'], default: 'off' },
   priceCheck: { title: 'Advanced · Price check', options: ['monthly', 'off'], default: 'monthly' },
 } as const satisfies Record<string, Spec>
 

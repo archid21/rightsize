@@ -10,6 +10,7 @@
 //     Every row but the five plain ones (Profile, Mode, Routing, Hand-offs, Cache) is titled "Advanced · <name>" in /config; the page gives the name.
 //   - plugins/rightsize/README.md: each row's title is in the `/config` list under "Commands and settings" (a bullet that opens with a bold title).
 //   - hooks/register.test.ts: each row has a scenario that names its key.
+//   - hooks/register.tsx: the web address written out at the $.http.fetch call (the directory wants a fixed address there) equal PRICING_URL (prices.ts), and is the only $.http.fetch call.
 // It exits 1 and lists everything missing.
 
 import { readFileSync } from 'node:fs'
@@ -92,6 +93,13 @@ for (const [key, row] of rows) {
   if (!pluginConfig.includes(`**${named}**`)) fail(key, `no **${named}** in the /config list of plugins/rightsize/README.md`)
   if (!new RegExp(`key: '${key}'`).test(test)) fail(key, "no scenario with `key: '" + key + "'` in hooks/register.test.ts")
 }
+
+// The one address the directory reads at the $.http.fetch call must be the same text as the exported constant, and nothing else is fetched.
+const priceUrl = /export const PRICING_URL = '([^']+)'/.exec(read(join(plugin, 'hooks', 'prices.ts')))?.[1]
+if (!priceUrl) problems.push('PRICING_URL: not found in hooks/prices.ts')
+else if (!register.includes(`$.http.fetch('${priceUrl}'`)) problems.push(`PRICING_URL: hooks/register.tsx has no $.http.fetch('${priceUrl}'...) with the address written out`)
+const fetches = register.match(/\$\.http\.fetch\(/g)?.length ?? 0
+if (fetches !== 1) problems.push(`hooks/register.tsx calls $.http.fetch ${fetches} times; rightsize fetches only the pricing page (docs/PRIVACY.md says nothing else is sent)`)
 
 // The other direction: a row in settings.ts that plugin.json does not declare.
 const from = settings.indexOf('export const SETTINGS = {')

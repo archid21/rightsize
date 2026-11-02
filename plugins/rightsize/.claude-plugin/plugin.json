@@ -1,7 +1,7 @@
 {
   "name": "rightsize",
   "displayName": "rightsize",
-  "version": "0.7.4",
+  "version": "0.8.0",
   "description": "Make your Claude plan go further, and keep Opus where it matters. rightsize rates each Claude Code prompt and runs it on the cheapest model and effort that will do it well: reviews go to Opus, routine work goes to a cheaper helper that your main chat briefs and checks, and the band above the prompt shows what it did and what it saved as a share of your usage window. It learns from your own log, and a watch-only mode shows what it would do before it changes anything. Savings are estimates against a stated baseline.",
   "types": "./types/index.d.ts",
   "author": {

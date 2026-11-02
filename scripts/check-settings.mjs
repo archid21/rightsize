@@ -6,9 +6,9 @@
 //   - plugin.json: each row is a string picker with a title, a description, a default and options. Profile is first, Mode second and Routing, Hand-offs and Cache third to fifth; the others are titled "Advanced · ...".
 //   - hooks/settings.ts: each row has an entry with the same title, default and (when written out) options.
 //   - hooks/register.tsx: each row has a `case '<key>'` in applyOption, the parse that applies it.
-//   - README.md: each row's title is in the `/config` list under "Commands and settings" (a bullet that opens with a bold title).
-//     Every row but the five plain ones (Profile, Mode, Routing, Hand-offs, Cache) is titled "Advanced · <name>" in /config; the list gives the name, under its note that the rest are Advanced.
-//   - plugins/rightsize/README.md: each row's title is in its `/config` list.
+//   - docs/SETTINGS.md: each row has a `### <name>` heading (the title without "Advanced · ") whose first lines give its `Key:`. The root README.md links to this page and no longer lists the settings.
+//     Every row but the five plain ones (Profile, Mode, Routing, Hand-offs, Cache) is titled "Advanced · <name>" in /config; the page gives the name.
+//   - plugins/rightsize/README.md: each row's title is in the `/config` list under "Commands and settings" (a bullet that opens with a bold title).
 //   - hooks/register.test.ts: each row has a scenario that names its key.
 // It exits 1 and lists everything missing.
 
@@ -36,7 +36,15 @@ const configList = file =>
     .split('\n')
     .filter(line => /^\s*- \*\*/.test(line))
     .join('\n')
-const rootConfig = configList(join(root, 'README.md'))
+// docs/SETTINGS.md: one `### <name>` section per row, which names its key.
+const settingsDoc = read(join(root, 'docs', 'SETTINGS.md'))
+const settingsDocRow = name => {
+  const heading = `\n### ${name}\n`
+  const start = settingsDoc.indexOf(heading)
+  if (start < 0) return undefined
+  const next = settingsDoc.indexOf('\n### ', start + heading.length)
+  return settingsDoc.slice(start, next < 0 ? undefined : next)
+}
 const pluginConfig = configList(join(plugin, 'README.md'))
 
 const problems = []
@@ -78,7 +86,9 @@ for (const [key, row] of rows) {
   }
   if (!new RegExp(`case '${key}':`).test(register)) fail(key, "no `case '" + key + "':` in hooks/register.tsx (the parse)")
   const named = row.title.replace(/^Advanced · /, '')
-  if (!rootConfig.includes(`**${named}**`)) fail(key, `no **${named}** in the /config list of the root README.md`)
+  const docRow = settingsDocRow(named)
+  if (docRow === undefined) fail(key, `no "### ${named}" section in docs/SETTINGS.md`)
+  else if (!docRow.includes(`- Key: \`${key}\``)) fail(key, `the "### ${named}" section of docs/SETTINGS.md does not give \`Key: ${key}\``)
   if (!pluginConfig.includes(`**${named}**`)) fail(key, `no **${named}** in the /config list of plugins/rightsize/README.md`)
   if (!new RegExp(`key: '${key}'`).test(test)) fail(key, "no scenario with `key: '" + key + "'` in hooks/register.test.ts")
 }
@@ -92,4 +102,4 @@ if (problems.length) {
   console.error(`${problems.length} problem(s) with the settings:\n${problems.map(p => `  - ${p}`).join('\n')}`)
   process.exit(1)
 }
-console.log(`ok: ${rows.length} settings, each in plugin.json, settings.ts, register.tsx, both READMEs and the tests`)
+console.log(`ok: ${rows.length} settings, each in plugin.json, settings.ts, register.tsx, docs/SETTINGS.md, the plugin README and the tests`)

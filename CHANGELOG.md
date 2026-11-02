@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.8.0 (unreleased)
+## 0.8.0 (2026-11-01)
 
 - **Hand-downs start only from Opus or Fable.** A helper on a cheaper model is used only when your session runs on Opus or Fable. From Sonnet, the brief and the check cost more than Haiku saves, so the work stays in your chat. Hand-ups and moving Claude's own subagents are unchanged.
 - **Three switches: Routing, Hand-offs, Cache.** Three new rows in `/config`, third to fifth after Profile and Mode, each on or off (default on), turn one part of rightsize off and leave the rest running. Routing covers effort changes on your main chat, the review switch to Opus and the mid-turn raises. Hand-offs covers helper subagents and moving Claude's own subagents to a cheaper model; with Routing on, an effort change takes the place of a hand-off. Cache covers keep warm, the cache offer, the handoff or compaction before the cache goes cold and the idle warning; turning it off stops a keep-warm run at once. With Routing and Hand-offs both off, rightsize rates no prompt, so nothing is spent on rating, and the cache features still work. A row that belongs to a feature that is off is not used and keeps its value. `/rightsize status` has a `Features:` line, and the log says when a plan was dropped because its feature is off.

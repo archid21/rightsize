@@ -643,7 +643,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await warm(d, h)
     h.rating = HAND_OFF()
     await startHelper(d, h, 't1', 'helper')
-    for (let i = 0; i < 3; i++) await d.bash('env:curl: (6) Could not resolve host: registry.example.com', 'agent-helper')
+    for (let i = 0; i < 3; i++) await d.bash('env:fatal: unable to access registry.example.com: Could not resolve host: registry.example.com', 'agent-helper')
     await d.step('t1', 1, 'agent-helper')
     expect(last(h.sent)?.effort, 'the network is down: effort would not help').toBe('low')
     // The person saying no at the permission prompt is not the work failing: the same refused call three times raises nothing.

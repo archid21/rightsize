@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.3 (2026-11-02)
+
+- **The directory check can read every use of `$`.** Three places that dropped a field from the band destructured it into a variable named `_`, which the directory read as an unclear use of `$`. They now use plain names. No change in behaviour. `scripts/check-plain-dollar.mjs` now flags destructuring into `_`.
+- **Plugin manifest:** the `types` field is removed from `plugin.json` (Claude Code ignores it, and the directory reported it as unrecognized). `types/index.d.ts` stays.
+- **Test text:** three tests that fake a failed network call no longer quote `curl`, so the directory does not read them as download-and-run commands. The tests check the same things.
+
 ## 0.8.2 (2026-11-02)
 
 - **Clearer code for the directory check.** Two local names that repeated the names of top-level functions (`choices` in the keep-warm offer, `choice` in closing it) are renamed, and four hook error handlers no longer name their first parameter `$`, so the directory's check can tell which function a call means. No change in behaviour. `scripts/check-plain-dollar.mjs` now checks this and is part of the contributor checks.

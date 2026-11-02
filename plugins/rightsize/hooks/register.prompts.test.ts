@@ -830,7 +830,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.submit(LOOKUP)
     await d.step('t1', 0)
     // The same blocked call three times (a repeat failure and a loop for any other error), then three different ones.
-    for (let i = 0; i < 3; i++) await d.bash('env:curl: (6) Could not resolve host: registry.example.com')
+    for (let i = 0; i < 3; i++) await d.bash('env:fatal: unable to access registry.example.com: Could not resolve host: registry.example.com')
     await d.step('t1', 1)
     expect(last(h.sent)?.effort, 'a network failure repeated').toBe('medium')
     await d.bash('env:bash: /etc/hosts: Operation not permitted')

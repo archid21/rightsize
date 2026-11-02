@@ -10,6 +10,8 @@
 //     top-level function (the directory reads the name as the top-level function everywhere, so a local
 //     `const choices` made every `choices($)` call look like something else: the v0.8.1 findings).
 //   - No local named `$` except the hook's parameter and top-level functions' first parameter.
+//   - No destructuring into `_`: `const { rate: _, ...rest } = band` was read as a non-plain use of $ (the v0.8.2
+//     findings). A parameter named `_`, as in `.catch((_, e, next) => next(e))`, was not flagged.
 // With --strict it also lists uses we only suspect: $ inside a nested function, calls passing $ nested in
 // another expression, and reads such as $.plugin.root.
 // It needs the TypeScript package (version 6 or older). It looks in TYPESCRIPT_DIR, the repo, then the global npm folder.
@@ -81,7 +83,8 @@ function check(file) {
     else if (ts.isFunctionDeclaration(n) && n.name && n.parent !== sf) names = [n.name]
     else if (ts.isClassDeclaration(n) && n.name) names = [n.name]
     for (const id of names)
-      if (topFns.has(id.text)) report(id, 'shadow', `a local named ${id.text} hides the top-level function ${id.text}, so ${id.text}($) is not read as a call to it`)
+      if (id.text === '_' && ts.isBindingElement(id.parent)) report(id, 'destructure-_', 'destructuring into _, which the directory reads as a use of $')
+      else if (topFns.has(id.text)) report(id, 'shadow', `a local named ${id.text} hides the top-level function ${id.text}, so ${id.text}($) is not read as a call to it`)
     ts.forEachChild(n, visit)
   })(sf)
 

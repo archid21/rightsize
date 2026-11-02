@@ -1758,7 +1758,7 @@ function setBand($: EngineInterface, band: Band | null, rating = false) {
   const after = (t: string) => `${t}${/[.!?]$/.test(t) ? '' : '.'} ${total}`
   if (total && text) text = after(text)
   else if (total && coldText) coldText = after(coldText)
-  const { coldText: _, ...rest } = band
+  const { coldText: droppedCold, ...rest } = band
   return $.state.set(BAND, { ...rest, text, ...(coldText ? { coldText } : {}) }).catch(() => undefined).then(() => showQuestion($))
 }
 
@@ -1875,7 +1875,7 @@ async function giveFeedback($: EngineInterface, ref: string, value: 'up' | 'down
   await appendRun($, { at: new Date().toISOString(), kind: 'feedback', session: sessionId, ref, value })
   const band = (await $.state.get(BAND).catch(() => undefined))?.value
   if (band?.rate === ref) {
-    const { rate: _, ...rest } = band
+    const { rate: droppedRate, ...rest } = band
     await setBand($, rest)
   }
   $.ui.toast('Rightsize: thanks — this tunes its choices on this machine.')
@@ -1885,7 +1885,7 @@ async function giveFeedback($: EngineInterface, ref: string, value: 'up' | 'down
 async function dropRate($: EngineInterface) {
   const band = (await $.state.get(BAND).catch(() => undefined))?.value
   if (!band?.rate) return
-  const { rate: _, ...rest } = band
+  const { rate: droppedRate, ...rest } = band
   await setBand($, rest)
 }
 

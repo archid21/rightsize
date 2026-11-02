@@ -1,6 +1,6 @@
 # Settings
 
-Every row is a picker in `/config` (rightsize section). In a terminal session a change applies at once. In the desktop app there is no `/config` menu: change values from a terminal (`echo '{"handOff":"60%"}' | claude plugin configure rightsize@archid21 --values-stdin`), then quit the app and reopen it. `/rightsize` opens the same list as a pane, and `/rightsize reset <key>` resets one row by its key.
+Every row is a picker in `/config` (rightsize section). In a terminal session a change applies at once. In the desktop app there is no `/config` menu: change values from a terminal (`claude plugin configure rightsize@archid21 --values-stdin <<< '{"handOff":"60%"}'`), then quit the app and reopen it. `/rightsize` opens the same list as a pane, and `/rightsize reset <key>` resets one row by its key.
 
 **Profile** is the first row, **Mode** the second, and **Routing**, **Hand-offs** and **Cache** the third to fifth: each of these three turns one feature on or off. Every other row is titled "Advanced · ..." in `/config`; the names below leave that off. **Your setting wins:** a row you set always beats what your profile supplies for it, and automatic behavior (pacing, the profile) acts only on rows you left alone. Rows marked "not set" mean your profile decides.
 
@@ -210,14 +210,14 @@ An "ask" answer opens its own timed dialog (see **Question wait**); every other 
 - Key: `idleWarning`
 - Options: over $0.10 · over $0.50 · over $1 · off
 - Default: over $0.50
-- When a session under 200K tokens sat idle past the cache's life (1 hour, or 5 minutes when prices.json says 5m), the next prompt writes the whole conversation to the cache again. When that costs over this much more than a warm cache, the band notes the cost beside what rightsize did with the prompt (as a share of the 5-hour window on a subscription, once runs show the rate), and what /compact first would have cost. The prompt is never held.
+- When a session under 200K of context sat idle past the cache's life (1 hour, or 5 minutes when prices.json says 5m), the next prompt writes the whole conversation to the cache again. When that costs over this much more than a warm cache, the band notes the cost beside what rightsize did with the prompt (as a share of the 5-hour window on a subscription, once runs show the rate), and what /compact first would have cost. The prompt is never held.
 
 ### Before the cache goes cold
 
 - Key: `beforeCold`
 - Options: ask · keep warm 2 h · keep warm 8 h · keep warm until my usual start · save a handoff · compact · off
 - Default: ask. The row shows ask until you set it. Left alone, your Profile decides (Quality 8 hours, Balanced until your usual start, Economy cold).
-- What rightsize does when a session that ends a turn with a big conversation (a cold return would cost $0.50 or more, API-equivalent on a subscription; under 200K tokens) is about to lose its prompt cache. keep warm 2 h, keep warm 8 h, keep warm until my usual start (the time you usually send your first prompt, at most 8 hours): send one tiny request just before each expiry to keep the cache warm until then, with a status row on the band (Stop keeping warm; Don't keep warm again in ⋯), and stop when you type, press Stop, a request fails, or keeping warm would cost more than coming back cold. ask: offer the choices on the band 5 minutes after the turn, each with its cost, and do nothing if you do not pick. save a handoff: run Groundwork's wrap-up once before expiry (compact when Groundwork is not installed). compact: compact once before expiry. off: nothing. Nothing runs during a turn. Not set here, your Profile decides: Quality keeps warm 8 hours, Balanced until your usual start, Economy lets it go cold.
+- What rightsize does when a session that ends a turn with a big conversation (a cold return would cost $0.50 or more, API-equivalent on a subscription; under 200K of context) is about to lose its prompt cache. keep warm 2 h, keep warm 8 h, keep warm until my usual start (the time you usually send your first prompt, at most 8 hours): send one tiny request just before each expiry to keep the cache warm until then, with a status row on the band (Stop keeping warm; Don't keep warm again in ⋯), and stop when you type, press Stop, a request fails, or keeping warm would cost more than coming back cold. ask: offer the choices on the band 5 minutes after the turn, each with its cost, and do nothing if you do not pick. save a handoff: run Groundwork's wrap-up once before expiry (compact when Groundwork is not installed). compact: compact once before expiry. off: nothing. Nothing runs during a turn. Not set here, your Profile decides: Quality keeps warm 8 hours, Balanced until your usual start, Economy lets it go cold.
 
 ### Reports
 

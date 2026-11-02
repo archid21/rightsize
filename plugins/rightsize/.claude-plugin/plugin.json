@@ -1,7 +1,7 @@
 {
   "name": "rightsize",
   "displayName": "rightsize",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "description": "Opus where it counts, rightsize everywhere else. rightsize picks the model and effort for each Claude Code prompt: routine work stays on Sonnet, reviews switch to Opus for one turn, and big routine jobs from an Opus session can go to a cheaper helper. A band shows what it did and what it cost, and watch-only mode lets you see its calls before it changes anything.",
   "types": "./types/index.d.ts",
   "author": {
@@ -300,7 +300,7 @@
     "idleWarning": {
       "type": "string",
       "title": "Advanced · Idle warning",
-      "description": "When a session under 200K tokens sat idle past the cache's life (1 hour, or 5 minutes when prices.json says 5m), the next prompt writes the whole conversation to the cache again. When that costs over this much more than a warm cache, the band notes the cost beside what rightsize did with the prompt (as a share of the 5-hour window on a subscription, once runs show the rate), and what /compact first would have cost. The prompt is never held.",
+      "description": "When a session under 200K of context sat idle past the cache's life (1 hour, or 5 minutes when prices.json says 5m), the next prompt writes the whole conversation to the cache again. When that costs over this much more than a warm cache, the band notes the cost beside what rightsize did with the prompt (as a share of the 5-hour window on a subscription, once runs show the rate), and what /compact first would have cost. The prompt is never held.",
       "default": "over $0.50",
       "options": [
         "over $0.10",
@@ -312,7 +312,7 @@
     "beforeCold": {
       "type": "string",
       "title": "Advanced · Before the cache goes cold",
-      "description": "What rightsize does when a session that ends a turn with a big conversation (a cold return would cost $0.50 or more, API-equivalent on a subscription; under 200K tokens) is about to lose its prompt cache. keep warm 2 h, keep warm 8 h, keep warm until my usual start (the time you usually send your first prompt, at most 8 hours): send one tiny request just before each expiry to keep the cache warm until then, with a status row on the band (Stop keeping warm; Don't keep warm again in ⋯), and stop when you type, press Stop, a request fails, or keeping warm would cost more than coming back cold. ask: offer the choices on the band 5 minutes after the turn, each with its cost, and do nothing if you do not pick. save a handoff: run Groundwork's wrap-up once before expiry (compact when Groundwork is not installed). compact: compact once before expiry. off: nothing. Nothing runs during a turn. Not set here, your Profile decides: Quality keeps warm 8 hours, Balanced until your usual start, Economy lets it go cold.",
+      "description": "What rightsize does when a session that ends a turn with a big conversation (a cold return would cost $0.50 or more, API-equivalent on a subscription; under 200K of context) is about to lose its prompt cache. keep warm 2 h, keep warm 8 h, keep warm until my usual start (the time you usually send your first prompt, at most 8 hours): send one tiny request just before each expiry to keep the cache warm until then, with a status row on the band (Stop keeping warm; Don't keep warm again in ⋯), and stop when you type, press Stop, a request fails, or keeping warm would cost more than coming back cold. ask: offer the choices on the band 5 minutes after the turn, each with its cost, and do nothing if you do not pick. save a handoff: run Groundwork's wrap-up once before expiry (compact when Groundwork is not installed). compact: compact once before expiry. off: nothing. Nothing runs during a turn. Not set here, your Profile decides: Quality keeps warm 8 hours, Balanced until your usual start, Economy lets it go cold.",
       "default": "ask",
       "options": [
         "ask",
@@ -369,10 +369,6 @@
   },
   "homepage": "https://aivalue.blog/rightsize",
   "repository": "https://github.com/archid21/rightsize",
-  "documentationUrl": "https://github.com/archid21/rightsize#quickstart",
-  "supportUrl": "https://github.com/archid21/rightsize/issues",
-  "privacyPolicyUrl": "https://github.com/archid21/rightsize/blob/main/docs/PRIVACY.md",
-  "termsOfServiceUrl": "https://github.com/archid21/rightsize/blob/main/LICENSE",
   "license": "MIT",
   "keywords": [
     "effort",

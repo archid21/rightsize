@@ -9,11 +9,11 @@
 //   - docs/SETTINGS.md: each row has a `### <name>` heading (the title without "Advanced · ") whose first lines give its `Key:`. The root README.md links to this page and no longer lists the settings.
 //     Every row but the five plain ones (Profile, Mode, Routing, Hand-offs, Cache) is titled "Advanced · <name>" in /config; the page gives the name.
 //   - plugins/rightsize/README.md: each row's title is in the `/config` list under "Commands and settings" (a bullet that opens with a bold title).
-//   - hooks/register.test.ts: each row has a scenario that names its key.
+//   - hooks/register.*.test.ts: each row has a scenario that names its key.
 //   - hooks/register.tsx: the web address written out at the $.http.fetch call (the directory wants a fixed address there) equal PRICING_URL (prices.ts), and is the only $.http.fetch call.
 // It exits 1 and lists everything missing.
 
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -24,7 +24,7 @@ const read = path => readFileSync(path, 'utf8')
 const manifest = JSON.parse(read(join(plugin, '.claude-plugin', 'plugin.json')))
 const settings = read(join(plugin, 'hooks', 'settings.ts'))
 const register = read(join(plugin, 'hooks', 'register.tsx'))
-const test = read(join(plugin, 'hooks', 'register.test.ts'))
+const test = readdirSync(join(plugin, 'hooks')).filter(f => /^register\..*\.test\.ts$/.test(f)).map(f => read(join(plugin, 'hooks', f))).join('\n')
 const section = (text, from) => {
   const start = text.indexOf(from)
   if (start < 0) return ''
@@ -91,7 +91,7 @@ for (const [key, row] of rows) {
   if (docRow === undefined) fail(key, `no "### ${named}" section in docs/SETTINGS.md`)
   else if (!docRow.includes(`- Key: \`${key}\``)) fail(key, `the "### ${named}" section of docs/SETTINGS.md does not give \`Key: ${key}\``)
   if (!pluginConfig.includes(`**${named}**`)) fail(key, `no **${named}** in the /config list of plugins/rightsize/README.md`)
-  if (!new RegExp(`key: '${key}'`).test(test)) fail(key, "no scenario with `key: '" + key + "'` in hooks/register.test.ts")
+  if (!new RegExp(`key: '${key}'`).test(test)) fail(key, "no scenario with `key: '" + key + "'` in hooks/register.*.test.ts")
 }
 
 // The one address the directory reads at the $.http.fetch call must be the same text as the exported constant, and nothing else is fetched.

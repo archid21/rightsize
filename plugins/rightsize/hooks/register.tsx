@@ -887,7 +887,7 @@ async function usageNow($: EngineInterface) {
 }
 
 // A subscription's responses carry its five-hour and seven-day windows; a Claude
-// gateway's carry only a spend limit, billed per token. None: an API key, or no
+// gateway's carry only a spend limit, billed per token. None: no window shown, or no
 // response read yet, so it can't tell.
 export function billingOf(limits: readonly { kind: string }[]): Billing | undefined {
   if (limits.some(l => l.kind === 'five_hour' || l.kind === 'seven_day')) return 'subscription'
@@ -1471,7 +1471,7 @@ async function askRater($: EngineInterface, model: Rater, tier: Tier, level: Lev
   if (!r.isAnswered) {
     await log($, `rating by ${model} failed: ${r.reason}`)
     // 'aborted' is the timeout; an API error with no status is a dropped connection or provider timeout. Any other
-    // API error (a refusal, a missing login, a limit) says the rater is not available now.
+    // API error (a refusal, an unavailable account, a limit) says the rater is not available now.
     const timedOut = r.reason === 'aborted' || (r.reason === 'api-error' && r.status === null)
     return { overhead, failed: r.reason === 'api-error' ? `rating call failed (${r.status === null ? 'no response' : `status ${r.status}`})` : r.reason === 'aborted' ? 'rating call timed out' : 'rating call came back empty', retry: timedOut || r.reason === 'empty-reply' }
   }
@@ -2485,12 +2485,12 @@ async function offerCold($: EngineInterface, turn: ColdTurn) {
   const rates = billing === 'subscription' ? await windowPerDollar($) : undefined
   const ping = pingCost(prices[turn.tier], turn.context)
   const usual = usualStart(runLog, now)
-  const choices = keepWarmChoices({ ttl: cacheTtl, endedAt: turn.endedAt, cold: turn.cold, ping, startMinutes: usual.minutes, tag: d => (billing === 'subscription' && rates ? bandShareText(shareOf(d, rates)) : costTag(d, billing === 'subscription', rates)) })
-  for (const c of choices) if (c.endsAt !== undefined) turn.ends[c.id] = c.endsAt
+  const warmChoices = keepWarmChoices({ ttl: cacheTtl, endedAt: turn.endedAt, cold: turn.cold, ping, startMinutes: usual.minutes, tag: d => (billing === 'subscription' && rates ? bandShareText(shareOf(d, rates)) : costTag(d, billing === 'subscription', rates)) })
+  for (const c of warmChoices) if (c.endsAt !== undefined) turn.ends[c.id] = c.endsAt
   const args = { ttl: cacheTtl, endedAt: turn.endedAt, cost: coldCostText(turn.cold, rates), breakEven: breakEvenMs(turn.cold, ping, cacheTtl) }
   const text = offerText({ ...args, now })
   const all: ColdButton[] = [
-    ...choices.map(c => ({ id: c.id, label: c.label })),
+    ...warmChoices.map(c => ({ id: c.id, label: c.label })),
     turn.groundwork ? { id: 'handoff', label: 'Save a handoff' } : { id: 'compact', label: 'Compact now' },
     { id: 'let-go', label: 'Let it go cold' },
     { id: 'off', label: "Don't offer again" },
@@ -2513,7 +2513,7 @@ async function offerCold($: EngineInterface, turn: ColdTurn) {
   await showOffer($, turn)
   // The cache goes cold with the offer unanswered: that is its outcome.
   await armCold($, coldGen, turn.endedAt + cacheTtl, () => closeOffer($, 'ignored'))
-  await log($, `before the cache goes cold: offered ${choices.map(c => c.id).join(', ') || 'no keep-warm time'}, button ${first.id}${learned ? ' (the one picked most)' : ''}${turn.ask ? `, asked ${turn.ask.kind === 'stop' ? 'whether to stop offering' : alwaysText(turn.ask.choice)}` : ''} (${money(turn.cold)} cold, ${Math.round(turn.context / 1000)}K tokens on ${TIER_NAME[turn.tier]}${usual.fallback ? `, usual start 9:00 by default, ${usual.days} days of runs` : ''})`)
+  await log($, `before the cache goes cold: offered ${warmChoices.map(c => c.id).join(', ') || 'no keep-warm time'}, button ${first.id}${learned ? ' (the one picked most)' : ''}${turn.ask ? `, asked ${turn.ask.kind === 'stop' ? 'whether to stop offering' : alwaysText(turn.ask.choice)}` : ''} (${money(turn.cold)} cold, ${Math.round(turn.context / 1000)}K tokens on ${TIER_NAME[turn.tier]}${usual.fallback ? `, usual start 9:00 by default, ${usual.days} days of runs` : ''})`)
 }
 
 /** Once a minute, from the 3-second timer: redraws the offer's line when its minute has changed. Not while a question is on the row. */
@@ -2550,10 +2550,10 @@ async function markAsked($: EngineInterface, key: string) {
 }
 
 /** The offer's outcome goes in the run log, once: the choice pressed, or `ignored`. After that the offer has none to give. */
-async function closeOffer($: EngineInterface, choice: string) {
+async function closeOffer($: EngineInterface, picked: string) {
   if (!offerOpen) return
   offerOpen = false
-  const line: RunLine = { at: new Date(await $.clock.now()).toISOString(), kind: 'cold', session: sessionId, choice }
+  const line: RunLine = { at: new Date(await $.clock.now()).toISOString(), kind: 'cold', session: sessionId, choice: picked }
   await append($, 'runs.jsonl', JSON.stringify(line), RUNS_LOG_MAX)
   runLog.push(line)
 }
@@ -3139,7 +3139,7 @@ async function resetSettings($: EngineInterface, keys: readonly SettingKey[], al
   // Claude Code would not write these here (the desktop app has no /config menu): say how to reset them from a terminal.
   const names = blocked.map(k => plainTitle(SETTINGS[k].title)).join(', ')
   const json = JSON.stringify(Object.fromEntries(blocked.map(k => [k, SETTINGS[k].default])))
-  const fix = `To reset ${blocked.length === 1 ? 'it' : 'them'}, run this in a terminal, then restart Claude Code: echo '${json}' | claude plugin configure rightsize@archid21 --values-stdin`
+  const fix = `To reset ${blocked.length === 1 ? 'it' : 'them'}, run this in a terminal, then restart Claude Code: claude plugin configure rightsize@archid21 --values-stdin <<< '${json}'`
   const done = all && blocked.length < keys.length ? 'The other settings are back to their defaults, and the saved answers are forgotten. ' : ''
   return `${done}${names} could not be changed from here. ${fix}`
 }
@@ -3801,7 +3801,7 @@ export const register: Register = (on, options) => {
       await append($, 'runs.jsonl', JSON.stringify(line), RUNS_LOG_MAX)
     }
     return result
-  }).catch(($, e, next) => next(e))
+  }).catch((_, e, next) => next(e))
 
   // A turn starting is how a prompt finds its turn. Prompts typed while a turn runs wait in line, and the turn
   // that starts for one carries its text, so each run is bound to its own turn, not to whichever starts next.
@@ -3822,7 +3822,7 @@ export const register: Register = (on, options) => {
     if (mine) await bind($, mine, e.turnId)
     for (const r of gone) await unbind($, r, 'delivered into the running turn')
     return next(e)
-  }).catch(($, e, next) => next(e))
+  }).catch((_, e, next) => next(e))
 
   on('turn.step', async function* ($, e, next) {
     if (e.agentId !== undefined) {
@@ -3985,7 +3985,7 @@ export const register: Register = (on, options) => {
       // A call the person said no to at the permission prompt comes back as an error: it is their steering, not a failure.
       const refused = (result as { isError?: boolean }).isError === true && refusedByPerson(errorText(result))
       const isError = (result as { isError?: boolean }).isError === true && !refused
-      // An error from the environment (no network, no login, a denied sandbox, a missing program) is a Blocked
+      // An error from the environment (no network, a denied sandbox, a missing program) is a Blocked
       // stall: more effort would not fix it, so it is neither an error nor a sign of struggling.
       const blocked = isError && blockedError(errorText(result))
       if (blocked) active.blocked += 1
@@ -3995,7 +3995,7 @@ export const register: Register = (on, options) => {
       if (!(result as { deny?: string }).deny && !refused && !blocked) active.signals = noteCall(active.signals, callKey(String(e.tool), e as Record<string, unknown>), isError, isTestCommand(String(e.tool), e as Record<string, unknown>))
     }
     return result
-  }).catch(($, e, next) => next(e))
+  }).catch((_, e, next) => next(e))
 
   // The main chat starting the hand-off's subagent: the Agent call names its model.
   // Remember its id, so its steps run at the hand-off's level. A subagent Claude
@@ -4021,7 +4021,7 @@ export const register: Register = (on, options) => {
     // Its watch starts at its spawn.
     if (id && (ours || size)) await helperWatch($, id)
     return result
-  }).catch(($, e, next) => next(e))
+  }).catch((_, e, next) => next(e))
 
   // Above the prompt, one row per topic: what rightsize did with the prompt, the cache, and a question. Each row
   // is a dim label (Prompt, Cache, the question's header), one line, and that row's buttons. With two rows or

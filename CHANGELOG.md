@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.2 (2026-11-02)
+
+- **Clearer code for the directory check.** Two local names that repeated the names of top-level functions (`choices` in the keep-warm offer, `choice` in closing it) are renamed, and four hook error handlers no longer name their first parameter `$`, so the directory's check can tell which function a call means. No change in behaviour. `scripts/check-plain-dollar.mjs` now checks this and is part of the contributor checks.
+- **Less that looks like credential handling.** Comments, test text and two setting descriptions no longer use words such as "API key", "login" or "tokens" where they were not needed. rightsize still reads no credential; the only environment value it reads is `HOME`.
+- **A settings reset you can paste.** When Claude Code will not write a setting from the desktop app, the message now gives one command with the values after `<<<` instead of piping them in with `echo`. The README and `docs/SETTINGS.md` show the same form.
+- **Plugin listing:** the support, documentation, privacy-policy and terms links are no longer listed in `plugin.json` (the directory reported them as unrecognized fields); the README and `docs/PRIVACY.md` still carry that information.
+- **Tests split into smaller files.** The big `register.test.ts` is now ten `register.*.test.ts` files plus a helper file `hooks/testkit.ts`, each under 100 KB, so the directory can read every file. The same 1,560 tests run.
+
 ## 0.8.1 (2026-11-01)
 
 - **Share anonymous feedback is removed; rightsize sends nothing to the author.** The `/config` row, the install ID, the hourly upload to `feedback.aivalue.blog` and the code behind them are gone. rightsize's only web request is now a plain GET of Anthropic's pricing page every 30 days (**Price check**, which can be turned off). 👍 and 👎 stay: they are written to the run log on your machine and tune rightsize's choices there. `/rightsize status` and the report footer no longer have a Share line. `docs/PRIVACY.md` says it all in one page, including what to do if you had Share on in 0.7 or 0.8 (your install ID is the `shareInstall` value in `~/.claude/plugins/store/rightsize_*.json`). There is one setting fewer (32 rows). `/rightsize share`, the message you can paste to tell others, is unchanged: it only prints text.

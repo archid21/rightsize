@@ -109,7 +109,7 @@ A row you set under Advanced replaces what the profile supplies for it: **Hand-o
 - `/rightsize settings` asks the four questions and sets their rows from your answers. `/rightsize retry` puts the last lowered prompt back in the box at normal effort (file changes are not undone). `/rightsize clear` drops a session switch. `/rightsize prices` checks prices now.
 - `/rightsize reset` asks what to reset (Settings, Cost measurement, Both or Cancel) and confirms. `/rightsize reset <setting>` resets one, named by key (`handOff`) or title.
 - `/mods` turns the mod on or off.
-- Changing settings: in a terminal, `/config` applies a change at once. The desktop app has no `/config` menu: change settings from a terminal (`echo '{"handOff":"60%"}' | claude plugin configure rightsize@archid21 --values-stdin`), then quit the app and reopen it.
+- Changing settings: in a terminal, `/config` applies a change at once. The desktop app has no `/config` menu: change settings from a terminal (`claude plugin configure rightsize@archid21 --values-stdin <<< '{"handOff":"60%"}'`), then quit the app and reopen it.
 - `/config`, then rightsize. Every row is a picker. Every row except Profile, Mode, Routing, Hand-offs and Cache is titled "Advanced · ..." in `/config`; the list gives the name.
   - **Profile** (Quality, Balanced or Economy, default Balanced): how much evidence a cheaper route needs; what the four cases do while their rows are not set. See **Profiles**.
   - **Mode** (act or watch only, default act): watch only rates and plans every prompt, applies nothing, and the band says what it would have done. Use it for a week to see rightsize's calls on your own work.

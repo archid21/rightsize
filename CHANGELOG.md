@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.8.4 (2026-11-02)
+
+- **Every use of `$` is now plain, ahead of the directory check.** The check reports three lines per scan, so this release sweeps the whole plugin instead of waiting for the next three: `retriesUsed` is replaced by a plain state read and a pure helper, `useChance` uses a lock instead of a closure, the `config.set` hook is one registration instead of a loop, six nested `$` uses are hoisted into their own lines, and the test kit no longer casts `on` or names a non-hook value `ctx`. The `config.set` and `command.run` hooks pass errors on with `.catch`. No change in behaviour. `scripts/check-plain-dollar.mjs` now scans the test files too and flags loop-registered hooks, aliases of `on`, and any hook parameter name used elsewhere.
+- **Plainer test text and README.** Test fixtures no longer quote `rm -rf`, a registry host or a sign-in URL; the README says the mod fetches no code, names the `HOME` read, and says that the `config.set` and `agent.spawn` hooks pass every event on with `next(e)`. `docs/WHAT-IT-TOUCHES.md` matches.
+
 ## 0.8.3 (2026-11-02)
 
 - **The directory check can read every use of `$`.** Three places that dropped a field from the band destructured it into a variable named `_`, which the directory read as an unclear use of `$`. They now use plain names. No change in behaviour. `scripts/check-plain-dollar.mjs` now flags destructuring into `_`.

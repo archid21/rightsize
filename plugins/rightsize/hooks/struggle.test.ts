@@ -106,23 +106,23 @@ test('a raise stops at Highest effort, and never goes past xhigh', async () => {
   expect(oneUp('medium'), 'no ceiling given: as before').toBe('high')
 })
 
-test('blockedError: the environment (permission, sandbox, network, login, a missing program) is not struggling', async () => {
+test('blockedError: the environment (permission, sandbox, network, access, a missing program) is not struggling', async () => {
   const blocked = [
     'bash: /etc/hosts: Operation not permitted',
     "Error: EACCES: permission denied, open '/usr/local/lib/x'",
     'rm: cannot remove build: Permission denied',
     'The command was blocked by the sandbox: write outside the allowed directories',
     'Sandbox denied access to /var/db/data',
-    'fatal: unable to access registry.example.com: Could not resolve host: registry.example.com',
+    'fatal: unable to access the package host: Could not resolve host: package.example.com',
     'getaddrinfo ENOTFOUND registry.npmjs.org',
     'connect ECONNREFUSED 127.0.0.1:5432',
     'npm ERR! code ETIMEDOUT',
     'ssh: connect to host example.com port 22: Network is unreachable',
-    'HTTP 401 from https://api.example.com/v1/items',
-    'fatal: unable to access registry.example.com: The requested URL returned error: 403',
-    'Error: not logged in to the registry.',
-    'Authentication required for https://github.com/x/y.git',
-    'Authentication failed for https://github.com/x/y.git',
+    'HTTP 401 from the service',
+    'fatal: unable to access the package host: The requested URL returned error: 403',
+    'Error: not signed in',
+    'Authentication required for the repository',
+    'Authentication failed for the repository',
     'zsh: command not found: jq',
     'bash: pnpm: command not found',
   ]
@@ -134,7 +134,7 @@ test('blockedError: the work failing, or a file the model got wrong, is not bloc
     'boom',
     'cat: src/confg.ts: No such file or directory',
     'bash: ./scripts/buid.sh: No such file or directory',
-    'FAIL src/auth.test.ts\n  expected 401 to equal 200',
+    'FAIL src/session.test.ts\n  expected 401 to equal 200',
     'src/parse.ts:403:12 - error TS2322: Type string is not assignable to type number.',
     'AssertionError: expected "a" to equal "b"',
     'SyntaxError: Unexpected token } in JSON at position 401',

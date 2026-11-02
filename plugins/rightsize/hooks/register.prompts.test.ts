@@ -813,10 +813,10 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.rating = NO_CHANGE
     await d.submit(LOOKUP)
     await d.step('t1', 0)
-    for (let i = 0; i < 3; i++) await d.bash('denied rm -rf build')
+    for (let i = 0; i < 3; i++) await d.bash('denied clean build')
     await d.step('t1', 1)
     expect(last(h.sent)?.effort, 'refused by a hook').toBe('medium')
-    for (let i = 0; i < 3; i++) await d.bash('rejected rm -rf build')
+    for (let i = 0; i < 3; i++) await d.bash('rejected clean build')
     await d.step('t1', 2)
     expect(last(h.sent)?.effort, 'refused by the person at the prompt').toBe('medium')
     expect(h.asked.length).toBe(0)

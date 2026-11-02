@@ -7,14 +7,14 @@ rightsize is a mod: it runs inside Claude Code and hooks some of its events. Thi
 - `prompt.submit`: rates the prompt (Sonnet by default), may change the effort level, and adds the hidden hand-off note. Your text is not changed. With **Mode** set to watch only, it rates and plans the prompt, logs the plan, and applies nothing.
 - `turn.start`: matches a turn that is starting to the prompt it was rated for (by its text), so a prompt typed while another turn runs is measured in its own turn. It changes nothing.
 - `turn.step`: watches each step to see when Claude is stuck and raises effort under your Raising rule.
-- `agent.spawn`: may move a general-purpose subagent that names no model to a cheaper model (see **Claude's subagents**).
+- `agent.spawn`: passes the event on with `next(e)` and never denies. It changes only the `model` of a general-purpose subagent that names none, moving it to a cheaper model (see **Claude's subagents**).
 - `tool.call`: passes every call on unchanged with `next(e)`. It notes whether each tool call failed and whether a test command passed or failed (for stuck turns and for the miss rate), and asks before a workflow starts, at each Workflow call until you answer. It denies three things:
   - steps only you can approve (shell commands that push, publish, release, deploy or merge; MCP tools whose action name starts with send, publish, deploy, merge or post) inside a hand-off helper;
   - the calls of a helper that was stopped and sent back to the main chat;
   - rework past the task's retry budget (the main chat then finishes the work).
 
   It never approves a call and never changes a permission decision anywhere else.
-- `config.set`: watches its own `rightsize.*` rows in `/config`, to know which values you set. The write goes through as you made it.
+- `config.set`: passes every event on with `next(e)` and never denies. It ignores rows that are not its own, and watches its own `rightsize.*` rows in `/config`, to know which values you set. The write goes through as you made it.
 - `turn.complete`: measures the turn. Before a big session's cache goes cold (see **Before the cache goes cold**), it may start a timer. The timer sends one small request through Claude Code over the same conversation, submits the prompt `wrap up` for Groundwork, or compacts the conversation. It lists the session's commands to find Groundwork. It starts nothing while a turn runs.
 - `command.run` (`/rightsize`), `session.start` and `ui.render` (the band above the prompt) serve its own command, start-up and display.
 
@@ -31,7 +31,7 @@ Four programs, started by name with no shell. The only part of a command that ch
 - `mkdir -m 700 -p` and `chmod`, to create its log folders under `~/.claude/mods-logs` and make them readable by you alone (folders 700, files 600).
 - `rm -f` and `rmdir` on a session's folder inside `~/.claude/mods-logs/rightsize/` once nothing in it has changed for 45 days (never the current session's).
 
-It starts no other program, and downloads and runs nothing.
+It starts no other program, and fetches no code.
 
 ## Prompts it submits
 
@@ -47,7 +47,7 @@ These are all the places it writes. Nothing in your project is read or written.
 
 ## What it reads
 
-Your prompt, the session's usage and rate limits, your `model` and `effortLevel` settings, its own `/config` rows, and two environment variables (`HOME` and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`), to rate and price each turn. For each tool call in a turn it reads the tool, its arguments and whether it failed, to spot a stuck turn, a blocked step or a failing test run. It reads no credentials (no API key, token, keychain or sign-in file): model calls go through Claude Code with your existing sign-in. From Claude Code's settings it reads `model`, `effortLevel` and its own `pluginConfigs` rows.
+Your prompt, the session's usage and rate limits, your `model` and `effortLevel` settings, its own `/config` rows, and two environment variables (the `HOME` variable, to place its logs, and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`), to rate and price each turn. For each tool call in a turn it reads the tool, its arguments and whether it failed, to spot a stuck turn, a blocked step or a failing test run. It reads no credentials (no API key, token, keychain or sign-in file): model calls go through Claude Code with your existing sign-in. From Claude Code's settings it reads `model`, `effortLevel` and its own `pluginConfigs` rows.
 
 ## Network
 

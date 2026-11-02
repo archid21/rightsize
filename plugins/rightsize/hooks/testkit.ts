@@ -6,9 +6,9 @@ declare const setTimeout: (fn: (...a: unknown[]) => void, ms: number) => unknown
 
 // Typed loosely: the AskUserQuestion matcher's full type is too deep for tsc.
 export type AskInput = { questions: { question: string; header?: string; options?: { label: string }[] }[] }
-export type LooseOn = (event: string, match: object, hook: (_$: unknown, e: AskInput) => Promise<unknown>) => void
+export type LooseOn = (event: 'tool.call', match: object, hook: (api: unknown, e: AskInput) => Promise<unknown>) => void
 export type StepInput = { effort?: string; model?: string; turnId: string; index: number; agentId?: string }
-export type LooseStep = (event: string, hook: (_$: unknown, e: StepInput) => AsyncGenerator<never, unknown>) => void
+export type LooseStep = (event: 'turn.step', hook: (api: unknown, e: StepInput) => AsyncGenerator<never, unknown>) => void
 export type Run = { text?: string }
 export type Engine = {
   session: { start: (x: unknown) => Promise<unknown> }
@@ -44,10 +44,12 @@ export const BIG_TURN = { input_tokens: 200, output_tokens: 400, cache_read_inpu
 // A report table row's cells (session, 7 days, 30 days), by its label.
 export const cellsOf = (text: string, label: string) => text.split('\n').find(l => l.startsWith(`  ${label}`))?.slice(2 + label.length).trim().split(/ {2,}/)
 
-export const h$ = (ctx: { ui: { resolve: (e: never) => { Box: unknown } } }, e: unknown) => h(ctx.ui.resolve(e as never).Box as never, {}) as never
+export function h$(api: { ui: { resolve: (e: never) => { Box: unknown } } }, e: unknown) {
+  return h(api.ui.resolve(e as never).Box as never, {}) as never
+}
 
 // Stands for the engine beneath the plugin, and records what reaches it.
-export function engine(on: Parameters<TestBody>[1], start: { model: string; effort: string; store?: Record<string, unknown>; stored?: Record<string, string>; configKey?: string }) {
+export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start: { model: string; effort: string; store?: Record<string, unknown>; stored?: Record<string, string>; configKey?: string }) {
   const h = {
     model: start.model,
     effort: start.effort,
@@ -203,51 +205,51 @@ export function engine(on: Parameters<TestBody>[1], start: { model: string; effo
       await flush()
     },
   }
-  on('session.start', async (ctx, e) => {
+  reg('session.start', async ($, e) => {
     h.surfaces = e.surface ? [e.surface] : []
     return { cwd: e.cwd } as never
   })
-  on('session.surfaces', async () => ({ value: h.surfaces }) as never)
-  on('ui.open', async (_$, e) => {
+  reg('session.surfaces', async () => ({ value: h.surfaces }) as never)
+  reg('ui.open', async ($, e) => {
     h.paneOpens.push(e as (typeof h.paneOpens)[number])
     return { value: h.panePlaced ? { isPlaced: true } : { isPlaced: false, reason: 'no surface draws panes' } } as never
   })
-  on('ui.close', async (_$, e) => {
+  reg('ui.close', async ($, e) => {
     h.paneCloses.push((e as { id: string }).id)
     return { value: undefined } as never
   })
-  on('command.register', async () => ({ value: undefined }) as never)
+  reg('command.register', async () => ({ value: undefined }) as never)
   // A repeating timer: on the virtual clock it ends each time `advance` reaches its next tick, so the plugin's callback runs once per tick.
-  on('clock.every', async (_$, e) => {
+  reg('clock.every', async ($, e) => {
     const ms = (e as { ms: number }).ms
     h.everies.push(ms)
     if (h.virtual && h.ticks) await new Promise<void>(release => h.sleepers.push({ due: h.now + ms, release }))
     return { value: undefined } as never
   })
   // The merged settings, as the engine holds them: a read of one key is this object, projected.
-  on('settings.read', async () => {
+  reg('settings.read', async () => {
     if (h.settingsFail) throw new Error('settings could not be read')
     return { value: { pluginConfigs: { other: { options: { floor: 'high' } }, ...(Object.keys(h.stored).length ? { [h.configKey]: { options: h.stored } } : {}) } } } as never
   })
-  on('session.messages', async () => {
+  reg('session.messages', async () => {
     if (h.messagesFail) throw new Error('messages could not be read')
     return { value: h.messages } as never
   })
-  on('session.id', async () => ({ value: h.sessionId }) as never)
-  on('session.model', async () => ({ value: h.liveModel ?? h.model }) as never)
-  on('session.usage', async (ctx, e) => {
+  reg('session.id', async () => ({ value: h.sessionId }) as never)
+  reg('session.model', async () => ({ value: h.liveModel ?? h.model }) as never)
+  reg('session.usage', async ($, e) => {
     const breakdown = (e as { breakdown?: string }).breakdown && h.breakdown ? { breakdown: h.breakdown } : {}
     return { value: { startedAt: 0, context: { window: 200_000, ...(h.contextTokens === undefined ? {} : { tokens: h.contextTokens }), ...breakdown }, rateLimits: h.rateLimits, ...(h.ledger === undefined ? {} : { cost: { usd: h.ledger } }) } } as never
   })
-  on('fs.exists', async (ctx, e) => {
+  reg('fs.exists', async ($, e) => {
     const { path } = e as { path: string }
     return { value: path.endsWith('/prices.json') ? h.pricesFile !== '' : path in h.files } as never
   })
-  on('fs.read', async (ctx, e) => {
+  reg('fs.read', async ($, e) => {
     const { path } = e as { path: string }
     return { value: path.endsWith('/prices.json') ? h.pricesFile : (h.files[path] ?? '') } as never
   })
-  on('fs.write', async (ctx, e) => {
+  reg('fs.write', async ($, e) => {
     const { path, text } = e as { path: string; text: string }
     if (path.endsWith('/prices.json')) h.pricesFile = text
     if (path.endsWith('/prices.json.bak')) h.backup = text
@@ -258,7 +260,7 @@ export function engine(on: Parameters<TestBody>[1], start: { model: string; effo
     return { value: undefined } as never
   })
   // The files under a folder, and the folders in it (the fake keeps files only); a folder with nothing in it lists as empty.
-  on('fs.list', async (ctx, e) => {
+  reg('fs.list', async ($, e) => {
     const { path } = e as { path: string }
     const prefix = `${path}/`
     const names = new Map<string, 'file' | 'dir'>()
@@ -270,16 +272,16 @@ export function engine(on: Parameters<TestBody>[1], start: { model: string; effo
     }
     return { value: [...names].map(([name, kind]) => ({ name, kind, size: kind === 'file' ? (h.files[`${prefix}${name}`] ?? '').length : 0, mtimeMs: kind === 'file' ? (h.mtimes[`${prefix}${name}`] ?? h.now) : 0, isLink: false })) } as never
   })
-  on('clock.now', async () => ({ value: h.now }) as never)
+  reg('clock.now', async () => ({ value: h.now }) as never)
   // A timer: the plugin keeps its callback and cancels it itself. Not on the virtual clock, it never fires.
-  on('clock.after', async (_$, e) => {
+  reg('clock.after', async ($, e) => {
     const ms = (e as { ms: number }).ms
     h.afters.push(ms)
     if (!h.virtual) await new Promise(() => {})
     await new Promise<void>(release => h.sleepers.push({ due: h.now + ms, release }))
     return { value: undefined } as never
   })
-  on('clock.sleep', async (_$, e) => {
+  reg('clock.sleep', async ($, e) => {
     h.sleeps.push((e as { ms: number }).ms)
     if (h.virtual) {
       await new Promise<void>(release => h.sleepers.push({ due: h.now + (e as { ms: number }).ms, release }))
@@ -289,11 +291,11 @@ export function engine(on: Parameters<TestBody>[1], start: { model: string; effo
     await new Promise(r => setTimeout(r, 25))
     return { value: undefined } as never
   })
-  on('env.get', async (ctx, e) => {
+  reg('env.get', async ($, e) => {
     const name = (e as { name: string }).name
     return { value: name === 'HOME' ? '/home/test' : h.env[name] } as never
   })
-  on('http.fetch', async (ctx, e) => {
+  reg('http.fetch', async ($, e) => {
     const { url, init } = e as { url: string; init?: { method?: string; body?: string } }
     if (init?.method === 'POST') {
       h.posts.push({ url, body: init.body ?? '' })
@@ -305,12 +307,12 @@ export function engine(on: Parameters<TestBody>[1], start: { model: string; effo
     if (h.fetchFails) return { value: { status: 503, ok: false, headers: {}, text: '' } } as never
     return { value: { status: 200, ok: true, headers: {}, text: h.page } } as never
   })
-  on('ui.toast', async (ctx, e) => {
+  reg('ui.toast', async ($, e) => {
     h.toasts.push((e as { text: string }).text)
     return { value: undefined } as never
   })
   // The writer: a value outside a row's options does not fit, so the row is left as it was; one that fits goes into settings.json.
-  on('config.set', async (ctx, e) => {
+  reg('config.set', async ($, e) => {
     const { key, value, origin } = e as { key: string; value: unknown; origin?: { kind: string } }
     const field = key.startsWith('rightsize.') ? key.slice('rightsize.'.length) : ''
     const known = KEYS.find(k => k === field)
@@ -322,32 +324,32 @@ export function engine(on: Parameters<TestBody>[1], start: { model: string; effo
     return { value } as never
   })
   // Only rm and rmdir do anything: the fake has files, not folders.
-  on('process.run', async (ctx, e) => {
+  reg('process.run', async ($, e) => {
     const { argv } = e as { argv: string[] }
     h.ran.push(argv)
     if (h.rmFails && (argv[0] === 'rm' || argv[0] === 'rmdir')) throw new Error('no such program')
     if (argv[0] === 'rm') for (const f of argv.slice(1).filter(a => !a.startsWith('-'))) delete h.files[f]
     return { value: { exitCode: 0, stdout: '', stderr: '' } } as never
   })
-  on('ui.status', async (ctx, e) => {
+  reg('ui.status', async ($, e) => {
     h.statuses.push((e as { text?: string }).text)
     return { value: undefined } as never
   })
-  on('ui.log', async (ctx, e) => {
+  reg('ui.log', async ($, e) => {
     h.logs.push((e as { text: string }).text)
     return { value: undefined } as never
   })
-  on('store.get', async (ctx, e) => ({ value: h.store[(e as { key: string }).key] }) as never)
-  on('store.set', async (ctx, e) => {
+  reg('store.get', async ($, e) => ({ value: h.store[(e as { key: string }).key] }) as never)
+  reg('store.set', async ($, e) => {
     const { key, value } = e as { key: string; value: unknown }
     h.store[key] = value
     return { value: undefined } as never
   })
-  on('prompt.fill', async (ctx, e) => {
+  reg('prompt.fill', async ($, e) => {
     h.filled.push((e as { text: string }).text)
     return { isFilled: true } as never
   })
-  on('model.complete', async (_$, e) => {
+  reg('model.complete', async ($, e) => {
     const model = String((e as { model?: unknown }).model ?? '')
     h.completions.push(model)
     // The spot-check is the only call with a 15 s timeout; a rating call has what is left of its prompt's 12 s.
@@ -367,7 +369,7 @@ export function engine(on: Parameters<TestBody>[1], start: { model: string; effo
     if (queued?.startsWith('unavailable')) return { value: { isAnswered: false, reason: 'api-error', status: 401, error: 'authentication_failed', usage: h.ratingUsage } } as never
     return { value: { isAnswered: true, text: queued ?? h.rating, usage: h.ratingUsage } } as never
   })
-  ;(on as unknown as LooseOn)('tool.call', { tool: 'AskUserQuestion' }, async (_$, e) => {
+  reg('tool.call', { tool: 'AskUserQuestion' }, async ($, e) => {
     const q = e.questions[0]
     const header = q?.header ?? ''
     h.asked.push({ header, question: q?.question ?? '', options: (q?.options ?? []).map(o => o.label) })
@@ -380,7 +382,7 @@ export function engine(on: Parameters<TestBody>[1], start: { model: string; effo
     return { result: { questions: e.questions, answers: { [q?.question ?? '']: answer } } }
   })
   // A timed question on the band, answered from `answers` as the dialog's are.
-  on('state.set', async (_$, e, next) => {
+  reg('state.set', async ($, e, next) => {
     const result = await next(e)
     const { key, value } = e as { key: string; value: unknown }
     if (key === 'question') {
@@ -393,15 +395,15 @@ export function engine(on: Parameters<TestBody>[1], start: { model: string; effo
     }
     return result
   })
-  ;(on as unknown as LooseOn)('tool.call', { tool: 'Agent' }, async () => ({ result: { content: 'done' } }))
-  ;(on as unknown as LooseOn)('tool.call', { tool: 'SendMessage' }, async () => ({ result: { content: 'sent' } }))
-  ;(on as unknown as LooseOn)('tool.call', { tool: 'Workflow' }, async () => {
+  reg('tool.call', { tool: 'Agent' }, async () => ({ result: { content: 'done' } }))
+  reg('tool.call', { tool: 'SendMessage' }, async () => ({ result: { content: 'sent' } }))
+  reg('tool.call', { tool: 'Workflow' }, async () => {
     h.events.push('workflow')
     return { result: { content: 'started in the background' } }
   })
   // A command starting "fail" fails, and so does one ending " --red" (a test run that is red); one starting "denied" is refused by a hook;
   // one starting "rejected" is refused by the person at the permission prompt, which core reports as an error result; one starting "env:" fails with the text after it.
-  ;(on as unknown as LooseOn)('tool.call', { tool: 'Bash' }, async (_$, e) => {
+  reg('tool.call', { tool: 'Bash' }, async ($, e) => {
     const command = String((e as unknown as { command: string }).command)
     if (command.startsWith('denied')) return { deny: 'permission denied' }
     if (command.startsWith('rejected')) return { result: REJECTED, text: REJECTED, isError: true }
@@ -409,15 +411,15 @@ export function engine(on: Parameters<TestBody>[1], start: { model: string; effo
     if (command.startsWith('env:')) return { result: command.slice(4), text: command.slice(4), isError: true }
     return command.startsWith('fail') || command.endsWith(' --red') ? { result: { stdout: '', stderr: 'boom' }, text: 'boom', isError: true } : { result: { stdout: 'ok', stderr: '' }, text: 'ok' }
   })
-  on('agent.spawn', async (ctx, e) => {
+  reg('agent.spawn', async ($, e) => {
     h.spawned.push({ description: e.description, model: e.model })
     const id = `agent-${e.description}`
     h.agents.push({ id, description: e.description, type: e.subagentType, status: 'running', ...(e.parentAgentId ? { parentId: e.parentAgentId } : {}) })
     if (h.spawnHold) await h.spawnHold
     return { model: e.model ?? h.subModel, agentId: id } as never
   })
-  on('agent.list', async () => ({ value: h.agents }) as never)
-  on('prompt.submit', async (ctx, e) => {
+  reg('agent.list', async () => ({ value: h.agents }) as never)
+  reg('prompt.submit', async ($, e) => {
     if (h.dropNext !== undefined) {
       const drop = h.dropNext
       h.dropNext = undefined
@@ -429,31 +431,33 @@ export function engine(on: Parameters<TestBody>[1], start: { model: string; effo
     if (during) await during()
     return { text: e.text } as never
   })
-  on('turn.start', async (_$, e) => ({ turnId: e.turnId }) as never)
-  ;(on as unknown as LooseStep)('turn.step', async function* (_$, e) {
+  reg('turn.start', async ($, e) => ({ turnId: e.turnId }) as never)
+  reg('turn.step', async function* ($, e) {
     h.sent.push({ effort: e.effort, model: e.model, agentId: e.agentId, turnId: e.turnId })
     if (h.ledger !== undefined) h.ledger += h.stepCost
     if (!e.agentId && h.windowStep) h.rateLimits = h.rateLimits.map(l => ({ ...l, percentUsed: l.percentUsed + h.windowStep }))
     const usage = h.stepUsage
     return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: { ...usage, model: e.agentId ? h.subModel : (e.model ?? h.model) } } as never
   })
-  on('turn.complete', async () => ({ text: '' }) as never)
-  on('command.list', async () => {
+  reg('turn.complete', async () => ({ text: '' }) as never)
+  reg('command.list', async () => {
     if (h.commandsFail) throw new Error('commands could not be listed')
     return { value: h.commands } as never
   })
-  on('model.fork', async (_$, e) => {
+  reg('model.fork', async ($, e) => {
     h.forks.push((e as { prompt: string }).prompt)
     const queued = h.forkReplies.shift()
     if (queued !== undefined) return { value: queued } as never
     return { value: { isAnswered: true, text: 'OK', ...(h.forkUsage ? { usage: h.forkUsage } : {}) } } as never
   })
-  on('session.compact', async () => {
+  reg('session.compact', async () => {
     h.compactions += 1
     return (h.compactSkip !== undefined ? { skip: h.compactSkip } : { messages: [{ role: 'user', text: 'Summary of the conversation.', toolUses: [] }] }) as never
   })
   // The engine's own band above the prompt: an empty row.
-  on('ui.render', (ctx, e) => h$(ctx, e))
+  reg('ui.render', ($, e) => {
+    return h$($, e)
+  })
   return h
 }
 
@@ -479,9 +483,9 @@ export async function answerBand(h: ReturnType<typeof engine>, q: BandAsk) {
   await ui.unmount()
 }
 
-export const drive = (ctx: unknown, h: ReturnType<typeof engine>) => {
-  const e = ctx as Engine
-  h.test$ = ctx
+export const drive = (api: unknown, h: ReturnType<typeof engine>) => {
+  const e = api as Engine
+  h.test$ = api
   return {
     start: (surface: string) => e.session.start({ source: 'startup', cwd: '/tmp', surface, isInteractive: true }),
     /** `turnId`: the turn that was running when the prompt was typed; left out, the session was idle. */
@@ -564,8 +568,8 @@ export const PANE = {
   requestId: 'rightsize-menu',
   props: { title: 'Rightsize', isFocused: true, bodyColumns: 80, placement: 'inline', scroll: { offset: 0, bodyRows: 40 }, view: {} },
 } as const
-export const mountPane = (ctx: unknown, surface: string) => (ctx as { ui: { mount: (x: unknown) => Promise<Mounted> } }).ui.mount({ ...PANE, surface })
-export const mount = (ctx: unknown, surface: string) => (ctx as { ui: { mount: (x: unknown) => Promise<Mounted> } }).ui.mount({ ...BAND, surface })
+export const mountPane = (api: unknown, surface: string) => (api as { ui: { mount: (x: unknown) => Promise<Mounted> } }).ui.mount({ ...PANE, surface })
+export const mount = (api: unknown, surface: string) => (api as { ui: { mount: (x: unknown) => Promise<Mounted> } }).ui.mount({ ...BAND, surface })
 /** A band row's line: the Text after its label ("Prompt", or "rightsize · Prompt" when it is the only row); '' when the row is not drawn. */
 export async function rowText(ui: Mounted, label: string) {
   const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text ?? '')
@@ -573,11 +577,11 @@ export async function rowText(ui: Mounted, label: string) {
   return at < 0 ? '' : (texts[at + 1] ?? '')
 }
 // The band's line as drawn (the prompt's row, else the cache row when it is the only one), or '' when it draws nothing.
-export async function bandText(ctx: unknown, surface: string) {
-  const ui = await mount(ctx, surface)
+export async function bandText(api: unknown, surface: string) {
+  const ui = await mount(api, surface)
   const text = (await rowText(ui, 'Prompt')) || (await rowText(ui, 'Cache'))
   await ui.unmount()
   return text
 }
-export const setBand = (ctx: unknown, value: string) => (ctx as { config: { set: (x: unknown) => Promise<unknown> } }).config.set({ key: 'rightsize.band', value })
+export const setBand = (api: unknown, value: string) => (api as { config: { set: (x: unknown) => Promise<unknown> } }).config.set({ key: 'rightsize.band', value })
 export const LOWER = '{"level":"low","model":"same","size":"small","type":"lookup","read":2000,"write":3000,"steps":1,"reason":"one function lookup"}'

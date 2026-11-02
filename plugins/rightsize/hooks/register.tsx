@@ -549,6 +549,8 @@ type Watch = {
 const watches = new Map<string, Watch>()
 /** One spend of the retry budget at a time: two helpers asking together never both take the last chance. */
 let spending: Promise<unknown> = Promise.resolve()
+/** The plugin's folder, read once at the session start. */
+let pluginRoot = ''
 
 const fromPerson = (e: PromptSubmitInput) => e.origin.kind === 'composer' || e.origin.kind === 'bridge'
 const names = (tiers: readonly Tier[]) => tiers.map(t => TIER_NAME[t]).join(' or ')
@@ -710,13 +712,13 @@ async function appendRun($: EngineInterface, line: RunLine) {
 
 // ---- Prices ----------------------------------------------------------------
 
-// Reads Anthropic's pricing page and writes any changed price into prices.json,
-// keeping the old file as prices.json.bak. A failed fetch or an unreadable page
-// changes nothing and is tried again at the next session start. `claimedFrom` is
+// Compares prices.json with the published price list and updates the numbers in it,
+// keeping the old file as prices.json.bak. A check that fails changes nothing and is
+// tried again at the next session start. `claimedFrom` is
 // the check time a monthly check replaced when it claimed the check; a failed
 // check puts it back so the check stays due.
 async function checkPrices($: EngineInterface, why: 'monthly' | 'manual', claimedFrom?: unknown): Promise<string> {
-  const path = `${$.plugin.root}/prices.json`
+  const path = `${pluginRoot}/prices.json`
   const failed = async (msg: string) => {
     if (why === 'monthly') await $.store.set('pricesCheckedAt', typeof claimedFrom === 'number' ? claimedFrom : 0).catch(() => undefined)
     await log($, `${why} ${msg}`)
@@ -2012,7 +2014,8 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
     const fixed = await fixedContext($)
     const now = await $.clock.now()
     const helpers = [...watches].filter(([, w]) => w.run === run.id).map(([agent, w]) => ({ agent, kind: w.kind, ...helperLine(w, now) }))
-    const retries = await retriesUsed($, run.task)
+    const stored = await $.state.get(RETRIES).catch(() => undefined)
+    const retries = usedOf(stored?.value, run.task)
     const line: RunLine & Record<string, unknown> = {
       at: new Date().toISOString(),
       kind: 'run',
@@ -2170,9 +2173,11 @@ async function escalateHelper($: EngineInterface, id: string, w: Watch, sign: St
   const cur = w.raisedTo ?? w.level
   const to = oneUp(cur, ceiling)
   let why = ''
+  const stored = to ? await $.state.get(RETRIES).catch(() => undefined) : undefined
+  const usedNow = usedOf(stored?.value, w.task)
   if (!to) why = `${cur} is as high as it goes`
   // No chance left: nothing to ask about.
-  else if ((await retriesUsed($, w.task)) >= chances) why = 'the task has no retry left'
+  else if (usedNow >= chances) why = 'the task has no retry left'
   else if (rule !== 'auto' && (await bandCanAsk($))) {
     if (onBand('Stuck')) return
     const q: Question<'yes' | 'no'> = {
@@ -2819,22 +2824,28 @@ async function claim($: EngineInterface, id: string) {
 
 const RETRIES = { plugin: 'rightsize', key: 'retries' } as const
 
-/** How many of the task's chances are used; a task that has none recorded has used none. */
-async function retriesUsed($: EngineInterface, task: string) {
-  const v = (await $.state.get(RETRIES).catch(() => undefined))?.value
+/** How many of the task's chances are used, from the stored value; a task that has none recorded has used none. */
+function usedOf(v: { task: string; used: number } | null | undefined, task: string): number {
   return v && v.task === task ? v.used : 0
 }
 
-/** Uses one of the task's chances; false when none is left. */
-function useChance($: EngineInterface, task: string): Promise<boolean> {
-  const spend = spending.then(async () => {
-    const used = await retriesUsed($, task)
+/** Uses one of the task's chances; false when none is left. Calls run one after another, so two at once cannot spend the same chance. */
+async function useChance($: EngineInterface, task: string): Promise<boolean> {
+  const before = spending
+  let release: () => void = () => undefined
+  spending = new Promise<void>(unlock => {
+    release = unlock
+  })
+  try {
+    await before.catch(() => undefined)
+    const stored = await $.state.get(RETRIES).catch(() => undefined)
+    const used = usedOf(stored?.value, task)
     if (used >= chances) return false
     await $.state.set(RETRIES, { task, used: used + 1 }).catch(() => undefined)
     return true
-  })
-  spending = spend.catch(() => undefined)
-  return spend
+  } finally {
+    release()
+  }
 }
 
 // The watch on a helper: the hand-off's subagent, or one rightsize moved to a cheaper
@@ -3432,25 +3443,29 @@ export const register: Register = (on, options) => {
 
   // Every setting takes effect the moment /config changes it, not at the next start. A change
   // by the person marks the row as theirs (settings.ts), so rightsize's own behaviour leaves it be.
-  for (const key of KEYS) {
-    on('config.set', { key: `rightsize.${key}` }, async ($, e, next) => {
-      if (e.key !== `rightsize.${key}`) return next(e)
-      const result = await next(e)
-      if (result.deny !== undefined || !inOptions(key, result.value)) return result
-      cfg = { ...cfg, [key]: result.value }
-      yours = afterSet(yours, e.key, result.value, e.origin)
-      if (yours.has(key)) await forgetReset($, key)
-      applyOption(key)
-      await followRow($, key, result.value)
-      await bumpMenu($)
-      return result
-    })
-  }
+  // One hook for all rows: it passes on every event that is not one of rightsize's own rows.
+  on('config.set', async ($, e, next) => {
+    const name = e.key.startsWith('rightsize.') ? e.key.slice('rightsize.'.length) : ''
+    const key = KEYS.find(k => k === name)
+    if (key === undefined) return next(e)
+    const result = await next(e)
+    if (result.deny !== undefined || !inOptions(key, result.value)) return result
+    cfg = { ...cfg, [key]: result.value }
+    yours = afterSet(yours, e.key, result.value, e.origin)
+    if (yours.has(key)) await forgetReset($, key)
+    applyOption(key)
+    await followRow($, key, result.value)
+    await bumpMenu($)
+    return result
+  }).catch((_, e, next) => next(e))
 
   on('session.start', async ($, e, next) => {
     const result = await next(e)
     // The plugin can live anywhere (a clone, ~/Projects), so ask for HOME rather than reading it off the path.
-    home = (await $.env.get('HOME').catch(() => undefined)) || ($.plugin.root.split('/.claude/')[0] ?? '')
+    const fromEnv = await $.env.get('HOME').catch(() => undefined)
+    const root = $.plugin.root
+    pluginRoot = root
+    home = fromEnv || (root.split('/.claude/')[0] ?? '')
     sessionId = await $.session.id().catch(() => '')
     pending = []
     active = null
@@ -3493,7 +3508,7 @@ export const register: Register = (on, options) => {
     if (gaps.length) await log($, `settings: plugin.json and the settings table disagree: ${gaps.join('; ')}`)
     await setBandMode($, bandMode)
     await setBand($, null)
-    const priceFile = await readText($, `${$.plugin.root}/prices.json`)
+    const priceFile = await readText($, `${pluginRoot}/prices.json`)
     prices = parsePrices(priceFile)
     cacheTtl = cacheTtlMs(priceFile)
     if (priceCheck === 'monthly') {
@@ -3564,7 +3579,8 @@ export const register: Register = (on, options) => {
       const now = await $.clock.now()
       const start = startBlock(adviseStart(runs, await startContext($), now), billing === 'subscription', money)
       // The desktop app (any surface but the terminal) renders the report as Markdown.
-      const markdown = (await $.session.surfaces()).some(x => x !== 'terminal')
+      const surfaces = await $.session.surfaces()
+      const markdown = surfaces.some(x => x !== 'terminal')
       return { text: buildReport(runs, switches, { now, session: sessionId, subscription: billing === 'subscription', start, pause: missBlock, markdown, watching, ...(measureFrom ? { measureFrom: new Date(measureFrom).toISOString() } : {}) }) }
     }
     if (arg === 'share') {
@@ -3595,7 +3611,7 @@ export const register: Register = (on, options) => {
     await $.store.set('remember', false).catch(() => undefined)
     await saveChoices($, next, true)
     return { text: await summary($) }
-  })
+  }).catch((_, e, next) => next(e))
 
   on('prompt.submit', async ($, e, next) => {
     // rightsize's own prompt (the handoff's "wrap up"): not rated, and it does not count as the person coming back.
@@ -3652,7 +3668,9 @@ export const register: Register = (on, options) => {
     let wroteTask: { id: string; prompts: number } | undefined
     try {
       const base = await situation($)
-      paceNow = pacing ? paceOf((await usageNow($))?.rateLimits ?? [], await $.clock.now()) : NORMAL_PACE
+      const usage = pacing ? await usageNow($) : undefined
+      const clockNow = pacing ? await $.clock.now() : 0
+      paceNow = pacing ? paceOf(usage?.rateLimits ?? [], clockNow) : NORMAL_PACE
       // Pacing moves only a threshold left at its default: one you set stays as you set it.
       const set = { handOff: yours.has('handOff'), lower: yours.has('lowering') }
       const movedRules = pacedRules(base.rules ?? DEFAULT_RULES, paceNow, set)
@@ -3755,7 +3773,8 @@ export const register: Register = (on, options) => {
         await log($, `${r.type}${ratedType ? ` (rated ${ratedType}, continues the ${r.type} task)` : ''} on ${s.tier}/${s.level}${paced}: rated ${fit}, plan ${p.kind}${'dir' in p ? ` ${p.dir}` : ''}${run.tie ? ` (tie ${run.tie.by} over ${run.tie.over})` : ''}: ${did}`)
         // Every 50th Haiku rating gets Sonnet's second opinion, in the background. A Sonnet rating is not checked
         // (Sonnet would only be asked to agree with itself), and does not count toward the 50.
-        if (by === 'haiku' && (await dueCheck($))) void spotCheck($, sessionId, run.task, s.tier, s.level, prompt, r)
+        const spotDue = by === 'haiku' ? await dueCheck($) : false
+        if (spotDue) void spotCheck($, sessionId, run.task, s.tier, s.level, prompt, r)
       } else {
         // No rating, even after a second try: the session stays as it is, the safe route. The log line says so, and carries
         // what the rating calls cost; /rightsize report counts the prompt as not counted, and the cost as overhead.
@@ -4038,9 +4057,36 @@ export const register: Register = (on, options) => {
     const rows: Row[] = []
     const buttons: { key: string; label: string; press: () => Promise<unknown> }[] = []
     if (band && shown.route) {
-      if (band.canRetry) buttons.push({ key: 'retry', label: 'Retry at original effort', press: async () => $.ui.toast(await retry($)) })
-      if (band.canStay && lastAuto?.kind === 'route') buttons.push({ key: 'stay', label: `Run on ${lastAuto.model}`, press: async () => $.ui.toast(await runOnCurrent($)) })
-      if (band.canClear) buttons.push({ key: 'clear', label: 'Clear', press: async () => $.ui.toast(await clearSession($)) })
+      if (band.canRetry) {
+        buttons.push({
+          key: 'retry',
+          label: 'Retry at original effort',
+          press: async () => {
+            const text = await retry($)
+            return $.ui.toast(text)
+          },
+        })
+      }
+      if (band.canStay && lastAuto?.kind === 'route') {
+        buttons.push({
+          key: 'stay',
+          label: `Run on ${lastAuto.model}`,
+          press: async () => {
+            const text = await runOnCurrent($)
+            return $.ui.toast(text)
+          },
+        })
+      }
+      if (band.canClear) {
+        buttons.push({
+          key: 'clear',
+          label: 'Clear',
+          press: async () => {
+            const text = await clearSession($)
+            return $.ui.toast(text)
+          },
+        })
+      }
       if (band.tip) {
         const tip = band.tip
         buttons.push({ key: 'tip-later', label: 'Not now', press: () => snoozeStart($, tip) })

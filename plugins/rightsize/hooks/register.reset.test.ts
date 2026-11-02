@@ -118,7 +118,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
         h.answers = { Reset: choice, ...(confirm === 'No' ? { Confirm: 'No' } : {}) }
         expect((await d.command('reset')).text).toBe('Nothing was reset.')
         expect(JSON.stringify(h.store), 'the store').toBe(store)
-        expect(JSON.stringify(h.stored), 'settings.json').toBe(stored)
+        expect(JSON.stringify(h.stored), 'the settings file').toBe(stored)
         expect(await settingsText(d)).toBe(before)
         expect(h.sets.length, 'nothing was written').toBe(sets)
       })
@@ -189,7 +189,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(changedCount(text)).toBe(2)
   })
 
-  test(`a reset row changed by hand in settings.json is yours at the next start (${surface})`, { timeoutMs: 30000, options: SOME_SET }, async ($, on) => {
+  test(`a reset row changed by hand in the settings file is yours at the next start (${surface})`, { timeoutMs: 30000, options: SOME_SET }, async ($, on) => {
     const h = engine(on, { ...OPUS, stored: SOME_SET })
     const { d } = await resetSettingsRun($, h, 'Settings')
     h.stored.floor = 'high'

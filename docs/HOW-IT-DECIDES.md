@@ -67,6 +67,7 @@ When the work goes to a cheaper model and still fails once the chances are used,
 
 **Handing work down needs a clear saving.**
 
+- Hand-downs start only from an Opus or Fable session. From Sonnet, the brief and the check cost more than Haiku saves, so a Sonnet session keeps the work and may change effort instead. A hand-up (a model stronger than yours) and Claude's own subagents are not affected.
 - A helper is used only when its estimate is under the hand-off threshold (50% Quality, 70% Balanced, 85% Economy; or the **Hand-off threshold** row) of the cost of staying at the level the work needs on your model, counting the brief, report, check and likely rework. A raise counts with the cache it may rewrite.
 - The main chat's part is priced from measured hand-offs: it reads your conversation several times (brief, report, check, answer), so a short task never clears the bar and a long, mechanical one can. Of the cheaper models that fit, the cheapest route wins unless two are close in cost.
 - Because Sonnet costs half of Opus, an Opus-to-Sonnet hand-off rarely clears 70%. Hand-offs to Haiku, and hand-offs from Fable, clear it more often.

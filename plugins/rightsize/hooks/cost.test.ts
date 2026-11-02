@@ -1017,3 +1017,10 @@ test('the profile caps a switched review: Economy stops at high, the others at H
   expect(plan(r, { ...sonnet, reviewCeiling: 'high' }, 'low'), 'Economy: capped at high').toMatchObject({ kind: 'switch', tier: 'opus', level: 'high' })
   expect(plan(r, { ...sonnet, reviewCeiling: 'max', ceiling: 'high' }, 'low'), 'Highest effort still caps').toMatchObject({ kind: 'switch', tier: 'opus', level: 'high' })
 })
+
+test('hand-downs start only from Opus or Fable: a Sonnet session keeps work Haiku fits', async () => {
+  const r: Rating = { level: 'medium', fit: { haiku: 'medium', sonnet: 'medium', opus: 'medium' }, type: 'bulk-edit', read: 40_000, write: 20_000, steps: 40, reason: '' }
+  const base: Situation = { tier: 'opus', level: 'medium', context: 40_000, prices: DEFAULT_PRICES, cal: {} }
+  expect(plan(r, base, 'low'), 'from Opus, the work goes to Haiku').toMatchObject({ kind: 'delegate', dir: 'down', tier: 'haiku' })
+  expect(plan(r, { ...base, tier: 'sonnet' }, 'low').kind, 'from Sonnet, no hand-down').not.toBe('delegate')
+})

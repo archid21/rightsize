@@ -84,7 +84,7 @@ Full table and every setting: [docs/SETTINGS.md](docs/SETTINGS.md).
 The rules in full, with every number and default: [docs/HOW-IT-DECIDES.md](docs/HOW-IT-DECIDES.md). The short version:
 
 - Your setting wins. Anything automatic acts only on settings you left at their default.
-- A hand-off needs a clear saving (under the profile's share of staying, counting the brief and the check) and a model the rating says fits. Reviews and writing never go to Haiku.
+- A hand-down starts only from an Opus or Fable session. It needs a clear saving (under the profile's share of staying, counting the brief and the check) and a model the rating says fits. Reviews and writing never go to Haiku.
 - Each route is scored against what happened: rework, step-ups, a failing test at the turn's end, a next prompt that corrects the reply, your 👍/👎 and spot-checks. A route that keeps missing is paused for that kind of work.
 - Estimates are corrected from the real cost of every turn, per task type and route.
 

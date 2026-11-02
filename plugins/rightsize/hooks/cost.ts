@@ -606,6 +606,8 @@ export function effortPlan(r0: Rating, s: Situation, floor: Level): Plan {
 // Opus switches the main chat to Opus for that turn; an Opus session raises to high and doesn't lower. Fable plans as usual,
 // with no route below Opus.
 export const REVIEW_TIER: Tier = 'opus'
+/** The weakest session model a hand-down to a helper starts from. */
+export const HAND_DOWN_FROM: Tier = 'opus'
 export const REVIEW_LEVEL: Level = 'high'
 const atLeast = (l: Level, min: Level) => (levelRank(l) < levelRank(min) ? min : l)
 
@@ -665,6 +667,9 @@ export function plan(r0: Rating, s: Situation, floor: Level): Plan {
   const alt = levelRank(level) > levelRank(s.level) ? atNeed : Math.min(stay, atNeed)
   // Only routes under the hand-off share are candidates; a close call is chosen among them.
   const bar = (s.rules ?? DEFAULT_RULES).handOff * alt
+  // Hand-downs start only from Opus or Fable: from Sonnet the brief and the check cost more than the
+  // cheaper model saves (ADR 0008).
+  if (tierRank(s.tier) < tierRank(HAND_DOWN_FROM)) return effortPlan(r, s, floor)
   const down = choose(r.type, ties, routes.filter(x => tierRank(x.tier) < tierRank(s.tier) && x.cost < bar), s.explore !== false)
   if (down) {
     return {

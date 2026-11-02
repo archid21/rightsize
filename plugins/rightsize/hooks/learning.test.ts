@@ -3,9 +3,9 @@ import { DEFAULT_PRICES, plan, type Plan, type Rating, type Situation } from './
 import { learningNote, planLabel } from './learning'
 
 const rating = (over: Partial<Rating>): Rating => ({ level: 'medium', fit: {}, type: 'feature', read: 10_000, write: 1000, steps: 40, reason: '', ...over })
-// A hand-off that sits just under the 70% line on Sonnet: about 0.685 of staying. Learning at g -0.2 shrinks the steps and takes it over the line.
-const r = rating({ fit: { haiku: 'medium', sonnet: 'medium' } })
-const s: Situation = { tier: 'sonnet', level: 'medium', context: 20_000, prices: DEFAULT_PRICES, cal: {} }
+// A hand-off that sits under the 70% line on Opus: about 0.63 of staying. Learning at g -0.2 shrinks the steps and takes it over the line.
+const r = rating({ fit: { haiku: 'medium', sonnet: 'medium', opus: 'medium' } })
+const s: Situation = { tier: 'opus', level: 'medium', context: 20_000, prices: DEFAULT_PRICES, cal: {} }
 
 test('the same plan on both sides is not a difference', async () => {
   const p = plan(r, s, 'low')
@@ -21,7 +21,7 @@ test('a hand-down that the learned exponent drops differs, and is labelled none'
   const acting = plan(r, s, 'low')
   expect(acting, 'with no stepExp, the work is handed down to Haiku').toMatchObject({ kind: 'delegate', dir: 'down', tier: 'haiku' })
   const learning = plan(r, { ...s, stepExp: -0.2 }, 'low')
-  expect(learning.kind, 'shrunk steps keep the work on Sonnet').toBe('none')
+  expect(learning.kind, 'shrunk steps keep the work on Opus').toBe('none')
   const note = learningNote(acting, learning, -0.2, false)
   expect(note.plan).toBe('none')
   expect(note.differs).toBe(true)

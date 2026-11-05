@@ -31,8 +31,6 @@ Four programs for its logs, started by name with no shell. The only part of a co
 - `mkdir -m 700 -p` and `chmod`, to create its log folders under `~/.claude/mods-logs` and make them readable by you alone (folders 700, files 600).
 - `rm -f` and `rmdir` on a session's folder inside `~/.claude/mods-logs/rightsize/` once nothing in it has changed for 45 days (never the current session's).
 
-When a session resumes, it starts two more, only to read: `find` on `~/.claude/projects` for that session's own transcript file, and `tail -c 1048576` on it, to learn when the last reply came and so whether the cache went cold. They change nothing.
-
 With whatsnext installed it starts two more, only to compact: `git rev-parse --show-toplevel` (to find your project's folder; it prints a path) and `python3 <whatsnext's folder>/skills/whatsnext/scripts/whatsnext.py` (whatsnext's own script) with one fixed command: `compact-instructions --session <session ID> --json` (the text to compact with, whether a handoff should come first and whether the folder is a whatsnext project). It changes nothing, and rightsize writes no whatsnext file or setting. rightsize finds whatsnext's folder in Claude Code's list of installed plugins and never runs a script from anywhere else.
 
 It starts no other program, and fetches no code.

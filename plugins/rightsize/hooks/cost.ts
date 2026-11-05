@@ -518,24 +518,6 @@ export const COMPACT_SUMMARY_TOKENS = 6000
 export const coldCost = (prices: Prices, tier: Tier, tokens: number) => idleCost(prices[tier], tokens).resend
 
 /**
- * What compacting `context` tokens with Haiku costs: the conversation read as input (as idleCost's `compact` reads it) and
- * `summaryTokens` written as output. Over 100,000 tokens the whole prompt is read at Haiku's higher rate (450K with a 6K
- * summary: $0.24, not $0.05).
- */
-export function haikuCompactCost(prices: Prices, context: number, summaryTokens = COMPACT_SUMMARY_TOKENS) {
-  const rate = atPrompt(prices.haiku, context)
-  return (context * rate.input + summaryTokens * rate.output) / 1e6
-}
-
-/**
- * What a cold return on `tier` would have saved had the conversation been compacted by Haiku beforehand: the cold cost of
- * `context`, less the compaction and the cold cost of the summary the next prompt then writes. Never below 0 (a small
- * context costs more to compact than to write again).
- */
-export const coldReturnSaving = (prices: Prices, tier: Tier, context: number, summaryTokens = COMPACT_SUMMARY_TOKENS) =>
-  Math.max(0, coldCost(prices, tier, context) - (haikuCompactCost(prices, context, summaryTokens) + coldCost(prices, tier, summaryTokens)))
-
-/**
  * What compacting `context` tokens now would save after a 5-hour reset, on `tier`: the cold re-read of the whole conversation
  * after the reset, less [a compaction now, with the cache still warm: the conversation read from the cache and
  * `summaryTokens` written as output, on the session's own model] and less the cold re-read of that summary after the reset.

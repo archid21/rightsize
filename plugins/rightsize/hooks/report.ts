@@ -27,10 +27,9 @@ export type RunLine = {
    * 'warm': one keep-warm request that kept the prompt cache from expiring (Before the cache goes cold); `overhead` is what it cost, `tier` its model and `context` the conversation it re-read.
    * 'cold': how the person answered one offer before the cache goes cold; `choice` is the id they pressed, or 'ignored'. It carries no cost and is no part of any total.
    * 'warmSaved': the person came back to a kept-warm cache after the time it would have gone cold without keep warm, and the returning prompt's first request read the cache (at least ~80% of the kept conversation); `saved` is what coming back cold would have cost. It carries no `overhead`, and `totals` counts `saved` toward Total saved.
-   * 'coldReturn': a session that started with history (a resume or a fork) after sitting longer than its prompt cache lives. It carries no `overhead` or `saved`, so no total counts it; the report's Cold returns line counts the lines and adds their `compactSaving`. `context` is the conversation's size, `tier` the model, `coldCost` what writing it again costs, `compactSaving` what a Haiku compaction beforehand would have saved, and `idleSeconds` how long the session sat since its last response.
    * `totals` adds the `overhead` of every line, so these pings count as rightsize's own cost and lower Total saved.
    */
-  kind?: 'run' | 'overhead' | 'subagent' | 'check' | 'feedback' | 'corrected' | 'unrated' | 'dropped' | 'unbound' | 'warm' | 'warmSaved' | 'cold' | 'coldReturn'
+  kind?: 'run' | 'overhead' | 'subagent' | 'check' | 'feedback' | 'corrected' | 'unrated' | 'dropped' | 'unbound' | 'warm' | 'warmSaved' | 'cold'
   /** A run line: how the turn's last test run ended (the main chat's, else a helper's): the objective outcome of the work. */
   tests?: 'passed' | 'failed'
   /** A run line in watch-only mode: the change rightsize would have made, and the estimate of the route it would have taken. Nothing was applied. */
@@ -38,12 +37,6 @@ export type RunLine = {
   wouldTaken?: number
   /** A 'warmSaved' line: what coming back cold would have cost (the conversation written again, less a read), in dollars (API-equivalent on a subscription). */
   saved?: number
-  /** A 'coldReturn' line: seconds since the session's last response, and whether it was a resume (always true now: a fork starts the same way and is not told apart). */
-  idleSeconds?: number
-  resume?: boolean
-  /** A 'coldReturn' line: what writing `context` again costs on `tier`, and what Haiku-compacting it first would have saved, in dollars (API-equivalent on a subscription). Not `saved`: no total counts it. */
-  coldCost?: number
-  compactSaving?: number
   /** A 'warm' line: the keep-warm run it belongs to, the ISO time of the turn that run kept warm. Lines of one run share it. */
   warmRun?: string
   /** A 'cold' line: the id of the choice pressed (`2h`, `8h`, `start`, `30m`, `1h`, `handoff`, `compact`, `let-go`, `off`), or `ignored` when the offer got no answer. */
@@ -569,8 +562,9 @@ function haikuRows(lines: readonly RunLine[], pause: number | null, from: number
     .sort((a, b) => b.rate - a.rate || b.n - a.n)[0]
   const [type, tier] = worst ? worst.key.split(':') : []
   if (!worst || pause === null || worst.rate < pause || !type || !isTier(tier)) return { rows }
-  const what = `${type} work to ${TIER_NAME[tier]}`
-  rows.push(['Hand-downs paused', `${what}, wrong on ${Math.round(worst.rate * 100)}% of ${worst.n}`])
+  // The type `other` is no kind of work: it is what the rater files a prompt under when none fits.
+  const what = type === 'other' ? `unclassified work (work the rater could not place in a kind) to ${TIER_NAME[tier]}` : `${type} work to ${TIER_NAME[tier]}`
+  rows.push(['Hand-downs paused', `${type === 'other' ? `unclassified work to ${TIER_NAME[tier]}` : what}, wrong on ${Math.round(worst.rate * 100)}% of ${worst.n}`])
   return { rows, paused: `Hand-downs of ${what}, and lowering effort on it, resume when its miss rate falls under the Pause after misses line (/config).` }
 }
 
@@ -864,20 +858,6 @@ export function keepWarmLine(lines: readonly RunLine[], subscription: boolean): 
   return `Keep warm: ${plural(runs, 'run')} · ${gain} · cost ${tildeMoney(cost)} · ${result}${subscription ? ' (API-equivalent)' : ''}`
 }
 
-/**
- * The Cold returns line: how many sessions came back to a cold cache in the lines, and what a Haiku compact of each
- * beforehand could have saved (the sum of `compactSaving`; a measurement, nothing rightsize or whatsnext does for you). Dollars; on a subscription the share of the 5-hour window when
- * `rates` (windowRates over the same lines, as the report converts elsewhere) has one, else the dollars, API-equivalent.
- * Undefined with no cold return. It changes no total.
- */
-export function coldReturnLine(lines: readonly RunLine[], subscription: boolean, rates?: { low: number; high: number }): string | undefined {
-  const returns = lines.filter(l => l.kind === 'coldReturn')
-  if (!returns.length) return undefined
-  const saving = returns.reduce((n, l) => n + num(l.compactSaving), 0)
-  const what = subscription ? windowCostText(saving, rates) : money(saving)
-  return `Cold returns: ${returns.length} · a compact could have saved ${what}`
-}
-
 /** The context every request carried, by part (largest first), request-weighted, what re-reading it cost, and how to cut it. */
 export function fixedBlock(lines: readonly RunLine[], subscription = false) {
   const runs = lines.filter(l => isRun(l) && l.fixed && num(l.requests) > 0)
@@ -946,9 +926,6 @@ export function buildReport(
   // Keep warm's own line: its saving is in Total saved above, and so is the cost of its requests.
   const kept = keepWarmLine(month, sub)
   if (kept) out.push('', ...(md ? [kept] : wrap(kept, '', '  ')))
-  // Cold returns: sessions that came back to a cold cache, and what a compact could have saved. Counted nowhere else.
-  const returned = coldReturnLine(month, sub, sub ? windowRates(month, 'five_hour') : undefined)
-  if (returned) out.push('', ...(md ? [returned] : wrap(returned, '', '  ')))
   // Watch only: what rightsize would have done, and what that would have saved, against staying. Nothing was applied.
   const watched = watchLine(month, sub, opts.watching === true)
   if (watched) out.push('', ...(md ? [watched] : wrap(watched, '', '  ')))

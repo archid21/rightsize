@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { SESSION_TOTAL, accuracyRows, type RunLine, bandShareText, buildReport, coldReturnLine, costTag, counterfactual, fixedBlock, keepWarmLine, parseLines, problems, sessionTotal, shareMessage, shareText, span, taskActual, taskEstimated, taskExtra, taskStay, tieCounts, totals, usedTag, watchLine, wholeTaskRows, wholeTasks, windowCostText, windowRates } from './report'
+import { SESSION_TOTAL, accuracyRows, type RunLine, bandShareText, buildReport, costTag, counterfactual, fixedBlock, keepWarmLine, parseLines, problems, sessionTotal, shareMessage, shareText, span, taskActual, taskEstimated, taskExtra, taskStay, tieCounts, totals, usedTag, watchLine, wholeTaskRows, wholeTasks, windowCostText, windowRates } from './report'
 import { DEFAULT_PRICES } from './cost'
 import type { StartBlock } from './start'
 
@@ -379,6 +379,13 @@ test("check and feedback lines are not rated runs, but a check's cost counts as 
 })
 
 const handDown = (rework: boolean, days = 0) => run({ at: ago(days), type: 'search', route: 'delegate:haiku', change: 'delegate-down', agentCalls: rework ? 2 : 1 })
+
+test('the type "other" is named as unclassified work, not "other work"', async () => {
+  const other = (rework: boolean) => run({ type: 'other', route: 'delegate:haiku', change: 'delegate-down', agentCalls: rework ? 2 : 1 })
+  const out = accuracyRows([other(true), other(true), other(false), other(false), other(false)])
+  expect(out.rows[1]).toEqual(['Hand-downs paused', 'unclassified work to Haiku, wrong on 40% of 5'])
+  expect(out.paused).toBe('Hand-downs of unclassified work (work the rater could not place in a kind) to Haiku, and lowering effort on it, resume when its miss rate falls under the Pause after misses line (/config).')
+})
 
 test("says how often Haiku's judgement was wrong, how the Sonnet checks went, and which hand-downs are paused", async () => {
   expect(accuracyRows([run({}), run({ change: 'lower', steppedUp: false })]).rows, 'no misses: nothing to say').toEqual([])
@@ -1037,52 +1044,3 @@ test('the watch-only line sums what the planned routes would have saved against 
   expect(line).toBe('Watch only: 3 prompts rated, 2 would have been changed, which would have saved ~$0.80 API-equivalent against staying (estimates; nothing was applied). Mode in /config turns rightsize on.')
 })
 
-const coldAt = (x: Partial<RunLine> = {}): RunLine => ({ at: ago(0), kind: 'coldReturn', session: 's1', resume: true, idleSeconds: 7200, tier: 'opus', context: 61_000, coldCost: 0.4758, compactSaving: 0.4199, ...x })
-/** The report with its Cold returns line taken out. */
-const withoutCold = (text: string) => text.replace(/\n\nCold returns:[^\n]*/, '')
-
-test('a coldReturn line changes no total: only the Cold returns line shows it, and a log of only those is still "Nothing rated yet"', async () => {
-  const cold = coldAt
-  const lines = [run({ change: 'lower', offered: 'lower', actual: 0.05, stay: 0.2, taken: 0.1, overhead: 0.01 }), run({ actual: 0.1 })]
-  for (const subscription of [false, true]) {
-    const text = report([...lines, cold(), cold({ context: undefined, coldCost: undefined, compactSaving: undefined, tier: undefined })], { subscription })
-    expect(withoutCold(text), `with the lines in the log, the rest is the same (subscription ${subscription})`).toBe(report(lines, { subscription }))
-    expect(text, 'and the line is there').toContain('Cold returns: 2 · a compact could have saved')
-  }
-  expect(totals([...lines, cold()]), 'totals() does not move').toEqual(totals(lines))
-  expect(totals([cold()])).toEqual(totals([]))
-  expect(report([cold()])).toContain('Nothing rated yet.')
-  expect(withoutCold(report([cold()], { markdown: true }))).toBe(report([], { markdown: true }))
-  expect(parseLines<RunLine>(JSON.stringify(cold())), 'the reader keeps it').toEqual([cold()])
-  expect(shareMessage([...lines, cold()], { now: NOW, subscription: false })).toBe(shareMessage(lines, { now: NOW, subscription: false }))
-})
-
-test('the Cold returns line: the count of cold returns and the sum of what a Haiku compaction would have saved, from 1 return', async () => {
-  expect(coldReturnLine([], false), 'no cold return, no line').toBeUndefined()
-  expect(coldReturnLine([run({})], false)).toBeUndefined()
-  expect(coldReturnLine([coldAt()], false)).toBe('Cold returns: 1 · a compact could have saved $0.42')
-  expect(coldReturnLine([coldAt(), coldAt({ compactSaving: 0.1 }), coldAt({ compactSaving: 0 })], false), 'every return counts; the savings add up').toBe('Cold returns: 3 · a compact could have saved $0.52')
-  expect(coldReturnLine([coldAt({ compactSaving: undefined, coldCost: undefined })], false), 'a return with no figure is counted and adds nothing').toBe('Cold returns: 1 · a compact could have saved under $0.01')
-  expect(coldReturnLine([coldAt({ compactSaving: 12.4 })], false), 'whole dollars from $10').toBe('Cold returns: 1 · a compact could have saved $12')
-})
-
-test('the Cold returns line on a subscription: a share of the 5-hour window when the report has the rate, else API-equivalent dollars', async () => {
-  const lines = [coldAt({ compactSaving: 0.5 }), coldAt({ compactSaving: 0.5 })]
-  expect(coldReturnLine(lines, true), 'no rate yet').toBe('Cold returns: 2 · a compact could have saved about $1.00 API-equivalent')
-  expect(coldReturnLine(lines, true, { low: 1, high: 3 }), 'the same conversion the report uses elsewhere').toBe(`Cold returns: 2 · a compact could have saved ${windowCostText(1, { low: 1, high: 3 })}`)
-  expect(windowCostText(1, { low: 1, high: 3 })).toBe('~1.0–3.0% of your 5-hour window ($1.00 API-equivalent)')
-  // In the report: runs that show the rate (1 point of the window per $0.50 of spend: 2% a dollar, ±1 for rounding) turn it into a share.
-  const runs = [run({ actual: 0.5, before: { five_hour: 10 }, after: { five_hour: 11 } }), run({ actual: 0.5, before: { five_hour: 11 }, after: { five_hour: 12 } })]
-  const text = report([...runs, ...lines], { subscription: true })
-  const rates = windowRates(runs, 'five_hour')
-  expect(text.replace(/\s+/g, ' '), 'the line wraps at 78 characters').toContain(`Cold returns: 2 · a compact could have saved ${windowCostText(1, rates)}`)
-  expect(windowCostText(1, rates)).toContain('of your 5-hour window')
-  expect(report([...runs, ...lines], { subscription: false })).toContain('Cold returns: 2 · a compact could have saved $1.00')
-})
-
-test('the Cold returns line covers the last 30 days, like the rest of the report', async () => {
-  expect(report([run({}), coldAt({ at: ago(40) })])).not.toContain('Cold returns')
-  expect(report([run({}), coldAt({ at: ago(40) }), coldAt({ at: ago(29) })])).toContain('Cold returns: 1 · a compact could have saved $0.42')
-  const text = report([coldAt()], { markdown: true })
-  expect(text.split('\n').filter(l => l.startsWith('Cold returns')), 'one line, no wrapping in Markdown').toEqual(['Cold returns: 1 · a compact could have saved $0.42'])
-})

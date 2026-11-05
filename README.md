@@ -76,7 +76,7 @@ Each row sits above the prompt. The figures are examples; yours come from your o
 
 **In the desktop app,** the same rows are labelled and the buttons are drawn as buttons. This is a mock-up of the layout.
 
-![Desktop app band with two rows: Prompt, Sent to Haiku, with a Run on Opus button; Cache, Context is 60% full, with a Compact now button](docs/images/band-desktop.png)
+![Desktop app band with two rows: Prompt, Sent to Haiku, with a Run on Fable button; Cache, Context is 60% full, with a Compact now button](docs/images/band-desktop.png)
 
 **In the terminal,** each row is one line with its buttons below.
 
@@ -161,7 +161,7 @@ Want to watch first? In `/config`, set **Mode** to watch only.
 
 **What it never does.** It never changes your model for you, never approves a tool call, never changes a permission, and never touches your project files. Hooks and file paths: [docs/WHAT-IT-TOUCHES.md](docs/WHAT-IT-TOUCHES.md).
 
-**What it runs, writes and sends.** It runs `mkdir`, `chmod`, `rm` and `rmdir` on its own log folders, `find` and `tail` to read when a session's last reply came, and, with whatsnext installed, `git rev-parse` and whatsnext's own script. The script's commands read what to compact and whether a handoff is missing; rightsize writes none of whatsnext's settings or files. It writes only under `~/.claude/mods-logs/rightsize/`, its own store, and its own `prices.json`. Its only web request is to `platform.claude.com` (Anthropic's pricing page, monthly, sends nothing of yours); it sends nothing to the author. It sets only its own `rightsize.*` settings, submits only the fixed text `wrap up`, reads no credential, and its `tool.call` hook only ever denies, never approves. The full list, checked against the code: [What it runs, writes and sends](plugins/rightsize/README.md#what-it-runs-writes-and-sends).
+**What it runs, writes and sends.** It runs `mkdir`, `chmod`, `rm` and `rmdir` on its own log folders and, with whatsnext installed, `git rev-parse` and whatsnext's own script. The script's commands read what to compact and whether a handoff is missing; rightsize writes none of whatsnext's settings or files. It writes only under `~/.claude/mods-logs/rightsize/`, its own store, and its own `prices.json`. Its only web request is to `platform.claude.com` (Anthropic's pricing page, monthly, sends nothing of yours); it sends nothing to the author. It sets only its own `rightsize.*` settings, submits only the fixed text `wrap up`, reads no credential, and its `tool.call` hook only ever denies, never approves. The full list, checked against the code: [What it runs, writes and sends](plugins/rightsize/README.md#what-it-runs-writes-and-sends).
 
 ## Make it yours
 

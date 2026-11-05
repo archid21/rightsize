@@ -28,6 +28,10 @@ import {
   share,
   cacheTtlMs,
   idleCost,
+  COMPACT_SUMMARY_TOKENS,
+  coldCost,
+  coldReturnSaving,
+  haikuCompactCost,
   parseIdleWarning,
   paceOf,
   pacedRules,
@@ -499,6 +503,33 @@ test('idle resume: the rewrite over a warm read, the cache life, and the warning
   expect(cacheTtlMs('{}')).toBe(3_600_000)
   expect(cacheTtlMs('not json')).toBe(3_600_000)
   expect([parseIdleWarning('over $0.50'), parseIdleWarning('over $1'), parseIdleWarning('off'), parseIdleWarning(undefined)]).toEqual([0.5, 1, null, 0.1])
+})
+
+test('cold-return saving: cold cost of the context, less a Haiku compaction and the cold cost of its summary, never below 0', async () => {
+  const P = DEFAULT_PRICES
+  expect(COMPACT_SUMMARY_TOKENS, 'the summary the next prompt re-reads').toBe(6000)
+  expect(near(coldCost(P, 'opus', 61_000), 0.4758), 'writing 61K again on Opus, less the warm read: 61000 x (8 - 0.2) / 1M').toBe(true)
+  expect(coldCost(P, 'opus', 100_000), 'the same figure as idleCost resend').toBe(idleCost(P.opus, 100_000).resend)
+  expect(near(haikuCompactCost(P, 61_000), 0.0091), 'Haiku reads 61K as input ($0.10) and writes 6K ($0.50)').toBe(true)
+  const normal = coldReturnSaving(P, 'opus', 61_000)
+  expect(near(normal, 0.4199), 'a 61K Opus session: 0.4758 - (0.0091 + 0.0468)').toBe(true)
+  expect(normal, 'near $0.40').toBeGreaterThan(0.39)
+  expect(normal).toBeLessThan(0.45)
+  expect(coldReturnSaving(P, 'sonnet', 61_000), 'cheaper tiers save less').toBeLessThan(normal)
+  expect(coldReturnSaving(P, 'opus', 61_000, 3000), 'a smaller summary saves more').toBeGreaterThan(normal)
+  expect(coldReturnSaving(P, 'opus', 150_000), 'more context, more saved').toBeGreaterThan(coldReturnSaving(P, 'opus', 61_000))
+  const small = coldReturnSaving(P, 'opus', 10_000)
+  expect(near(small, 0.0780 - (0.0010 + 0.0030 + 0.0468)), 'a small context still saves a little on Opus').toBe(true)
+  expect(small, 'positive but small').toBeGreaterThan(0)
+  expect(small).toBeLessThan(0.05)
+})
+
+test('cold-return saving is clamped to 0 when the summary is as big as the conversation, and on Haiku', async () => {
+  const P = DEFAULT_PRICES
+  expect(coldReturnSaving(P, 'opus', 6000), 'the context is no bigger than its summary: compacting only adds a cost').toBe(0)
+  expect(coldReturnSaving(P, 'opus', 0), 'no context').toBe(0)
+  expect(coldReturnSaving(P, 'haiku', 20_000), 'on Haiku a compaction costs more than writing again').toBe(0)
+  expect(coldReturnSaving(P, 'opus', 61_000, 61_000), 'a summary as large as the conversation').toBe(0)
 })
 
 test("a moved subagent's model learns from what such subagents really cost", async () => {

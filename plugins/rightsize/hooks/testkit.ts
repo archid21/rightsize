@@ -440,6 +440,8 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
     return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: { ...usage, model: e.agentId ? h.subModel : (e.model ?? h.model) } } as never
   })
   reg('turn.complete', async () => ({ text: '' }) as never)
+  // The classic SessionStart (cold-return log): nothing beneath answers it.
+  reg('classic.SessionStart', async () => ({}) as never)
   reg('command.list', async () => {
     if (h.commandsFail) throw new Error('commands could not be listed')
     return { value: h.commands } as never

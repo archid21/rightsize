@@ -26,6 +26,8 @@ import {
   type Situation,
   type Tie,
   cacheTtlMs,
+  coldCost,
+  coldReturnSaving,
   contextOf,
   idleCost,
   MISS_BLOCK,
@@ -2304,6 +2306,50 @@ async function noteIdle($: EngineInterface) {
   await log($, `idle ${idleFor(idle)} with ${context} tokens: noted on the band (${money(c.resend)} to write again)`)
 }
 
+// ---- Cold return log -----------------------------------------------------------
+
+/** What the classic SessionStart event says about a resumed or forked session (the fields the log reads). */
+type ColdReturnInput = {
+  session_id: string
+  source?: string
+  model?: string
+  context_tokens?: number
+  seconds_since_last_response?: number
+  prompt_cache_likely_expired?: boolean
+}
+/** True once this process's `session.start` has finished: prices, run log and session id are then loaded. */
+let sessionReady = false
+/** A SessionStart that came before `session.start` finished: written at its end, when the prices and the log are there. */
+let pendingReturn: ColdReturnInput | null = null
+
+/**
+ * A session that starts by resuming (or forking) with its prompt cache likely expired: one `coldReturn` line in the run
+ * log, whatever the cost (COLD_MIN does not apply). Nothing is shown and nothing is compacted. A figure the event does
+ * not give is left out, never guessed. Never throws.
+ */
+async function noteColdReturn($: EngineInterface, e: ColdReturnInput) {
+  try {
+    if (e.prompt_cache_likely_expired !== true || off) return
+    const tier = tierOf(e.model) ?? tierOf(String((await $.session.model().catch(() => undefined)) ?? ''))
+    const context = typeof e.context_tokens === 'number' && Number.isFinite(e.context_tokens) && e.context_tokens > 0 ? e.context_tokens : undefined
+    const idle = typeof e.seconds_since_last_response === 'number' && Number.isFinite(e.seconds_since_last_response) && e.seconds_since_last_response >= 0 ? Math.round(e.seconds_since_last_response) : undefined
+    const line: RunLine = {
+      at: new Date(await $.clock.now()).toISOString(),
+      kind: 'coldReturn',
+      session: e.session_id || sessionId,
+      resume: e.source === 'resume',
+      ...(idle !== undefined ? { idleSeconds: idle } : {}),
+      ...(tier ? { tier } : {}),
+      ...(context !== undefined ? { context } : {}),
+      ...(tier && context !== undefined ? { coldCost: round(coldCost(prices, tier, context)), compactSaving: round(coldReturnSaving(prices, tier, context)) } : {}),
+    }
+    await append($, 'runs.jsonl', JSON.stringify(line), RUNS_LOG_MAX)
+    runLog.push(line)
+  } catch {
+    // A log line must never hold up a session start.
+  }
+}
+
 // ---- Before the cache goes cold ----------------------------------------------
 
 // A session whose conversation is big enough that coming back after its cache expired would cost $0.50 or more
@@ -3461,6 +3507,7 @@ export const register: Register = (on, options) => {
 
   on('session.start', async ($, e, next) => {
     const result = await next(e)
+    sessionReady = false
     // The plugin can live anywhere (a clone, ~/Projects), so ask for HOME rather than reading it off the path.
     const fromEnv = await $.env.get('HOME').catch(() => undefined)
     const root = $.plugin.root
@@ -3554,6 +3601,10 @@ export const register: Register = (on, options) => {
     profileNoted.clear()
     await checkStart($).catch(() => undefined)
     await dayOneTip($).catch(() => undefined)
+    sessionReady = true
+    const early = pendingReturn
+    pendingReturn = null
+    if (early) await noteColdReturn($, early)
     $.clock.every(3000, () => {
       void readSwitches($).then(json => {
         off = json[NAME] === false
@@ -3567,6 +3618,15 @@ export const register: Register = (on, options) => {
     await showStatus($)
     return result
   })
+
+  // The classic SessionStart carries what the resume knows: how long the session sat, its size and whether its cache expired.
+  on('classic.SessionStart', async ($, e, next) => {
+    const result = await next(e)
+    if (e.prompt_cache_likely_expired !== true) return result
+    if (sessionReady) await noteColdReturn($, e)
+    else pendingReturn = e
+    return result
+  }).catch((_, e, next) => next(e))
 
   on('command.run', { command: CMD }, async ($, e) => {
     const arg = e.args.trim().toLowerCase()

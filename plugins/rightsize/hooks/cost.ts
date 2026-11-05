@@ -482,6 +482,24 @@ export function idleCost(p: Price, context: number) {
   return { resend: dollars(p, { cacheWrite: context }) - dollars(p, { cacheRead: context }), compact: dollars(p, { input: context }) }
 }
 
+/** What a Haiku compaction of an idle session is assumed to leave behind: the summary the next prompt re-reads instead of the whole conversation. */
+export const COMPACT_SUMMARY_TOKENS = 6000
+
+/** What coming back cold costs on `tier`: `tokens` written to the cache again, less the read it would have been warm. The same figure as idleCost's `resend`. */
+export const coldCost = (prices: Prices, tier: Tier, tokens: number) => idleCost(prices[tier], tokens).resend
+
+/** What compacting `context` tokens with Haiku costs: the conversation read as input (as idleCost's `compact` reads it) and `summaryTokens` written as output. */
+export const haikuCompactCost = (prices: Prices, context: number, summaryTokens = COMPACT_SUMMARY_TOKENS) =>
+  dollars(prices.haiku, { input: context, output: summaryTokens })
+
+/**
+ * What a cold return on `tier` would have saved had the conversation been compacted by Haiku beforehand: the cold cost of
+ * `context`, less the compaction and the cold cost of the summary the next prompt then writes. Never below 0 (a small
+ * context costs more to compact than to write again).
+ */
+export const coldReturnSaving = (prices: Prices, tier: Tier, context: number, summaryTokens = COMPACT_SUMMARY_TOKENS) =>
+  Math.max(0, coldCost(prices, tier, context) - (haikuCompactCost(prices, context, summaryTokens) + coldCost(prices, tier, summaryTokens)))
+
 /** "over $0.50" from /config as 0.5; "off" as null; anything else, the default. */
 export function parseIdleWarning(v: unknown): number | null {
   if (v === 'off') return null

@@ -1035,3 +1035,16 @@ test('the watch-only line sums what the planned routes would have saved against 
   const line = watchLine([w('delegate-down', 1, 0.3), w('none', 0.5, 0.5), w('lower', 0.2, 0.1)], true, true)
   expect(line).toBe('Watch only: 3 prompts rated, 2 would have been changed, which would have saved ~$0.80 API-equivalent against staying (estimates; nothing was applied). Mode in /config turns rightsize on.')
 })
+
+test('a coldReturn line counts toward nothing: no total, no section, and a log of only those is still "Nothing rated yet"', async () => {
+  const cold = (x: Partial<RunLine> = {}): RunLine => ({ at: ago(0), kind: 'coldReturn', session: 's1', resume: true, idleSeconds: 7200, tier: 'opus', context: 61_000, coldCost: 0.4758, compactSaving: 0.4199, ...x })
+  const lines = [run({ change: 'lower', offered: 'lower', actual: 0.05, stay: 0.2, taken: 0.1, overhead: 0.01 }), run({ actual: 0.1 })]
+  for (const subscription of [false, true]) {
+    expect(report([...lines, cold(), cold({ context: undefined, coldCost: undefined, compactSaving: undefined, tier: undefined })], { subscription }), `with the line in the log (subscription ${subscription})`).toBe(report(lines, { subscription }))
+  }
+  expect(totals([...lines, cold()])).toEqual(totals(lines))
+  expect(report([cold()])).toContain('Nothing rated yet.')
+  expect(report([cold()], { markdown: true })).toBe(report([], { markdown: true }))
+  expect(parseLines<RunLine>(JSON.stringify(cold())), 'the reader keeps it').toEqual([cold()])
+  expect(shareMessage([...lines, cold()], { now: NOW, subscription: false })).toBe(shareMessage(lines, { now: NOW, subscription: false }))
+})

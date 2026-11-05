@@ -57,6 +57,26 @@ Switching by hand with `/model` works until you forget, which is most of the tim
 
 ★ Needs whatsnext.
 
+### The cache and compact bands
+
+Each row sits above the prompt. The figures are examples; yours come from your own sessions and prices.
+
+**Keep warm offer.** The cache will go cold soon, and coming back would cost this much.
+
+![Band row: Goes cold in 55 min (19:10), coming back after costs about $1.56, with a Keep warm 8 h button](docs/images/band-keep-warm-offer.png)
+
+**Context-size warning.** The conversation reached the next step of the window.
+
+![Band row: Context is 60% full (120K of 200K tokens), with a Compact now button](docs/images/band-context-warning.png)
+
+**Advice to compact before your 5-hour limit.**
+
+![Band row: Near your 5-hour limit, resets 21:40, Compact now to save about $0.59 after the reset, with a Compact now button](docs/images/band-limit-advice.png)
+
+**Cold-return note, with Turn on (needs whatsnext).** Turn on opens a dialog with the limit and the cost; nothing starts until you confirm.
+
+![Band row: whatsnext could have saved $0.42 here, with a Turn on button](docs/images/band-cold-return.png)
+
 **Opus results, without Opus prices.** Before each prompt runs, a quick rating decides what kind of work it is. Routine work stays on Sonnet. Reviews switch to Opus at high effort for that one turn, then your chat goes back.
 
 **More from your plan.** On Pro, Max and Ultra, rightsize watches your usage windows (weekly, and 5-hour where your plan has one) and saves harder as you run low. Opus allowance goes to the work that needs it.

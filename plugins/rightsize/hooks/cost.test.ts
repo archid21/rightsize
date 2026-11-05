@@ -525,6 +525,16 @@ test('cold-return saving: cold cost of the context, less a Haiku compaction and 
   expect(small).toBeLessThan(0.05)
 })
 
+test('a Haiku compaction over 100K tokens reads the whole prompt at the over-100K rate', async () => {
+  const P = DEFAULT_PRICES
+  expect(near(haikuCompactCost(P, 100_000), 0.013), 'exactly 100K is still the lower rate: 0.010 + 0.003').toBe(true)
+  expect(near(haikuCompactCost(P, 100_001), 0.065), 'one token over: about 100K x 0.50 + 6K x 2.50, per million').toBe(true)
+  expect(near(haikuCompactCost(P, 450_000), 0.24), '450K with a 6K summary: 0.225 + 0.015').toBe(true)
+  expect(near(haikuCompactCost({ ...P, haiku: { ...P.haiku, over100k: undefined } }, 450_000), 0.048), 'no second tier in the prices: the base rate').toBe(true)
+  expect(parsePrices('{}').haiku.over100k, 'a prices.json without the field keeps the default').toEqual({ input: 0.5, output: 2.5 })
+  expect(parsePrices('{"models":{"haiku":{"over100k":{"input":0.6,"output":3}}}}').haiku.over100k).toEqual({ input: 0.6, output: 3 })
+})
+
 test('cold-return saving is clamped to 0 when the summary is as big as the conversation, and on Haiku', async () => {
   const P = DEFAULT_PRICES
   expect(coldReturnSaving(P, 'opus', 6000), 'the context is no bigger than its summary: compacting only adds a cost').toBe(0)

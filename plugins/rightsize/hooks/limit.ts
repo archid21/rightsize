@@ -10,10 +10,6 @@ import { clockText } from './warm'
 /** The advice needs more than this many tokens of conversation: under it a compaction saves too little to bother with. */
 export const LIMIT_MIN_CONTEXT = 30_000
 
-/** What a compaction started from the advice is told to keep and drop. */
-export const LIMIT_COMPACT_INSTRUCTIONS =
-  'Keep the current task, the decisions made, open questions, file paths and next steps. Drop tool output and dead ends.'
-
 /** What the row's ⋯ menu says under "Why?". */
 export const LIMIT_WHY =
   'After the reset the whole conversation is read again at full price. A compact now, while the cache is warm, leaves a short summary instead.'

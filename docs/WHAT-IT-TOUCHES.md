@@ -1,6 +1,6 @@
 # What rightsize touches
 
-rightsize is a mod: it runs inside Claude Code and hooks some of its events. This is everything it does outside the chat. Nothing in your project is written, and none of its files is opened by rightsize: it only checks that `.whatsnext/config.json` exists, the sign that whatsnext was started there.
+rightsize is a mod: it runs inside Claude Code and hooks some of its events. This is everything it does outside the chat. Nothing in your project is written, and none of its files is opened by rightsize: whatsnext's script answers instead.
 
 ## Hooks
 
@@ -33,7 +33,7 @@ Four programs for its logs, started by name with no shell. The only part of a co
 
 When a session resumes, it starts two more, only to read: `find` on `~/.claude/projects` for that session's own transcript file, and `tail -c 1048576` on it, to learn when the last reply came and so whether the cache went cold. They change nothing.
 
-With whatsnext installed it starts two more, only to compact: `git rev-parse --show-toplevel` (to find your project's folder; it prints a path) and `python3 <whatsnext's folder>/skills/whatsnext/scripts/whatsnext.py compact-instructions --session <session ID> --json` (whatsnext's own script; it prints the text to compact with and whether a handoff should come first, and changes nothing). rightsize finds whatsnext's folder in Claude Code's list of installed plugins and never runs a script from anywhere else.
+With whatsnext installed it starts two more, only to compact: `git rev-parse --show-toplevel` (to find your project's folder; it prints a path) and `python3 <whatsnext's folder>/skills/whatsnext/scripts/whatsnext.py` (whatsnext's own script) with one of four fixed commands: `compact-instructions --session <session ID> --json` (the text to compact with, whether a handoff should come first and whether the folder is a whatsnext project), `config show --json` (whether closed-thread compacting is on) and `compact-log --json --since 30d` (the compacts whatsnext ran, for the report), all of which change nothing; and, only after you confirm the **Turn on** dialog, `config set --user compact.closed.billing <api or subscription>` and `config set --user compact.closed.auto true`, which whatsnext writes to its own settings file. rightsize finds whatsnext's folder in Claude Code's list of installed plugins and never runs a script from anywhere else.
 
 It starts no other program, and fetches no code.
 
@@ -51,7 +51,7 @@ These are all the places it writes. Nothing in your project is written, and none
 
 ## What it reads
 
-Your prompt, the session's usage and rate limits, your `model` and `effortLevel` settings, its own `/config` rows, and three environment variables (the `HOME` variable, to place its logs, `CLAUDE_CONFIG_DIR` where Claude Code keeps its folder, and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`), to rate and price each turn. With whatsnext installed it also reads Claude Code's list of installed plugins (`installed_plugins.json` in Claude Code's folder) to find whatsnext's folder. For each tool call in a turn it reads the tool, its arguments and whether it failed, to spot a stuck turn, a blocked step or a failing test run. It reads no credentials (no API key, token, keychain or sign-in file): model calls go through Claude Code with your existing sign-in. From Claude Code's settings it reads `model`, `effortLevel` and its own `pluginConfigs` rows.
+Your prompt, the session's usage and rate limits, your `model` and `effortLevel` settings, its own `/config` rows, and four environment variables (the `HOME` variable, to place its logs, `CLAUDE_CONFIG_DIR` where Claude Code keeps its folder, `WHATSNEXT_COMPACT_WORKER`, which whatsnext's closed-thread worker sets so rightsize logs no cold return for its own run, and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`), to rate and price each turn. With whatsnext installed it also reads Claude Code's list of installed plugins (`installed_plugins.json` in Claude Code's folder) to find whatsnext's folder. For each tool call in a turn it reads the tool, its arguments and whether it failed, to spot a stuck turn, a blocked step or a failing test run. It reads no credentials (no API key, token, keychain or sign-in file): model calls go through Claude Code with your existing sign-in. From Claude Code's settings it reads `model`, `effortLevel` and its own `pluginConfigs` rows.
 
 ## Network
 

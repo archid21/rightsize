@@ -1,6 +1,6 @@
 import { type TestBody, expect, test } from 'claude-code/testing'
-import { RUNS_FILE, LOG_PATH, NO_CHANGE, NO_COLD, engine, drive, untilAsked, mount, rowText } from './testkit'
-import { HOW_IT_WORKS, WHATSNEXT_URL } from './whatsnext'
+import { RUNS_FILE, LOG_PATH, NO_CHANGE, NO_COLD, WHATSNEXT_SCRIPT, engine, drive, installWhatsnext, untilAsked, mount, rowText } from './testkit'
+import { CONSENT_TEXT, HOW_IT_WORKS, WHATSNEXT_URL } from './whatsnext'
 
 // ---- The whatsnext note ------------------------------------------------------------------------------------
 //
@@ -133,15 +133,109 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(n.text, 'the note itself is the same').toBe('whatsnext could have saved $0.42 here.')
   })
 
-  test(`whatsnext installed: the note has no button yet (Turn on is not built) (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`whatsnext installed, the setting off: the note has Turn on, and no link (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = setup(on, { commands: WHATSNEXT })
+    installWhatsnext(h)
+    h.wnAuto = false
     const d = drive($, h)
     await d.start(surface)
     await prompt(d, 't1')
     const n = await note($)
     expect(n.text, 'the note shows').toBe('whatsnext could have saved $0.42 here.')
     expect(n.links, 'no Get whatsnext').toEqual([])
-    expect(n.buttons.map(b => b[0]), 'only ⋯ and ×: no Turn on, no Compact now, no Remind me later').toEqual(['mode', 'close'])
+    expect(n.buttons.map(b => b[0]), 'Turn on, ⋯ and ×').toEqual(['cold-wn-turn-on', 'mode', 'close'])
+  })
+
+  test(`whatsnext installed, the setting unknown: no button (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = setup(on, { commands: WHATSNEXT })
+    const d = drive($, h)
+    await d.start(surface)
+    await prompt(d, 't1')
+    const n = await note($)
+    expect(n.text).toBe('whatsnext could have saved $0.42 here.')
+    expect(n.buttons.map(b => b[0]), 'only ⋯ and ×').toEqual(['mode', 'close'])
+  })
+
+  test(`whatsnext installed, the setting on: no note at all (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = setup(on, { commands: WHATSNEXT })
+    installWhatsnext(h)
+    h.wnAuto = true
+    const d = drive($, h)
+    await d.start(surface)
+    await prompt(d, 't1')
+    expect((await note($)).text).toBe('')
+  })
+
+  const pressTurnOn = async ($: unknown) => {
+    const ui = await mount($, surface)
+    await ui.press({ key: 'cold-wn-turn-on' })
+    await ui.unmount()
+  }
+  const sets = (h: ReturnType<typeof engine>) => h.wnRuns.filter(r => r[2] === 'config' && r[3] === 'set')
+
+  test(`Turn on opens the confirm dialog with the cap and the cost; nothing is on until confirm, then it runs config set for billing and auto (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = setup(on, { commands: WHATSNEXT })
+    installWhatsnext(h)
+    h.wnAuto = false
+    h.answers = { whatsnext: 'Turn on' }
+    const d = drive($, h)
+    await d.start(surface)
+    await prompt(d, 't1')
+    const before = h.asked.length
+    await pressTurnOn($)
+    await untilAsked(h, before)
+    expect(h.asked[before]?.question, 'the dialog says what it costs').toBe(CONSENT_TEXT)
+    expect(h.asked[before]?.options).toEqual(['Turn on', 'Cancel'])
+    await h.advance(0)
+    expect(sets(h)).toEqual([
+      ['python3', WHATSNEXT_SCRIPT, 'config', 'set', '--user', 'compact.closed.billing', 'api'],
+      ['python3', WHATSNEXT_SCRIPT, 'config', 'set', '--user', 'compact.closed.auto', 'true'],
+    ])
+    expect((await note($)).text, 'the note goes').toBe('')
+    expect(h.files[LOG_PATH] ?? '').toContain('whatsnext turn on: confirmed')
+  })
+
+  test(`Cancel in the dialog changes nothing (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = setup(on, { commands: WHATSNEXT })
+    installWhatsnext(h)
+    h.wnAuto = false
+    h.answers = { whatsnext: 'Cancel' }
+    const d = drive($, h)
+    await d.start(surface)
+    await prompt(d, 't1')
+    const before = h.asked.length
+    await pressTurnOn($)
+    await untilAsked(h, before)
+    await h.advance(0)
+    expect(sets(h), 'nothing written').toEqual([])
+    expect(h.files[LOG_PATH] ?? '').toContain('whatsnext turn on: not confirmed; nothing changed')
+  })
+
+  test(`a config set that fails leaves it off and says why (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = setup(on, { commands: WHATSNEXT })
+    installWhatsnext(h)
+    h.wnAuto = false
+    h.wnSetFails = 'unknown key'
+    h.answers = { whatsnext: 'Turn on' }
+    const d = drive($, h)
+    await d.start(surface)
+    await prompt(d, 't1')
+    const before = h.asked.length
+    await pressTurnOn($)
+    await untilAsked(h, before)
+    await h.advance(0)
+    expect(sets(h).length, 'stopped at the first failure').toBe(1)
+    expect(h.files[LOG_PATH] ?? '').toContain('failed (exit 1: unknown key)')
+  })
+
+  test(`a whatsnext worker's own start is not a cold return: nothing logged, no note (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = setup(on)
+    h.env.WHATSNEXT_COMPACT_WORKER = '1'
+    const d = drive($, h)
+    await d.start(surface)
+    expect(coldLines(h)).toEqual([])
+    await prompt(d, 't1')
+    expect((await note($)).text).toBe('')
   })
 
   test(`whatsnext found by its plugin name with a marketplace too (${surface})`, { timeoutMs: 30000 }, async ($, on) => {

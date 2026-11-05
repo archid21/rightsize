@@ -1,4 +1,4 @@
-import { MISS_BLOCK, TIER_NAME, isTier, money } from './cost'
+import { MISS_BLOCK, type Prices, TIER_NAME, haikuCompactCost, isTier, money } from './cost'
 import { STEP_PROVE } from './steps'
 import { MISS_MIN, checkTotals, missRates, missTotals } from './misses'
 import type { StartBlock } from './start'
@@ -878,6 +878,29 @@ export function coldReturnLine(lines: readonly RunLine[], subscription: boolean,
   return `Cold returns: ${returns.length} · whatsnext could have saved ${what}`
 }
 
+/** One line of `whatsnext compact-log --json`: a closed-session compact that ran. The session id is the key shared with the run log. */
+export type CompactEntry = { session: string; ts?: string; model?: string; context_before?: number; context_unit?: string; est_cost?: number; outcome?: string }
+
+/**
+ * The Closed compacts line, from `whatsnext compact-log --json --since 30d` (`entries`) joined to the run log's cold returns by
+ * session id: how many whatsnext compacted, how many of those sessions came back (a `coldReturn` line for the same session
+ * after the compact), what the compacts cost and what they saved. Spent is each entry's `est_cost`, else a Haiku compaction
+ * of its `context_before` (tokens only); saved is the `compactSaving` of the returns that followed a compact. Dollars; on a
+ * subscription the share of the 5-hour window when `rates` has one. Undefined with no compact. It changes no total.
+ */
+export function closedCompactLine(entries: readonly CompactEntry[], lines: readonly RunLine[], prices: Prices, subscription: boolean, rates?: { low: number; high: number }): string | undefined {
+  const done = entries.filter(e => e.outcome === 'compacted' && typeof e.session === 'string')
+  if (!done.length) return undefined
+  const spent = done.reduce((n, e) => n + (typeof e.est_cost === 'number' ? e.est_cost : e.context_unit === 'tokens' && typeof e.context_before === 'number' ? haikuCompactCost(prices, e.context_before) : 0), 0)
+  const compactedAt = new Map<string, number>()
+  for (const e of done) compactedAt.set(e.session, Math.min(compactedAt.get(e.session) ?? Infinity, Date.parse(e.ts ?? '') || 0))
+  const back = lines.filter(l => l.kind === 'coldReturn' && l.session !== undefined && compactedAt.has(l.session) && Date.parse(l.at) >= (compactedAt.get(l.session) ?? 0))
+  const returned = new Set(back.map(l => l.session)).size
+  const saved = back.reduce((n, l) => n + num(l.compactSaving), 0)
+  const as = (d: number) => (d <= 0 ? '$0.00' : subscription ? windowCostText(d, rates) : money(d))
+  return `Closed compacts: ${done.length} · ${returned} came back (${Math.round((returned / compactedAt.size) * 100)}%) · spent ${as(spent)} · saved ${as(saved)}`
+}
+
 /** The context every request carried, by part (largest first), request-weighted, what re-reading it cost, and how to cut it. */
 export function fixedBlock(lines: readonly RunLine[], subscription = false) {
   const runs = lines.filter(l => isRun(l) && l.fixed && num(l.requests) > 0)
@@ -924,7 +947,7 @@ export function fixedBlock(lines: readonly RunLine[], subscription = false) {
 export function buildReport(
   lines: readonly RunLine[],
   switches: readonly SwitchLine[],
-  opts: { now: number; session: string; subscription: boolean; start?: StartBlock; pause?: number | null; measureFrom?: string; markdown?: boolean; watching?: boolean },
+  opts: { now: number; session: string; subscription: boolean; start?: StartBlock; pause?: number | null; measureFrom?: string; markdown?: boolean; watching?: boolean; compactLog?: readonly CompactEntry[]; prices?: Prices },
 ) {
   const since = (days: number) => (l: { at: string }) => opts.now - Date.parse(l.at) <= days * DAY
   const month = lines.filter(since(30))
@@ -949,6 +972,9 @@ export function buildReport(
   // Cold returns: sessions that came back to a cold cache, and what whatsnext's compaction beforehand would have saved. Counted nowhere else.
   const returned = coldReturnLine(month, sub, sub ? windowRates(month, 'five_hour') : undefined)
   if (returned) out.push('', ...(md ? [returned] : wrap(returned, '', '  ')))
+  // Closed compacts: whatsnext's own log of what it compacted, joined to the cold returns by session id.
+  const closed = opts.compactLog && opts.prices ? closedCompactLine(opts.compactLog, month, opts.prices, sub, sub ? windowRates(month, 'five_hour') : undefined) : undefined
+  if (closed) out.push('', ...(md ? [closed] : wrap(closed, '', '  ')))
   // Watch only: what rightsize would have done, and what that would have saved, against staying. Nothing was applied.
   const watched = watchLine(month, sub, opts.watching === true)
   if (watched) out.push('', ...(md ? [watched] : wrap(watched, '', '  ')))

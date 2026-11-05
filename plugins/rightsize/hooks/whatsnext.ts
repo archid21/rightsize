@@ -12,6 +12,33 @@ export const WHATSNEXT_URL = 'https://github.com/archid21/whatsnext'
 export const HOW_IT_WORKS =
   'whatsnext compacts large, closed threads with Haiku before you come back, so reopening one re-reads a short summary, not the whole conversation. At most 5 a day; it skips threads that are open.'
 
+/**
+ * What rightsize's own compaction is told to keep and drop when whatsnext cannot compact. A copy of whatsnext's
+ * `COMPACT_BASE` (`skills/whatsnext/scripts/wn/wrapup.py`): when whatsnext changes its text, change this one the same day.
+ */
+export const COMPACT_BASE =
+  'Keep: the current task and its goal, the decisions made and why, the open questions, the file paths and commands that matter, and the next steps. Drop: tool output, file dumps and dead ends (approaches tried and abandoned), unless the reason one failed still matters.'
+
+/** The confirm dialog behind "Turn on": nothing is on until it is confirmed. 5 a day matches ADR 0012 and HOW_IT_WORKS. */
+export const CONSENT_TEXT =
+  'whatsnext will compact up to 5 closed threads a day with Haiku. Cost: up to $0.50 a day in API money, or up to 1M tokens a day of your usage windows on a subscription.'
+export const CONSENT_ON = 'Turn on'
+export const CONSENT_CANCEL = 'Cancel'
+/** The whatsnext settings "Turn on" writes, through `whatsnext.py config set --user`. */
+export const AUTO_KEY = 'compact.closed.auto'
+export const BILLING_KEY = 'compact.closed.billing'
+
+/** The note's button when whatsnext is installed and the closed-thread setting is off (`false`; unknown or on: none). */
+export const TURN_ON_ID = 'wn-turn-on'
+export const TURN_ON_BUTTON = { id: TURN_ON_ID, label: CONSENT_ON }
+
+/** Over this many tokens of room left in the window, a wrap-up turn is safe; under it rightsize compacts with the handoff it has. */
+export const WRAP_HEADROOM = 40_000
+/** A wrap-up that whatsnext still says is missing after this many main-turn ends is given up on. */
+export const WRAP_TURNS = 2
+/** Said on the band when the compaction goes ahead without a fresh handoff. */
+export const NO_FRESH_HANDOFF = 'no fresh handoff'
+
 /** The note's ⋯ menu entries, with the ids `pressCold` answers. */
 export const NOTE_HOW = 'wn-how'
 export const NOTE_HIDE = 'wn-hide'
@@ -40,7 +67,8 @@ export function noteText(saving: number | undefined, subscription: boolean, rate
  */
 export function noteLink(installed: boolean | undefined): { label: string; href: string } | undefined {
   if (installed === false) return { label: 'Get whatsnext', href: WHATSNEXT_URL }
-  // TODO(whatsnext-turn-on): when whatsnext has its "Turn on" setting, installed (installed === true) gets that button here.
-  // Pressing it should turn the setting on and need no link; until whatsnext builds the setting there is nothing to press.
   return undefined
 }
+
+/** "Turn on" (a button, not a link) when whatsnext is installed and its closed-thread setting is off; otherwise none. */
+export const noteButton = (installed: boolean | undefined, auto: boolean | undefined) => (installed === true && auto === false ? TURN_ON_BUTTON : undefined)

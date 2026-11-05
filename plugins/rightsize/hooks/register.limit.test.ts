@@ -1,7 +1,8 @@
 import { type TestBody, expect, test } from 'claude-code/testing'
 import { RUNS_FILE, LOG_PATH, NO_CHANGE, NO_COLD, WHATSNEXT_ARGS, WHATSNEXT_SCRIPT, engine, drive, installWhatsnext, untilAsked, mount, rowText, wnAnswer } from './testkit'
 import { clockText } from './warm'
-import { LIMIT_COMPACT_INSTRUCTIONS, LIMIT_WHY } from './limit'
+import { LIMIT_WHY } from './limit'
+import { COMPACT_BASE } from './whatsnext'
 
 // ---- Compact before the usage limit --------------------------------------------------------------------------
 //
@@ -217,7 +218,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.compactions, 'the advice shown, nothing compacted').toBe(0)
     await press($, 'cold-limit-compact')
     expect(h.compactions).toBe(1)
-    expect(h.compactCalls).toEqual([{ instructions: LIMIT_COMPACT_INSTRUCTIONS }])
+    expect(h.compactCalls).toEqual([{ instructions: COMPACT_BASE }])
     expect((await advice($)).text).toBe('Compacted. After the reset a short summary is read, not the whole conversation.')
     expect(log(h)).toContain('usage-limit advice: compacted before the reset, on the person\'s button')
   })
@@ -232,6 +233,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.start(surface)
     await turn(d, 't1')
     expect(h.compactions, 'the advice shown, nothing compacted').toBe(0)
+    h.wnRuns.length = 0 // the turn end's own check of whether this is a whatsnext project is not what the tests count
     return { h, d }
   }
 
@@ -246,10 +248,9 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(log(h)).toContain('usage-limit advice: compacted with whatsnext before the reset')
   })
 
-  test(`with whatsnext installed and wrap_up_first, Compact now submits "wrap up", and when that turn ends asks again and submits the compact prompt, once (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
+  test(`with whatsnext installed and wrap_up_first, Compact now submits "wrap up", and at the end of the turn that follows asks again and submits the compact prompt once wrap_up_first is false (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
     const { h, d } = await withWhatsnext($, on)
-    // The second answer still says wrap_up_first: it is not followed, or this would loop.
-    h.wnReplies = [{ exitCode: 0, stdout: wnAnswer(true) }, { exitCode: 0, stdout: wnAnswer(true) }]
+    h.wnReplies = [{ exitCode: 0, stdout: wnAnswer(true) }, { exitCode: 0, stdout: wnAnswer(false) }]
     await press($, 'cold-limit-compact')
     expect(h.submitted.map(x => x.text), 'the wrap-up only, until its turn ends').toEqual(['continue', 'wrap up'])
     expect(h.wnRuns.length).toBe(1)
@@ -271,6 +272,38 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.commandRuns.length, 'one compaction').toBe(1)
   })
 
+  test(`a turn that ends while wrap_up_first is still true waits for the next turn; after 2 such turns it gives up with a band note and compacts nothing (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
+    const { h, d } = await withWhatsnext($, on)
+    h.wnReply = { exitCode: 0, stdout: wnAnswer(true) }
+    await press($, 'cold-limit-compact')
+    h.rating = NO_CHANGE
+    await d.turnStart('t2', 'wrap up')
+    await d.step('t2')
+    await d.complete('t2')
+    await h.advance(0)
+    expect(h.commandRuns, 'the handoff is not there yet: no compaction').toEqual([])
+    expect(log(h)).toContain('the handoff is not written yet (turn 1 of 2)')
+    await d.turnStart('t3', 'wrap up')
+    await d.step('t3')
+    await d.complete('t3')
+    await h.advance(0)
+    expect(h.commandRuns, 'still not there: given up').toEqual([])
+    expect(h.compactions).toBe(0)
+    expect(log(h)).toContain('no handoff after 2 turns; not compacting')
+    expect((await advice($)).text).toBe("whatsnext's handoff was not written after 2 turns, so nothing was compacted.")
+  })
+
+  test(`with under 40,000 tokens left in the window there is no "wrap up": it compacts with the existing handoff and the band says no fresh handoff (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
+    const { h } = await withWhatsnext($, on)
+    h.wnReply = { exitCode: 0, stdout: wnAnswer(true) }
+    h.contextTokens = 170_000
+    await press($, 'cold-limit-compact')
+    expect(h.submitted.map(x => x.text), 'no wrap-up').toEqual(['continue'])
+    expect(h.commandRuns).toEqual([{ command: 'compact', args: WHATSNEXT_ARGS }])
+    expect((await advice($)).text).toBe('Compacted. After the reset a short summary is read, not the whole conversation; no fresh handoff.')
+    expect(log(h)).toContain('under 40000: no "wrap up"; compacting with the existing handoff')
+  })
+
   test(`a prompt from the person before the wrap-up's turn ends stops the compaction (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
     const { h, d } = await withWhatsnext($, on)
     h.wnReply = { exitCode: 0, stdout: wnAnswer(true) }
@@ -287,11 +320,11 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   const FAILS: { name: string; over?: { initialized?: boolean; listed?: boolean }; reply?: { exitCode: number; stdout: string; stderr?: string }; runs: number; why: string }[] = [
-    { name: 'the project has not been through whatsnext init', over: { initialized: false }, runs: 0, why: 'this project has not been through "whatsnext init"' },
+    { name: 'the project has not been through whatsnext init', over: { initialized: false }, runs: 1, why: 'this project has not been through "whatsnext init"' },
     { name: 'whatsnext\'s plugin folder is not in the list of installed plugins', over: { listed: false }, runs: 0, why: 'whatsnext\'s plugin folder was not found' },
     { name: 'compact-instructions exits with an error', reply: { exitCode: 1, stdout: '', stderr: 'not a session id\n' }, runs: 1, why: 'compact-instructions exited 1: not a session id' },
     { name: 'compact-instructions does not answer in JSON', reply: { exitCode: 0, stdout: 'Keep: the task.' }, runs: 1, why: 'did not answer in JSON' },
-    { name: 'compact-instructions leaves out compact_prompt', reply: { exitCode: 0, stdout: '{"wrap_up_first": false}' }, runs: 1, why: 'answered without compact_prompt or wrap_up_first' },
+    { name: 'compact-instructions leaves out compact_prompt', reply: { exitCode: 0, stdout: '{"wrap_up_first": false}' }, runs: 1, why: 'answered without compact_prompt, wrap_up_first or project' },
   ]
   for (const f of FAILS) {
     test(`Compact now compacts with its own instructions, and logs why, when ${f.name} (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
@@ -299,7 +332,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
       if (f.reply) h.wnReply = f.reply
       await press($, 'cold-limit-compact')
       expect(h.wnRuns.length).toBe(f.runs)
-      expect(h.compactCalls).toEqual([{ instructions: LIMIT_COMPACT_INSTRUCTIONS }])
+      expect(h.compactCalls).toEqual([{ instructions: COMPACT_BASE }])
       expect(h.submitted.map(x => x.text), 'no whatsnext prompt').toEqual(['continue'])
       expect(h.commandRuns).toEqual([])
       expect(log(h)).toContain('usage-limit advice: whatsnext could not compact (')
@@ -317,7 +350,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.complete('t2')
     await h.advance(0)
     expect(h.submitted.map(x => x.text)).toEqual(['continue', 'wrap up'])
-    expect(h.compactCalls).toEqual([{ instructions: LIMIT_COMPACT_INSTRUCTIONS }])
+    expect(h.compactCalls).toEqual([{ instructions: COMPACT_BASE }])
     expect(log(h)).toContain('compact-instructions exited 1: boom')
   })
 
@@ -325,7 +358,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const { h } = await withWhatsnext($, on)
     h.commandRunFails = 'a hook refused it'
     await press($, 'cold-limit-compact')
-    expect(h.compactCalls).toEqual([{ instructions: LIMIT_COMPACT_INSTRUCTIONS }])
+    expect(h.compactCalls).toEqual([{ instructions: COMPACT_BASE }])
     expect(log(h)).toContain('"/compact" could not run:')
   })
 

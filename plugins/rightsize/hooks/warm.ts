@@ -82,6 +82,45 @@ export function warmPlan(o: { ms: number; ttl: number; cold: number; ping: numbe
   return { pings, wanted, capped: pings < wanted, cost: pings * o.ping, endsAt }
 }
 
+// ---- How long the session will probably sit idle -------------------------------
+
+/** Idle gaps shorter than this are a pause, not an absence: they are not recorded. */
+export const IDLE_GAP_MIN = 5 * MIN
+/** How many of the latest gaps in a project the estimate reads. */
+export const IDLE_GAPS_KEPT = 20
+/** Fewer recorded gaps than this say nothing about a habit: the estimate is the cap. */
+export const IDLE_MIN_GAPS = 5
+/** The longest idle time the estimate gives. */
+export const IDLE_CAP = 8 * HOUR
+/** A compaction pays only when keeping the cache warm over the expected idle time costs at least this many times what it costs. */
+export const COMPACT_VALUE = 3
+
+/** The latest gaps, oldest first, with `gap` added when it is long enough to be an absence. */
+export function addGap(gaps: readonly number[], gap: number): number[] {
+  const kept = gaps.filter(g => Number.isFinite(g) && g > 0)
+  return (Number.isFinite(gap) && gap >= IDLE_GAP_MIN ? [...kept, gap] : kept).slice(-IDLE_GAPS_KEPT)
+}
+
+/** The expected idle time E, in ms: the median of the last 20 recorded gaps, at most 8 hours; fewer than 5 gaps: 8 hours. */
+export function idleEstimate(gaps: readonly number[]): number {
+  const sorted = gaps.filter(g => Number.isFinite(g) && g > 0).slice(-IDLE_GAPS_KEPT).sort((a, b) => a - b)
+  if (sorted.length < IDLE_MIN_GAPS) return IDLE_CAP
+  const mid = sorted.length >> 1
+  const median = sorted.length % 2 ? (sorted[mid] as number) : ((sorted[mid - 1] as number) + (sorted[mid] as number)) / 2
+  return Math.min(IDLE_CAP, median)
+}
+
+/**
+ * Is a compaction before the cache goes cold worth it? Keeping warm for the expected idle time E costs ceil(E / ttl)
+ * requests of `ping` each; a compaction costs `compact`, and the summary it leaves is read cold once (`summaryCold`).
+ * Compact only when keeping warm costs at least COMPACT_VALUE times that.
+ */
+export function compactWorth(o: { estimate: number; ttl: number; ping: number; compact: number; summaryCold: number }) {
+  const keepWarm = Math.ceil(o.estimate / o.ttl) * o.ping
+  const cost = o.compact + o.summaryCold
+  return { worth: keepWarm >= COMPACT_VALUE * cost, keepWarm, cost }
+}
+
 // ---- The person's usual start time -------------------------------------------
 
 export const START_DAYS = 14

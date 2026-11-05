@@ -1,5 +1,6 @@
 import { expect, test } from 'claude-code/testing'
-import { LIMIT_COMPACT, LIMIT_COMPACT_INSTRUCTIONS, LIMIT_HIDE, LIMIT_MIN_CONTEXT, LIMIT_MORE, LIMIT_WHY, LIMIT_WHY_ID, isLimitId, limitDue, limitText } from './limit'
+import { COMPACT_BASE } from './whatsnext'
+import { LIMIT_COMPACT, LIMIT_HIDE, LIMIT_MIN_CONTEXT, LIMIT_MORE, LIMIT_WHY, LIMIT_WHY_ID, isLimitId, limitDue, limitText } from './limit'
 import { clockText } from './warm'
 
 // ---- The usage-limit advice: the pure part -----------------------------------------------------------------
@@ -44,5 +45,5 @@ test('the words and ids: Why? says what the compaction does, and the instruction
   expect(LIMIT_MORE.map(m => [m.id, m.label])).toEqual([[LIMIT_WHY_ID, 'Why?'], [LIMIT_HIDE, "Don't show again"]])
   expect([LIMIT_COMPACT, LIMIT_WHY_ID, LIMIT_HIDE].every(isLimitId)).toBe(true)
   expect(isLimitId('compact')).toBe(false)
-  for (const word of ['current task', 'decisions', 'open questions', 'file paths', 'next steps', 'tool output', 'dead ends']) expect(LIMIT_COMPACT_INSTRUCTIONS).toContain(word)
+  for (const word of ['current task', 'decisions', 'open questions', 'file paths', 'next steps', 'tool output', 'dead ends']) expect(COMPACT_BASE).toContain(word)
 })

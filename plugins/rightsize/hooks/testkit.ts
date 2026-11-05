@@ -34,10 +34,10 @@ export const WHATSNEXT_COMPACT = '/compact Keep: the task. Handoff: docs/project
 /** What follows `/compact ` there: the arguments the slash command runs with. */
 export const WHATSNEXT_ARGS = WHATSNEXT_COMPACT.slice('/compact '.length)
 /** What `compact-instructions --json` prints; the fields rightsize reads are the first two. */
-export const wnAnswer = (wrapUpFirst: boolean) =>
-  JSON.stringify({ instructions: WHATSNEXT_ARGS, compact_prompt: WHATSNEXT_COMPACT, handoff: 'docs/project/HANDOFF.md', handoff_exists: true, wrap_up_first: wrapUpFirst, wrap_up_prompt: 'wrap up', session_found: true }, null, 2)
+export const wnAnswer = (wrapUpFirst: boolean, project = true) =>
+  JSON.stringify({ instructions: WHATSNEXT_ARGS, compact_prompt: WHATSNEXT_COMPACT, handoff: 'docs/project/HANDOFF.md', handoff_exists: true, wrap_up_first: wrapUpFirst, wrap_up_state: wrapUpFirst ? 'none' : 'written', wrap_up_prompt: 'wrap up', project, session_found: true }, null, 2)
 /** Makes whatsnext installed (its commands, its entry in installed_plugins.json, its script), and the project `whatsnext init`-ed unless `initialized` is false. */
-export function installWhatsnext(h: { commands: { name: string; description: string; source: string; plugin?: string }[]; files: Record<string, string>; cwd: string }, over: { initialized?: boolean; listed?: boolean } = {}) {
+export function installWhatsnext(h: { commands: { name: string; description: string; source: string; plugin?: string }[]; files: Record<string, string>; cwd: string; wnReply: { exitCode: number; stdout: string; stderr?: string } }, over: { initialized?: boolean; listed?: boolean } = {}) {
   h.commands = WHATSNEXT_CMDS
   if (over.listed !== false) {
     h.files['/home/test/.claude/plugins/installed_plugins.json'] = JSON.stringify({ version: 2, plugins: { 'whatsnext@whatsnext': [{ scope: 'user', installPath: WHATSNEXT_ROOT, version: '0.0.1', lastUpdated: '2026-11-01T00:00:00.000Z' }] } })
@@ -46,8 +46,8 @@ export function installWhatsnext(h: { commands: { name: string; description: str
     delete h.files['/home/test/.claude/plugins/installed_plugins.json']
     delete h.files[WHATSNEXT_SCRIPT]
   }
-  if (over.initialized !== false) h.files[`${h.cwd}/.whatsnext/config.json`] = '{}\n'
-  else delete h.files[`${h.cwd}/.whatsnext/config.json`]
+  // Whether the folder is a whatsnext project is whatsnext's answer (`project` in compact-instructions --json), not a file rightsize reads.
+  if (over.initialized === false) h.wnReply = { exitCode: 0, stdout: wnAnswer(false, false) }
 }
 /** What core returns when the person says no at the permission prompt. */
 export const REJECTED = "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed."
@@ -222,6 +222,12 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
     /** What the next whatsnext.py runs answer, in order; when none is left, `wnReply`. */
     wnReplies: [] as { exitCode: number; stdout: string; stderr?: string }[],
     wnReply: { exitCode: 0, stdout: wnAnswer(false) } as { exitCode: number; stdout: string; stderr?: string },
+    /** `compact.closed.auto` in what `whatsnext config show --json` answers; undefined: the answer has no such key. */
+    wnAuto: undefined as boolean | undefined,
+    /** A reason to make `whatsnext config set` fail (exit 1, this on stderr). */
+    wnSetFails: undefined as string | undefined,
+    /** What `whatsnext compact-log --json` answers. */
+    wnCompactLog: '{"since":"30d","count":0,"entries":[]}',
     /** True: sleeps are on a virtual clock. They end only when `advance` reaches them, and the clock moves to each one's time. */
     virtual: false,
     sleepers: [] as { due: number; release: () => void }[],
@@ -383,6 +389,9 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
     if (argv[0] === 'git' && argv[1] === 'rev-parse') return { value: { exitCode: 0, stdout: `${h.cwd}\n`, stderr: '' } } as never
     if (argv[0] === 'python3') {
       h.wnRuns.push(argv)
+      if (argv[2] === 'config' && argv[3] === 'show') return { value: { exitCode: 0, stdout: JSON.stringify(h.wnAuto === undefined ? {} : { 'compact.closed.auto': { value: h.wnAuto, source: 'default', file: null } }), stderr: '' } } as never
+      if (argv[2] === 'config' && argv[3] === 'set') return { value: h.wnSetFails === undefined ? { exitCode: 0, stdout: '', stderr: '' } : { exitCode: 1, stdout: '', stderr: h.wnSetFails } } as never
+      if (argv[2] === 'compact-log') return { value: { exitCode: 0, stdout: h.wnCompactLog, stderr: '' } } as never
       const reply = h.wnReplies.shift() ?? h.wnReply
       return { value: { exitCode: reply.exitCode, stdout: reply.stdout, stderr: reply.stderr ?? '' } } as never
     }

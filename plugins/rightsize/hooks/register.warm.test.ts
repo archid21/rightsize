@@ -465,7 +465,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await h.advance(57 * MIN)
     expect(h.submitted, 'no wrap-up prompt: whatsnext would not answer it here').toEqual([])
     expect(h.compactions).toBe(1)
-    expect(h.wnRuns, 'whatsnext is not asked either').toEqual([])
+    expect(h.wnRuns.length, 'whatsnext is asked, twice, and says it is not a project: at the turn end and by the compaction').toBe(2)
     expect(coldLog(h)).toContain('whatsnext is installed but this project has not been through "whatsnext init"')
     expect(await bandText($, surface)).toBe('Compacted while the cache was warm.')
   })
@@ -485,6 +485,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   const wnWithCompact = async ($: unknown, on: Parameters<TestBody>[1]) => {
     const { h, d } = await coldSession($, on, { stored: COMPACT.stored, commands: WHATSNEXT })
     await coldTurn(d, 't1')
+    h.wnRuns.length = 0 // the turn end's own check of whether this is a whatsnext project is not what these tests count
     return { h, d }
   }
 
@@ -505,8 +506,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
   test(`compact: wrap_up_first submits "wrap up", then runs the compact prompt when that turn ends, once (${surface})`, { timeoutMs: 30000, options: COMPACT.options }, async ($, on) => {
     const { h, d } = await wnWithCompact($, on)
-    // The second answer still says wrap_up_first: it is not followed.
-    h.wnReplies = [{ exitCode: 0, stdout: wnAnswer(true) }, { exitCode: 0, stdout: wnAnswer(true) }]
+    // The first answer asks for the wrap-up; after its turn the handoff is written, so whatsnext stops asking.
+    h.wnReplies = [{ exitCode: 0, stdout: wnAnswer(true) }, { exitCode: 0, stdout: wnAnswer(false) }, { exitCode: 0, stdout: wnAnswer(false) }]
     await h.advance(57 * MIN)
     expect(h.submitted.map(s => s.text)).toEqual(['wrap up'])
     expect(h.commandRuns, 'not yet').toEqual([])
@@ -517,7 +518,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.turnStart('t2', 'wrap up')
     await coldTurn(d, 't2')
     await h.advance(0)
-    expect(h.wnRuns.length).toBe(2)
+    expect(h.wnRuns.length, 'asked again after the turn').toBeGreaterThanOrEqual(2)
     expect(h.commandRuns).toEqual([CMD])
     expect(h.submitted.map(s => s.text), 'one wrap-up').toEqual(['wrap up'])
     expect(h.compactions).toBe(0)

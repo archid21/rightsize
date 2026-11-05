@@ -42,20 +42,24 @@ export const tierOf = (model: string | null | undefined): Tier | undefined => {
 // ---- Prices ----------------------------------------------------------------
 
 /** US dollars per 1 million tokens. */
-export type Price = { input: number; output: number; cacheRead: number; cacheWrite: number }
+/** `over100k`: the price of a prompt over 100,000 tokens, where the model has a second tier (Haiku). */
+export type Price = { input: number; output: number; cacheRead: number; cacheWrite: number; over100k?: { input: number; output: number } }
 export type Prices = Record<Tier, Price>
 
 // Anthropic first-party prices from the pricing page, checked 2026-10-23;
 // prices.json beside the mod overrides them. cacheWrite is the 1-hour TTL (2x input),
 // the one Claude Code sessions usually write.
 export const DEFAULT_PRICES: Prices = {
-  haiku: { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.2 },
+  haiku: { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.2, over100k: { input: 0.5, output: 2.5 } },
   sonnet: { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 4 },
   opus: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 8 },
   fable: { input: 10, output: 50, cacheRead: 0.25, cacheWrite: 20 },
 }
 
 const num = (v: unknown, fallback: number) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : fallback)
+
+/** A prompt over this many tokens is priced at a model's `over100k` rate, where it has one. */
+export const LONG_PROMPT = 100_000
 
 // Reads prices.json. Any field that is missing or not a number keeps the default.
 export function parsePrices(raw: string): Prices {
@@ -71,11 +75,13 @@ export function parsePrices(raw: string): Prices {
     const m = json.models?.[t] ?? {}
     const d = DEFAULT_PRICES[t]
     const input = num(m.input, d.input)
+    const long = (m.over100k ?? {}) as Record<string, unknown>
     out[t] = {
       input,
       output: num(m.output, d.output),
       cacheRead: num(m.cacheRead, d.cacheRead),
       cacheWrite: num(m[writeKey], input * (writeKey === 'cacheWrite1h' ? 2 : 1.25)),
+      ...(d.over100k ? { over100k: { input: num(long.input, d.over100k.input), output: num(long.output, d.over100k.output) } } : {}),
     }
   }
   return out
@@ -488,9 +494,16 @@ export const COMPACT_SUMMARY_TOKENS = 6000
 /** What coming back cold costs on `tier`: `tokens` written to the cache again, less the read it would have been warm. The same figure as idleCost's `resend`. */
 export const coldCost = (prices: Prices, tier: Tier, tokens: number) => idleCost(prices[tier], tokens).resend
 
-/** What compacting `context` tokens with Haiku costs: the conversation read as input (as idleCost's `compact` reads it) and `summaryTokens` written as output. */
-export const haikuCompactCost = (prices: Prices, context: number, summaryTokens = COMPACT_SUMMARY_TOKENS) =>
-  dollars(prices.haiku, { input: context, output: summaryTokens })
+/**
+ * What compacting `context` tokens with Haiku costs: the conversation read as input (as idleCost's `compact` reads it) and
+ * `summaryTokens` written as output. Over 100,000 tokens the whole prompt is read at Haiku's higher rate (450K with a 6K
+ * summary: $0.24, not $0.05).
+ */
+export function haikuCompactCost(prices: Prices, context: number, summaryTokens = COMPACT_SUMMARY_TOKENS) {
+  const h = prices.haiku
+  const rate = context > LONG_PROMPT && h.over100k ? h.over100k : h
+  return (context * rate.input + summaryTokens * rate.output) / 1e6
+}
 
 /**
  * What a cold return on `tier` would have saved had the conversation been compacted by Haiku beforehand: the cold cost of

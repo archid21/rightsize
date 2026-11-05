@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import { DEFAULT_PRICES, idleCost } from './cost'
-import { ALWAYS_AFTER, BACK_OFF_AFTER, LEARN_OVER, OFFER_AFTER_MS, DEFAULT_START, ROW_OF, breakEvenMs, breakEvenPings, clockText, coldPlan, alwaysText, ignoredLately, keepWarmChoices, leadMs, learnedChoice, netSaving, nextStart, offerAt, offerText, pingCost, pingEvery, pingsFor, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText, WARM_PROOF, cacheHeld } from './warm'
+import { COMPACT_VALUE, IDLE_CAP, addGap, compactWorth, idleEstimate, ALWAYS_AFTER, BACK_OFF_AFTER, LEARN_OVER, OFFER_AFTER_MS, DEFAULT_START, ROW_OF, breakEvenMs, breakEvenPings, clockText, coldPlan, alwaysText, ignoredLately, keepWarmChoices, leadMs, learnedChoice, netSaving, nextStart, offerAt, offerText, pingCost, pingEvery, pingsFor, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText, WARM_PROOF, cacheHeld } from './warm'
 
 const MIN = 60_000
 const HOUR = 60 * MIN
@@ -290,4 +290,35 @@ test('the cache held when the first request read at least 80% of the kept conver
 
 test('keep warm until my usual start is a warm plan of at most 8 hours, cut to the usual start by the caller', async () => {
   expect(coldPlan('keep warm until my usual start', false)).toEqual({ action: 'warm', hours: 8, untilStart: true })
+})
+
+test('idle gaps: only absences of 5 minutes or more are kept, the latest 20', async () => {
+  expect(addGap([], 4 * MIN), 'a pause, not an absence').toEqual([])
+  expect(addGap([HOUR], 5 * MIN)).toEqual([HOUR, 5 * MIN])
+  const many = Array.from({ length: 20 }, (_, i) => (i + 1) * MIN * 10)
+  const next = addGap(many, HOUR)
+  expect(next.length).toBe(20)
+  expect(next.at(-1)).toBe(HOUR)
+  expect(next[0], 'the oldest goes').toBe(20 * MIN)
+})
+
+test('expected idle time E: the median of the gaps, at most 8 hours, and 8 hours with fewer than 5 gaps', async () => {
+  expect(idleEstimate([]), 'no gaps').toBe(IDLE_CAP)
+  expect(idleEstimate([HOUR, HOUR, HOUR, HOUR]), 'four gaps say nothing yet').toBe(IDLE_CAP)
+  expect(idleEstimate([HOUR, 2 * HOUR, 3 * HOUR, 4 * HOUR, 5 * HOUR])).toBe(3 * HOUR)
+  expect(idleEstimate([HOUR, 2 * HOUR, 3 * HOUR, 4 * HOUR, 5 * HOUR, 6 * HOUR]), 'even count: the middle two').toBe(3.5 * HOUR)
+  expect(idleEstimate([10 * HOUR, 11 * HOUR, 12 * HOUR, 13 * HOUR, 14 * HOUR]), 'capped').toBe(IDLE_CAP)
+})
+
+test('compact only when keeping warm over E costs at least 3 times the compaction and its summary\'s cold read', async () => {
+  expect(COMPACT_VALUE).toBe(3)
+  const base = { ttl: HOUR, ping: 0.1, compact: 0.5, summaryCold: 0.1 }
+  // 8 hours on a 1-hour cache is 8 requests: $0.80 against 3 x $0.60 = $1.80.
+  expect(compactWorth({ ...base, estimate: 8 * HOUR }).worth).toBe(false)
+  const w = compactWorth({ ...base, estimate: 8 * HOUR, ping: 0.3 })
+  expect(Math.abs(w.keepWarm - 2.4)).toBeLessThan(1e-9)
+  expect(Math.abs(w.cost - 0.6)).toBeLessThan(1e-9)
+  expect(w.worth, '$2.40 is at least $1.80').toBe(true)
+  expect(compactWorth({ ...base, estimate: 30 * MIN, ping: 0.3 }).keepWarm, 'under one cache life is one request').toBe(0.3)
+  expect(compactWorth({ ...base, estimate: 6 * HOUR, ping: 0.4 }).worth, '6 x 0.40 = $2.40 clears $1.80').toBe(true)
 })

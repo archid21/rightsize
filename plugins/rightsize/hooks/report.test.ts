@@ -1,5 +1,6 @@
 import { expect, test } from 'claude-code/testing'
-import { SESSION_TOTAL, accuracyRows, type RunLine, bandShareText, buildReport, coldReturnLine, costTag, counterfactual, fixedBlock, keepWarmLine, parseLines, problems, sessionTotal, shareMessage, shareText, span, taskActual, taskEstimated, taskExtra, taskStay, tieCounts, totals, usedTag, watchLine, wholeTaskRows, wholeTasks, windowCostText, windowRates } from './report'
+import { closedCompactLine, SESSION_TOTAL, accuracyRows, type RunLine, bandShareText, buildReport, coldReturnLine, costTag, counterfactual, fixedBlock, keepWarmLine, parseLines, problems, sessionTotal, shareMessage, shareText, span, taskActual, taskEstimated, taskExtra, taskStay, tieCounts, totals, usedTag, watchLine, wholeTaskRows, wholeTasks, windowCostText, windowRates } from './report'
+import { DEFAULT_PRICES } from './cost'
 import type { StartBlock } from './start'
 
 const NOW = Date.parse('2026-10-23T18:00:00.000Z')
@@ -1084,4 +1085,19 @@ test('the Cold returns line covers the last 30 days, like the rest of the report
   expect(report([run({}), coldAt({ at: ago(40) }), coldAt({ at: ago(29) })])).toContain('Cold returns: 1 · whatsnext could have saved $0.42')
   const text = report([coldAt()], { markdown: true })
   expect(text.split('\n').filter(l => l.startsWith('Cold returns')), 'one line, no wrapping in Markdown').toEqual(['Cold returns: 1 · whatsnext could have saved $0.42'])
+})
+
+test('Closed compacts line: compacts from whatsnext\'s log, joined to cold returns by session id', async () => {
+  const prices = DEFAULT_PRICES
+  const entries = [
+    { session: 'a', ts: ago(5), context_before: 450_000, context_unit: 'tokens', outcome: 'compacted' },
+    { session: 'b', ts: ago(4), context_before: 100_000, context_unit: 'tokens', outcome: 'compacted' },
+    { session: 'c', ts: ago(3), context_before: 100_000, context_unit: 'tokens', outcome: 'timeout' },
+  ]
+  const lines = [run({ kind: 'coldReturn', session: 'a', at: ago(2), compactSaving: 1.5 }), run({ kind: 'coldReturn', session: 'c', at: ago(2), compactSaving: 9 }), run({ kind: 'coldReturn', session: 'b', at: ago(9), compactSaving: 7 })]
+  // spent: 450K on Haiku over 100K ($0.24) + 100K at the base rate ($0.013); a came back after its compact, b's return was before it, c did not compact.
+  expect(closedCompactLine(entries, lines, prices, false)).toBe('Closed compacts: 2 · 1 came back (50%) · spent $0.25 · saved $1.50')
+  expect(closedCompactLine([], lines, prices, false), 'no compact, no line').toBeUndefined()
+  expect(closedCompactLine([{ session: 'x', outcome: 'error' }], lines, prices, false)).toBeUndefined()
+  expect(closedCompactLine([{ ...entries[0]!, est_cost: 0.5 }], [], prices, false)).toBe('Closed compacts: 1 · 0 came back (0%) · spent $0.50 · saved $0.00')
 })

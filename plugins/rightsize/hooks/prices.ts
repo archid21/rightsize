@@ -9,7 +9,7 @@ export const PRICING_URL = 'https://platform.claude.com/docs/en/about-claude/pri
 export const CHECK_DAYS = 30
 
 export type PageRow = { input: number; cacheWrite5m: number; cacheWrite1h: number; cacheRead: number; output: number }
-export type PageRows = Partial<Record<Tier, PageRow>>
+export type PageRows = Partial<Record<Tier, PageRow>> & { haikuOver100k?: { input: number; output: number } }
 
 // The page's model table names each model like this. Haiku's first row is the
 // up-to-100K-tokens price, the one the mod uses.
@@ -35,13 +35,16 @@ export function parsePricingPage(md: string): PageRows {
     const cells = line.split('|').slice(1, -1).map(c => c.trim())
     if (cells.length !== 6) continue
     const tier = TIERS.find(t => cells[0] === ROW_NAME[t] || cells[0]?.startsWith(`${ROW_NAME[t]} (`))
-    if (!tier || out[tier]) continue
+    if (!tier) continue
+    const over = tier === 'haiku' && cells[0]?.includes('over 100,000')
+    if (over ? out.haikuOver100k : out[tier]) continue
     const values = cells.slice(1).map(dollarsIn)
     if (values.some(v => !Number.isFinite(v) || v <= 0)) continue
     const row = Object.fromEntries(FIELDS.map((f, i) => [f, values[i] as number])) as PageRow
     // Output always costs more than input and a cache hit less: anything else is a misread.
     if (row.output <= row.input || row.cacheRead >= row.input) continue
-    out[tier] = row
+    if (over) out.haikuOver100k = { input: row.input, output: row.output }
+    else out[tier] = row
   }
   return out
 }
@@ -73,6 +76,12 @@ export function diffPrices(fileText: string, page: PageRows): string[] {
     const have = json.models?.[t] ?? {}
     for (const f of FIELDS) if (have[f] !== row[f]) changes.push(`${NAME[t]} ${LABEL[f]}: ${fmt(have[f])} → $${row[f]}`)
   }
+  const long = page.haikuOver100k
+  if (long) {
+    const have = (json.models?.haiku?.over100k ?? {}) as Record<string, unknown>
+    if (have.input !== long.input) changes.push(`Haiku 5.5 input over 100K tokens: ${fmt(have.input)} → $${long.input}`)
+    if (have.output !== long.output) changes.push(`Haiku 5.5 output over 100K tokens: ${fmt(have.output)} → $${long.output}`)
+  }
   return changes
 }
 
@@ -89,6 +98,7 @@ export function applyPrices(fileText: string, page: PageRows, date: string): str
     const row = page[t]
     if (row) models[t] = { ...(models[t] ?? {}), ...row }
   }
+  if (page.haikuOver100k) models.haiku = { ...(models.haiku ?? {}), over100k: page.haikuOver100k }
   const next: FileJson = {
     ...json,
     source: `Anthropic Claude API first-party prices, checked against ${PRICING_URL.replace(/^https:\/\//, '').replace(/\.md$/, '')} on ${date}. rightsize checks them every ${CHECK_DAYS} days; run /rightsize prices to check sooner.`,

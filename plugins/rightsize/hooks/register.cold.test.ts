@@ -203,7 +203,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(coldLog(h)).toContain('offered 2h, 8h, start')
   })
 
-  test(`ask: nothing for a small conversation, for Haiku, or past 200K tokens; Sonnet needs about 128K (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`ask: nothing for a small conversation or for Haiku; Sonnet needs about 128K, and there is no size ceiling (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const { h, d } = await coldSession($, on, { usage: { ...BIG_TURN, cache_read_input_tokens: 20_000 } })
     await coldTurn(d, 't1')
     expect(await bandText($, surface), '20K tokens on Opus: $0.16 cold').toBe('')
@@ -220,7 +220,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.stepUsage = { ...BIG_TURN, cache_read_input_tokens: 139_500 }
     await coldOffer(h, d, 't4')
     expect(await bandText($, surface)).toBe('Goes cold in 55 min (19:00) · coming back after costs about $0.55')
-    // Opus at exactly 200K tokens is offered; one token more is Claude Code's to compact.
+    // Opus at exactly 200K tokens is offered, and so is one token more: the size ceiling is gone.
     h.model = 'claude-opus-5-5'
     h.stepUsage = { ...BIG_TURN, cache_read_input_tokens: 199_500 }
     await coldOffer(h, d, 't5')
@@ -228,7 +228,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await bandText($, surface)).toContain('Goes cold')
     h.stepUsage = { ...BIG_TURN, cache_read_input_tokens: 199_501 }
     await coldOffer(h, d, 't6')
-    expect(await bandText($, surface), 'over IDLE_MAX_CONTEXT').toBe('')
+    expect(await bandText($, surface), 'no ceiling any more').toContain('Goes cold')
   })
 
   test(`ask: the size bar is the Idle warning amount: over $0.10 offers 20K tokens on Opus (${surface})`, { timeoutMs: 30000, options: { idleWarning: 'over $0.10' } }, async ($, on) => {

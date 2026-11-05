@@ -3,15 +3,15 @@
 ## Unreleased
 
 - **New tagline and README.** "Make every Claude token count." The README opens with the benefits (same outcome at up to 30% lower cost from an Opus start; stronger reviews, possibly at a higher cost, from a Sonnet start; less manual switching; lower cache and compact costs), a feature table with how to use each feature, and a note that rightsize works better with whatsnext. The sections on how it works, what it runs and its limits now cover compacting, the context warning and whatsnext.
-- **One consent flow for closed-thread compacting.** The cold-return note's **Turn on** opens a confirm dialog (up to 5 closed threads a day with Haiku; up to $0.50 a day in API money, or up to 1M tokens a day of your usage windows on a subscription). Nothing is on until you confirm; confirm runs whatsnext's `config set --user`. With it on, the note does not show.
-- **Haiku's over-100K price.** `prices.json` has `haiku.over100k` ($0.50 / $2.50), and a Haiku compaction of a context over 100K tokens is priced at it (450K: $0.24, not $0.05). The monthly price check compares it.
+- **Haiku's over-100K price.** `prices.json` has `haiku.over100k` ($0.50 / $2.50), and a Haiku compaction of a context over 100K tokens is priced at it (450K: $0.24, not $0.05). It prices the saving in the Cold returns log and report line. The monthly price check compares it.
 - **whatsnext decides "installed".** rightsize reads `project` from `compact-instructions --json` instead of looking for `.whatsnext/config.json`.
 - **One fallback compact** for the limit button and the idle compact, with whatsnext's own keep/drop text.
 - **Wrap-up ordering.** After `wrap up`, at each turn end rightsize asks whatsnext again and compacts only when no wrap-up is missing; after 2 turns it gives up with a band note. With under 40,000 tokens of room it skips `wrap up` and says "no fresh handoff".
 - **Keep warm vs compact by expected idle time.** When Before the cache goes cold is the profile's keep warm, rightsize compacts instead if keeping warm over the usual idle time (median of the last 20 gaps in the project, at most 8 hours) costs at least 3 times a compaction and its summary.
 - **Context-size warning.** At the end of a turn, when the conversation first reaches 40, 50, 60, 70, 80 or 90% of the window, the cache row says so with a **Compact now** button, once per step. Steps at or above Claude Code's auto-compact point are skipped. It compacts only when you press the button; ⋯ has **Why?** and **Don't show again**.
 - **No 200K ceiling** on the idle note or the cache row.
-- **Closed compacts report line** from whatsnext's compact log, joined by session ID. rightsize logs no cold return for whatsnext's own worker (`WHATSNEXT_COMPACT_WORKER`).
+- **No closed-thread compacting.** whatsnext no longer compacts closed threads, so rightsize no longer offers it. Removed: the cold-return note ("whatsnext could have saved $X here") with its **Turn on** and **How it works** buttons, the Turn on confirm dialog and every `whatsnext config set --user compact.closed.*` call, the `Closed compacts` line in `/rightsize report`, and the read of `WHATSNEXT_COMPACT_WORKER`. rightsize now runs one whatsnext command, `compact-instructions --json`, and writes no whatsnext setting.
+- **Cold returns still logged.** A resume past the cache life still writes a `coldReturn` line to the run log, and the report's `Cold returns` line reads "a compact could have saved $X". Nothing shows on the band.
 - Removed the last mentions of the old handoff plugin from the docs.
 
 ## 0.8.4 (2026-11-02)

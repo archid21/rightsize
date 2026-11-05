@@ -25,7 +25,7 @@ If your default is Opus, moving to Sonnet with rightsize cut cost by about 30% a
 
 **Cut cache and compact costs.** Stop paying to rewrite a cold cache or re-read a long conversation. rightsize keeps the cache warm when that is cheaper, warns as your context fills, and compacts only when the saving outweighs the cost.
 
-**rightsize works better with whatsnext.** rightsize decides when a compact pays. [whatsnext](https://github.com/archid21/whatsnext) decides what to keep: it saves a handoff note first, so a compact retains the details that matter, and it can compact closed threads for you. rightsize works on its own too, and uses Claude's own compact when whatsnext isn't installed.
+**rightsize works better with whatsnext.** rightsize decides when a compact pays. [whatsnext](https://github.com/archid21/whatsnext) decides what to keep: it saves a handoff note first, so a compact retains the details that matter. rightsize asks it for that handoff before the cache goes cold and uses its compact text for **Compact now**. rightsize works on its own too, and uses Claude's own compact when whatsnext isn't installed.
 
 ## The problem: one model for every prompt
 
@@ -48,9 +48,8 @@ Switching by hand with `/model` works until you forget, which is most of the tim
 | Keep warm | Avoid paying to rewrite a cold cache | Set **Before the cache goes cold**, or pick a time when the band offers it. |
 | Context-size warning | Compact before the conversation gets costly | Appears at 40–90% full. Press **Compact now**. |
 | Compact before your 5-hour limit | Save usage after a window reset | Press **Compact now** when the band advises it. |
-| Handoff before a compact ★ | A compact that retains the details that matter | Install whatsnext. rightsize asks it automatically. |
-| Closed-thread compacting ★ | Cheaper returns to old threads | Press **Turn on** on the cold-return note, then confirm. |
-| Cost report ★ | Measured savings, spend and return rate | Run `/rightsize report`. (★ for the Closed compacts line only.) |
+| Handoff before a compact ★ | A compact that retains the details that matter | Install whatsnext. rightsize asks it automatically, before the cache goes cold and before **Compact now**. |
+| Cost report | Measured savings, spend and return rate | Run `/rightsize report`. |
 | Band and settings | See and change every decision | Use the band's buttons and ⋯ menu, `/config`, or `/rightsize settings`. |
 
 ★ Needs whatsnext.
@@ -93,10 +92,6 @@ Each row sits above the prompt. The figures are examples; yours come from your o
 
 ![Band row: Near your 5-hour limit, resets 21:40, Compact now to save about $0.59 after the reset, with a Compact now button](docs/images/band-limit-advice.png)
 
-**Cold-return note, with Turn on (needs whatsnext).** Turn on opens a dialog with the limit and the cost; nothing starts until you confirm.
-
-![Band row: whatsnext could have saved $0.42 here, with a Turn on button](docs/images/band-cold-return.png)
-
 ### See it run
 
 A routine edit stays on Sonnet; a review switches to Opus for one turn; the band shows what each cost.
@@ -120,9 +115,9 @@ On a subscription, the rebuild doesn't eat into your usage window. The band show
 
 **Compact before it costs you.** As a conversation fills the window, the band says so at 40, 50, 60, 70, 80 and 90%, skipping any point where Claude Code would compact by itself. Near your 5-hour limit it advises a compact while the cache is warm. Nothing compacts until you press the button.
 
-**Come back to old threads cheaper.** Most closed threads are never reopened, so rightsize compacts only when the saving outweighs the cost. When you resume a session after its cache expired, the band says what a compact beforehand would have saved. **Turn on** opens a dialog with the limit (up to 5 closed threads a day) and the cost, and nothing starts until you confirm. Needs whatsnext.
+**Leave a thread cheaper to come back to.** Before the cache goes cold, rightsize can keep it warm, or save a whatsnext handoff and compact, whichever costs less. It acts only on the choice you made, and it never compacts a closed thread on its own.
 
-**Cost you can see.** A band above the prompt says what rightsize did and why. `/rightsize report` shows what each choice cost against staying on your own model, including the times it cost more. The report also shows how many sessions came back to a cold cache and, with whatsnext, what its closed-thread compacts spent, saved and how many came back.
+**Cost you can see.** A band above the prompt says what rightsize did and why. `/rightsize report` shows what each choice cost against staying on your own model, including the times it cost more. The report also shows how many sessions came back to a cold cache and what a compact could have saved on each.
 
 **Safe to try.** Watch-only mode rates every prompt and changes nothing, so you can see its calls on your own work first.
 
@@ -149,7 +144,7 @@ On a subscription, the rebuild doesn't eat into your usage window. The band show
 2. Start a new session and type `/rightsize`. If the settings pane opens, it works.
 3. On an Opus start, the band offers **Switch: /model sonnet** once. Press it, then Enter. rightsize never changes your model by itself.
 4. Work as usual. After a few sessions, run `/rightsize report`.
-5. Optional: install [whatsnext](https://github.com/archid21/whatsnext) for compacts that retain better information, and for closed-thread compacting.
+5. Optional: install [whatsnext](https://github.com/archid21/whatsnext) for compacts that retain better information.
 
 Want to watch first? In `/config`, set **Mode** to watch only.
 
@@ -166,7 +161,7 @@ Want to watch first? In `/config`, set **Mode** to watch only.
 
 **What it never does.** It never changes your model for you, never approves a tool call, never changes a permission, and never touches your project files. Hooks and file paths: [docs/WHAT-IT-TOUCHES.md](docs/WHAT-IT-TOUCHES.md).
 
-**What it runs, writes and sends.** It runs `mkdir`, `chmod`, `rm` and `rmdir` on its own log folders, `find` and `tail` to read when a session's last reply came, and, with whatsnext installed, `git rev-parse` and whatsnext's own script. The script's commands read settings and logs; it writes whatsnext's settings only after you confirm **Turn on**. It writes only under `~/.claude/mods-logs/rightsize/`, its own store, and its own `prices.json`. Its only web request is to `platform.claude.com` (Anthropic's pricing page, monthly, sends nothing of yours); it sends nothing to the author. It sets only its own `rightsize.*` settings, submits only the fixed text `wrap up`, reads no credential, and its `tool.call` hook only ever denies, never approves. The full list, checked against the code: [What it runs, writes and sends](plugins/rightsize/README.md#what-it-runs-writes-and-sends).
+**What it runs, writes and sends.** It runs `mkdir`, `chmod`, `rm` and `rmdir` on its own log folders, `find` and `tail` to read when a session's last reply came, and, with whatsnext installed, `git rev-parse` and whatsnext's own script. The script's commands read what to compact and whether a handoff is missing; rightsize writes none of whatsnext's settings or files. It writes only under `~/.claude/mods-logs/rightsize/`, its own store, and its own `prices.json`. Its only web request is to `platform.claude.com` (Anthropic's pricing page, monthly, sends nothing of yours); it sends nothing to the author. It sets only its own `rightsize.*` settings, submits only the fixed text `wrap up`, reads no credential, and its `tool.call` hook only ever denies, never approves. The full list, checked against the code: [What it runs, writes and sends](plugins/rightsize/README.md#what-it-runs-writes-and-sends).
 
 ## Make it yours
 
@@ -214,8 +209,8 @@ claude plugin update rightsize@archid21
 - The rating is a model's estimate. It can be wrong on a single prompt; miss tracking corrects it over time.
 - Hand-offs take longer than staying, because the helper adds a brief and a check. The band says so.
 - If you already use Sonnet for everything, rightsize costs more than you pay now. What you get for it is Opus on reviews.
-- Handoffs before a compact, closed-thread compacting and the Closed compacts report line need whatsnext. Without it, rightsize uses Claude's own compact.
-- Automatic compacting of closed threads is off until you turn it on, and it can spend up to $0.50 a day (or 1M tokens of your usage windows on a subscription).
+- Handoffs before a compact need whatsnext. Without it, rightsize uses Claude's own compact.
+- rightsize compacts only the open session, and only when you press a button or set a row to compact. It does not compact closed threads.
 - The effort picker in the app does not move; the status line shows the level in use.
 
 ## Get involved

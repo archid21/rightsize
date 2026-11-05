@@ -222,12 +222,6 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
     /** What the next whatsnext.py runs answer, in order; when none is left, `wnReply`. */
     wnReplies: [] as { exitCode: number; stdout: string; stderr?: string }[],
     wnReply: { exitCode: 0, stdout: wnAnswer(false) } as { exitCode: number; stdout: string; stderr?: string },
-    /** `compact.closed.auto` in what `whatsnext config show --json` answers; undefined: the answer has no such key. */
-    wnAuto: undefined as boolean | undefined,
-    /** A reason to make `whatsnext config set` fail (exit 1, this on stderr). */
-    wnSetFails: undefined as string | undefined,
-    /** What `whatsnext compact-log --json` answers. */
-    wnCompactLog: '{"since":"30d","count":0,"entries":[]}',
     /** True: sleeps are on a virtual clock. They end only when `advance` reaches them, and the clock moves to each one's time. */
     virtual: false,
     sleepers: [] as { due: number; release: () => void }[],
@@ -389,9 +383,6 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
     if (argv[0] === 'git' && argv[1] === 'rev-parse') return { value: { exitCode: 0, stdout: `${h.cwd}\n`, stderr: '' } } as never
     if (argv[0] === 'python3') {
       h.wnRuns.push(argv)
-      if (argv[2] === 'config' && argv[3] === 'show') return { value: { exitCode: 0, stdout: JSON.stringify(h.wnAuto === undefined ? {} : { 'compact.closed.auto': { value: h.wnAuto, source: 'default', file: null } }), stderr: '' } } as never
-      if (argv[2] === 'config' && argv[3] === 'set') return { value: h.wnSetFails === undefined ? { exitCode: 0, stdout: '', stderr: '' } : { exitCode: 1, stdout: '', stderr: h.wnSetFails } } as never
-      if (argv[2] === 'compact-log') return { value: { exitCode: 0, stdout: h.wnCompactLog, stderr: '' } } as never
       const reply = h.wnReplies.shift() ?? h.wnReply
       return { value: { exitCode: reply.exitCode, stdout: reply.stdout, stderr: reply.stderr ?? '' } } as never
     }

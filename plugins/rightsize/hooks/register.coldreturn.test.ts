@@ -220,7 +220,7 @@ test('the report and the log reader take the line: only the Cold returns line sh
   await d.start('terminal')
   expect(coldLines(h).length).toBe(1)
   const after = (await d.command('report')).text ?? ''
-  expect(after, 'the line reads the log: 1 return, what the compaction would have saved').toContain('Cold returns: 1 · whatsnext could have saved $0.42')
+  expect(after, 'the line reads the log: 1 return, what a compact could have saved').toContain('Cold returns: 1 · a compact could have saved $0.42')
   expect(after.replace(/\n\nCold returns:[^\n]*/, ''), 'the rest is the same report').toBe(before)
   expect((await d.command('status')).text ?? '').not.toBe('')
 })

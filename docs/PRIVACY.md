@@ -10,7 +10,7 @@ rightsize sends nothing to its author or to any third party. It keeps its logs o
 
 ## whatsnext
 
-If whatsnext is installed, rightsize runs its script on your machine, found in Claude Code's list of installed plugins. Four commands: `compact-instructions --json`, `config show --json` and `compact-log --json --since 30d` read and print; `config set --user` runs only after you confirm **Turn on**, and whatsnext writes its own settings file. Nothing goes to the author or any third party. whatsnext's own compacts go through Claude Code with your sign-in, like any other request.
+If whatsnext is installed, rightsize runs its script on your machine, found in Claude Code's list of installed plugins. One command: `compact-instructions --json` reads and prints; rightsize writes no whatsnext file or setting. Nothing goes to the author or any third party. whatsnext's own compacts go through Claude Code with your sign-in, like any other request.
 
 ## What stays on your machine
 

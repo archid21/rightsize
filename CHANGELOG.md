@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **New tagline and README.** "Make every Claude token count." The README opens with the benefits (same outcome at up to 30% lower cost from an Opus start; stronger reviews, possibly at a higher cost, from a Sonnet start; less manual switching; lower cache and compact costs), a feature table with how to use each feature, and a note that rightsize works better with whatsnext. The sections on how it works, what it runs and its limits now cover compacting, the context warning and whatsnext.
 - **One consent flow for closed-thread compacting.** The cold-return note's **Turn on** opens a confirm dialog (up to 5 closed threads a day with Haiku; up to $0.50 a day in API money, or up to 1M tokens a day of your usage windows on a subscription). Nothing is on until you confirm; confirm runs whatsnext's `config set --user`. With it on, the note does not show.
 - **Haiku's over-100K price.** `prices.json` has `haiku.over100k` ($0.50 / $2.50), and a Haiku compaction of a context over 100K tokens is priced at it (450K: $0.24, not $0.05). The monthly price check compares it.
 - **whatsnext decides "installed".** rightsize reads `project` from `compact-instructions --json` instead of looking for `.whatsnext/config.json`.

@@ -2,6 +2,43 @@
 
 By [Archi Dubey](https://github.com/archid21), MIT license. Full guide: https://github.com/archid21/rightsize. Feedback: hello@aivalue.blog (subject: rightsize)
 
+**Make every Claude token count.**
+
+rightsize picks the model and effort for each prompt, and keeps your cache and context from costing more than they should.
+
+## Why use it
+
+**Same outcome, lower cost (starting on Opus).** rightsize routes routine work to cheaper models and lower effort, and keeps Opus for the work that needs it. On our coding benchmark it matched Opus at up to 30% lower cost (API-equivalent).
+
+**Higher quality (starting on Sonnet).** rightsize steps up to Opus as needed, for reviews and other work that needs it. If your default is Sonnet, you may spend more: on our coding benchmark, about 1.4x to 2x what Sonnet alone costs, almost all of it from reviews that run on Opus. In return you get stronger reviews without switching models yourself. Your cost depends on how many reviews you run.
+
+If your default is Opus, moving to Sonnet with rightsize cut cost by about 30% and matched Opus on our coding benchmark.
+
+**Less manual switching.** rightsize chooses the model and effort for each prompt, so you only switch to Opus or Fable yourself when you know a task is truly complex.
+
+**Cut cache and compact costs.** Stop paying to rewrite a cold cache or re-read a long conversation. rightsize keeps the cache warm when that is cheaper, warns as your context fills, and compacts only when the saving outweighs the cost.
+
+**rightsize works better with whatsnext.** rightsize decides when a compact pays. [whatsnext](https://github.com/archid21/whatsnext) decides what to keep: it saves a handoff note first, so a compact retains the details that matter, and it can compact closed threads for you. rightsize works on its own too, and uses Claude's own compact when whatsnext isn't installed.
+
+### What you get
+
+| Feature | What it delivers | How to use it |
+|---|---|---|
+| Smart routing | Routine work on cheaper models, Opus where it counts | Automatic. Pick a **Profile** in `/config`. |
+| Effort control | Lower effort for easy prompts, higher for hard ones | Automatic. The **Lowering** and **Raising** rows set ask, automatic or never. |
+| Cheaper helpers | Big routine edits handled at lower cost | Automatic from Opus or Fable sessions. Press **Run on your model** on the band to undo one. |
+| Opus reviews | Stronger reviews without switching models | Automatic. The **Stronger model** row sets ask first or always send. |
+| Watch only | See what rightsize would save before it changes anything | Set **Mode** to watch only, then run `/rightsize report` after a week. |
+| Keep warm | Avoid paying to rewrite a cold cache | Set **Before the cache goes cold**, or pick a time when the band offers it. |
+| Context-size warning | Compact before the conversation gets costly | Appears at 40–90% full. Press **Compact now**. |
+| Compact before your 5-hour limit | Save usage after a window reset | Press **Compact now** when the band advises it. |
+| Handoff before a compact ★ | A compact that retains the details that matter | Install whatsnext. rightsize asks it automatically. |
+| Closed-thread compacting ★ | Cheaper returns to old threads | Press **Turn on** on the cold-return note, then confirm. |
+| Cost report ★ | Measured savings, spend and return rate | Run `/rightsize report`. (★ for the Closed compacts line only.) |
+| Band and settings | See and change every decision | Use the band's buttons and ⋯ menu, `/config`, or `/rightsize settings`. |
+
+★ Needs whatsnext.
+
 Before a prompt is sent, rightsize asks a rater (Sonnet at low effort by default, or Haiku: see **Rater**) which effort each model would need for it, or whether a model would struggle, and how big the work is. A cost model then prices each model at its own level, counting the work that model does at that level, and picks the cheapest route that fits, which can change the model and the effort together. Savings are estimates against a baseline: rightsize's own estimate of staying on your model and effort, made when it chose the route and never changed afterward.
 
 Your setting wins: a value you set in `/config`, or set from the band, is never changed or bypassed by the mod's own behavior. A profile (**Profile**, the first row in `/config`) supplies the defaults of a few rows, and decides each of the four cases while its rule row is not set; a row you set beats it. **Mode** (the second row) can be set to watch only, which rates and plans every prompt and applies nothing.

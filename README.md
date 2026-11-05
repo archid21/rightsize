@@ -61,6 +61,12 @@ Switching by hand with `/model` works until you forget, which is most of the tim
 
 Each row sits above the prompt. The figures are examples; yours come from your own sessions and prices.
 
+**In the desktop app,** the same rows are labelled and the buttons are drawn as buttons. This is a mock-up of the layout.
+
+![Desktop app band with two rows: Prompt, Sent to Haiku, with a Run on Opus button; Cache, Context is 60% full, with a Compact now button](docs/images/band-desktop.png)
+
+**In the terminal,** each row is one line with its buttons below.
+
 **Keep warm offer.** The cache will go cold soon, and coming back would cost this much.
 
 ![Band row: Goes cold in 55 min (19:10), coming back after costs about $1.56, with a Keep warm 8 h button](docs/images/band-keep-warm-offer.png)

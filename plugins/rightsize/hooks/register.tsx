@@ -104,6 +104,7 @@ import { isApprovalStep } from './approval'
 import { LIMITS, type Limits, type Signals, type Struggle, blockedError, callKey, isSensitivity, isTestCommand, noSignals, noteCall, oneUp, refusedByPerson, struggle, testsOutcome } from './struggle'
 import { type Change, type CompactEntry, type HelperLine, type RunLine, type SwitchLine, type Windows, SESSION_TOTAL, SESSION_TOTAL_FROM, bandShareText, buildReport, costTag, parseLines, ratedInSession, sessionTotal, shareMessage, shareOf, usedTag, windowCostText, windowRates } from './report'
 import { LIMIT_BUTTON, LIMIT_COMPACT, LIMIT_HIDE, LIMIT_MORE, LIMIT_WHY, LIMIT_WHY_ID, isLimitId, limitDue, limitText } from './limit'
+import { SIZE_BUTTON, SIZE_COMPACT, SIZE_HIDE, SIZE_MORE, SIZE_WHY, SIZE_WHY_ID, isSizeId, sizeStep, sizeText } from './size'
 import { AUTO_KEY, BILLING_KEY, COMPACT_BASE, CONSENT_CANCEL, CONSENT_ON, CONSENT_TEXT, HOW_IT_WORKS, NOTE_HIDE, NOTE_HOW, NOTE_MORE, NO_FRESH_HANDOFF, TURN_ON_ID, WRAP_HEADROOM, WRAP_TURNS, isWhatsnext, noteButton, noteLink, noteText } from './whatsnext'
 import { PING_PROMPT, ROW_OF, WRAP_UP, addGap, alwaysText, compactWorth, idleEstimate, breakEvenMs, cacheHeld, clockText, coldPlan, ignoredLately, keepWarmChoices, leadMs, learnedChoice, COLD_MIN, netSaving, nextStart, offerAt, offerText, pingCost, pingEvery, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText } from './warm'
 
@@ -2776,6 +2777,95 @@ async function limitCheck($: EngineInterface) {
   }
 }
 
+// ---- Context-size warning ------------------------------------------------------------------------------------------
+
+// ADR 0013, decision 1. At the end of a main turn, when the conversation first reaches 40, 50, 60, 70, 80 or 90% of the window
+// (a step that Claude Code's own auto-compaction would reach first is skipped), the cache row says so, with Compact now. It
+// advises: the compaction runs on the button and never otherwise. Once per step per conversation; a compaction starts it over.
+
+/** The store key: true once the person hid the warning. */
+const SIZE_HIDDEN = 'sizeWarningHidden'
+/** The highest step already said in this conversation (0: none). */
+let sizeShown = 0
+
+async function sizeCheck($: EngineInterface) {
+  try {
+    if (off) return
+    if ((await $.store.get(SIZE_HIDDEN).catch(() => undefined)) === true) return
+    const ctx = (await $.session.usage({ breakdown: 'summary' }).catch(() => undefined))?.context
+    const tokens = ctx?.tokens
+    const window = ctx?.window
+    if (typeof tokens === 'number' && typeof window === 'number' && window > 0 && (tokens / window) * 100 < sizeShown) sizeShown = 0 // compacted: start over
+    const step = sizeStep(tokens, window, ctx?.breakdown?.autoCompactThreshold, sizeShown)
+    if (step === undefined || typeof tokens !== 'number' || typeof window !== 'number') return
+    // The usage-limit advice, a keep-warm run and an offer own the cache row: this step is said at a later turn's end.
+    const had = (await $.state.get(BAND).catch(() => undefined))?.value
+    if (warming || coldTurn?.offer || had?.coldText) {
+      await log($, `context warning: ${step}% not shown, the cache row is in use`)
+      return
+    }
+    sizeShown = step
+    const text = sizeText(step, tokens, window)
+    if (watching) {
+      await log($, `watch only: would warn that the context is ${step}% full (${Math.round(tokens / 1000)}K of ${Math.round(window / 1000)}K tokens)`)
+      return
+    }
+    if (bandMode === 'off') return
+    await showCold($, text, [SIZE_BUTTON], true, [...SIZE_MORE])
+    await log($, `context warning: shown at ${step}% (${Math.round(tokens / 1000)}K of ${Math.round(window / 1000)}K tokens)`)
+  } catch {
+    // A warning must never hold up a turn.
+  }
+}
+
+/** The warning's button and ⋯ entries. */
+async function pressSize($: EngineInterface, id: string): Promise<void> {
+  try {
+    if (id === SIZE_WHY_ID) {
+      $.ui.log(SIZE_WHY)
+      return
+    }
+    if (id === SIZE_HIDE) {
+      await $.store.set(SIZE_HIDDEN, true).catch(() => undefined)
+      await clearColdRow($)
+      $.ui.toast('Rightsize: the context-size warning is hidden.')
+      await log($, 'context warning: hidden for good ("Don\'t show again")')
+      return
+    }
+    if (id !== SIZE_COMPACT) return
+    if (mainBusy) {
+      $.ui.toast('Rightsize: a turn is running. Press Compact now again when it ends.')
+      return
+    }
+    await compactForSize($)
+  } catch (err) {
+    await log($, `context warning failed: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
+/** Runs the compaction the person asked for with "Compact now" on the warning: whatsnext's way when it is installed, else rightsize's own. */
+async function compactForSize($: EngineInterface) {
+  coldDone = true
+  const done = (noFresh?: boolean) => async () => {
+    sizeShown = 0
+    idleWarnedFor = lastTurnAt
+    await log($, `context warning: compacted on the person's button${noFresh ? ` (${NO_FRESH_HANDOFF})` : ''}`)
+    await showCold($, withHandoffNote('Compacted. Later turns read a short summary, not the whole conversation.', noFresh))
+  }
+  const own = async () => {
+    const skip = await ownCompact($)
+    if (skip !== undefined) {
+      await log($, `context warning: compact skipped: ${skip}`)
+      await clearColdRow($)
+      $.ui.toast(`Rightsize: the conversation was not compacted (${skip}).`)
+      return
+    }
+    await done()()
+  }
+  if ((await whatsnextInstalled($)) !== true) return own()
+  await compactWithWhatsnext($, { label: 'context warning', compacted: async noFresh => done(noFresh)(), fallback: own })
+}
+
 /** The advice's button and ⋯ entries: "Compact now" compacts, "Why?" explains, "Don't show again" hides this row for good. */
 async function pressLimit($: EngineInterface, id: string): Promise<void> {
   try {
@@ -3307,6 +3397,7 @@ async function pressCold($: EngineInterface, id: string): Promise<void> {
   if (id === TURN_ON_ID) return turnOnClosed($)
   if (id === NOTE_HOW || id === NOTE_HIDE) return pressNote($, id)
   if (isLimitId(id)) return pressLimit($, id)
+  if (isSizeId(id)) return pressSize($, id)
   if (id === 'stop') {
     const w = warming
     cancelCold($, 'Stop pressed')
@@ -4065,6 +4156,7 @@ export const register: Register = (on, options) => {
     coldPrompt = null
     wrapThenCompact = null
     projectFlag = null
+    sizeShown = 0
     mainBusy = false
     lastWarmAt = 0
     warmReturn = null
@@ -4795,6 +4887,7 @@ export const register: Register = (on, options) => {
     // A person who interrupted is at the keyboard: no offer for an aborted turn.
     if (e.agentId === undefined && !e.isAborted) await coldCheck($).catch(err => log($, `before the cache goes cold failed: ${err instanceof Error ? err.message : String(err)}`))
     if (e.agentId === undefined && !e.isAborted) await limitCheck($)
+    if (e.agentId === undefined && !e.isAborted) await sizeCheck($)
     // whatsnext's wrap-up before a compaction ended: the compaction follows (after coldCheck, which cancels timers), from a timer (the hook does not wait for it). An interrupted wrap-up stops it.
     if (e.agentId === undefined && wrapThenCompact) {
       const w = wrapThenCompact

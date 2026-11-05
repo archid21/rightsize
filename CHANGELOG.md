@@ -8,6 +8,7 @@
 - **One fallback compact** for the limit button and the idle compact, with whatsnext's own keep/drop text.
 - **Wrap-up ordering.** After `wrap up`, at each turn end rightsize asks whatsnext again and compacts only when no wrap-up is missing; after 2 turns it gives up with a band note. With under 40,000 tokens of room it skips `wrap up` and says "no fresh handoff".
 - **Keep warm vs compact by expected idle time.** When Before the cache goes cold is the profile's keep warm, rightsize compacts instead if keeping warm over the usual idle time (median of the last 20 gaps in the project, at most 8 hours) costs at least 3 times a compaction and its summary.
+- **Context-size warning.** At the end of a turn, when the conversation first reaches 40, 50, 60, 70, 80 or 90% of the window, the cache row says so with a **Compact now** button, once per step. Steps at or above Claude Code's auto-compact point are skipped. It compacts only when you press the button; ⋯ has **Why?** and **Don't show again**.
 - **No 200K ceiling** on the idle note or the cache row.
 - **Closed compacts report line** from whatsnext's compact log, joined by session ID. rightsize logs no cold return for whatsnext's own worker (`WHATSNEXT_COMPACT_WORKER`).
 - Removed the last mentions of the old handoff plugin from the docs.

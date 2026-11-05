@@ -1,4 +1,4 @@
-import { type Price, type Tokens, dollars } from './cost'
+import { type Price, type Tokens, atPrompt, dollars } from './cost'
 
 // Before the cache goes cold: what rightsize can do for a big session that has ended a turn, before its prompt
 // cache expires. Prices and the times come from rightsize's own parts (cost.ts prices, idleCost, cacheTtl).
@@ -41,11 +41,12 @@ export const pingEvery = (ttl: number) => ttl - leadMs(ttl)
  * What one keep-warm request cost, from its usage; when the usage is missing, a cache read of the whole conversation.
  * The fork answers over the cached conversation, so that is what it is billed for, give or take a few tokens.
  */
-export function pingCost(p: Price, context: number, usage?: { input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number }) {
+export function pingCost(price: Price, context: number, usage?: { input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number }) {
   const t: Tokens = usage
     ? { input: usage.input_tokens, output: usage.output_tokens, cacheRead: usage.cache_read_input_tokens, cacheWrite: usage.cache_creation_input_tokens }
     : { cacheRead: context }
-  return dollars(p, t)
+  // The ping's prompt is the whole conversation: over 100,000 tokens Haiku pays its higher prices.
+  return dollars(atPrompt(price, usage ? usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens : context), t)
 }
 
 /** The returning prompt's first request must read at least this share of the kept conversation from the cache, or keeping warm is not credited. */

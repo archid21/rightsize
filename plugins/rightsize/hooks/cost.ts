@@ -42,15 +42,17 @@ export const tierOf = (model: string | null | undefined): Tier | undefined => {
 // ---- Prices ----------------------------------------------------------------
 
 /** US dollars per 1 million tokens. */
-/** `over100k`: the price of a prompt over 100,000 tokens, where the model has a second tier (Haiku). */
-export type Price = { input: number; output: number; cacheRead: number; cacheWrite: number; over100k?: { input: number; output: number } }
+/** The four prices of a request whose prompt is over 100,000 tokens, where the model has a second tier (Haiku). The prompt counts cache reads and writes. */
+export type LongPrice = { input: number; output: number; cacheRead: number; cacheWrite: number }
+/** `over100k`: the prices a request pays when its prompt is over 100,000 tokens, where the model has a second tier (Haiku). */
+export type Price = { input: number; output: number; cacheRead: number; cacheWrite: number; over100k?: LongPrice }
 export type Prices = Record<Tier, Price>
 
 // Anthropic first-party prices from the pricing page, checked 2026-10-23;
 // prices.json beside the mod overrides them. cacheWrite is the 1-hour TTL (2x input),
 // the one Claude Code sessions usually write.
 export const DEFAULT_PRICES: Prices = {
-  haiku: { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.2, over100k: { input: 0.5, output: 2.5 } },
+  haiku: { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.2, over100k: { input: 0.5, output: 2.5, cacheRead: 0.05, cacheWrite: 1 } },
   sonnet: { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 4 },
   opus: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 8 },
   fable: { input: 10, output: 50, cacheRead: 0.25, cacheWrite: 20 },
@@ -58,8 +60,22 @@ export const DEFAULT_PRICES: Prices = {
 
 const num = (v: unknown, fallback: number) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : fallback)
 
-/** A prompt over this many tokens is priced at a model's `over100k` rate, where it has one. */
+/** A request whose prompt is over this many tokens pays a model's `over100k` prices, where it has them. */
 export const LONG_PROMPT = 100_000
+
+/** The prices one request pays: its prompt (all input, cache reads and cache writes) decides the tier. */
+export const atPrompt = (p: Price, prompt: number): Price => (prompt > LONG_PROMPT && p.over100k ? { ...p, ...p.over100k } : p)
+
+/** A model's over-100K prices from prices.json: any field that is missing keeps the default, the cache write follows the file's TTL. */
+function longPrice(m: Record<string, unknown>, d: LongPrice, writeKey: string): LongPrice {
+  const input = num(m.input, d.input)
+  return {
+    input,
+    output: num(m.output, d.output),
+    cacheRead: num(m.cacheRead, d.cacheRead),
+    cacheWrite: num(m[writeKey], input * (writeKey === 'cacheWrite1h' ? 2 : 1.25)),
+  }
+}
 
 // Reads prices.json. Any field that is missing or not a number keeps the default.
 export function parsePrices(raw: string): Prices {
@@ -81,7 +97,7 @@ export function parsePrices(raw: string): Prices {
       output: num(m.output, d.output),
       cacheRead: num(m.cacheRead, d.cacheRead),
       cacheWrite: num(m[writeKey], input * (writeKey === 'cacheWrite1h' ? 2 : 1.25)),
-      ...(d.over100k ? { over100k: { input: num(long.input, d.over100k.input), output: num(long.output, d.over100k.output) } } : {}),
+      ...(d.over100k ? { over100k: longPrice(long, d.over100k, writeKey) } : {}),
     }
   }
   return out
@@ -112,7 +128,7 @@ export const contextOf = (u: Usage) => u.input_tokens + u.cache_read_input_token
 export function usageCost(prices: Prices, model: string, u: Usage) {
   const t = tierOf(model)
   if (!t) return 0
-  return dollars(prices[t], {
+  return dollars(atPrompt(prices[t], contextOf(u)), {
     input: u.input_tokens,
     output: u.output_tokens,
     cacheRead: u.cache_read_input_tokens,
@@ -328,7 +344,7 @@ export function rawMainCost(r: Rating, s: Situation, level: Level) {
   const w = WORK[s.tier][level]
   const steps = Math.max(1, pricedSteps(r.steps, s.stepExp ?? 0) * w.steps)
   // Each step re-reads the conversation from cache; what the work reads is written once.
-  return dollars(s.prices[s.tier], {
+  return dollars(atPrompt(s.prices[s.tier], s.context + r.read / 2), {
     cacheRead: steps * s.context + ((steps - 1) * r.read) / 2,
     cacheWrite: r.read + PROMPT,
     output: r.write * w.out,
@@ -337,7 +353,7 @@ export function rawMainCost(r: Rating, s: Situation, level: Level) {
 
 /** What `switches` effort changes cost: each one may make the next request re-write the whole conversation. */
 export function switchCost(s: Situation, switches: number) {
-  const p = s.prices[s.tier]
+  const p = atPrompt(s.prices[s.tier], s.context)
   const miss = dollars(p, { cacheWrite: s.context }) - dollars(p, { cacheRead: s.context })
   return switches * switchMissShare(s.cal) * miss
 }
@@ -359,11 +375,17 @@ const reworkFactor = (main: Tier, sub: Tier) => (tierRank(sub) >= tierRank(main)
 export function subWork(r: Rating, s: Situation, sub: Tier, subLevel: Level) {
   const w = WORK[sub][subLevel]
   const steps = Math.max(1, pricedSteps(r.steps, (s.stepExp ?? 0) * HANDOFF_SHARE) * w.steps)
-  return dollars(s.prices[sub], {
+  const tokens: Tokens = {
     cacheWrite: SUB_BASE + BRIEF + r.read,
     cacheRead: steps * (SUB_BASE + BRIEF) + ((steps - 1) * r.read) / 2,
     output: r.write * w.out + REPORT,
-  })
+  }
+  // Its prompt grows from the base and brief to the whole of what it read. The requests past 100,000 tokens pay the model's over-100K prices (Haiku).
+  const p = s.prices[sub]
+  const start = SUB_BASE + BRIEF
+  const peak = start + r.read
+  const over = p.over100k && peak > LONG_PROMPT ? Math.min(1, (peak - Math.max(LONG_PROMPT, start)) / (peak - start)) : 0
+  return over > 0 ? (1 - over) * dollars(p, tokens) + over * dollars(atPrompt(p, Infinity), tokens) : dollars(p, tokens)
 }
 
 /** The work handed to a subagent on `sub`, before calibration: brief, work, check, likely rework. */
@@ -371,7 +393,7 @@ export function rawDelegateCost(r: Rating, s: Situation, sub: Tier, subLevel: Le
   // The main chat writes the brief, reads the report, checks the result and answers.
   // Reads and output follow measured hand-offs: more requests than the brief and the answer alone, but the text is plain output,
   // near the model's lowest-effort multiple, not the medium-effort thinking multiple the work itself gets.
-  const main = dollars(s.prices[s.tier], {
+  const main = dollars(atPrompt(s.prices[s.tier], s.context), {
     cacheRead: HANDOFF_READS * s.context,
     cacheWrite: REPORT + Math.min(CHECK_CAP, r.read * 0.2) + PROMPT,
     output: (BRIEF + FINAL) * WORK[s.tier].low.out,
@@ -484,7 +506,8 @@ export function parseShare(v: unknown, fallback: number) {
 export const IDLE_MAX_CONTEXT = 200_000
 
 /** Sending into an expired cache: what writing the conversation again costs over reading it warm, and what /compact's read costs. */
-export function idleCost(p: Price, context: number) {
+export function idleCost(price: Price, context: number) {
+  const p = atPrompt(price, context)
   return { resend: dollars(p, { cacheWrite: context }) - dollars(p, { cacheRead: context }), compact: dollars(p, { input: context }) }
 }
 
@@ -500,8 +523,7 @@ export const coldCost = (prices: Prices, tier: Tier, tokens: number) => idleCost
  * summary: $0.24, not $0.05).
  */
 export function haikuCompactCost(prices: Prices, context: number, summaryTokens = COMPACT_SUMMARY_TOKENS) {
-  const h = prices.haiku
-  const rate = context > LONG_PROMPT && h.over100k ? h.over100k : h
+  const rate = atPrompt(prices.haiku, context)
   return (context * rate.input + summaryTokens * rate.output) / 1e6
 }
 
@@ -520,7 +542,7 @@ export const coldReturnSaving = (prices: Prices, tier: Tier, context: number, su
  * Never below 0 (a small context costs more to compact than to read again).
  */
 export const limitSaving = (prices: Prices, tier: Tier, context: number, summaryTokens = COMPACT_SUMMARY_TOKENS) =>
-  Math.max(0, coldCost(prices, tier, context) - (dollars(prices[tier], { cacheRead: context, output: summaryTokens }) + coldCost(prices, tier, summaryTokens)))
+  Math.max(0, coldCost(prices, tier, context) - (dollars(atPrompt(prices[tier], context), { cacheRead: context, output: summaryTokens }) + coldCost(prices, tier, summaryTokens)))
 
 /** "over $0.50" from /config as 0.5; "off" as null; anything else, the default. */
 export function parseIdleWarning(v: unknown): number | null {
@@ -660,7 +682,7 @@ function reviewPlan(r: Rating, s: Situation, floor: Level): Plan | undefined {
   if (tierRank(s.tier) < tierRank(REVIEW_TIER)) {
     if (s.without?.includes(REVIEW_TIER)) return undefined
     // The main chat on Opus for one turn: its work at that level, plus writing the conversation to Opus's cache once.
-    const cost = mainCost(r, { ...s, tier: REVIEW_TIER }, level, 0) + (s.context * s.prices[REVIEW_TIER].cacheWrite) / 1e6
+    const cost = mainCost(r, { ...s, tier: REVIEW_TIER }, level, 0) + (s.context * atPrompt(s.prices[REVIEW_TIER], s.context).cacheWrite) / 1e6
     return { kind: 'switch', tier: REVIEW_TIER, level, cost, mainCost: mainCost(r, s, s.level, 0), rule: 'review' }
   }
   if (s.tier !== REVIEW_TIER) return undefined

@@ -33,6 +33,7 @@ import {
   coldReturnSaving,
   limitSaving,
   haikuCompactCost,
+  usageCost,
   parseIdleWarning,
   paceOf,
   pacedRules,
@@ -531,8 +532,30 @@ test('a Haiku compaction over 100K tokens reads the whole prompt at the over-100
   expect(near(haikuCompactCost(P, 100_001), 0.065), 'one token over: about 100K x 0.50 + 6K x 2.50, per million').toBe(true)
   expect(near(haikuCompactCost(P, 450_000), 0.24), '450K with a 6K summary: 0.225 + 0.015').toBe(true)
   expect(near(haikuCompactCost({ ...P, haiku: { ...P.haiku, over100k: undefined } }, 450_000), 0.048), 'no second tier in the prices: the base rate').toBe(true)
-  expect(parsePrices('{}').haiku.over100k, 'a prices.json without the field keeps the default').toEqual({ input: 0.5, output: 2.5 })
-  expect(parsePrices('{"models":{"haiku":{"over100k":{"input":0.6,"output":3}}}}').haiku.over100k).toEqual({ input: 0.6, output: 3 })
+  expect(parsePrices('{}').haiku.over100k, 'a prices.json without the field keeps the default').toEqual({ input: 0.5, output: 2.5, cacheRead: 0.05, cacheWrite: 1 })
+  expect(parsePrices('{"models":{"haiku":{"over100k":{"input":0.6,"output":3}}}}').haiku.over100k, 'the cache write follows the input at the file\'s TTL').toEqual({ input: 0.6, output: 3, cacheRead: 0.05, cacheWrite: 1.2 })
+  expect(parsePrices('{"cacheTtl":"5m","models":{"haiku":{"over100k":{"cacheWrite5m":0.7}}}}').haiku.over100k?.cacheWrite).toBe(0.7)
+})
+
+test('Haiku over 100K tokens pays the higher cache prices too, on each request by its own prompt', async () => {
+  const P = DEFAULT_PRICES
+  const u = (n: number) => ({ input_tokens: 0, output_tokens: 0, cache_read_input_tokens: n, cache_creation_input_tokens: 0 })
+  expect(near(usageCost(P, 'claude-haiku-5-5', u(100_000)), 0.001), 'exactly 100K: the base cache read, $0.01 per 1M').toBe(true)
+  expect(near(usageCost(P, 'claude-haiku-5-5', u(100_001)) / 100_001 * 1e6, 0.05), 'over 100K: $0.05 per 1M').toBe(true)
+  expect(near(usageCost(P, 'claude-haiku-5-5', { ...u(60_000), cache_creation_input_tokens: 50_000 }), (60_000 * 0.05 + 50_000 * 1) / 1e6), 'the prompt counts reads and writes together').toBe(true)
+  expect(near(usageCost(P, 'claude-sonnet-5-5', u(450_000)), (450_000 * 0.1) / 1e6), 'no tier on other models').toBe(true)
+  expect(near(coldCost(P, 'haiku', 200_000), (200_000 * (1 - 0.05)) / 1e6), 'a cold Haiku return over 100K: write 1.00 less read 0.05').toBe(true)
+  expect(near(coldCost(P, 'haiku', 50_000), (50_000 * (0.2 - 0.01)) / 1e6), 'under 100K: the base prices').toBe(true)
+  expect(near(idleCost(P.haiku, 200_000).compact, (200_000 * 0.5) / 1e6)).toBe(true)
+})
+
+test('a Haiku helper whose prompt grows past 100K pays the higher prices for the requests past it', async () => {
+  const s: Situation = { ...opus, prices: DEFAULT_PRICES }
+  const small = subWork(rating({ read: 20_000, steps: 6 }), s, 'haiku', 'medium')
+  const big = subWork(rating({ read: 300_000, steps: 6 }), s, 'haiku', 'medium')
+  const flat = subWork(rating({ read: 300_000, steps: 6 }), { ...s, prices: { ...DEFAULT_PRICES, haiku: { ...DEFAULT_PRICES.haiku, over100k: undefined } } }, 'haiku', 'medium')
+  expect(big, 'priced above the same work at the base rates').toBeGreaterThan(flat * 1.5)
+  expect(subWork(rating({ read: 20_000, steps: 6 }), { ...s, prices: { ...DEFAULT_PRICES, haiku: { ...DEFAULT_PRICES.haiku, over100k: undefined } } }, 'haiku', 'medium'), 'a helper that stays under 100K is unchanged').toBe(small)
 })
 
 test('cold-return saving is clamped to 0 when the summary is as big as the conversation, and on Haiku', async () => {

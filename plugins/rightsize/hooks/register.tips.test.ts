@@ -685,7 +685,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
       await d.complete(t)
       const run = last(runLines(h).filter(l => l.kind === 'run')) as { rater: string; overhead: number }
       expect(run.rater, `${n}: Haiku rated`).toBe('haiku')
-      expect(run.overhead, `${n}: each call priced with its own model: 1M tokens on Sonnet plus 1M on Haiku`).toBe(2.1)
+      // 1M input tokens on Sonnet ($2) plus 1M on Haiku; a Haiku prompt over 100K tokens pays $0.50 a million, not $0.10.
+      expect(run.overhead, `${n}: each call priced with its own model`).toBe(2.5)
     }
     expect(runLines(h).some(l => l.kind === 'unrated')).toBe(false)
 
@@ -697,7 +698,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const unrated = runLines(h).filter(l => l.kind === 'unrated')
     // An unrated prompt is part of the task in progress: the last rated run's.
     const task = (last(runLines(h).filter(l => l.kind === 'run')) as { task: string }).task
-    expect(unrated).toEqual([{ at: expect.any(String), kind: 'unrated', session: 'sess-1', task, reason: 'rating unreadable', rater: 'haiku', overhead: 2.1, ratingMs: 0 }])
+    expect(unrated).toEqual([{ at: expect.any(String), kind: 'unrated', session: 'sess-1', task, reason: 'rating unreadable', rater: 'haiku', overhead: 2.5, ratingMs: 0 }])
     expect(h.files[LOG_FILE] ?? '').toContain('prompt not rated (rating unreadable)')
     expect(h.files[LOG_FILE] ?? '').toContain('rating by sonnet failed (rating call timed out): trying haiku')
   })

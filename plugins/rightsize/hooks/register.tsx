@@ -25,6 +25,7 @@ import {
   type Rules,
   type Situation,
   type Tie,
+  atPrompt,
   cacheTtlMs,
   coldCost,
   coldReturnSaving,
@@ -1677,7 +1678,7 @@ function startRun(r: Rating, s: Situation, d: Decision, p: Plan, base: Level, ov
           : 'raise'
   // The turn on another model: its work at that level, plus writing the conversation to that model's cache once.
   const swOn: Situation | undefined = sw ? { ...s, tier: sw.tier } : undefined
-  const swCost = sw && swOn ? mainCost(r, swOn, sw.level, 0) + (s.context * s.prices[sw.tier].cacheWrite) / 1e6 : 0
+  const swCost = sw && swOn ? mainCost(r, swOn, sw.level, 0) + (s.context * atPrompt(s.prices[sw.tier], s.context).cacheWrite) / 1e6 : 0
   // A per-prompt switch goes and comes back; a session switch goes once.
   const switches = d.level && d.level !== s.level ? 2 : d.session ? 1 : 0
   const id = `${sessionId}:${Date.now()}-${++runSeq}`
@@ -2002,7 +2003,7 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
     // level, so its cost says nothing about one level's estimate: it teaches nothing.
     else if (!run.delegate && !run.steppedUp && !run.escalations.length) {
       // A switched turn teaches the switched model's keys, with the one cache write the switch costs taken out.
-      const written = run.switchTo ? (run.context * prices[run.switchTo.tier].cacheWrite) / 1e6 : 0
+      const written = run.switchTo ? (run.context * atPrompt(prices[run.switchTo.tier], run.context).cacheWrite) / 1e6 : 0
       const spent = Math.max(0, actual - run.missCost - written)
       const sample = ratioSample(spent, run.rawMain)
       const keys = mainKeys(r.type, run.switchTo?.tier ?? run.tier, run.ranAt)
@@ -2087,7 +2088,7 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
       ...(retries > 0 ? { retries } : {}),
       requests: run.requests,
       // Each request reads the fixed context from the cache, at least.
-      ...(fixed ? { fixed: { ...fixed, cost: round((run.requests * fixed.tokens * prices[run.switchTo?.tier ?? run.tier].cacheRead) / 1e6) } } : {}),
+      ...(fixed ? { fixed: { ...fixed, cost: round((run.requests * fixed.tokens * atPrompt(prices[run.switchTo?.tier ?? run.tier], run.context).cacheRead) / 1e6) } } : {}),
       ...(run.workflows ? { workflows: run.workflows } : {}),
       ...(workflowSeen ? { afterWorkflow: true } : {}),
       durationMs,
@@ -4483,7 +4484,7 @@ export const register: Register = (on, options) => {
           RUNS_LOG_MAX,
         )
         const t = tierOf(u.model)
-        if (missed && run && t) run.missCost += (u.cache_creation_input_tokens * (prices[t].cacheWrite - prices[t].cacheRead)) / 1e6
+        if (missed && run && t) run.missCost += (u.cache_creation_input_tokens * (atPrompt(prices[t], contextOf(u)).cacheWrite - atPrompt(prices[t], contextOf(u)).cacheRead)) / 1e6
         void saveCal($)
       }
       if (applied) lastApplied = applied

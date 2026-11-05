@@ -21,7 +21,7 @@ const FILE = JSON.stringify({
   source: 'old',
   cacheTtl: '1h',
   models: {
-    haiku: { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite5m: 0.125, cacheWrite1h: 0.2, over100k: { input: 0.5, output: 2.5 } },
+    haiku: { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite5m: 0.125, cacheWrite1h: 0.2, over100k: { input: 0.5, output: 2.5, cacheRead: 0.05, cacheWrite5m: 0.625, cacheWrite1h: 1 } },
     sonnet: { input: 2, output: 10, cacheRead: 0.2, cacheWrite5m: 2.5, cacheWrite1h: 4 },
     opus: { input: 4, output: 20, cacheRead: 0.2, cacheWrite5m: 5, cacheWrite1h: 8 },
     fable: { input: 10, output: 50, cacheRead: 0.25, cacheWrite5m: 12.5, cacheWrite1h: 20 },
@@ -39,11 +39,16 @@ test('reads the four models from the model table only', async () => {
 
 test('reads Haiku\'s over-100K row and checks it against prices.json', async () => {
   const page = parsePricingPage(PAGE)
-  expect(page.haikuOver100k).toEqual({ input: 0.5, output: 2.5 })
-  const stale = JSON.stringify({ models: { haiku: { input: 0.1, output: 0.5, over100k: { input: 0.4, output: 2.5 } } } })
-  expect(diffPrices(stale, { haikuOver100k: page.haikuOver100k })).toEqual(['Haiku 5.5 input over 100K tokens: $0.4 → $0.5'])
-  const next = JSON.parse(applyPrices(stale, page, '2026-11-04')) as { models: { haiku: { over100k: { input: number; output: number } } } }
-  expect(next.models.haiku.over100k).toEqual({ input: 0.5, output: 2.5 })
+  expect(page.haikuOver100k).toEqual({ input: 0.5, cacheWrite5m: 0.625, cacheWrite1h: 1, cacheRead: 0.05, output: 2.5 })
+  const stale = JSON.stringify({ models: { haiku: { input: 0.1, output: 0.5, over100k: { input: 0.4, output: 2.5, cacheRead: 0.01 } } } })
+  expect(diffPrices(stale, { haikuOver100k: page.haikuOver100k })).toEqual([
+    'Haiku 5.5 input over 100K tokens: $0.4 → $0.5',
+    'Haiku 5.5 5-minute cache write over 100K tokens: unset → $0.625',
+    'Haiku 5.5 1-hour cache write over 100K tokens: unset → $1',
+    'Haiku 5.5 cache read over 100K tokens: $0.01 → $0.05',
+  ])
+  const next = JSON.parse(applyPrices(stale, page, '2026-11-04')) as { models: { haiku: { over100k: Record<string, number> } } }
+  expect(next.models.haiku.over100k).toEqual({ input: 0.5, output: 2.5, cacheRead: 0.05, cacheWrite5m: 0.625, cacheWrite1h: 1 })
 })
 
 test('refuses rows that cannot be prices', async () => {

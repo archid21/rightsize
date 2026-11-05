@@ -27,7 +27,7 @@ export type RunLine = {
    * 'warm': one keep-warm request that kept the prompt cache from expiring (Before the cache goes cold); `overhead` is what it cost, `tier` its model and `context` the conversation it re-read.
    * 'cold': how the person answered one offer before the cache goes cold; `choice` is the id they pressed, or 'ignored'. It carries no cost and is no part of any total.
    * 'warmSaved': the person came back to a kept-warm cache after the time it would have gone cold without keep warm, and the returning prompt's first request read the cache (at least ~80% of the kept conversation); `saved` is what coming back cold would have cost. It carries no `overhead`, and `totals` counts `saved` toward Total saved.
-   * 'coldReturn': a session resumed (or forked) with its prompt cache likely expired. It is a log only: no report section counts it, and it carries no `overhead` or `saved`. `context` is the conversation's size, `tier` the model, `coldCost` what writing it again costs, `compactSaving` what a Haiku compaction beforehand would have saved, and `idleSeconds` how long the session sat (left out when the host does not say).
+   * 'coldReturn': a session that started with history (a resume or a fork) after sitting longer than its prompt cache lives. It is a log only: no report section counts it, and it carries no `overhead` or `saved`. `context` is the conversation's size, `tier` the model, `coldCost` what writing it again costs, `compactSaving` what a Haiku compaction beforehand would have saved, and `idleSeconds` how long the session sat since its last response.
    * `totals` adds the `overhead` of every line, so these pings count as rightsize's own cost and lower Total saved.
    */
   kind?: 'run' | 'overhead' | 'subagent' | 'check' | 'feedback' | 'corrected' | 'unrated' | 'dropped' | 'unbound' | 'warm' | 'warmSaved' | 'cold' | 'coldReturn'
@@ -38,7 +38,7 @@ export type RunLine = {
   wouldTaken?: number
   /** A 'warmSaved' line: what coming back cold would have cost (the conversation written again, less a read), in dollars (API-equivalent on a subscription). */
   saved?: number
-  /** A 'coldReturn' line: seconds since the resumed session's last response (absent when unknown), and whether it was a resume (false: a fork). */
+  /** A 'coldReturn' line: seconds since the session's last response, and whether it was a resume (always true now: a fork starts the same way and is not told apart). */
   idleSeconds?: number
   resume?: boolean
   /** A 'coldReturn' line: what writing `context` again costs on `tier`, and what Haiku-compacting it first would have saved, in dollars (API-equivalent on a subscription). Not `saved`: no total counts it. */

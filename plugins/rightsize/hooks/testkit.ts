@@ -132,6 +132,12 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
     ratingPrompts: [] as string[],
     /** The conversation as $.session.messages() reports it: Claude's last reply is what the rater is shown. */
     messages: [{ role: 'assistant', text: 'Done: the change is in.' }] as { role: string; text: string }[],
+    /** The transcript file's tail as the cold-return check reads it (JSONL); undefined: this session has no transcript file. */
+    transcript: undefined as string | undefined,
+    /** How many times the transcript was looked for. */
+    lookups: 0,
+    /** True: finding or reading the transcript fails to start. */
+    transcriptFails: false,
     /** True: $.session.messages() throws. */
     messagesFail: false,
     /** What the spot-check answers; the rating's own reply when unset. */
@@ -326,6 +332,14 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
   // Only rm and rmdir do anything: the fake has files, not folders.
   reg('process.run', async ($, e) => {
     const { argv } = e as { argv: string[] }
+    // The cold-return check looks for this session's transcript and reads its tail; it is not one of the programs the tests count.
+    if (argv[0] === 'find' || argv[0] === 'tail') {
+      if (h.transcriptFails) throw new Error('no such program')
+      if (argv[0] === 'find') h.lookups += 1
+      const path = `/home/test/.claude/projects/p/${h.sessionId}.jsonl`
+      const out = argv[0] === 'find' ? (h.transcript === undefined ? '' : `${path}\n`) : (h.transcript ?? '')
+      return { value: { exitCode: 0, stdout: out, stderr: '' } } as never
+    }
     h.ran.push(argv)
     if (h.rmFails && (argv[0] === 'rm' || argv[0] === 'rmdir')) throw new Error('no such program')
     if (argv[0] === 'rm') for (const f of argv.slice(1).filter(a => !a.startsWith('-'))) delete h.files[f]
@@ -440,8 +454,6 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
     return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: { ...usage, model: e.agentId ? h.subModel : (e.model ?? h.model) } } as never
   })
   reg('turn.complete', async () => ({ text: '' }) as never)
-  // The classic SessionStart (cold-return log): nothing beneath answers it.
-  reg('classic.SessionStart', async () => ({}) as never)
   reg('command.list', async () => {
     if (h.commandsFail) throw new Error('commands could not be listed')
     return { value: h.commands } as never

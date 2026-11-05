@@ -2308,37 +2308,69 @@ async function noteIdle($: EngineInterface) {
 
 // ---- Cold return log -----------------------------------------------------------
 
-/** What the classic SessionStart event says about a resumed or forked session (the fields the log reads). */
-type ColdReturnInput = {
-  session_id: string
-  source?: string
-  model?: string
-  context_tokens?: number
-  seconds_since_last_response?: number
-  prompt_cache_likely_expired?: boolean
+/** How much of the transcript's end the cold-return check reads: room for the last response, whatever tool output it holds. */
+const TAIL_BYTES = 1_048_576
+
+/** The last main-chat response in a transcript's tail (JSONL): when it ended, the model and the size of what it was answered over. */
+function lastResponse(tail: string): { at: number; model?: string; context?: number } | undefined {
+  const rows = tail.split('\n')
+  for (let i = rows.length - 1; i >= 0; i--) {
+    let row: Record<string, any> | undefined
+    try {
+      row = JSON.parse(rows[i] ?? '')
+    } catch {
+      continue // the first row of a tail is usually cut short
+    }
+    const m = row?.type === 'assistant' && !row.isSidechain && !row.isApiErrorMessage ? row.message : undefined
+    const at = typeof row?.timestamp === 'string' ? Date.parse(row.timestamp) : NaN
+    if (!m?.usage || !Number.isFinite(at) || m.model === '<synthetic>') continue
+    const u = m.usage as Record<string, unknown>
+    const n = (k: string) => (typeof u[k] === 'number' && Number.isFinite(u[k]) ? (u[k] as number) : 0)
+    const context = n('input_tokens') + n('cache_read_input_tokens') + n('cache_creation_input_tokens')
+    return { at, ...(typeof m.model === 'string' ? { model: m.model } : {}), ...(context > 0 ? { context } : {}) }
+  }
+  return undefined
 }
-/** True once this process's `session.start` has finished: prices, run log and session id are then loaded. */
-let sessionReady = false
-/** A SessionStart that came before `session.start` finished: written at its end, when the prices and the log are there. */
-let pendingReturn: ColdReturnInput | null = null
+
+/** The end of this session's transcript, read as text: undefined when it cannot be found or read. */
+async function transcriptTail($: EngineInterface, id: string): Promise<string | undefined> {
+  if (!/^[A-Za-z0-9_-]+$/.test(id)) return undefined
+  const config = (await $.env.get('CLAUDE_CONFIG_DIR').catch(() => undefined)) || `${home}/.claude`
+  const found = await $.process.run(['find', `${config}/projects`, '-maxdepth', '2', '-type', 'f', '-name', `${id}.jsonl`])
+  const path = found.exitCode === 0 ? found.stdout.split('\n')[0]?.trim() : ''
+  if (!path) return undefined
+  const read = await $.process.run(['tail', '-c', String(TAIL_BYTES), path])
+  return read.exitCode === 0 ? read.stdout : undefined
+}
 
 /**
- * A session that starts by resuming (or forking) with its prompt cache likely expired: one `coldReturn` line in the run
- * log, whatever the cost (COLD_MIN does not apply). Nothing is shown and nothing is compacted. A figure the event does
- * not give is left out, never guessed. Never throws.
+ * Called at the end of `session.start`: a session that comes back with history (a resume or a fork) and whose last
+ * response ended more than the cache life (`cacheTtl`) ago gets one `coldReturn` line in the run log, whatever the cost
+ * (COLD_MIN does not apply). Nothing is shown and nothing is compacted. It reads the session itself, not an event
+ * the host raises: the history from `$.session.messages()` (a fresh session has no assistant message, so it stops there), the
+ * size from `$.session.usage()`, the model from `$.session.model()`; the host gives no time of the last response, so
+ * that, and the model and size when usage has none, come from the last 1 MiB of the transcript file. A figure not found
+ * is left out, never guessed; with no time there is no line. Never throws.
  */
-async function noteColdReturn($: EngineInterface, e: ColdReturnInput) {
+async function noteColdReturn($: EngineInterface) {
   try {
-    if (e.prompt_cache_likely_expired !== true || off) return
-    const tier = tierOf(e.model) ?? tierOf(String((await $.session.model().catch(() => undefined)) ?? ''))
-    const context = typeof e.context_tokens === 'number' && Number.isFinite(e.context_tokens) && e.context_tokens > 0 ? e.context_tokens : undefined
-    const idle = typeof e.seconds_since_last_response === 'number' && Number.isFinite(e.seconds_since_last_response) && e.seconds_since_last_response >= 0 ? Math.round(e.seconds_since_last_response) : undefined
+    if (off) return
+    const rows = await $.session.messages()
+    if (!Array.isArray(rows) || !rows.some(r => r.role === 'assistant')) return
+    const last = lastResponse((await transcriptTail($, sessionId)) ?? '')
+    if (!last) return
+    const now = await $.clock.now()
+    const idle = Math.max(0, now - last.at)
+    if (idle <= cacheTtl) return
+    const live = (await usageNow($))?.context.tokens
+    const context = typeof live === 'number' && Number.isFinite(live) && live > 0 ? live : last.context
+    const tier = tierOf(last.model) ?? tierOf(String((await $.session.model().catch(() => undefined)) ?? ''))
     const line: RunLine = {
-      at: new Date(await $.clock.now()).toISOString(),
+      at: new Date(now).toISOString(),
       kind: 'coldReturn',
-      session: e.session_id || sessionId,
-      resume: e.source === 'resume',
-      ...(idle !== undefined ? { idleSeconds: idle } : {}),
+      session: sessionId,
+      resume: true,
+      idleSeconds: Math.round(idle / 1000),
       ...(tier ? { tier } : {}),
       ...(context !== undefined ? { context } : {}),
       ...(tier && context !== undefined ? { coldCost: round(coldCost(prices, tier, context)), compactSaving: round(coldReturnSaving(prices, tier, context)) } : {}),
@@ -3507,7 +3539,6 @@ export const register: Register = (on, options) => {
 
   on('session.start', async ($, e, next) => {
     const result = await next(e)
-    sessionReady = false
     // The plugin can live anywhere (a clone, ~/Projects), so ask for HOME rather than reading it off the path.
     const fromEnv = await $.env.get('HOME').catch(() => undefined)
     const root = $.plugin.root
@@ -3601,10 +3632,7 @@ export const register: Register = (on, options) => {
     profileNoted.clear()
     await checkStart($).catch(() => undefined)
     await dayOneTip($).catch(() => undefined)
-    sessionReady = true
-    const early = pendingReturn
-    pendingReturn = null
-    if (early) await noteColdReturn($, early)
+    await noteColdReturn($)
     $.clock.every(3000, () => {
       void readSwitches($).then(json => {
         off = json[NAME] === false
@@ -3618,15 +3646,6 @@ export const register: Register = (on, options) => {
     await showStatus($)
     return result
   })
-
-  // The classic SessionStart carries what the resume knows: how long the session sat, its size and whether its cache expired.
-  on('classic.SessionStart', async ($, e, next) => {
-    const result = await next(e)
-    if (e.prompt_cache_likely_expired !== true) return result
-    if (sessionReady) await noteColdReturn($, e)
-    else pendingReturn = e
-    return result
-  }).catch((_, e, next) => next(e))
 
   on('command.run', { command: CMD }, async ($, e) => {
     const arg = e.args.trim().toLowerCase()

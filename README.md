@@ -4,8 +4,6 @@
 
 rightsize picks the model and effort for each prompt, and keeps your cache and context from costing more than they should.
 
-![rightsize in Claude Code: a routine edit stays on Sonnet, a review switches to Opus for one turn, and the band shows what each cost](docs/images/rightsize-demo.gif)
-
 ```bash
 claude plugin marketplace add archid21/rightsize
 claude plugin install rightsize@archid21 --scope user
@@ -57,6 +55,22 @@ Switching by hand with `/model` works until you forget, which is most of the tim
 
 ★ Needs whatsnext.
 
+### Routing in action
+
+Screenshots from a real session, with captions added.
+
+**1. The first time, it asks what you want.** You stay in charge.
+
+![Claude Code asking: When a task could run on a cheaper model than Opus, what should I do? Send it to a cheaper subagent (Recommended)](docs/images/1-asks-first.png)
+
+**2. This task doesn't need Opus, so it goes to a Sonnet subagent.**
+
+![rightsize band: Sending this to a Sonnet subagent at medium effort, using about 26% of the usage vs staying on Opus (estimated), with Ask first and Stay, lower effort only buttons](docs/images/2-hands-off.png)
+
+**3. Done by Sonnet: $0.18 instead of about $2.41 on Opus (estimated).**
+
+![rightsize band: Sent to Sonnet, used about 7% of the usage vs staying on Opus, API-equivalent $0.18 vs about $2.41 (estimated)](docs/images/3-result.png)
+
 ### The cache and compact bands
 
 Each row sits above the prompt. The figures are examples; yours come from your own sessions and prices.
@@ -82,6 +96,12 @@ Each row sits above the prompt. The figures are examples; yours come from your o
 **Cold-return note, with Turn on (needs whatsnext).** Turn on opens a dialog with the limit and the cost; nothing starts until you confirm.
 
 ![Band row: whatsnext could have saved $0.42 here, with a Turn on button](docs/images/band-cold-return.png)
+
+### See it run
+
+A routine edit stays on Sonnet; a review switches to Opus for one turn; the band shows what each cost.
+
+![rightsize in Claude Code: a routine edit stays on Sonnet, a review switches to Opus for one turn, and the band shows what each cost](docs/images/rightsize-demo.gif)
 
 **Opus results, without Opus prices.** Before each prompt runs, a quick rating decides what kind of work it is. Routine work stays on Sonnet. Reviews switch to Opus at high effort for that one turn, then your chat goes back.
 

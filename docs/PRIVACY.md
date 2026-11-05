@@ -8,6 +8,10 @@ rightsize sends nothing to its author or to any third party. It keeps its logs o
 - **One web request of its own:** a plain GET of Anthropic's pricing page, `https://platform.claude.com/docs/en/about-claude/pricing.md`, every 30 days, to keep `prices.json` current. It carries nothing of yours. **Price check** set to off stops it, and rightsize sends nothing while Claude Code's `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` is set.
 - **Model calls go through Claude Code,** with your own sign-in, to Anthropic, as your prompts do anyway (see "What the rating sees"). rightsize reads no credential.
 
+## whatsnext
+
+If whatsnext is installed, rightsize runs its script on your machine, found in Claude Code's list of installed plugins. Four commands: `compact-instructions --json`, `config show --json` and `compact-log --json --since 30d` read and print; `config set --user` runs only after you confirm **Turn on**, and whatsnext writes its own settings file. Nothing goes to the author or any third party. whatsnext's own compacts go through Claude Code with your sign-in, like any other request.
+
 ## What stays on your machine
 
 - The logs under `~/.claude/mods-logs/rightsize/` (readable by you alone) and rightsize's store in Claude Code's plugin store. They hold what rightsize decided and measured, and are listed in [WHAT-IT-TOUCHES.md](WHAT-IT-TOUCHES.md).

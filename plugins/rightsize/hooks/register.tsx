@@ -28,6 +28,7 @@ import {
   cacheTtlMs,
   coldCost,
   coldReturnSaving,
+  limitSaving,
   contextOf,
   idleCost,
   MISS_BLOCK,
@@ -102,6 +103,7 @@ import { BRIEF_MAX, cutRequest, parseRating, ratingPrompt, ratingSystem } from '
 import { isApprovalStep } from './approval'
 import { LIMITS, type Limits, type Signals, type Struggle, blockedError, callKey, isSensitivity, isTestCommand, noSignals, noteCall, oneUp, refusedByPerson, struggle, testsOutcome } from './struggle'
 import { type Change, type HelperLine, type RunLine, type SwitchLine, type Windows, SESSION_TOTAL, SESSION_TOTAL_FROM, bandShareText, buildReport, costTag, parseLines, ratedInSession, sessionTotal, shareMessage, shareOf, usedTag, windowCostText, windowRates } from './report'
+import { LIMIT_BUTTON, LIMIT_COMPACT, LIMIT_COMPACT_INSTRUCTIONS, LIMIT_HIDE, LIMIT_MORE, LIMIT_WHY, LIMIT_WHY_ID, isLimitId, limitDue, limitText } from './limit'
 import { HOW_IT_WORKS, NOTE_HIDE, NOTE_HOW, NOTE_MORE, isWhatsnext, noteLink, noteText } from './whatsnext'
 import { PING_PROMPT, ROW_OF, WRAP_UP, alwaysText, breakEvenMs, cacheHeld, clockText, coldPlan, ignoredLately, isGroundwork, keepWarmChoices, leadMs, learnedChoice, COLD_MIN, netSaving, nextStart, offerAt, offerText, pingCost, pingEvery, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText } from './warm'
 
@@ -2447,6 +2449,107 @@ async function pressNote($: EngineInterface, id: string) {
   await log($, 'whatsnext note: hidden for good ("Don\'t show again")')
 }
 
+// ---- Before the usage limit ----------------------------------------------------------------------------------------
+
+// Near the 5-hour limit with a big conversation, when the reset is further off than the cache lives, the whole
+// conversation is read again at full price after the reset. A compaction now, while the cache is warm, leaves a short
+// summary instead. rightsize only advises: the row shows at the end of a main turn, once per 5-hour window, and the
+// compaction runs when the person presses "Compact now" and never otherwise. Its figures are limit.ts and cost.ts (limitSaving).
+
+/** The store keys: true once the person hid the advice, and the `resetsAt` of the window it was last shown (or logged) for. */
+const LIMIT_HIDDEN = 'limitAdviceHidden'
+const LIMIT_WINDOW = 'limitAdviceWindow'
+
+/** The turn ended: shows the advice when it is due. Skipped while rightsize or Cache is off. Watch-only mode logs it. Never throws. */
+async function limitCheck($: EngineInterface) {
+  try {
+    if (off || !cacheOn) return
+    if ((await $.store.get(LIMIT_HIDDEN).catch(() => undefined)) === true) return
+    const u = await usageNow($)
+    const context = lastContext || u?.context?.tokens
+    const now = await $.clock.now()
+    const due = limitDue(u?.rateLimits ?? [], context, now, cacheTtl)
+    if (!due || typeof context !== 'number') return
+    if ((await $.store.get(LIMIT_WINDOW).catch(() => undefined)) === due.resetsAt) return
+    const tier = (await situation($)).tier
+    const saving = limitSaving(prices, tier, context)
+    if (saving <= 0) return
+    // The cache path owns the cache row while it keeps warm or has an offer up.
+    if (warming || coldTurn?.offer) {
+      await log($, 'usage-limit advice: not shown, the cache row is in use')
+      return
+    }
+    const subscription = billing === 'subscription'
+    const text = limitText(due.resetAt, saving, subscription, subscription ? await windowPerDollar($) : undefined)
+    if (!text) return
+    if (watching) {
+      await $.store.set(LIMIT_WINDOW, due.resetsAt).catch(() => undefined)
+      await log($, `watch only: would advise compacting before the 5-hour limit (${money(saving)} saved after the reset, ${Math.round(context / 1000)}K tokens on ${TIER_NAME[tier]}, resets ${clockText(due.resetAt)})`)
+      return
+    }
+    if (bandMode === 'off') return
+    await $.store.set(LIMIT_WINDOW, due.resetsAt).catch(() => undefined)
+    await showCold($, text, [LIMIT_BUTTON], true, [...LIMIT_MORE])
+    await log($, `usage-limit advice: shown, compacting now saves ${money(saving)} after the reset (${Math.round(context / 1000)}K tokens on ${TIER_NAME[tier]}, resets ${clockText(due.resetAt)})`)
+  } catch {
+    // Advice must never hold up a turn.
+  }
+}
+
+/** The advice's button and ⋯ entries: "Compact now" compacts, "Why?" explains, "Don't show again" hides this row for good. */
+async function pressLimit($: EngineInterface, id: string): Promise<void> {
+  try {
+    if (id === LIMIT_WHY_ID) {
+      $.ui.log(LIMIT_WHY)
+      return
+    }
+    if (id === LIMIT_HIDE) {
+      await $.store.set(LIMIT_HIDDEN, true).catch(() => undefined)
+      await clearColdRow($)
+      $.ui.toast('Rightsize: the usage-limit advice is hidden.')
+      await log($, 'usage-limit advice: hidden for good ("Don\'t show again")')
+      return
+    }
+    if (id !== LIMIT_COMPACT) return
+    if (mainBusy) {
+      $.ui.toast('Rightsize: a turn is running. Press Compact now again when it ends.')
+      return
+    }
+    await compactForLimit($)
+  } catch (err) {
+    await log($, `usage-limit advice failed: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
+/**
+ * TODO(whatsnext-compact): the hand-off point. When whatsnext is installed the compaction is whatsnext's to run, but its
+ * command is not built yet. Run it here and return true once it exists; until then this returns false, and the caller
+ * compacts with rightsize's own instructions, as it does when whatsnext is not installed.
+ */
+async function whatsnextCompact(_$: EngineInterface): Promise<boolean> {
+  return false
+}
+
+/** Runs the compaction the person asked for with "Compact now" on the advice. Only the button calls it. */
+async function compactForLimit($: EngineInterface) {
+  coldDone = true
+  if ((await whatsnextInstalled($)) === true && (await whatsnextCompact($))) {
+    await log($, 'usage-limit advice: whatsnext compacted')
+    return
+  }
+  const r = await $.session.compact({ instructions: LIMIT_COMPACT_INSTRUCTIONS })
+  if (r.skip !== undefined) {
+    await log($, `usage-limit advice: compact skipped: ${r.skip}`)
+    await clearColdRow($)
+    $.ui.toast(`Rightsize: the conversation was not compacted (${r.skip}).`)
+    return
+  }
+  // The conversation is small now: the idle question would quote the old size.
+  idleWarnedFor = lastTurnAt
+  await log($, 'usage-limit advice: compacted before the reset, on the person\'s button')
+  await showCold($, 'Compacted. After the reset a short summary is read, not the whole conversation.')
+}
+
 // ---- Before the cache goes cold ----------------------------------------------
 
 // A session under 200K tokens whose action saves something (its own cost taken off what coming back after the cache
@@ -2633,6 +2736,11 @@ async function offerCold($: EngineInterface, turn: ColdTurn) {
   const now = await $.clock.now()
   if (mainBusy) {
     await log($, 'before the cache goes cold: no offer, a turn is running')
+    return
+  }
+  // The usage-limit advice is on the cache row: it says more about this session's cache than the offer would.
+  if (((await $.state.get(BAND).catch(() => undefined))?.value?.coldMore ?? []).some(m => m.id === LIMIT_WHY_ID)) {
+    await log($, 'before the cache goes cold: no offer, the usage-limit advice is on the band')
     return
   }
   if (turn.endedAt + cacheTtl <= now) {
@@ -2888,6 +2996,7 @@ async function compactNow($: EngineInterface) {
 // right away, and a keep-warm time counts from the turn's end. Each answer to an offer goes in the run log.
 async function pressCold($: EngineInterface, id: string): Promise<void> {
   if (id === NOTE_HOW || id === NOTE_HIDE) return pressNote($, id)
+  if (isLimitId(id)) return pressLimit($, id)
   if (id === 'stop') {
     const w = warming
     cancelCold($, 'Stop pressed')
@@ -4369,6 +4478,7 @@ export const register: Register = (on, options) => {
     if (e.agentId === undefined) await endNote($)
     // A person who interrupted is at the keyboard: no offer for an aborted turn.
     if (e.agentId === undefined && !e.isAborted) await coldCheck($).catch(err => log($, `before the cache goes cold failed: ${err instanceof Error ? err.message : String(err)}`))
+    if (e.agentId === undefined && !e.isAborted) await limitCheck($)
     return result
   })
 }

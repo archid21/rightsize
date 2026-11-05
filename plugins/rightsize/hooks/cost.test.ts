@@ -31,6 +31,7 @@ import {
   COMPACT_SUMMARY_TOKENS,
   coldCost,
   coldReturnSaving,
+  limitSaving,
   haikuCompactCost,
   parseIdleWarning,
   paceOf,
@@ -1054,4 +1055,17 @@ test('hand-downs start only from Opus or Fable: a Sonnet session keeps work Haik
   const base: Situation = { tier: 'opus', level: 'medium', context: 40_000, prices: DEFAULT_PRICES, cal: {} }
   expect(plan(r, base, 'low'), 'from Opus, the work goes to Haiku').toMatchObject({ kind: 'delegate', dir: 'down', tier: 'haiku' })
   expect(plan(r, { ...base, tier: 'sonnet' }, 'low').kind, 'from Sonnet, no hand-down').not.toBe('delegate')
+})
+
+test('usage-limit saving: the cold re-read after the reset, less a warm compaction now and the cold re-read of its summary, never below 0', async () => {
+  const P = DEFAULT_PRICES
+  // 100K on Opus: cold re-read 100000 x (8 - 0.2) / 1M = 0.78; compaction now reads 100K warm (0.02) and writes 6K (0.12); the summary read cold 0.0468.
+  const normal = limitSaving(P, 'opus', 100_000)
+  expect(near(normal, 0.78 - (0.02 + 0.12) - 0.0468), 'a 100K Opus session').toBe(true)
+  expect(normal).toBeGreaterThan(0.5)
+  expect(limitSaving(P, 'sonnet', 100_000), 'cheaper tiers save less').toBeLessThan(normal)
+  expect(limitSaving(P, 'opus', 200_000), 'more context, more saved').toBeGreaterThan(normal)
+  expect(limitSaving(P, 'opus', 100_000, 3000), 'a smaller summary saves more').toBeGreaterThan(normal)
+  expect(limitSaving(P, 'opus', 5000), 'a context smaller than its summary: clamped to 0').toBe(0)
+  expect(limitSaving(P, 'opus', 0)).toBe(0)
 })

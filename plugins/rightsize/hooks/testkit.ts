@@ -185,6 +185,8 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
     forkUsage: { input_tokens: 12, output_tokens: 4, cache_read_input_tokens: 80_000, cache_creation_input_tokens: 0 } as Record<string, number> | undefined,
     /** How many times $.session.compact() ran, and what it answers: a reason to skip, or the compaction. */
     compactions: 0,
+    /** What each $.session.compact() call was given. */
+    compactCalls: [] as unknown[],
     compactSkip: undefined as string | undefined,
     /** True: sleeps are on a virtual clock. They end only when `advance` reaches them, and the clock moves to each one's time. */
     virtual: false,
@@ -466,8 +468,9 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
     if (queued !== undefined) return { value: queued } as never
     return { value: { isAnswered: true, text: 'OK', ...(h.forkUsage ? { usage: h.forkUsage } : {}) } } as never
   })
-  reg('session.compact', async () => {
+  reg('session.compact', async ($, e) => {
     h.compactions += 1
+    h.compactCalls.push(e)
     return (h.compactSkip !== undefined ? { skip: h.compactSkip } : { messages: [{ role: 'user', text: 'Summary of the conversation.', toolUses: [] }] }) as never
   })
   // The engine's own band above the prompt: an empty row.

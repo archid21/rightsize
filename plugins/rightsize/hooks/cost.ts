@@ -500,6 +500,15 @@ export const haikuCompactCost = (prices: Prices, context: number, summaryTokens 
 export const coldReturnSaving = (prices: Prices, tier: Tier, context: number, summaryTokens = COMPACT_SUMMARY_TOKENS) =>
   Math.max(0, coldCost(prices, tier, context) - (haikuCompactCost(prices, context, summaryTokens) + coldCost(prices, tier, summaryTokens)))
 
+/**
+ * What compacting `context` tokens now would save after a 5-hour reset, on `tier`: the cold re-read of the whole conversation
+ * after the reset, less [a compaction now, with the cache still warm: the conversation read from the cache and
+ * `summaryTokens` written as output, on the session's own model] and less the cold re-read of that summary after the reset.
+ * Never below 0 (a small context costs more to compact than to read again).
+ */
+export const limitSaving = (prices: Prices, tier: Tier, context: number, summaryTokens = COMPACT_SUMMARY_TOKENS) =>
+  Math.max(0, coldCost(prices, tier, context) - (dollars(prices[tier], { cacheRead: context, output: summaryTokens }) + coldCost(prices, tier, summaryTokens)))
+
 /** "over $0.50" from /config as 0.5; "off" as null; anything else, the default. */
 export function parseIdleWarning(v: unknown): number | null {
   if (v === 'off') return null

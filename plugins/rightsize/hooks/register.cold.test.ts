@@ -1,6 +1,6 @@
 import { type TestBody, expect, test } from 'claude-code/testing'
 import { CAL_STORE } from './cost'
-import { type Engine, RUNS_FILE, LOG_PATH, LEGACY_RUNS, LOOKUP, DEBUG, NO_CHANGE, FREE_SWITCHES, BIG_TURN, cellsOf, engine, drive, untilAsked, last, mount, rowText, bandText, LOWER } from './testkit'
+import { type Engine, RUNS_FILE, LOG_PATH, LEGACY_RUNS, LOOKUP, DEBUG, NO_CHANGE, FREE_SWITCHES, BIG_TURN, cellsOf, engine, drive, untilAsked, last, mount, rowText, bandText, LOWER, WHATSNEXT_CMDS, installWhatsnext } from './testkit'
 
 for (const surface of ['desktop', 'terminal'] as const) {
   const HOUR = 3600_000
@@ -19,13 +19,13 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
   /** 18:00 local: the next 9:00 is 15 hours away. */
   const EVENING = new Date(2027, 0, 15, 18, 0, 0, 0).getTime()
-  const GROUNDWORK = [{ name: 'groundwork:groundwork', description: 'Groundwork', source: 'plugin', plugin: 'groundwork' }]
+  const WHATSNEXT = WHATSNEXT_CMDS
   type ColdOver = {
     /** The rows the person set (settings.json); Before the cache goes cold is "ask" unless these say otherwise, since only that row offers. */
     stored?: Record<string, string>
     /** True: leave Before the cache goes cold unset, so the profile decides. */
     unset?: boolean
-    commands?: typeof GROUNDWORK
+    commands?: typeof WHATSNEXT
     prices?: string
     usage?: typeof BIG_TURN
     fork?: Record<string, number> | undefined
@@ -45,6 +45,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.ticks = over.ticks === true
     h.stepUsage = over.usage ?? BIG_TURN
     h.commands = over.commands ?? []
+    if (over.commands?.length) installWhatsnext(h)
     if ('fork' in over) h.forkUsage = over.fork
     if (over.prices) h.pricesFile = over.prices
     const d = drive($, h)
@@ -188,8 +189,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect((await openMenu($, h))[0]?.options, 'the rule options, then the cache choices, three to a page').toEqual(['Ask me each time', 'Never raise', 'Keep warm to 2:00 tomorrow ($0.13)', 'More…'])
   })
 
-  test(`ask: with Groundwork installed the offer says Save a handoff, and the usual start time comes from the run log (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const { h, d } = await coldSession($, on, { commands: GROUNDWORK })
+  test(`ask: with whatsnext installed the offer says Save a handoff, and the usual start time comes from the run log (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const { h, d } = await coldSession($, on, { commands: WHATSNEXT })
     // Six days whose first prompt was at 8:21, 8:22 ... 8:26: the median, 8:23.5, rounds to 8:30.
     const day = (n: number) => JSON.stringify({ at: new Date(2027, 0, 15 - n, 9, 30).toISOString(), submittedAt: new Date(2027, 0, 15 - n, 8, 20 + n).toISOString(), kind: 'run' })
     h.files[LEGACY_RUNS] = `${[1, 2, 3, 4, 5, 6].map(day).join('\n')}\n`
@@ -290,16 +291,16 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   test(`Save a handoff from the offer submits "wrap up" at once, and the turn it starts does not bring the offer back (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const { h, d } = await coldSession($, on, { commands: GROUNDWORK })
+    const { h, d } = await coldSession($, on, { commands: WHATSNEXT })
     await coldOffer(h, d, 't1')
     await openMenu($, h, { Options: 'Save a handoff' }, 1)
     expect(h.submitted.map(s => s.text)).toEqual(['wrap up'])
-    expect(await bandText($, surface)).toBe('Saved a handoff with Groundwork before the cache went cold.')
+    expect(await bandText($, surface)).toBe('Saved a handoff with whatsnext before the cache went cold.')
     expect(h.ratings, 'rightsize\'s own prompt is not rated').toBe(0)
-    // Groundwork's wrap-up is a turn of its own.
+    // whatsnext's wrap-up is a turn of its own.
     await d.turnStart('t2', 'wrap up')
     await coldTurn(d, 't2')
-    expect(await bandText($, surface), 'no second offer after a handoff').toBe('Saved a handoff with Groundwork before the cache went cold.')
+    expect(await bandText($, surface), 'no second offer after a handoff').toBe('Saved a handoff with whatsnext before the cache went cold.')
     await h.advance(3 * HOUR)
     expect(h.submitted.length).toBe(1)
     // The person comes back and works: it starts afresh.

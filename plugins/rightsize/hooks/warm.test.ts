@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import { DEFAULT_PRICES, idleCost } from './cost'
-import { ALWAYS_AFTER, BACK_OFF_AFTER, LEARN_OVER, OFFER_AFTER_MS, DEFAULT_START, ROW_OF, breakEvenMs, breakEvenPings, clockText, coldPlan, isGroundwork, alwaysText, ignoredLately, keepWarmChoices, leadMs, learnedChoice, netSaving, nextStart, offerAt, offerText, pingCost, pingEvery, pingsFor, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText, WARM_PROOF, cacheHeld } from './warm'
+import { ALWAYS_AFTER, BACK_OFF_AFTER, LEARN_OVER, OFFER_AFTER_MS, DEFAULT_START, ROW_OF, breakEvenMs, breakEvenPings, clockText, coldPlan, alwaysText, ignoredLately, keepWarmChoices, leadMs, learnedChoice, netSaving, nextStart, offerAt, offerText, pingCost, pingEvery, pingsFor, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText, WARM_PROOF, cacheHeld } from './warm'
 
 const MIN = 60_000
 const HOUR = 60 * MIN
@@ -178,7 +178,7 @@ test('the keep-warm line says until when and what it used so far, with no ping c
   expect(warmEndText('Stopped keeping warm', undefined)).toBe('Stopped keeping warm · nothing used.')
 })
 
-test('each row value is a plan: a handoff without Groundwork is a compaction, and an unknown value asks', async () => {
+test('each row value is a plan: a handoff without whatsnext is a compaction, and an unknown value asks', async () => {
   expect(coldPlan('ask', true)).toEqual({ action: 'ask' })
   expect(coldPlan('keep warm 2 h', false)).toEqual({ action: 'warm', hours: 2 })
   expect(coldPlan('keep warm 8 h', true)).toEqual({ action: 'warm', hours: 8 })
@@ -187,13 +187,6 @@ test('each row value is a plan: a handoff without Groundwork is a compaction, an
   expect(coldPlan('compact', true)).toEqual({ action: 'compact' })
   expect(coldPlan('off', true)).toEqual({ action: 'off' })
   expect(coldPlan('something else', true)).toEqual({ action: 'ask' })
-})
-
-test('Groundwork is found by plugin name', async () => {
-  expect(isGroundwork('groundwork')).toBe(true)
-  expect(isGroundwork('groundwork@archid21')).toBe(true)
-  expect(isGroundwork('groundwork-lite')).toBe(false)
-  expect(isGroundwork(undefined)).toBe(false)
 })
 
 test('there is no size bar: a row acts when its action nets above zero, the action\'s own cost taken off the cold cost', async () => {

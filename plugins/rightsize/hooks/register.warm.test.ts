@@ -1,6 +1,6 @@
 import { type TestBody, expect, test } from 'claude-code/testing'
 import { type RunLine, sessionTotal } from './report'
-import { RUNS_FILE, LOG_PATH, LEGACY_RUNS, LOOKUP, NO_CHANGE, BIG_TURN, cellsOf, engine, drive, flush, untilAsked, DAY, OLD_PRICES, last, mount, rowText, bandText } from './testkit'
+import { RUNS_FILE, LOG_PATH, LEGACY_RUNS, LOOKUP, NO_CHANGE, BIG_TURN, cellsOf, engine, drive, flush, untilAsked, DAY, OLD_PRICES, last, mount, rowText, bandText, WHATSNEXT_ARGS, WHATSNEXT_CMDS, WHATSNEXT_SCRIPT, installWhatsnext, wnAnswer } from './testkit'
 
 for (const surface of ['desktop', 'terminal'] as const) {
   const readRuns = (h: ReturnType<typeof engine>) => (h.files[RUNS_FILE] ?? '').trim().split('\n').map(l => JSON.parse(l) as Record<string, unknown>)
@@ -27,13 +27,13 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
   /** 18:00 local: the next 9:00 is 15 hours away. */
   const EVENING = new Date(2027, 0, 15, 18, 0, 0, 0).getTime()
-  const GROUNDWORK = [{ name: 'groundwork:groundwork', description: 'Groundwork', source: 'plugin', plugin: 'groundwork' }]
+  const WHATSNEXT = WHATSNEXT_CMDS
   type ColdOver = {
     /** The rows the person set (settings.json); Before the cache goes cold is "ask" unless these say otherwise, since only that row offers. */
     stored?: Record<string, string>
     /** True: leave Before the cache goes cold unset, so the profile decides. */
     unset?: boolean
-    commands?: typeof GROUNDWORK
+    commands?: typeof WHATSNEXT
     prices?: string
     usage?: typeof BIG_TURN
     fork?: Record<string, number> | undefined
@@ -53,6 +53,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.ticks = over.ticks === true
     h.stepUsage = over.usage ?? BIG_TURN
     h.commands = over.commands ?? []
+    if (over.commands?.length) installWhatsnext(h)
     if ('fork' in over) h.forkUsage = over.fork
     if (over.prices) h.pricesFile = over.prices
     const d = drive($, h)
@@ -397,8 +398,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   const HANDOFF = inProfile('Balanced', { beforeCold: 'save a handoff' })
-  test(`save a handoff: with Groundwork it submits "wrap up" once, 3 minutes before expiry, unrated (${surface})`, { timeoutMs: 30000, options: HANDOFF.options }, async ($, on) => {
-    const { h, d } = await coldSession($, on, { stored: HANDOFF.stored, commands: GROUNDWORK })
+  test(`save a handoff: with whatsnext it submits "wrap up" once, 3 minutes before expiry, unrated (${surface})`, { timeoutMs: 30000, options: HANDOFF.options }, async ($, on) => {
+    const { h, d } = await coldSession($, on, { stored: HANDOFF.stored, commands: WHATSNEXT })
     await coldTurn(d, 't1')
     expect(await bandText($, surface), 'nothing to show yet').toBe('')
     expect(h.afters, 'one timer, 3 minutes before the cache expires').toEqual([57 * MIN])
@@ -409,16 +410,16 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.compactions).toBe(0)
     expect(h.ratings, 'not rated').toBe(0)
     expect(h.completions, 'no rating call at all').toEqual([])
-    expect(await bandText($, surface)).toBe('Saved a handoff with Groundwork before the cache went cold.')
-    expect(coldLog(h)).toContain('handoff: submitted "wrap up" to Groundwork before the cache went cold')
-    // Groundwork's turn ends: no second round.
+    expect(await bandText($, surface)).toBe('Saved a handoff with whatsnext before the cache went cold.')
+    expect(coldLog(h)).toContain('handoff: submitted "wrap up" to whatsnext before the cache went cold')
+    // whatsnext's turn ends: no second round.
     await d.turnStart('t2', 'wrap up')
     await coldTurn(d, 't2')
     await h.advance(5 * HOUR)
     expect(h.submitted.length, 'once').toBe(1)
   })
 
-  test(`save a handoff: with no Groundwork it compacts instead (${surface})`, { timeoutMs: 30000, options: HANDOFF.options }, async ($, on) => {
+  test(`save a handoff: with no whatsnext it compacts instead (${surface})`, { timeoutMs: 30000, options: HANDOFF.options }, async ($, on) => {
     const { h, d } = await coldSession($, on, { stored: HANDOFF.stored })
     await coldTurn(d, 't1')
     await h.advance(56 * MIN)
@@ -436,12 +437,12 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   const COMPACT = inProfile('Balanced', { beforeCold: 'compact' })
-  test(`compact: calls $.session.compact() once before expiry, and logs a skip with its reason (${surface})`, { timeoutMs: 30000, options: COMPACT.options }, async ($, on) => {
-    const { h, d } = await coldSession($, on, { stored: COMPACT.stored, commands: GROUNDWORK })
+  test(`compact: with no whatsnext it calls $.session.compact() once before expiry, and logs a skip with its reason (${surface})`, { timeoutMs: 30000, options: COMPACT.options }, async ($, on) => {
+    const { h, d } = await coldSession($, on, { stored: COMPACT.stored })
     await coldTurn(d, 't1')
     await h.advance(57 * MIN)
     expect(h.compactions).toBe(1)
-    expect(h.submitted, 'compact is not a handoff, with Groundwork or not').toEqual([])
+    expect(h.submitted, 'compact is not a handoff').toEqual([])
     expect(coldLog(h)).toContain('compact: compacted before the cache went cold')
     await h.advance(5 * HOUR)
     expect(h.compactions).toBe(1)
@@ -457,8 +458,100 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await bandText($, surface)).toBe('')
   })
 
+  test(`save a handoff: whatsnext installed but the project not through whatsnext init compacts instead, and says why (${surface})`, { timeoutMs: 30000, options: HANDOFF.options }, async ($, on) => {
+    const { h, d } = await coldSession($, on, { stored: HANDOFF.stored })
+    installWhatsnext(h, { initialized: false })
+    await coldTurn(d, 't1')
+    await h.advance(57 * MIN)
+    expect(h.submitted, 'no wrap-up prompt: whatsnext would not answer it here').toEqual([])
+    expect(h.compactions).toBe(1)
+    expect(h.wnRuns, 'whatsnext is not asked either').toEqual([])
+    expect(coldLog(h)).toContain('whatsnext is installed but this project has not been through "whatsnext init"')
+    expect(await bandText($, surface)).toBe('Compacted while the cache was warm.')
+  })
+
+  test(`ask: whatsnext installed but the project not through whatsnext init offers Compact now, not Save a handoff (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const { h, d } = await coldSession($, on)
+    installWhatsnext(h, { initialized: false })
+    await coldOffer(h, d, 't1')
+    const keys = (await bandButtons($)).map(b => b[0])
+    const more = await openMenu($, h, {}, 1)
+    expect([...keys, ...more.flatMap(q => q.options)].join(' ')).not.toContain('handoff')
+    expect(more[0]?.options.join(' ')).toContain('Compact now')
+  })
+
+  // ---- Compact now with whatsnext: its instructions, its wrap-up first when it asks for one ----
+  const CMD = { command: 'compact', args: WHATSNEXT_ARGS }
+  const wnWithCompact = async ($: unknown, on: Parameters<TestBody>[1]) => {
+    const { h, d } = await coldSession($, on, { stored: COMPACT.stored, commands: WHATSNEXT })
+    await coldTurn(d, 't1')
+    return { h, d }
+  }
+
+  test(`compact: with whatsnext it asks for the instructions and runs its compact prompt before expiry, and does not compact itself (${surface})`, { timeoutMs: 30000, options: COMPACT.options }, async ($, on) => {
+    const { h } = await wnWithCompact($, on)
+    await h.advance(56 * MIN)
+    expect(h.wnRuns).toEqual([])
+    await h.advance(MIN)
+    expect(h.wnRuns).toEqual([['python3', WHATSNEXT_SCRIPT, 'compact-instructions', '--session', 'sess-1', '--json']])
+    expect(h.commandRuns).toEqual([CMD])
+    expect(h.compactions).toBe(0)
+    expect(h.submitted, 'no wrap-up').toEqual([])
+    expect(coldLog(h)).toContain('compact: compacted with whatsnext before the cache went cold')
+    expect(await bandText($, surface)).toBe('Compacted while the cache was warm.')
+    await h.advance(5 * HOUR)
+    expect(h.commandRuns.length, 'once').toBe(1)
+  })
+
+  test(`compact: wrap_up_first submits "wrap up", then runs the compact prompt when that turn ends, once (${surface})`, { timeoutMs: 30000, options: COMPACT.options }, async ($, on) => {
+    const { h, d } = await wnWithCompact($, on)
+    // The second answer still says wrap_up_first: it is not followed.
+    h.wnReplies = [{ exitCode: 0, stdout: wnAnswer(true) }, { exitCode: 0, stdout: wnAnswer(true) }]
+    await h.advance(57 * MIN)
+    expect(h.submitted.map(s => s.text)).toEqual(['wrap up'])
+    expect(h.commandRuns, 'not yet').toEqual([])
+    expect(h.compactions).toBe(0)
+    expect(h.ratings, 'the wrap-up is not rated').toBe(0)
+    await h.advance(HOUR)
+    expect(h.commandRuns, 'still waiting for the wrap-up turn to end').toEqual([])
+    await d.turnStart('t2', 'wrap up')
+    await coldTurn(d, 't2')
+    await h.advance(0)
+    expect(h.wnRuns.length).toBe(2)
+    expect(h.commandRuns).toEqual([CMD])
+    expect(h.submitted.map(s => s.text), 'one wrap-up').toEqual(['wrap up'])
+    expect(h.compactions).toBe(0)
+    await h.advance(5 * HOUR)
+    expect(h.commandRuns.length).toBe(1)
+    expect(h.submitted.length).toBe(1)
+  })
+
+  const WN_FAILS: { name: string; over?: { initialized?: boolean; listed?: boolean }; reply?: { exitCode: number; stdout: string; stderr?: string }; run?: string; why: string }[] = [
+    { name: 'there is no plugin folder for whatsnext', over: { listed: false }, why: "whatsnext's plugin folder was not found" },
+    { name: 'the project is not through whatsnext init', over: { initialized: false }, why: 'this project has not been through "whatsnext init"' },
+    { name: 'compact-instructions exits with an error', reply: { exitCode: 2, stdout: '' }, why: 'compact-instructions exited 2' },
+    { name: 'its answer is not JSON', reply: { exitCode: 0, stdout: '<html>' }, why: 'did not answer in JSON' },
+    { name: 'the /compact cannot run', run: 'no such command', why: '"/compact" could not run:' },
+  ]
+  for (const f of WN_FAILS) {
+    test(`compact: with whatsnext, when ${f.name}, it compacts with $.session.compact() and logs why (${surface})`, { timeoutMs: 30000, options: COMPACT.options }, async ($, on) => {
+      const { h } = await wnWithCompact($, on)
+      installWhatsnext(h, f.over)
+      if (f.reply) h.wnReply = f.reply
+      if (f.run) h.commandRunFails = f.run
+      await h.advance(57 * MIN)
+      expect(h.compactions).toBe(1)
+      expect(h.commandRuns).toEqual([])
+      expect(h.submitted).toEqual([])
+      expect(coldLog(h)).toContain('compact: whatsnext could not compact (')
+      expect(coldLog(h)).toContain(f.why)
+      expect(coldLog(h)).toContain('compact: compacted before the cache went cold')
+      expect(await bandText($, surface)).toBe('Compacted while the cache was warm.')
+    })
+  }
+
   test(`a prompt before expiry cancels the waiting handoff (${surface})`, { timeoutMs: 30000, options: HANDOFF.options }, async ($, on) => {
-    const { h, d } = await coldSession($, on, { stored: HANDOFF.stored, commands: GROUNDWORK })
+    const { h, d } = await coldSession($, on, { stored: HANDOFF.stored, commands: WHATSNEXT })
     await coldTurn(d, 't1')
     await h.advance(30 * MIN)
     h.rating = NO_CHANGE
@@ -469,7 +562,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   test(`nothing fires while a turn is active (${surface})`, { timeoutMs: 30000, options: HANDOFF.options }, async ($, on) => {
-    const { h, d } = await coldSession($, on, { stored: HANDOFF.stored, commands: GROUNDWORK })
+    const { h, d } = await coldSession($, on, { stored: HANDOFF.stored, commands: WHATSNEXT })
     await coldTurn(d, 't1')
     await h.advance(30 * MIN)
     // A turn the person did not start runs when the timer is due.
@@ -604,7 +697,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   test(`your setting wins: Economy keeps warm when you say keep warm 2 h (${surface})`, { timeoutMs: 30000, options: inProfile('Economy', { beforeCold: 'keep warm 2 h' }).options }, async ($, on) => {
-    const { h, d } = await coldSession($, on, { stored: inProfile('Economy', { beforeCold: 'keep warm 2 h' }).stored, commands: GROUNDWORK })
+    const { h, d } = await coldSession($, on, { stored: inProfile('Economy', { beforeCold: 'keep warm 2 h' }).stored, commands: WHATSNEXT })
     await coldTurn(d, 't1')
     await h.advance(5 * HOUR)
     expect(NOTHING_DONE(h), 'keep warm 2 h, not the profile\'s ask').toEqual({ forks: 2, submitted: 0, compactions: 0 })
@@ -680,7 +773,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     (h.files[RUNS_FILE] ?? '').split('\n').filter(Boolean).map(l => JSON.parse(l) as { kind?: string; choice?: string; session?: string }).filter(l => l.kind === 'cold').map(l => l.choice)
 
   test(`each answer to an offer is one cold line in the run log: the button or menu choice pressed (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const { h, d } = await coldSession($, on, { commands: GROUNDWORK })
+    const { h, d } = await coldSession($, on, { commands: WHATSNEXT })
     await coldOffer(h, d, 't1')
     await pressBand($, 'cold-2h')
     expect(coldChoices(h)).toEqual(['2h'])
@@ -765,13 +858,13 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   test(`a learned choice this offer does not have is passed over: the default button stands (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    // Groundwork was installed, and a handoff picked twice; now it is not, so the offer has Compact now and no handoff.
+    // whatsnext was installed, and a handoff picked twice; now it is not, so the offer has Compact now and no handoff.
     const { h, d } = await coldSession($, on)
     await history(h, d, ['handoff', 'handoff'])
     await coldOffer(h, d, 't1')
     expect((await bandButtons($))[0], 'today\'s default: the first priced keep-warm choice').toEqual(['cold-2h', 'Keep warm to 20:00 ($0.03)'])
-    // With Groundwork the handoff is the button; with nothing priced, the handoff or the compaction is the default.
-    h.commands = GROUNDWORK
+    // With whatsnext the handoff is the button; with nothing priced, the handoff or the compaction is the default.
+    installWhatsnext(h)
     await history(h, d, ['handoff', '2h', 'handoff'])
     await coldOffer(h, d, 't2')
     expect((await bandButtons($))[0]).toEqual(['cold-handoff', 'Save a handoff'])
@@ -788,10 +881,10 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   const ALWAYS = [
-    { choice: '2h', question: 'Always keep warm 2 hours?', value: 'keep warm 2 h', commands: [] as typeof GROUNDWORK },
-    { choice: '8h', question: 'Always keep warm 8 hours?', value: 'keep warm 8 h', commands: [] as typeof GROUNDWORK },
-    { choice: 'handoff', question: 'Always save a handoff?', value: 'save a handoff', commands: GROUNDWORK },
-    { choice: 'compact', question: 'Always compact?', value: 'compact', commands: [] as typeof GROUNDWORK },
+    { choice: '2h', question: 'Always keep warm 2 hours?', value: 'keep warm 2 h', commands: [] as typeof WHATSNEXT },
+    { choice: '8h', question: 'Always keep warm 8 hours?', value: 'keep warm 8 h', commands: [] as typeof WHATSNEXT },
+    { choice: 'handoff', question: 'Always save a handoff?', value: 'save a handoff', commands: WHATSNEXT },
+    { choice: 'compact', question: 'Always compact?', value: 'compact', commands: [] as typeof WHATSNEXT },
   ]
   for (const a of ALWAYS) {
     test(`after 3 answers of ${a.choice} the next offer asks "${a.question}" once; Yes sets the /config row and does it now (${surface})`, { timeoutMs: 30000 }, async ($, on) => {

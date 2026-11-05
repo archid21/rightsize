@@ -105,7 +105,7 @@ import { LIMITS, type Limits, type Signals, type Struggle, blockedError, callKey
 import { type Change, type HelperLine, type RunLine, type SwitchLine, type Windows, SESSION_TOTAL, SESSION_TOTAL_FROM, bandShareText, buildReport, costTag, parseLines, ratedInSession, sessionTotal, shareMessage, shareOf, usedTag, windowCostText, windowRates } from './report'
 import { LIMIT_BUTTON, LIMIT_COMPACT, LIMIT_COMPACT_INSTRUCTIONS, LIMIT_HIDE, LIMIT_MORE, LIMIT_WHY, LIMIT_WHY_ID, isLimitId, limitDue, limitText } from './limit'
 import { HOW_IT_WORKS, NOTE_HIDE, NOTE_HOW, NOTE_MORE, isWhatsnext, noteLink, noteText } from './whatsnext'
-import { PING_PROMPT, ROW_OF, WRAP_UP, alwaysText, breakEvenMs, cacheHeld, clockText, coldPlan, ignoredLately, isGroundwork, keepWarmChoices, leadMs, learnedChoice, COLD_MIN, netSaving, nextStart, offerAt, offerText, pingCost, pingEvery, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText } from './warm'
+import { PING_PROMPT, ROW_OF, WRAP_UP, alwaysText, breakEvenMs, cacheHeld, clockText, coldPlan, ignoredLately, keepWarmChoices, leadMs, learnedChoice, COLD_MIN, netSaving, nextStart, offerAt, offerText, pingCost, pingEvery, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText } from './warm'
 
 // Before a prompt is sent, a quick Haiku call rates the effort, the model and
 // the work needs on each model, and the cost model prices each route that fits. The first time
@@ -2347,7 +2347,7 @@ function lastResponse(tail: string): { at: number; model?: string; context?: num
 /** The end of this session's transcript, read as text: undefined when it cannot be found or read. */
 async function transcriptTail($: EngineInterface, id: string): Promise<string | undefined> {
   if (!/^[A-Za-z0-9_-]+$/.test(id)) return undefined
-  const config = (await $.env.get('CLAUDE_CONFIG_DIR').catch(() => undefined)) || `${home}/.claude`
+  const config = await claudeDir($)
   const found = await $.process.run(['find', `${config}/projects`, '-maxdepth', '2', '-type', 'f', '-name', `${id}.jsonl`])
   const path = found.exitCode === 0 ? found.stdout.split('\n')[0]?.trim() : ''
   if (!path) return undefined
@@ -2406,6 +2406,152 @@ async function whatsnextInstalled($: EngineInterface): Promise<boolean | undefin
   } catch {
     return undefined
   }
+}
+
+// ---- whatsnext's interfaces ---------------------------------------------------------------------------------------
+//
+// Three, all through whatsnext's own script (`python3 <plugin folder>/skills/whatsnext/scripts/whatsnext.py`):
+//  1. Wrap up: submit exactly `wrap up`. Its hook answers it only in a project that went through `whatsnext init`.
+//  2. Compaction in an OPEN session (rightsize's): `compact-instructions --session <id> --json` gives `compact_prompt`
+//     (`/compact <instructions>`) and `wrap_up_first`. When that is true, submit `wrap up`, wait for the end of its turn,
+//     ask again, then submit `compact_prompt` (run through `$.command.run`: a prompt that begins with `/` is refused). Once: the second answer is followed whatever `wrap_up_first` says.
+//  3. Compaction of a CLOSED session: `whatsnext.py compact --session <id> [--dry-run]`; exit 0 compacted, 3 the session is
+//     open, 1 any other error. rightsize does not call it: its compactions run in the open session.
+
+/** whatsnext's script, below its plugin folder. */
+const WHATSNEXT_SCRIPT = 'skills/whatsnext/scripts/whatsnext.py'
+
+/** Claude Code's own folder: `CLAUDE_CONFIG_DIR`, else `~/.claude`. */
+async function claudeDir($: EngineInterface) {
+  return (await $.env.get('CLAUDE_CONFIG_DIR').catch(() => undefined)) || `${home}/.claude`
+}
+
+/** The folder whatsnext treats as the project: git's top level from the session's folder, else that folder. Empty when the session's folder is unknown. */
+async function projectFolder($: EngineInterface): Promise<string> {
+  const cwd = await $.session.cwd().catch(() => '')
+  if (!cwd) return ''
+  const top = await $.process.run(['git', 'rev-parse', '--show-toplevel'], { cwd }).catch(() => undefined)
+  return (top && top.exitCode === 0 ? top.stdout.trim() : '') || cwd
+}
+
+/** True when the project went through `whatsnext init`, which writes `.whatsnext/config.json`; a project it was never started in does not answer `wrap up`. */
+async function whatsnextInitialized($: EngineInterface): Promise<boolean> {
+  const project = await projectFolder($)
+  if (!project) return false
+  return (await $.fs.exists(`${project}/.whatsnext/config.json`).catch(() => false)) === true
+}
+
+/**
+ * whatsnext's plugin folder, from Claude Code's list of installed plugins (`<config>/plugins/installed_plugins.json`: each
+ * `name@marketplace` has entries with an `installPath`). The newest entry that has the script wins; an entry installed for
+ * another project is passed over. Undefined when there is none: a plugin loaded by `--plugin-dir` is not in the list.
+ */
+async function whatsnextRoot($: EngineInterface, project: string): Promise<string | undefined> {
+  let plugins: unknown
+  try {
+    plugins = (JSON.parse(await readText($, `${await claudeDir($)}/plugins/installed_plugins.json`)) as { plugins?: unknown }).plugins
+  } catch {
+    return undefined
+  }
+  if (!plugins || typeof plugins !== 'object') return undefined
+  const found: { path: string; at: number }[] = []
+  for (const [key, list] of Object.entries(plugins as Record<string, unknown>)) {
+    if (!isWhatsnext(key) || !Array.isArray(list)) continue
+    for (const x of list as { installPath?: unknown; projectPath?: unknown; lastUpdated?: unknown }[]) {
+      if (typeof x?.installPath !== 'string' || !x.installPath) continue
+      if (typeof x.projectPath === 'string' && x.projectPath !== project) continue
+      found.push({ path: x.installPath, at: typeof x.lastUpdated === 'string' ? Date.parse(x.lastUpdated) || 0 : 0 })
+    }
+  }
+  for (const f of found.sort((a, b) => b.at - a.at)) if ((await $.fs.exists(`${f.path}/${WHATSNEXT_SCRIPT}`).catch(() => false)) === true) return f.path
+  return undefined
+}
+
+/** What `compact-instructions --json` says: the prompt that compacts, and whether a wrap-up has to come first. */
+type WhatsnextSteps = { prompt: string; wrapUpFirst: boolean }
+
+/** Asks whatsnext how to compact this open session: its steps, or why it cannot (not started in this project, not found, an error, an answer that is not JSON). Never throws. */
+async function whatsnextSteps($: EngineInterface): Promise<{ steps: WhatsnextSteps } | { why: string }> {
+  try {
+    const project = await projectFolder($)
+    if (!project) return { why: 'the session\'s folder is unknown' }
+    if (!(await whatsnextInitialized($))) return { why: 'this project has not been through "whatsnext init"' }
+    const root = await whatsnextRoot($, project)
+    if (!root) return { why: 'whatsnext\'s plugin folder was not found in the list of installed plugins' }
+    if (!/^[A-Za-z0-9_-]+$/.test(sessionId)) return { why: 'the session has no usable id' }
+    const run = await $.process.run(['python3', `${root}/${WHATSNEXT_SCRIPT}`, 'compact-instructions', '--session', sessionId, '--json'], { cwd: project, timeoutMs: 60_000 })
+    if (run.exitCode !== 0) return { why: `compact-instructions exited ${run.exitCode}${run.stderr.trim() ? `: ${run.stderr.trim().split('\n')[0]}` : ''}` }
+    let out: { compact_prompt?: unknown; wrap_up_first?: unknown }
+    try {
+      out = JSON.parse(run.stdout) as typeof out
+    } catch {
+      return { why: 'compact-instructions did not answer in JSON' }
+    }
+    if (typeof out?.compact_prompt !== 'string' || !out.compact_prompt.startsWith('/compact ') || typeof out.wrap_up_first !== 'boolean') return { why: 'compact-instructions answered without compact_prompt or wrap_up_first' }
+    return { steps: { prompt: out.compact_prompt, wrapUpFirst: out.wrap_up_first } }
+  } catch (err) {
+    return { why: `compact-instructions could not run (${err instanceof Error ? err.message : String(err)})` }
+  }
+}
+
+/** A compaction that goes through whatsnext: how it ends well (`compacted`), and what compacts instead when whatsnext cannot (`fallback`). `label` starts its log lines. */
+type WhatsnextCompact = { label: string; compacted: () => Promise<void>; fallback: () => Promise<void> }
+/** whatsnext asked for a wrap-up first and it was submitted: the compaction follows the end of that turn. At most one per compaction. */
+let wrapThenCompact: WhatsnextCompact | null = null
+
+/** Submits rightsize's own prompt, which its hook lets through unrated. Resolves to the reason when it is refused. */
+async function submitOwn($: EngineInterface, text: string): Promise<string | undefined> {
+  coldPrompt = text.trim()
+  try {
+    return (await $.prompt.submit({ text })).drop
+  } catch (err) {
+    return `error: ${err instanceof Error ? err.message : String(err)}`
+  } finally {
+    coldPrompt = null
+  }
+}
+
+async function whatsnextFallback($: EngineInterface, w: WhatsnextCompact, why: string) {
+  await log($, `${w.label}: whatsnext could not compact (${why}); compacting with rightsize's own instructions`)
+  await w.fallback()
+}
+
+/**
+ * Submits whatsnext's `compact_prompt` (`/compact <instructions>`). A prompt that begins with `/` is refused by `$.prompt.submit`,
+ * so the slash command runs through `$.command.run`, the way the person's own `/compact` would; a failure falls back.
+ */
+async function submitWhatsnextCompact($: EngineInterface, w: WhatsnextCompact, prompt: string) {
+  try {
+    await $.command.run({ command: 'compact', args: prompt.slice('/compact '.length) })
+  } catch (err) {
+    return whatsnextFallback($, w, `"/compact" could not run: ${err instanceof Error ? err.message : String(err)}`)
+  }
+  await w.compacted()
+}
+
+/**
+ * Compacts the open session the way whatsnext says. When it wants a handoff first, `wrap up` goes now and the compaction
+ * follows the end of that turn (resumeCompact); otherwise `compact_prompt` goes now. Any failure falls back, and says why.
+ */
+async function compactWithWhatsnext($: EngineInterface, w: WhatsnextCompact) {
+  const got = await whatsnextSteps($)
+  if ('why' in got) return whatsnextFallback($, w, got.why)
+  if (!got.steps.wrapUpFirst) return submitWhatsnextCompact($, w, got.steps.prompt)
+  wrapThenCompact = w
+  const drop = await submitOwn($, WRAP_UP)
+  if (drop !== undefined) {
+    wrapThenCompact = null
+    return whatsnextFallback($, w, `"${WRAP_UP}" was refused: ${drop}`)
+  }
+  await log($, `${w.label}: whatsnext wants a handoff first; submitted "${WRAP_UP}", the compaction follows that turn`)
+  await showCold($, 'Saving a handoff with whatsnext, then compacting.')
+}
+
+/** The wrap-up's turn ended: ask whatsnext again and submit its compact prompt, whatever `wrap_up_first` says now (no second wrap-up). */
+async function resumeCompact($: EngineInterface, w: WhatsnextCompact) {
+  const got = await whatsnextSteps($)
+  if ('why' in got) return whatsnextFallback($, w, got.why)
+  await submitWhatsnextCompact($, w, got.steps.prompt)
 }
 
 /**
@@ -2521,40 +2667,39 @@ async function pressLimit($: EngineInterface, id: string): Promise<void> {
   }
 }
 
-/**
- * TODO(whatsnext-compact): the hand-off point. When whatsnext is installed the compaction is whatsnext's to run, but its
- * command is not built yet. Run it here and return true once it exists; until then this returns false, and the caller
- * compacts with rightsize's own instructions, as it does when whatsnext is not installed.
- */
-async function whatsnextCompact(_$: EngineInterface): Promise<boolean> {
-  return false
-}
-
 /** Runs the compaction the person asked for with "Compact now" on the advice. Only the button calls it. */
 async function compactForLimit($: EngineInterface) {
   coldDone = true
-  if ((await whatsnextInstalled($)) === true && (await whatsnextCompact($))) {
-    await log($, 'usage-limit advice: whatsnext compacted')
-    return
+  const own = async () => {
+    const r = await $.session.compact({ instructions: LIMIT_COMPACT_INSTRUCTIONS })
+    if (r.skip !== undefined) {
+      await log($, `usage-limit advice: compact skipped: ${r.skip}`)
+      await clearColdRow($)
+      $.ui.toast(`Rightsize: the conversation was not compacted (${r.skip}).`)
+      return
+    }
+    // The conversation is small now: the idle question would quote the old size.
+    idleWarnedFor = lastTurnAt
+    await log($, 'usage-limit advice: compacted before the reset, on the person\'s button')
+    await showCold($, 'Compacted. After the reset a short summary is read, not the whole conversation.')
   }
-  const r = await $.session.compact({ instructions: LIMIT_COMPACT_INSTRUCTIONS })
-  if (r.skip !== undefined) {
-    await log($, `usage-limit advice: compact skipped: ${r.skip}`)
-    await clearColdRow($)
-    $.ui.toast(`Rightsize: the conversation was not compacted (${r.skip}).`)
-    return
-  }
-  // The conversation is small now: the idle question would quote the old size.
-  idleWarnedFor = lastTurnAt
-  await log($, 'usage-limit advice: compacted before the reset, on the person\'s button')
-  await showCold($, 'Compacted. After the reset a short summary is read, not the whole conversation.')
+  if ((await whatsnextInstalled($)) !== true) return own()
+  await compactWithWhatsnext($, {
+    label: 'usage-limit advice',
+    compacted: async () => {
+      idleWarnedFor = lastTurnAt
+      await log($, 'usage-limit advice: compacted with whatsnext before the reset, on the person\'s button')
+      await showCold($, 'Compacted. After the reset a short summary is read, not the whole conversation.')
+    },
+    fallback: own,
+  })
 }
 
 // ---- Before the cache goes cold ----------------------------------------------
 
 // A session under 200K tokens whose action saves something (its own cost taken off what coming back after the cache
 // expired would cost, API-equivalent dollars on a subscription too) gets one of these at the end of a main-chat turn, by the row:
-// an offer in the band (ask), keep-warm requests until a chosen time, a Groundwork handoff, a compaction, or nothing.
+// an offer in the band (ask), keep-warm requests until a chosen time, a whatsnext handoff, a compaction, or nothing.
 // The offer is a row of its own under the band's route line, with one button; the other choices are in the ⋯ menu. On a
 // cache of 1 hour or more it shows OFFER_AFTER_MS after the turn ended, not at its end (the timer below); on a shorter
 // cache it shows at once.
@@ -2562,7 +2707,7 @@ async function compactForLimit($: EngineInterface) {
 // overhead (a `warm` line), the words the band's. A session has one timer, a `$.clock.after` that waits for the next
 // thing to do (the expiry action, or the next ping, which schedules the one after it). A newer turn's end replaces it,
 // and a prompt from the person, Stop, turning rightsize off or the row changing cancels it; `coldGen` is the second
-// guard, for a callback already on its way. Nothing fires during a turn. rightsize never writes Groundwork's files: it
+// guard, for a callback already on its way. Nothing fires during a turn. rightsize never writes whatsnext's files: it
 // sends the prompt its skill answers.
 
 /** Every cancel and every new turn bumps this: a callback that wakes up under an older number does nothing. */
@@ -2576,7 +2721,8 @@ type ColdTurn = {
   tier: Tier
   /** What coming back cold would cost: the conversation written to the cache again, less a read. */
   cold: number
-  groundwork: boolean
+  /** whatsnext is installed and this project went through `whatsnext init`: it can write the handoff. */
+  whatsnext: boolean
   /** The task in progress when the turn ended: the keep-warm requests are counted in its total. */
   task?: string
   /** Where each offered keep-warm choice ends, by its id. */
@@ -2636,6 +2782,7 @@ async function dropCache($: EngineInterface, why: string) {
   coldTurn = null
   offerOpen = false
   warmReturn = null
+  wrapThenCompact = null
   idleNote = ''
   whatsnextRow = null
   await clearColdRow($)
@@ -2654,15 +2801,20 @@ async function showCold($: EngineInterface, text: string, cold?: { id: string; l
   await setBand($, { ...lead, acted: true, coldText: text, ...(cold?.length ? { cold } : {}), ...(more?.length ? { coldMore: more } : {}), ...(link ? { coldLink: link } : {}) })
 }
 
-/** The other plugin that matters: Groundwork writes the handoff. A listing that fails says it is not installed. */
+/**
+ * The other plugin that matters: whatsnext writes the handoff, but only in a project that went through `whatsnext init`
+ * (its hook answers `wrap up` there alone). A listing that fails says it is not installed.
+ */
 async function neighbours($: EngineInterface) {
-  try {
-    const list = await $.command.list()
-    return { groundwork: list.some(c => isGroundwork(c.plugin)) }
-  } catch (err) {
-    await log($, `before the cache goes cold: could not list the commands (${err instanceof Error ? err.message : String(err)}); Groundwork taken as not installed`)
-    return { groundwork: false }
+  const installed = await whatsnextInstalled($)
+  if (installed === undefined) {
+    await log($, 'before the cache goes cold: could not list the commands; whatsnext taken as not installed')
+    return { whatsnext: false }
   }
+  if (!installed) return { whatsnext: false }
+  const ready = await whatsnextInitialized($)
+  if (!ready && coldMode === 'save a handoff') await log($, 'before the cache goes cold: whatsnext is installed but this project has not been through "whatsnext init"; compacting instead of saving a handoff')
+  return { whatsnext: ready }
 }
 
 // Arms the session's one timer for `at` (ms): `fn` runs then, unless the timer was cancelled, a newer round began or
@@ -2694,8 +2846,8 @@ async function coldCheck($: EngineInterface) {
   const tier = (await situation($)).tier
   const idle = idleCost(prices[tier], context)
   const cold = idle.resend
-  const { groundwork } = await neighbours($)
-  const plan = coldPlan(coldMode, groundwork)
+  const { whatsnext } = await neighbours($)
+  const plan = coldPlan(coldMode, whatsnext)
   // The row acts only on a conversation big enough to matter, by the Idle warning amount (COLD_MIN while that is off), and
   // when its action saves something: its own cost taken off coming back cold.
   if (cold < (idleWarning ?? COLD_MIN)) return
@@ -2705,7 +2857,7 @@ async function coldCheck($: EngineInterface) {
     return
   }
   const task = (await currentTask($))?.id
-  const turn: ColdTurn = { endedAt: lastTurnAt || (await $.clock.now()), context, tier, cold, groundwork, ...(task ? { task } : {}), ends: {} }
+  const turn: ColdTurn = { endedAt: lastTurnAt || (await $.clock.now()), context, tier, cold, whatsnext, ...(task ? { task } : {}), ends: {} }
   coldTurn = turn
   const gen = coldGen
   if (plan.action === 'warm') {
@@ -2756,7 +2908,7 @@ async function offerCold($: EngineInterface, turn: ColdTurn) {
   const text = offerText({ ...args, now })
   const all: ColdButton[] = [
     ...warmChoices.map(c => ({ id: c.id, label: c.label })),
-    turn.groundwork ? { id: 'handoff', label: 'Save a handoff' } : { id: 'compact', label: 'Compact now' },
+    turn.whatsnext ? { id: 'handoff', label: 'Save a handoff' } : { id: 'compact', label: 'Compact now' },
     { id: 'let-go', label: 'Let it go cold' },
     { id: 'off', label: "Don't offer again" },
   ]
@@ -2954,10 +3106,10 @@ async function atCold($: EngineInterface, c: ColdTurn, action: 'handoff' | 'comp
   }
 }
 
-// Groundwork's skill answers "wrap up" with its wrap-up flow. The prompt is rightsize's own: rated by nobody, and its
-// hook lets it through. Without Groundwork it is a compaction.
+// whatsnext's skill answers "wrap up" with its wrap-up flow. The prompt is rightsize's own: rated by nobody, and its
+// hook lets it through. Without whatsnext (or in a project it was not started in) it is a compaction.
 async function saveHandoff($: EngineInterface, c: ColdTurn) {
-  if (!c.groundwork) return compactNow($)
+  if (!c.whatsnext) return compactNow($)
   coldDone = true
   coldPrompt = WRAP_UP
   try {
@@ -2966,8 +3118,8 @@ async function saveHandoff($: EngineInterface, c: ColdTurn) {
       await log($, `handoff: "${WRAP_UP}" was refused (${sent.drop})`)
       return
     }
-    await log($, `handoff: submitted "${WRAP_UP}" to Groundwork before the cache went cold`)
-    await showCold($, 'Saved a handoff with Groundwork before the cache went cold.')
+    await log($, `handoff: submitted "${WRAP_UP}" to whatsnext before the cache went cold`)
+    await showCold($, 'Saved a handoff with whatsnext before the cache went cold.')
   } catch (err) {
     await log($, `handoff failed: ${err instanceof Error ? err.message : String(err)}`)
   } finally {
@@ -2978,15 +3130,27 @@ async function saveHandoff($: EngineInterface, c: ColdTurn) {
 async function compactNow($: EngineInterface) {
   coldDone = true
   try {
-    const r = await $.session.compact()
-    if (r.skip !== undefined) {
-      await log($, `compact skipped: ${r.skip}`)
-      return
+    const own = async () => {
+      const r = await $.session.compact()
+      if (r.skip !== undefined) {
+        await log($, `compact skipped: ${r.skip}`)
+        return
+      }
+      // The conversation is small now: the idle question would quote the old size.
+      idleWarnedFor = lastTurnAt
+      await log($, 'compact: compacted before the cache went cold')
+      await showCold($, 'Compacted while the cache was warm.')
     }
-    // The conversation is small now: the idle question would quote the old size.
-    idleWarnedFor = lastTurnAt
-    await log($, 'compact: compacted before the cache went cold')
-    await showCold($, 'Compacted while the cache was warm.')
+    if ((await whatsnextInstalled($)) !== true) return await own()
+    await compactWithWhatsnext($, {
+      label: 'compact',
+      compacted: async () => {
+        idleWarnedFor = lastTurnAt
+        await log($, 'compact: compacted with whatsnext before the cache went cold')
+        await showCold($, 'Compacted while the cache was warm.')
+      },
+      fallback: own,
+    })
   } catch (err) {
     await log($, `compact failed: ${err instanceof Error ? err.message : String(err)}`)
   }
@@ -3752,6 +3916,7 @@ export const register: Register = (on, options) => {
     coldTurn = null
     coldDone = false
     coldPrompt = null
+    wrapThenCompact = null
     mainBusy = false
     lastWarmAt = 0
     warmReturn = null
@@ -3885,6 +4050,7 @@ export const register: Register = (on, options) => {
     // The person is back: keep-warm requests, a waiting handoff and a waiting offer stop, and the next big turn's end starts afresh.
     if (!off && fromPerson(e) && !e.command && !e.isMeta) {
       coldDone = false
+      wrapThenCompact = null
       await closeOffer($, 'ignored')
       await noteReturn($)
       cancelCold($, 'a prompt was submitted')
@@ -4479,6 +4645,13 @@ export const register: Register = (on, options) => {
     // A person who interrupted is at the keyboard: no offer for an aborted turn.
     if (e.agentId === undefined && !e.isAborted) await coldCheck($).catch(err => log($, `before the cache goes cold failed: ${err instanceof Error ? err.message : String(err)}`))
     if (e.agentId === undefined && !e.isAborted) await limitCheck($)
+    // whatsnext's wrap-up before a compaction ended: the compaction follows (after coldCheck, which cancels timers), from a timer (the hook does not wait for it). An interrupted wrap-up stops it.
+    if (e.agentId === undefined && wrapThenCompact) {
+      const w = wrapThenCompact
+      wrapThenCompact = null
+      if (e.isAborted) await log($, `${w.label}: the wrap-up was interrupted; not compacting`)
+      else if (!off) await armCold($, coldGen, await $.clock.now(), () => resumeCompact($, w))
+    }
     return result
   })
 }

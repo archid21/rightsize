@@ -25,6 +25,30 @@ export const SESSION_DIR = `${LOGS}/rightsize/sess-1`
 export const RUNS_FILE = `${SESSION_DIR}/runs.jsonl`
 export const SWITCHES_FILE = `${SESSION_DIR}/switches.jsonl`
 export const LOG_PATH = `${SESSION_DIR}/rightsize.log`
+/** whatsnext's plugin folder in the fake's list of installed plugins, and the project folder it is started in. */
+export const WHATSNEXT_ROOT = '/plugins/whatsnext'
+export const WHATSNEXT_SCRIPT = `${WHATSNEXT_ROOT}/skills/whatsnext/scripts/whatsnext.py`
+export const WHATSNEXT_CMDS = [{ name: 'whatsnext:whatsnext', description: 'whatsnext', source: 'plugin', plugin: 'whatsnext' }]
+/** The prompt whatsnext's `compact-instructions --json` hands over. */
+export const WHATSNEXT_COMPACT = '/compact Keep: the task. Handoff: docs/project/HANDOFF.md says where the work stands.'
+/** What follows `/compact ` there: the arguments the slash command runs with. */
+export const WHATSNEXT_ARGS = WHATSNEXT_COMPACT.slice('/compact '.length)
+/** What `compact-instructions --json` prints; the fields rightsize reads are the first two. */
+export const wnAnswer = (wrapUpFirst: boolean) =>
+  JSON.stringify({ instructions: WHATSNEXT_ARGS, compact_prompt: WHATSNEXT_COMPACT, handoff: 'docs/project/HANDOFF.md', handoff_exists: true, wrap_up_first: wrapUpFirst, wrap_up_prompt: 'wrap up', session_found: true }, null, 2)
+/** Makes whatsnext installed (its commands, its entry in installed_plugins.json, its script), and the project `whatsnext init`-ed unless `initialized` is false. */
+export function installWhatsnext(h: { commands: { name: string; description: string; source: string; plugin?: string }[]; files: Record<string, string>; cwd: string }, over: { initialized?: boolean; listed?: boolean } = {}) {
+  h.commands = WHATSNEXT_CMDS
+  if (over.listed !== false) {
+    h.files['/home/test/.claude/plugins/installed_plugins.json'] = JSON.stringify({ version: 2, plugins: { 'whatsnext@whatsnext': [{ scope: 'user', installPath: WHATSNEXT_ROOT, version: '0.0.1', lastUpdated: '2026-11-01T00:00:00.000Z' }] } })
+    h.files[WHATSNEXT_SCRIPT] = '#!/usr/bin/env python3\n'
+  } else {
+    delete h.files['/home/test/.claude/plugins/installed_plugins.json']
+    delete h.files[WHATSNEXT_SCRIPT]
+  }
+  if (over.initialized !== false) h.files[`${h.cwd}/.whatsnext/config.json`] = '{}\n'
+  else delete h.files[`${h.cwd}/.whatsnext/config.json`]
+}
 /** What core returns when the person says no at the permission prompt. */
 export const REJECTED = "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed."
 /** The shared files of 0.7 and before: still read, never written. */
@@ -188,6 +212,16 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
     /** What each $.session.compact() call was given. */
     compactCalls: [] as unknown[],
     compactSkip: undefined as string | undefined,
+    /** What $.session.cwd() answers; `git rev-parse --show-toplevel` answers it too, so it is the project folder. */
+    cwd: '/repo',
+    /** Every slash command the plugin ran with $.command.run, and a reason to make the next one fail. */
+    commandRuns: [] as { command: string; args?: string }[],
+    commandRunFails: undefined as string | undefined,
+    /** Every whatsnext.py run (python3 ...), as its arguments. */
+    wnRuns: [] as string[][],
+    /** What the next whatsnext.py runs answer, in order; when none is left, `wnReply`. */
+    wnReplies: [] as { exitCode: number; stdout: string; stderr?: string }[],
+    wnReply: { exitCode: 0, stdout: wnAnswer(false) } as { exitCode: number; stdout: string; stderr?: string },
     /** True: sleeps are on a virtual clock. They end only when `advance` reaches them, and the clock moves to each one's time. */
     virtual: false,
     sleepers: [] as { due: number; release: () => void }[],
@@ -245,6 +279,7 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
     if (h.messagesFail) throw new Error('messages could not be read')
     return { value: h.messages } as never
   })
+  reg('session.cwd', async () => ({ value: h.cwd }) as never)
   reg('session.id', async () => ({ value: h.sessionId }) as never)
   reg('session.model', async () => ({ value: h.liveModel ?? h.model }) as never)
   reg('session.usage', async ($, e) => {
@@ -343,6 +378,13 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
       const path = `/home/test/.claude/projects/p/${h.sessionId}.jsonl`
       const out = argv[0] === 'find' ? (h.transcript === undefined ? '' : `${path}\n`) : (h.transcript ?? '')
       return { value: { exitCode: 0, stdout: out, stderr: '' } } as never
+    }
+    // Where whatsnext starts: git's top level of the session's folder.
+    if (argv[0] === 'git' && argv[1] === 'rev-parse') return { value: { exitCode: 0, stdout: `${h.cwd}\n`, stderr: '' } } as never
+    if (argv[0] === 'python3') {
+      h.wnRuns.push(argv)
+      const reply = h.wnReplies.shift() ?? h.wnReply
+      return { value: { exitCode: reply.exitCode, stdout: reply.stdout, stderr: reply.stderr ?? '' } } as never
     }
     h.ran.push(argv)
     if (h.rmFails && (argv[0] === 'rm' || argv[0] === 'rmdir')) throw new Error('no such program')
@@ -458,6 +500,16 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
     return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: { ...usage, model: e.agentId ? h.subModel : (e.model ?? h.model) } } as never
   })
   reg('turn.complete', async () => ({ text: '' }) as never)
+  reg('command.run', async ($, e) => {
+    const { command, args } = e as { command: string; args?: string }
+    if (h.commandRunFails !== undefined) {
+      const why = h.commandRunFails
+      h.commandRunFails = undefined
+      throw new Error(why)
+    }
+    h.commandRuns.push({ command, args })
+    return { value: { text: '' } } as never
+  })
   reg('command.list', async () => {
     if (h.commandsFail) throw new Error('commands could not be listed')
     return { value: h.commands } as never

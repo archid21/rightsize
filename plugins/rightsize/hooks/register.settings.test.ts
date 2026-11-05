@@ -1,7 +1,7 @@
 import { type TestBody, expect, test } from 'claude-code/testing'
 import { CAL_FULL, CAL_STORE, DEFAULT_PRICES, type Calibration, type Rating, type Situation, delegateCost, delegateKeys } from './cost'
 import { KEYS, SETTINGS, type SettingKey, inOptions, plainTitle } from './settings'
-import { RUNS_FILE, LOG_PATH, LEGACY_RUNS, LOOKUP, DEBUG, NO_ONE, SEARCH, REVIEW, NO_CHANGE, FREE_SWITCHES, NO_COLD, BIG_TURN, engine, drive, flush, settle, untilAsked, DAY, PAGE, OLD_PRICES, last, mount, bandText, LOWER } from './testkit'
+import { RUNS_FILE, LOG_PATH, LEGACY_RUNS, LOOKUP, DEBUG, NO_ONE, SEARCH, REVIEW, NO_CHANGE, FREE_SWITCHES, NO_COLD, BIG_TURN, engine, drive, flush, settle, untilAsked, DAY, PAGE, OLD_PRICES, last, mount, bandText, LOWER, WHATSNEXT_CMDS, installWhatsnext } from './testkit'
 
 for (const surface of ['desktop', 'terminal'] as const) {
 
@@ -886,13 +886,13 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
   /** 18:00 local: the next 9:00 is 15 hours away. */
   const EVENING = new Date(2027, 0, 15, 18, 0, 0, 0).getTime()
-  const GROUNDWORK = [{ name: 'groundwork:groundwork', description: 'Groundwork', source: 'plugin', plugin: 'groundwork' }]
+  const WHATSNEXT = WHATSNEXT_CMDS
   type ColdOver = {
     /** The rows the person set (settings.json); Before the cache goes cold is "ask" unless these say otherwise, since only that row offers. */
     stored?: Record<string, string>
     /** True: leave Before the cache goes cold unset, so the profile decides. */
     unset?: boolean
-    commands?: typeof GROUNDWORK
+    commands?: typeof WHATSNEXT
     prices?: string
     usage?: typeof BIG_TURN
     fork?: Record<string, number> | undefined
@@ -912,6 +912,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.ticks = over.ticks === true
     h.stepUsage = over.usage ?? BIG_TURN
     h.commands = over.commands ?? []
+    if (over.commands?.length) installWhatsnext(h)
     if ('fork' in over) h.forkUsage = over.fork
     if (over.prices) h.pricesFile = over.prices
     const d = drive($, h)

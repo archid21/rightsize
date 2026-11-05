@@ -28,7 +28,7 @@ export const COLD_MIN = 0.5
 /** The request that keeps the cache warm: the fork re-reads the whole conversation from the cache, and so refreshes it. */
 export const PING_PROMPT = 'Reply with the single word OK.'
 
-/** The prompt Groundwork's skill answers with its wrap-up flow. */
+/** The prompt whatsnext's skill answers with its wrap-up flow. */
 export const WRAP_UP = 'wrap up'
 
 /** How long before the cache expires rightsize acts: 3 minutes for a 1-hour cache, 1 minute for a 5-minute cache. */
@@ -278,10 +278,10 @@ export const ignoredLately = (lines: readonly Answered[]) => {
   return last.length === BACK_OFF_AFTER && last.every(c => c === 'ignored')
 }
 
-/** What a row value does at a turn's end: `warm` has the hours, or `untilStart` (the usual start time, at most the hours). A handoff without Groundwork is a compaction. */
+/** What a row value does at a turn's end: `warm` has the hours, or `untilStart` (the usual start time, at most the hours). A handoff without whatsnext is a compaction. */
 export type ColdPlan = { action: 'ask' | 'warm' | 'handoff' | 'compact' | 'off'; hours?: number; untilStart?: true }
 
-export function coldPlan(value: string, groundwork: boolean): ColdPlan {
+export function coldPlan(value: string, whatsnext: boolean): ColdPlan {
   switch (value) {
     case 'keep warm 2 h':
       return { action: 'warm', hours: 2 }
@@ -290,7 +290,7 @@ export function coldPlan(value: string, groundwork: boolean): ColdPlan {
     case 'keep warm until my usual start':
       return { action: 'warm', hours: 8, untilStart: true }
     case 'save a handoff':
-      return { action: groundwork ? 'handoff' : 'compact' }
+      return { action: whatsnext ? 'handoff' : 'compact' }
     case 'compact':
       return { action: 'compact' }
     case 'off':
@@ -299,6 +299,3 @@ export function coldPlan(value: string, groundwork: boolean): ColdPlan {
       return { action: 'ask' }
   }
 }
-
-/** True when a plugin's name is Groundwork's (`groundwork`, or `groundwork@<marketplace>`). */
-export const isGroundwork = (plugin: string | undefined) => plugin === 'groundwork' || (plugin ?? '').startsWith('groundwork@')

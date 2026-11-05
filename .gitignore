@@ -6,6 +6,6 @@ plugins/*/.claude-plugin/types/
 *.bak
 .groundwork/config.local.json
 
-# Groundwork: decisions and handoff stay private (research-stays-private rule)
+# whatsnext: decisions and handoff stay private (research-stays-private rule)
 docs/decisions/
 docs/project/HANDOFF.md

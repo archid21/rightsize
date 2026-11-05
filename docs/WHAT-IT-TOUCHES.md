@@ -1,6 +1,6 @@
 # What rightsize touches
 
-rightsize is a mod: it runs inside Claude Code and hooks some of its events. This is everything it does outside the chat. Nothing in your project is read or written.
+rightsize is a mod: it runs inside Claude Code and hooks some of its events. This is everything it does outside the chat. Nothing in your project is written, and none of its files is opened by rightsize: it only checks that `.whatsnext/config.json` exists, the sign that whatsnext was started there.
 
 ## Hooks
 
@@ -15,7 +15,7 @@ rightsize is a mod: it runs inside Claude Code and hooks some of its events. Thi
 
   It never approves a call and never changes a permission decision anywhere else.
 - `config.set`: passes every event on with `next(e)` and never denies. It ignores rows that are not its own, and watches its own `rightsize.*` rows in `/config`, to know which values you set. The write goes through as you made it.
-- `turn.complete`: measures the turn. Before a big session's cache goes cold (see **Before the cache goes cold**), it may start a timer. The timer sends one small request through Claude Code over the same conversation, submits the prompt `wrap up` for Groundwork, or compacts the conversation. It lists the session's commands to find Groundwork. It starts nothing while a turn runs.
+- `turn.complete`: measures the turn. Before a big session's cache goes cold (see **Before the cache goes cold**), it may start a timer. The timer sends one small request through Claude Code over the same conversation, submits the prompt `wrap up` for whatsnext, or compacts the conversation (with whatsnext installed, using the instructions whatsnext prints; see **Programs it runs**). It lists the session's commands to find whatsnext. It starts nothing while a turn runs.
 - `command.run` (`/rightsize`), `session.start` and `ui.render` (the band above the prompt) serve its own command, start-up and display.
 
 The **Routing**, **Hand-offs** and **Cache** rows turn off the matching actions of these hooks: Routing the effort changes, the review switch and the mid-turn raises, Hand-offs the hand-off note and the move of Claude's subagents, Cache the keep-warm requests, the offer, the handoff or compaction and the idle warning. With Routing and Hand-offs both off, `prompt.submit` rates nothing and passes the prompt through.
@@ -26,16 +26,20 @@ Only its own `rightsize.*` rows in `/config`: when you answer one of its questio
 
 ## Programs it runs
 
-Four programs, started by name with no shell. The only part of a command that changes is a path inside its own log folders.
+Four programs for its logs, started by name with no shell. The only part of a command that changes is a path inside its own log folders.
 
 - `mkdir -m 700 -p` and `chmod`, to create its log folders under `~/.claude/mods-logs` and make them readable by you alone (folders 700, files 600).
 - `rm -f` and `rmdir` on a session's folder inside `~/.claude/mods-logs/rightsize/` once nothing in it has changed for 45 days (never the current session's).
+
+When a session resumes, it starts two more, only to read: `find` on `~/.claude/projects` for that session's own transcript file, and `tail -c 1048576` on it, to learn when the last reply came and so whether the cache went cold. They change nothing.
+
+With whatsnext installed it starts two more, only to compact: `git rev-parse --show-toplevel` (to find your project's folder; it prints a path) and `python3 <whatsnext's folder>/skills/whatsnext/scripts/whatsnext.py compact-instructions --session <session ID> --json` (whatsnext's own script; it prints the text to compact with and whether a handoff should come first, and changes nothing). rightsize finds whatsnext's folder in Claude Code's list of installed plugins and never runs a script from anywhere else.
 
 It starts no other program, and fetches no code.
 
 ## Prompts it submits
 
-One, and only one fixed text: `wrap up`, submitted once before a big session's cache goes cold, when **Before the cache goes cold** is set to save a handoff and Groundwork is installed. The keep-warm request is the fixed text `Reply with the single word OK.`, sent through Claude Code over the same conversation, and the compaction is Claude Code's own `/compact`. rightsize never submits text taken from your conversation. Two band buttons only put text in the prompt box for you to send yourself: your last prompt again (Retry, Run on your model) and `/model sonnet` (the start suggestion).
+One, and only one fixed text: `wrap up`, submitted once before a big session's cache goes cold, when **Before the cache goes cold** is set to save a handoff and whatsnext is installed and started in the project. When whatsnext wants a handoff before a compaction, the same `wrap up` is submitted once for that. The keep-warm request is the fixed text `Reply with the single word OK.`, sent through Claude Code over the same conversation, and the compaction is Claude Code's own `/compact` (with whatsnext installed and started in the project, run with the instructions whatsnext printed). rightsize never submits text taken from your conversation. Two band buttons only put text in the prompt box for you to send yourself: your last prompt again (Retry, Run on your model) and `/model sonnet` (the start suggestion).
 
 ## Files it writes
 
@@ -43,11 +47,11 @@ One, and only one fixed text: `wrap up`, submitted once before a big session's c
 - Its own store in Claude Code's plugin store (your answers, calibration and counters), `~/.claude/plugins/store/rightsize_*.json`.
 - `prices.json` in its own plugin folder, keeping the old file as `prices.json.bak` (the monthly price check).
 
-These are all the places it writes. Nothing in your project is read or written.
+These are all the places it writes. Nothing in your project is written, and none of its files is opened by rightsize: it only checks that `.whatsnext/config.json` exists, the sign that whatsnext was started there.
 
 ## What it reads
 
-Your prompt, the session's usage and rate limits, your `model` and `effortLevel` settings, its own `/config` rows, and two environment variables (the `HOME` variable, to place its logs, and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`), to rate and price each turn. For each tool call in a turn it reads the tool, its arguments and whether it failed, to spot a stuck turn, a blocked step or a failing test run. It reads no credentials (no API key, token, keychain or sign-in file): model calls go through Claude Code with your existing sign-in. From Claude Code's settings it reads `model`, `effortLevel` and its own `pluginConfigs` rows.
+Your prompt, the session's usage and rate limits, your `model` and `effortLevel` settings, its own `/config` rows, and three environment variables (the `HOME` variable, to place its logs, `CLAUDE_CONFIG_DIR` where Claude Code keeps its folder, and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`), to rate and price each turn. With whatsnext installed it also reads Claude Code's list of installed plugins (`installed_plugins.json` in Claude Code's folder) to find whatsnext's folder. For each tool call in a turn it reads the tool, its arguments and whether it failed, to spot a stuck turn, a blocked step or a failing test run. It reads no credentials (no API key, token, keychain or sign-in file): model calls go through Claude Code with your existing sign-in. From Claude Code's settings it reads `model`, `effortLevel` and its own `pluginConfigs` rows.
 
 ## Network
 

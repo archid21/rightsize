@@ -1,5 +1,5 @@
 import { type TestBody, expect, test } from 'claude-code/testing'
-import { RUNS_FILE, LOG_PATH, NO_CHANGE, NO_COLD, engine, drive, untilAsked, mount, rowText } from './testkit'
+import { RUNS_FILE, LOG_PATH, NO_CHANGE, NO_COLD, WHATSNEXT_ARGS, WHATSNEXT_SCRIPT, engine, drive, installWhatsnext, untilAsked, mount, rowText, wnAnswer } from './testkit'
 import { clockText } from './warm'
 import { LIMIT_COMPACT_INSTRUCTIONS, LIMIT_WHY } from './limit'
 
@@ -222,14 +222,111 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(log(h)).toContain('usage-limit advice: compacted before the reset, on the person\'s button')
   })
 
-  test(`with whatsnext installed Compact now still compacts the same way for now (TODO(whatsnext-compact)) (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
+  const COMPACTED = 'Compacted. After the reset a short summary is read, not the whole conversation.'
+  /** A session with whatsnext installed and the project through `whatsnext init`, on the virtual clock, with the advice shown. */
+  const withWhatsnext = async ($: unknown, on: Parameters<TestBody>[1], over: { initialized?: boolean; listed?: boolean } = {}) => {
     const h = setup(on, { commands: WHATSNEXT })
+    installWhatsnext(h, over)
+    h.virtual = true
     const d = drive($, h)
     await d.start(surface)
     await turn(d, 't1')
+    expect(h.compactions, 'the advice shown, nothing compacted').toBe(0)
+    return { h, d }
+  }
+
+  test(`with whatsnext installed, Compact now asks whatsnext for the instructions and submits its compact prompt, and does not compact itself (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
+    const { h } = await withWhatsnext($, on)
+    await press($, 'cold-limit-compact')
+    expect(h.wnRuns).toEqual([['python3', WHATSNEXT_SCRIPT, 'compact-instructions', '--session', 'sess-1', '--json']])
+    expect(h.commandRuns, 'whatsnext\'s compact_prompt, run as /compact (a prompt that begins with / is refused)').toEqual([{ command: 'compact', args: WHATSNEXT_ARGS }])
+    expect(h.submitted.map(x => x.text), 'only the person\'s own prompt').toEqual(['continue'])
+    expect(h.compactions, 'rightsize does not compact').toBe(0)
+    expect((await advice($)).text).toBe(COMPACTED)
+    expect(log(h)).toContain('usage-limit advice: compacted with whatsnext before the reset')
+  })
+
+  test(`with whatsnext installed and wrap_up_first, Compact now submits "wrap up", and when that turn ends asks again and submits the compact prompt, once (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
+    const { h, d } = await withWhatsnext($, on)
+    // The second answer still says wrap_up_first: it is not followed, or this would loop.
+    h.wnReplies = [{ exitCode: 0, stdout: wnAnswer(true) }, { exitCode: 0, stdout: wnAnswer(true) }]
+    await press($, 'cold-limit-compact')
+    expect(h.submitted.map(x => x.text), 'the wrap-up only, until its turn ends').toEqual(['continue', 'wrap up'])
+    expect(h.wnRuns.length).toBe(1)
+    expect(h.commandRuns, 'no compaction yet').toEqual([])
+    await h.advance(60_000)
+    expect(h.wnRuns.length, 'nothing runs while the wrap-up turn does not end').toBe(1)
+    await d.turnStart('t2', 'wrap up')
+    await d.step('t2')
+    await d.complete('t2')
+    await h.advance(0)
+    expect(h.wnRuns.length, 'asked again after the turn').toBe(2)
+    expect(h.commandRuns).toEqual([{ command: 'compact', args: WHATSNEXT_ARGS }])
+    expect(h.submitted.map(x => x.text)).toEqual(['continue', 'wrap up'])
     expect(h.compactions).toBe(0)
+    expect((await advice($)).text).toBe(COMPACTED)
+    await turn(d, 't3')
+    await h.advance(HOUR)
+    expect(h.submitted.filter(x => x.text === 'wrap up').length, 'one wrap-up per compaction').toBe(1)
+    expect(h.commandRuns.length, 'one compaction').toBe(1)
+  })
+
+  test(`a prompt from the person before the wrap-up's turn ends stops the compaction (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
+    const { h, d } = await withWhatsnext($, on)
+    h.wnReply = { exitCode: 0, stdout: wnAnswer(true) }
+    await press($, 'cold-limit-compact')
+    h.rating = NO_CHANGE
+    await d.submit('wait, one more thing')
+    await d.turnStart('t2', 'wait')
+    await d.step('t2')
+    await d.complete('t2')
+    await h.advance(HOUR)
+    expect(h.wnRuns.length, 'asked once, at the press').toBe(1)
+    expect(h.submitted.map(x => x.text)).toEqual(['continue', 'wrap up', 'wait, one more thing'])
+    expect(h.compactions).toBe(0)
+  })
+
+  const FAILS: { name: string; over?: { initialized?: boolean; listed?: boolean }; reply?: { exitCode: number; stdout: string; stderr?: string }; runs: number; why: string }[] = [
+    { name: 'the project has not been through whatsnext init', over: { initialized: false }, runs: 0, why: 'this project has not been through "whatsnext init"' },
+    { name: 'whatsnext\'s plugin folder is not in the list of installed plugins', over: { listed: false }, runs: 0, why: 'whatsnext\'s plugin folder was not found' },
+    { name: 'compact-instructions exits with an error', reply: { exitCode: 1, stdout: '', stderr: 'not a session id\n' }, runs: 1, why: 'compact-instructions exited 1: not a session id' },
+    { name: 'compact-instructions does not answer in JSON', reply: { exitCode: 0, stdout: 'Keep: the task.' }, runs: 1, why: 'did not answer in JSON' },
+    { name: 'compact-instructions leaves out compact_prompt', reply: { exitCode: 0, stdout: '{"wrap_up_first": false}' }, runs: 1, why: 'answered without compact_prompt or wrap_up_first' },
+  ]
+  for (const f of FAILS) {
+    test(`Compact now compacts with its own instructions, and logs why, when ${f.name} (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
+      const { h } = await withWhatsnext($, on, f.over)
+      if (f.reply) h.wnReply = f.reply
+      await press($, 'cold-limit-compact')
+      expect(h.wnRuns.length).toBe(f.runs)
+      expect(h.compactCalls).toEqual([{ instructions: LIMIT_COMPACT_INSTRUCTIONS }])
+      expect(h.submitted.map(x => x.text), 'no whatsnext prompt').toEqual(['continue'])
+      expect(h.commandRuns).toEqual([])
+      expect(log(h)).toContain('usage-limit advice: whatsnext could not compact (')
+      expect(log(h)).toContain(f.why)
+      expect((await advice($)).text).toBe(COMPACTED)
+    })
+  }
+
+  test(`a wrap-up that fails on the second ask falls back to compacting with the instructions (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
+    const { h, d } = await withWhatsnext($, on)
+    h.wnReplies = [{ exitCode: 0, stdout: wnAnswer(true) }, { exitCode: 1, stdout: '', stderr: 'boom' }]
+    await press($, 'cold-limit-compact')
+    await d.turnStart('t2', 'wrap up')
+    await d.step('t2')
+    await d.complete('t2')
+    await h.advance(0)
+    expect(h.submitted.map(x => x.text)).toEqual(['continue', 'wrap up'])
+    expect(h.compactCalls).toEqual([{ instructions: LIMIT_COMPACT_INSTRUCTIONS }])
+    expect(log(h)).toContain('compact-instructions exited 1: boom')
+  })
+
+  test(`a /compact that cannot run falls back to compacting with the instructions (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
+    const { h } = await withWhatsnext($, on)
+    h.commandRunFails = 'a hook refused it'
     await press($, 'cold-limit-compact')
     expect(h.compactCalls).toEqual([{ instructions: LIMIT_COMPACT_INSTRUCTIONS }])
+    expect(log(h)).toContain('"/compact" could not run:')
   })
 
   test(`a compaction that is skipped says so and leaves no row (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {

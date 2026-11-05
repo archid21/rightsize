@@ -22,7 +22,7 @@ export function netSaving(action: ColdPlan['action'], o: { cold: number; ping: n
   return o.cold - cost
 }
 
-/** The row acts only when coming back cold costs at least this many dollars (API-equivalent on a subscription too). The cold-return note has no minimum. */
+/** The row's size bar while Idle warning is off; otherwise the row uses the Idle warning amount. Dollars, API-equivalent on a subscription too. The cold-return note has no minimum. */
 export const COLD_MIN = 0.5
 
 /** The request that keeps the cache warm: the fork re-reads the whole conversation from the cache, and so refreshes it. */

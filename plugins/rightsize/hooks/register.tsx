@@ -2593,8 +2593,9 @@ async function coldCheck($: EngineInterface) {
   const cold = idle.resend
   const { groundwork } = await neighbours($)
   const plan = coldPlan(coldMode, groundwork)
-  // The row acts only on a big conversation (COLD_MIN) and when its action saves something: its own cost taken off coming back cold.
-  if (cold < COLD_MIN) return
+  // The row acts only on a conversation big enough to matter, by the Idle warning amount (COLD_MIN while that is off), and
+  // when its action saves something: its own cost taken off coming back cold.
+  if (cold < (idleWarning ?? COLD_MIN)) return
   const net = netSaving(plan.action, { cold, ping: pingCost(prices[tier], context), compact: idle.compact })
   if (plan.action !== 'off' && net <= 0) {
     await log($, `before the cache goes cold: ${plan.action} skipped, it would cost ${money(cold - net)} against ${money(cold)} cold`)

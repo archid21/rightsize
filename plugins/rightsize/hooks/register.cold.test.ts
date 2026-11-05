@@ -230,6 +230,20 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await bandText($, surface), 'over IDLE_MAX_CONTEXT').toBe('')
   })
 
+  test(`ask: the size bar is the Idle warning amount: over $0.10 offers 20K tokens on Opus (${surface})`, { timeoutMs: 30000, options: { idleWarning: 'over $0.10' } }, async ($, on) => {
+    const { h, d } = await coldSession($, on, { usage: { ...BIG_TURN, cache_read_input_tokens: 20_000 } })
+    await coldOffer(h, d, 't1')
+    expect(await bandText($, surface)).toContain('Goes cold')
+  })
+
+  test(`ask: Idle warning over $1 skips a $0.55 cold return (${surface})`, { timeoutMs: 30000, options: { idleWarning: 'over $1' } }, async ($, on) => {
+    const { h, d } = await coldSession($, on)
+    h.model = 'claude-sonnet-5-5'
+    h.stepUsage = { ...BIG_TURN, cache_read_input_tokens: 139_500 }
+    await coldTurn(d, 't1')
+    expect(await bandText($, surface)).toBe('')
+  })
+
   test(`ask: an aborted turn gets no offer: the person is at the keyboard (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const { d } = await coldSession($, on)
     await d.step('t1')

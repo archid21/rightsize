@@ -53,7 +53,7 @@ test('the size is the live window of $.session.usage() when it has one; else the
   expect(coldLines(h)[0], 'the host figure wins over the tail').toMatchObject({ context: 75_000, tier: 'opus' })
 })
 
-test('it is logged below the $0.50 bar for Before the cache goes cold', async ($, on) => {
+test('it is logged for a small conversation too (the old $0.50 bar for Before the cache goes cold is gone)', async ($, on) => {
   const h = engine(on, OPUS)
   resumed(h, 2 * HOUR * 1000, {}, { input_tokens: 0, cache_read_input_tokens: 20_000, cache_creation_input_tokens: 0 })
   await drive($, h).start('terminal')
@@ -209,15 +209,18 @@ test('error: a transcript of junk rows writes nothing', async ($, on) => {
   expect((await d.command('status')).text ?? '').not.toBe('')
 })
 
-test('the report and the log reader take the line without changing', async ($, on) => {
+test('the report and the log reader take the line: only the Cold returns line shows it, and nothing else in the report changes', async ($, on) => {
   const h = engine(on, OPUS)
   const d = drive($, h)
   await d.start('terminal')
   const before = (await d.command('report')).text
+  expect(before, 'no cold return yet, no line').not.toContain('Cold returns')
   // A second start in the same process, now with a transcript to find: the line is written into the log the report reads.
   resumed(h)
   await d.start('terminal')
   expect(coldLines(h).length).toBe(1)
-  expect((await d.command('report')).text, 'the same report with the line in the log').toBe(before)
+  const after = (await d.command('report')).text ?? ''
+  expect(after, 'the line reads the log: 1 return, what the compaction would have saved').toContain('Cold returns: 1 · whatsnext could have saved $0.42')
+  expect(after.replace(/\n\nCold returns:[^\n]*/, ''), 'the rest is the same report').toBe(before)
   expect((await d.command('status')).text ?? '').not.toBe('')
 })

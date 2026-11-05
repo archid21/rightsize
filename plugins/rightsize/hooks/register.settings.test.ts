@@ -1,7 +1,7 @@
 import { type TestBody, expect, test } from 'claude-code/testing'
 import { CAL_FULL, CAL_STORE, DEFAULT_PRICES, type Calibration, type Rating, type Situation, delegateCost, delegateKeys } from './cost'
 import { KEYS, SETTINGS, type SettingKey, inOptions, plainTitle } from './settings'
-import { RUNS_FILE, LOG_PATH, LEGACY_RUNS, LOOKUP, DEBUG, NO_ONE, SEARCH, REVIEW, NO_CHANGE, FREE_SWITCHES, BIG_TURN, engine, drive, flush, settle, untilAsked, DAY, PAGE, OLD_PRICES, last, mount, bandText, LOWER } from './testkit'
+import { RUNS_FILE, LOG_PATH, LEGACY_RUNS, LOOKUP, DEBUG, NO_ONE, SEARCH, REVIEW, NO_CHANGE, FREE_SWITCHES, NO_COLD, BIG_TURN, engine, drive, flush, settle, untilAsked, DAY, PAGE, OLD_PRICES, last, mount, bandText, LOWER } from './testkit'
 
 for (const surface of ['desktop', 'terminal'] as const) {
 
@@ -91,7 +91,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     key: SettingKey
     /** A value other than the default. */
     value: string
-    start: { model: string; effort: string; store?: Record<string, unknown> }
+    start: { model: string; effort: string; store?: Record<string, unknown>; stored?: Record<string, string> }
     /** One turn first, so rightsize has seen the model and level the session runs on. */
     warm?: boolean
     setup?: (h: ReturnType<typeof engine>) => void
@@ -175,7 +175,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     {
       key: 'remember',
       value: 'this session',
-      start: { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES } },
+      start: { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES }, stored: NO_COLD },
       see: async c => {
         // Nothing is asked for the profile's answers: Remember follows a rule the person sets, here from the band's ⋯ menu.
         c.h.rating = RAISE_HIGH
@@ -485,7 +485,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   const KEEP8 = { profile: 'Balanced', beforeCold: 'keep warm 8 h' }
 
   test(`Routing off: a lowering is not applied, nothing is asked, the band says nothing, and the log says why (${surface})`, { timeoutMs: 30000, options: ROUTING_OFF.options }, async ($, on) => {
-    const h = engine(on, { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES }, stored: ROUTING_OFF.stored })
+    const h = engine(on, { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES }, stored: { ...ROUTING_OFF.stored, ...NO_COLD } })
     const d = drive($, h)
     await d.start(surface)
     await d.step('t0')
@@ -505,7 +505,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
   test(`Routing off: a raise, a session switch and a review on Opus are not set either, and a stuck turn is not raised (${surface})`, { timeoutMs: 30000, options: ROUTING_OFF.options }, async ($, on) => {
     // Raising set to ask: the question would offer a session switch.
-    const h = engine(on, { model: 'claude-sonnet-5-5', effort: 'medium', store: { ...AUTO_RAISE, choices: { raise: 'ask' }, [CAL_STORE]: FREE_SWITCHES }, stored: ROUTING_OFF.stored })
+    const h = engine(on, { model: 'claude-sonnet-5-5', effort: 'medium', store: { ...AUTO_RAISE, choices: { raise: 'ask' }, [CAL_STORE]: FREE_SWITCHES }, stored: { ...ROUTING_OFF.stored, ...NO_COLD } })
     const d = drive($, h)
     await d.start(surface)
     await d.step('t0')

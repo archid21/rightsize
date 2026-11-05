@@ -38,6 +38,8 @@ export const NO_ONE = '(no one answers)'
 export const SEARCH = 'find every call site of the old logger across the whole repo and list them'
 export const REVIEW = '{"level":"high","model":"opus","size":"small","type":"review","read":30000,"write":3000,"steps":10,"reason":"subtle bug hunt"}'
 export const NO_CHANGE = '{"level":"medium","model":"same","size":"small","type":"lookup","read":2000,"write":300,"steps":1}'
+/** Stored rows that turn Before the cache goes cold off. It has no size bar: a small session gets a keep-warm row too, so a test that is about something else on the band sets this. */
+export const NO_COLD = { beforeCold: 'off' }
 export const FREE_SWITCHES = { 'cache:effort-switch': { n: 20, ratio: 0 } }
 /** A main request that read 80,500 tokens: on Opus a cold return costs $0.63, over the $0.50 bar for Before the cache goes cold. */
 export const BIG_TURN = { input_tokens: 200, output_tokens: 400, cache_read_input_tokens: 80_000, cache_creation_input_tokens: 300 }

@@ -102,7 +102,8 @@ import { BRIEF_MAX, cutRequest, parseRating, ratingPrompt, ratingSystem } from '
 import { isApprovalStep } from './approval'
 import { LIMITS, type Limits, type Signals, type Struggle, blockedError, callKey, isSensitivity, isTestCommand, noSignals, noteCall, oneUp, refusedByPerson, struggle, testsOutcome } from './struggle'
 import { type Change, type HelperLine, type RunLine, type SwitchLine, type Windows, SESSION_TOTAL, SESSION_TOTAL_FROM, bandShareText, buildReport, costTag, parseLines, ratedInSession, sessionTotal, shareMessage, shareOf, usedTag, windowCostText, windowRates } from './report'
-import { COLD_MIN, PING_PROMPT, ROW_OF, WRAP_UP, alwaysText, breakEvenMs, cacheHeld, clockText, coldPlan, ignoredLately, isGroundwork, keepWarmChoices, leadMs, learnedChoice, nextStart, offerAt, offerText, pingCost, pingEvery, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText } from './warm'
+import { HOW_IT_WORKS, NOTE_HIDE, NOTE_HOW, NOTE_MORE, isWhatsnext, noteLink, noteText } from './whatsnext'
+import { PING_PROMPT, ROW_OF, WRAP_UP, alwaysText, breakEvenMs, cacheHeld, clockText, coldPlan, ignoredLately, isGroundwork, keepWarmChoices, leadMs, learnedChoice, COLD_MIN, netSaving, nextStart, offerAt, offerText, pingCost, pingEvery, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText } from './warm'
 
 // Before a prompt is sent, a quick Haiku call rates the effort, the model and
 // the work needs on each model, and the cost model prices each route that fits. The first time
@@ -471,6 +472,12 @@ let profileChose: (keyof Choices)[] = []
 const profileNoted = new Set<keyof Choices>()
 /** A note for the prompt's band: the cache went cold, so this prompt writes the conversation again. */
 let idleNote = ''
+/** What a Haiku compaction would have saved on this session's cold return, in dollars, held for its first prompt (0: none). */
+let returnSaving = 0
+/** The whatsnext note while it is on the band, from the first prompt after a cold resume to the end of that turn. Every band of the turn carries it (setBand). */
+let whatsnextRow: { text: string; link?: { label: string; href: string } } | null = null
+/** The store key of "Don't show again" on the whatsnext note: true once the person hid it. */
+const WHATSNEXT_HIDDEN = 'whatsnextNoteHidden'
 /** One close call in five takes the route the guide did not pick. Off in every profile. */
 let explore = false
 /** What happens to the answers to the four questions: ask whether to keep them, keep them, or forget them at the end of the session. */
@@ -1750,8 +1757,11 @@ function bandRows(band: Band | null | undefined, mode: BandMode) {
 let bandNote: string | null = null
 
 /** `rating` is true for the band of a prompt being rated now: its run line is not in the log yet, so it counts as one more rated prompt toward SESSION_TOTAL_FROM. */
-function setBand($: EngineInterface, band: Band | null, rating = false) {
-  if (!band) return $.state.set(BAND, null).catch(() => undefined).then(() => showQuestion($))
+function setBand($: EngineInterface, from: Band | null, rating = false) {
+  if (!from) return $.state.set(BAND, null).catch(() => undefined).then(() => showQuestion($))
+  // The whatsnext note rides on every band of its turn, as its own row: a prompt's band that is not shown (it did nothing) leaves only the note.
+  const shown = from.acted || bandMode === 'always'
+  const band: Band = whatsnextRow && !from.coldText ? { ...(shown ? from : { text: '' }), acted: true, coldText: whatsnextRow.text, coldMore: [...NOTE_MORE], ...(whatsnextRow.link ? { coldLink: whatsnextRow.link } : {}) } : from
   // A band built from an earlier band's text already carries a total: drop it, and add the current one last.
   let text = band.text.replace(SESSION_TOTAL, '')
   let coldText = band.coldText?.replace(SESSION_TOTAL, '')
@@ -2345,14 +2355,17 @@ async function transcriptTail($: EngineInterface, id: string): Promise<string | 
 
 /**
  * Called at the end of `session.start`: a session that comes back with history (a resume or a fork) and whose last
- * response ended more than the cache life (`cacheTtl`) ago gets one `coldReturn` line in the run log, whatever the cost
- * (COLD_MIN does not apply). Nothing is shown and nothing is compacted. It reads the session itself, not an event
+ * response ended more than the cache life (`cacheTtl`) ago gets one `coldReturn` line in the run log, whatever the cost.
+ * Nothing is compacted. When the line says a Haiku compaction would have saved something, its first prompt gets a band
+ * note about it (noteWhatsnext). It reads the session itself, not an event
  * the host raises: the history from `$.session.messages()` (a fresh session has no assistant message, so it stops there), the
  * size from `$.session.usage()`, the model from `$.session.model()`; the host gives no time of the last response, so
  * that, and the model and size when usage has none, come from the last 1 MiB of the transcript file. A figure not found
  * is left out, never guessed; with no time there is no line. Never throws.
  */
 async function noteColdReturn($: EngineInterface) {
+  returnSaving = 0
+  whatsnextRow = null
   try {
     if (off) return
     const rows = await $.session.messages()
@@ -2377,15 +2390,67 @@ async function noteColdReturn($: EngineInterface) {
     }
     await append($, 'runs.jsonl', JSON.stringify(line), RUNS_LOG_MAX)
     runLog.push(line)
+    // The first prompt says what whatsnext would have saved, when it would have saved anything.
+    returnSaving = line.compactSaving !== undefined && line.compactSaving > 0 ? line.compactSaving : 0
   } catch {
     // A log line must never hold up a session start.
   }
 }
 
+/** True when whatsnext's commands or skills are listed (so it is installed and on); false when they are not; undefined when the list cannot be read. */
+async function whatsnextInstalled($: EngineInterface): Promise<boolean | undefined> {
+  try {
+    return (await $.command.list()).some(c => isWhatsnext(c.plugin))
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * The first prompt after a cold resume (called with the prompt, once): a row on the band, "whatsnext could have saved
+ * $0.12 here.", only when the cold-return line says a Haiku compaction beforehand would have saved more than 0. One button
+ * by state: "Get whatsnext" (a link to its page) when whatsnext is not installed, none when it is. ⋯ has How it works and
+ * "Don't show again", which is kept in the store: the report line stays. Every band of the turn carries it (setBand), and it
+ * leaves when the turn ends (endNote). Nothing is held back, asked or compacted.
+ */
+async function noteWhatsnext($: EngineInterface) {
+  const saving = returnSaving
+  returnSaving = 0
+  whatsnextRow = null
+  if (saving <= 0 || off || bandMode === 'off') return
+  if ((await $.store.get(WHATSNEXT_HIDDEN).catch(() => undefined)) === true) return
+  const text = noteText(saving, billing === 'subscription', billing === 'subscription' ? await windowPerDollar($) : undefined)
+  if (!text) return
+  const link = noteLink(await whatsnextInstalled($))
+  whatsnextRow = { text, ...(link ? { link } : {}) }
+  await showCold($, text, undefined, true, [...NOTE_MORE], link)
+  await log($, `whatsnext note: could have saved ${money(saving)} on the cold return${link ? '; whatsnext not installed, Get whatsnext shown' : ''}`)
+}
+
+/** The turn ended: the whatsnext note leaves the band. */
+async function endNote($: EngineInterface) {
+  if (!whatsnextRow) return
+  whatsnextRow = null
+  await clearColdRow($)
+}
+
+/** ⋯ on the note: "How it works" says what whatsnext does; "Don't show again" hides this note for good (the report line stays). */
+async function pressNote($: EngineInterface, id: string) {
+  if (id === NOTE_HOW) {
+    $.ui.log(HOW_IT_WORKS)
+    return
+  }
+  whatsnextRow = null
+  await $.store.set(WHATSNEXT_HIDDEN, true).catch(() => undefined)
+  await clearColdRow($)
+  $.ui.toast('Rightsize: the whatsnext note is hidden. The Cold returns line stays in the report.')
+  await log($, 'whatsnext note: hidden for good ("Don\'t show again")')
+}
+
 // ---- Before the cache goes cold ----------------------------------------------
 
-// A session whose conversation is big enough that coming back after its cache expired would cost $0.50 or more
-// (API-equivalent dollars, on a subscription too) gets one of these at the end of a main-chat turn, by the row:
+// A session under 200K tokens whose action saves something (its own cost taken off what coming back after the cache
+// expired would cost, API-equivalent dollars on a subscription too) gets one of these at the end of a main-chat turn, by the row:
 // an offer in the band (ask), keep-warm requests until a chosen time, a Groundwork handoff, a compaction, or nothing.
 // The offer is a row of its own under the band's route line, with one button; the other choices are in the ⋯ menu. On a
 // cache of 1 hour or more it shows OFFER_AFTER_MS after the turn ended, not at its end (the timer below); on a shorter
@@ -2457,8 +2522,8 @@ function cancelCold($: EngineInterface, why: string) {
 /** Takes the Cache row off the band, and leaves the prompt's row as it was. */
 async function clearColdRow($: EngineInterface) {
   const band = (await $.state.get(BAND).catch(() => undefined))?.value
-  if (!band || (!band.coldText && !band.cold && !band.coldMore)) return
-  const { coldText: _t, cold: _c, coldMore: _m, ...route } = band
+  if (!band || (!band.coldText && !band.cold && !band.coldMore && !band.coldLink)) return
+  const { coldText: _t, cold: _c, coldMore: _m, coldLink: _l, ...route } = band
   await setBand($, route.text ? route : null)
 }
 
@@ -2469,6 +2534,7 @@ async function dropCache($: EngineInterface, why: string) {
   offerOpen = false
   warmReturn = null
   idleNote = ''
+  whatsnextRow = null
   await clearColdRow($)
 }
 
@@ -2477,12 +2543,12 @@ async function dropCache($: EngineInterface, why: string) {
  * as the offer's other choices (the ⋯ menu lists them). With `join`, the row sits under what the band said before (a
  * lowering's Retry and 👍 👎 stay); without it, it is the only row.
  */
-async function showCold($: EngineInterface, text: string, cold?: { id: string; label: string }[], join = false, more?: { id: string; label: string }[]) {
+async function showCold($: EngineInterface, text: string, cold?: { id: string; label: string }[], join = false, more?: { id: string; label: string }[], link?: { label: string; href: string }) {
   if (bandMode === 'off') return
   const had = join ? (await $.state.get(BAND).catch(() => undefined))?.value : undefined
-  const { coldText: _t, cold: _c, coldMore: _m, ...route } = had ?? { text: '', acted: false }
+  const { coldText: _t, cold: _c, coldMore: _m, coldLink: _l, ...route } = had ?? { text: '', acted: false }
   const lead = had && (had.acted || bandMode === 'always') ? route : { text: '' }
-  await setBand($, { ...lead, acted: true, coldText: text, ...(cold?.length ? { cold } : {}), ...(more?.length ? { coldMore: more } : {}) })
+  await setBand($, { ...lead, acted: true, coldText: text, ...(cold?.length ? { cold } : {}), ...(more?.length ? { coldMore: more } : {}), ...(link ? { coldLink: link } : {}) })
 }
 
 /** The other plugin that matters: Groundwork writes the handoff. A listing that fails says it is not installed. */
@@ -2510,8 +2576,8 @@ async function armCold($: EngineInterface, gen: number, at: number, fn: () => Pr
   })
 }
 
-// At a main turn's end, in the session's own model's prices. Skipped: rightsize off, Cache or the row off, no conversation
-// to speak of (a cold return under $0.50), one over 200K tokens (Claude Code compacts those itself),
+// At a main turn's end, in the session's own model's prices. Skipped: rightsize off, Cache or the row off, no conversation,
+// one whose action would not save anything (netSaving), one over 200K tokens (Claude Code compacts those itself),
 // and a round already done after the person's last prompt.
 async function coldCheck($: EngineInterface) {
   await closeOffer($, 'ignored')
@@ -2523,10 +2589,17 @@ async function coldCheck($: EngineInterface) {
   const context = lastContext
   if (!context || context > IDLE_MAX_CONTEXT) return
   const tier = (await situation($)).tier
-  const cold = idleCost(prices[tier], context).resend
-  if (cold < COLD_MIN) return
+  const idle = idleCost(prices[tier], context)
+  const cold = idle.resend
   const { groundwork } = await neighbours($)
   const plan = coldPlan(coldMode, groundwork)
+  // The row acts only on a big conversation (COLD_MIN) and when its action saves something: its own cost taken off coming back cold.
+  if (cold < COLD_MIN) return
+  const net = netSaving(plan.action, { cold, ping: pingCost(prices[tier], context), compact: idle.compact })
+  if (plan.action !== 'off' && net <= 0) {
+    await log($, `before the cache goes cold: ${plan.action} skipped, it would cost ${money(cold - net)} against ${money(cold)} cold`)
+    return
+  }
   const task = (await currentTask($))?.id
   const turn: ColdTurn = { endedAt: lastTurnAt || (await $.clock.now()), context, tier, cold, groundwork, ...(task ? { task } : {}), ends: {} }
   coldTurn = turn
@@ -2813,6 +2886,7 @@ async function compactNow($: EngineInterface) {
 // A band button. Offer buttons act on the turn that ended; the cache is still warm, so a handoff or a compaction runs
 // right away, and a keep-warm time counts from the turn's end. Each answer to an offer goes in the run log.
 async function pressCold($: EngineInterface, id: string): Promise<void> {
+  if (id === NOTE_HOW || id === NOTE_HIDE) return pressNote($, id)
   if (id === 'stop') {
     const w = warming
     cancelCold($, 'Stop pressed')
@@ -3722,6 +3796,7 @@ export const register: Register = (on, options) => {
     // When the prompt came in, before any rating or question: the start of the task's time to done.
     const submittedAt = await $.clock.now()
     await noteIdle($).catch(() => undefined)
+    await noteWhatsnext($).catch(() => undefined)
     profileChose = []
     // The session is idle, so no running turn can still take a prompt that has not started: it never will.
     if (e.turnId === undefined) await releaseStale($)
@@ -4131,8 +4206,8 @@ export const register: Register = (on, options) => {
     const band = (await $.state.get(BAND).catch(() => undefined))?.value
     const shown = bandRows(band, mode)
     if (!shown.route && !shown.cold && !question) return next(e)
-    const { Box, Button, Text } = $.ui.resolve(e)
-    type Row = { key: string; label: string; text: string; buttons: ReturnType<typeof Button>[]; note?: string }
+    const { Box, Button, Link, Text } = $.ui.resolve(e)
+    type Row = { key: string; label: string; text: string; buttons: ReturnType<typeof Button>[]; note?: string; link?: { label: string; href: string } }
     const rows: Row[] = []
     const buttons: { key: string; label: string; press: () => Promise<unknown> }[] = []
     if (band && shown.route) {
@@ -4186,7 +4261,7 @@ export const register: Register = (on, options) => {
     if (band && shown.route) rows.push({ key: 'route', label: 'Prompt', text: band.text, buttons: numbered(buttons) })
     if (band && shown.cold && band.coldText) {
       const cold = (band.cold ?? []).map(c => ({ key: `cold-${c.id}`, label: c.label, press: () => pressCold($, c.id) }))
-      rows.push({ key: 'cold', label: 'Cache', text: band.coldText, buttons: numbered(cold) })
+      rows.push({ key: 'cold', label: 'Cache', text: band.coldText, buttons: numbered(cold), ...(band.coldLink ? { link: band.coldLink } : {}) })
     }
     if (question) {
       const options = question.options.map((label, i) => ({ key: `q-${i}`, label, press: () => answerBand($, question.id, i) }))
@@ -4194,6 +4269,7 @@ export const register: Register = (on, options) => {
     }
     // × closes every row: a question closed this way gets its no-answer default. A question alone has no ⋯.
     const close = async () => {
+      whatsnextRow = null
       if (band && (shown.route || shown.cold)) await setBand($, null)
       if (question) await answerBand($, question.id, undefined)
     }
@@ -4213,6 +4289,7 @@ export const register: Register = (on, options) => {
           <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
             <Text>{r.text}</Text>
             {r.buttons}
+            {r.link ? <Text><Link key="link" href={r.link.href} label={r.link.label} /></Text> : null}
             {single ? ends : null}
           </Box>
           {r.note ? <Text dimColor>{r.note}</Text> : null}
@@ -4286,8 +4363,9 @@ export const register: Register = (on, options) => {
       active = null
       await finish($, run, e.isAborted, e.durationMs)
     }
-    // The turn's own questions go, unanswered; those asked while its prompt was sent show now.
+    // The turn's own questions go, unanswered; those asked while its prompt was sent show now. So does the whatsnext note.
     if (e.agentId === undefined) await endBand($, 'turn')
+    if (e.agentId === undefined) await endNote($)
     // A person who interrupted is at the keyboard: no offer for an aborted turn.
     if (e.agentId === undefined && !e.isAborted) await coldCheck($).catch(err => log($, `before the cache goes cold failed: ${err instanceof Error ? err.message : String(err)}`))
     return result

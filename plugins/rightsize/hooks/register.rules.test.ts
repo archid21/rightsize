@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import { CAL_STORE } from './cost'
-import { RUNS_FILE, LOG_PATH, LEGACY_RUNS, LOOKUP, DEBUG, SEARCH, NO_CHANGE, FREE_SWITCHES, cellsOf, engine, drive, flush, settle, untilAsked, DAY, PAGE, OLD_PRICES, last, mount, bandText, LOWER } from './testkit'
+import { RUNS_FILE, LOG_PATH, LEGACY_RUNS, LOOKUP, DEBUG, SEARCH, NO_CHANGE, FREE_SWITCHES, NO_COLD, cellsOf, engine, drive, flush, settle, untilAsked, DAY, PAGE, OLD_PRICES, last, mount, bandText, LOWER } from './testkit'
 
 for (const surface of ['desktop', 'terminal'] as const) {
   const readRuns = (h: ReturnType<typeof engine>) => (h.files[RUNS_FILE] ?? '').trim().split('\n').map(l => JSON.parse(l) as Record<string, unknown>)
@@ -456,7 +456,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   ]
   for (const row of KEEP_ROWS) {
     test(`Remember choices, ${row.name} (${surface})`, { timeoutMs: 30000, ...(row.mode ? { options: { remember: row.mode } } : {}) }, async ($, on) => {
-      const h = engine(on, { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES }, ...(row.mode ? { stored: { remember: row.mode } } : {}) })
+      const h = engine(on, { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES }, stored: { ...NO_COLD, ...(row.mode ? { remember: row.mode } : {}) } })
       const d = drive($, h)
       await d.start(surface)
       await setRaiseFromBand($, h, d, { Remember: row.remember })

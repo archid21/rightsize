@@ -1,6 +1,6 @@
 import { type TestBody, expect, test } from 'claude-code/testing'
 import { CAL_STORE } from './cost'
-import { RUNS_FILE, SWITCHES_FILE, LOG_PATH, LEGACY_RUNS, LOOKUP, DEBUG, SEARCH, REVIEW, NO_CHANGE, FREE_SWITCHES, BIG_TURN, cellsOf, engine, drive, flush, settle, untilAsked, last, mount, bandText, LOWER } from './testkit'
+import { RUNS_FILE, SWITCHES_FILE, LOG_PATH, LEGACY_RUNS, LOOKUP, DEBUG, SEARCH, REVIEW, NO_CHANGE, FREE_SWITCHES, NO_COLD, BIG_TURN, cellsOf, engine, drive, flush, settle, untilAsked, last, mount, bandText, LOWER } from './testkit'
 
 for (const surface of ['desktop', 'terminal'] as const) {
   test(`Q1 is the profile's: Balanced lowers on its own with no question, says so on the band once, steps up when the turn gets long, and retries at the original effort (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -1087,7 +1087,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   test(`the band shows a change and who decided it; Retry undoes it (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES } })
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES }, stored: NO_COLD })
     const d = drive($, h)
     await d.start(surface)
     await d.step('t0')
@@ -1111,7 +1111,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   const HIGH = '{"level":"high","model":"same","type":"debug","read":20000,"write":3000,"steps":8,"reason":"unknown cause"}'
 
   test(`the ⋯ menu of a band lists the other rules; one pick sets the rule's /config row, and Remember follows it (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES } })
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES }, stored: NO_COLD })
     const d = drive($, h)
     await d.start(surface)
     await d.step('t0')

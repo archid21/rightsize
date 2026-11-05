@@ -27,7 +27,7 @@ export type RunLine = {
    * 'warm': one keep-warm request that kept the prompt cache from expiring (Before the cache goes cold); `overhead` is what it cost, `tier` its model and `context` the conversation it re-read.
    * 'cold': how the person answered one offer before the cache goes cold; `choice` is the id they pressed, or 'ignored'. It carries no cost and is no part of any total.
    * 'warmSaved': the person came back to a kept-warm cache after the time it would have gone cold without keep warm, and the returning prompt's first request read the cache (at least ~80% of the kept conversation); `saved` is what coming back cold would have cost. It carries no `overhead`, and `totals` counts `saved` toward Total saved.
-   * 'coldReturn': a session that started with history (a resume or a fork) after sitting longer than its prompt cache lives. It is a log only: no report section counts it, and it carries no `overhead` or `saved`. `context` is the conversation's size, `tier` the model, `coldCost` what writing it again costs, `compactSaving` what a Haiku compaction beforehand would have saved, and `idleSeconds` how long the session sat since its last response.
+   * 'coldReturn': a session that started with history (a resume or a fork) after sitting longer than its prompt cache lives. It carries no `overhead` or `saved`, so no total counts it; the report's Cold returns line counts the lines and adds their `compactSaving`. `context` is the conversation's size, `tier` the model, `coldCost` what writing it again costs, `compactSaving` what a Haiku compaction beforehand would have saved, and `idleSeconds` how long the session sat since its last response.
    * `totals` adds the `overhead` of every line, so these pings count as rightsize's own cost and lower Total saved.
    */
   kind?: 'run' | 'overhead' | 'subagent' | 'check' | 'feedback' | 'corrected' | 'unrated' | 'dropped' | 'unbound' | 'warm' | 'warmSaved' | 'cold' | 'coldReturn'
@@ -864,6 +864,20 @@ export function keepWarmLine(lines: readonly RunLine[], subscription: boolean): 
   return `Keep warm: ${plural(runs, 'run')} · ${gain} · cost ${tildeMoney(cost)} · ${result}${subscription ? ' (API-equivalent)' : ''}`
 }
 
+/**
+ * The Cold returns line: how many sessions came back to a cold cache in the lines, and what whatsnext compacting them
+ * beforehand would have saved (the sum of `compactSaving`). Dollars; on a subscription the share of the 5-hour window when
+ * `rates` (windowRates over the same lines, as the report converts elsewhere) has one, else the dollars, API-equivalent.
+ * Undefined with no cold return. It changes no total.
+ */
+export function coldReturnLine(lines: readonly RunLine[], subscription: boolean, rates?: { low: number; high: number }): string | undefined {
+  const returns = lines.filter(l => l.kind === 'coldReturn')
+  if (!returns.length) return undefined
+  const saving = returns.reduce((n, l) => n + num(l.compactSaving), 0)
+  const what = subscription ? windowCostText(saving, rates) : money(saving)
+  return `Cold returns: ${returns.length} · whatsnext could have saved ${what}`
+}
+
 /** The context every request carried, by part (largest first), request-weighted, what re-reading it cost, and how to cut it. */
 export function fixedBlock(lines: readonly RunLine[], subscription = false) {
   const runs = lines.filter(l => isRun(l) && l.fixed && num(l.requests) > 0)
@@ -932,6 +946,9 @@ export function buildReport(
   // Keep warm's own line: its saving is in Total saved above, and so is the cost of its requests.
   const kept = keepWarmLine(month, sub)
   if (kept) out.push('', ...(md ? [kept] : wrap(kept, '', '  ')))
+  // Cold returns: sessions that came back to a cold cache, and what whatsnext's compaction beforehand would have saved. Counted nowhere else.
+  const returned = coldReturnLine(month, sub, sub ? windowRates(month, 'five_hour') : undefined)
+  if (returned) out.push('', ...(md ? [returned] : wrap(returned, '', '  ')))
   // Watch only: what rightsize would have done, and what that would have saved, against staying. Nothing was applied.
   const watched = watchLine(month, sub, opts.watching === true)
   if (watched) out.push('', ...(md ? [watched] : wrap(watched, '', '  ')))

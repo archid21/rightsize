@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import { CAL_FULL, CAL_STORE, DEFAULT_PRICES, type Calibration, type Rating, type Situation, delegateCost, delegateKeys, plan, sizeSubagent, subagentKeys, subWork } from './cost'
-import { type Engine, RUNS_FILE, LOG_PATH, LEGACY_RUNS, LOOKUP, DEBUG, SEARCH, REVIEW, NO_CHANGE, FREE_SWITCHES, cellsOf, engine, drive, flush, settle, untilAsked, DAY, PAGE, OLD_PRICES, last, mount, bandText, setBand, LOWER } from './testkit'
+import { type Engine, RUNS_FILE, LOG_PATH, LEGACY_RUNS, LOOKUP, DEBUG, SEARCH, REVIEW, NO_CHANGE, FREE_SWITCHES, NO_COLD, cellsOf, engine, drive, flush, settle, untilAsked, DAY, PAGE, OLD_PRICES, last, mount, bandText, setBand, LOWER } from './testkit'
 
 for (const surface of ['desktop', 'terminal'] as const) {
 
@@ -859,7 +859,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   }
 
   test(`👍 and 👎 in the ⋯ menu on a hand-off's result write a feedback line for that run, once (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high' })
+    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', stored: NO_COLD })
     const d = drive($, h)
     h.now = Date.now()
     await d.start(surface)
@@ -903,7 +903,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   test(`👍 and 👎 in the ⋯ menu on an automatic lowering write a feedback line for that run, and 👍 counts as a hit (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES } })
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES }, stored: NO_COLD })
     const d = drive($, h)
     h.now = Date.now()
     await d.start(surface)
@@ -1061,7 +1061,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
   // The record steers the next decisions: a model the rater has often got wrong gets no lowering.
   test(`a task type the rater keeps getting wrong is not lowered, once the log shows it (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES } })
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES }, stored: NO_COLD })
     const d = drive($, h)
     h.files[RUNS] = Array.from({ length: 6 }, (_, i) =>
       JSON.stringify({ at: new Date(h.now - (6 - i) * 60_000).toISOString(), kind: 'run', type: 'lookup', route: 'main', tier: 'opus', change: 'lower', steppedUp: i < 3 }),

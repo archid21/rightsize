@@ -9,7 +9,20 @@ const MIN = 60_000
 const HOUR = 60 * MIN
 const DAY = 24 * HOUR
 
-/** The row acts only when coming back cold costs at least this many dollars (API-equivalent on a subscription too). */
+/**
+ * What an action nets against coming back cold: the cold cost, less the action's own cost. The row acts only when this is
+ * above zero (dollars; API-equivalent on a subscription too). There is no minimum size: a small saving counts if it is a saving.
+ * `ping` is one keep-warm request (and a handoff, which reads the warm conversation once), `compact` a compaction's read.
+ * `ask` is judged by its cheapest choice; `off` does nothing, so it nets nothing. A keep-warm run is also capped by `warmPlan`:
+ * it never costs more than coming back cold.
+ */
+export function netSaving(action: ColdPlan['action'], o: { cold: number; ping: number; compact: number }) {
+  if (action === 'off') return 0
+  const cost = action === 'compact' ? o.compact : action === 'ask' ? Math.min(o.ping, o.compact) : o.ping
+  return o.cold - cost
+}
+
+/** The row acts only when coming back cold costs at least this many dollars (API-equivalent on a subscription too). The cold-return note has no minimum. */
 export const COLD_MIN = 0.5
 
 /** The request that keeps the cache warm: the fork re-reads the whole conversation from the cache, and so refreshes it. */

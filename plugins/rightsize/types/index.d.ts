@@ -55,6 +55,8 @@ export type RightsizeBand = {
   cold?: { id: string; label: string }[]
   /** The offer's other choices, which the ⋯ menu lists; pressing one does what its `id` says, as a cache button does. */
   coldMore?: { id: string; label: string }[]
+  /** A link the cache row draws after its buttons, for a note that points to a page (`href` opens it). */
+  coldLink?: { label: string; href: string }
 }
 
 /** A question the band asks while the work goes on: the next prompt, or the end of the turn, takes it away. */

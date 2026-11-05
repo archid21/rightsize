@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import { DEFAULT_PRICES, idleCost } from './cost'
-import { ALWAYS_AFTER, BACK_OFF_AFTER, COLD_MIN, LEARN_OVER, OFFER_AFTER_MS, DEFAULT_START, ROW_OF, breakEvenMs, breakEvenPings, clockText, coldPlan, isGroundwork, alwaysText, ignoredLately, keepWarmChoices, leadMs, learnedChoice, nextStart, offerAt, offerText, pingCost, pingEvery, pingsFor, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText, WARM_PROOF, cacheHeld } from './warm'
+import { ALWAYS_AFTER, BACK_OFF_AFTER, LEARN_OVER, OFFER_AFTER_MS, DEFAULT_START, ROW_OF, breakEvenMs, breakEvenPings, clockText, coldPlan, isGroundwork, alwaysText, ignoredLately, keepWarmChoices, leadMs, learnedChoice, netSaving, nextStart, offerAt, offerText, pingCost, pingEvery, pingsFor, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText, WARM_PROOF, cacheHeld } from './warm'
 
 const MIN = 60_000
 const HOUR = 60 * MIN
@@ -196,13 +196,24 @@ test('Groundwork is found by plugin name', async () => {
   expect(isGroundwork(undefined)).toBe(false)
 })
 
-test('the cold cost that triggers it is $0.50: about 64K tokens on Opus and 128K on Sonnet with a 1-hour cache, and never on Haiku', async () => {
-  expect(COLD_MIN).toBe(0.5)
-  const tokensFor = (p: typeof OPUS) => Math.ceil((COLD_MIN * 1e6) / (p.cacheWrite - p.cacheRead) / 1000)
-  expect(tokensFor(DEFAULT_PRICES.opus)).toBe(65)
-  expect(tokensFor(DEFAULT_PRICES.sonnet)).toBe(129)
-  // Haiku would need 2.6 million tokens: past the window.
-  expect(tokensFor(DEFAULT_PRICES.haiku)).toBeGreaterThan(2_000)
+test('there is no size bar: a row acts when its action nets above zero, the action\'s own cost taken off the cold cost', async () => {
+  const p = DEFAULT_PRICES.opus
+  // 20K tokens on Opus: $0.156 to come back cold, under the old $0.50 bar.
+  const cold = (20_000 * (p.cacheWrite - p.cacheRead)) / 1e6
+  const ping = pingCost(p, 20_000)
+  const compact = (20_000 * p.input) / 1e6
+  const cents = (n: number) => Math.round(n * 1e6) / 1e6
+  expect(cents(cold)).toBe(0.156)
+  expect(cents(netSaving('warm', { cold, ping, compact })), 'one request against the cold cost').toBe(cents(cold - ping))
+  expect(cents(netSaving('handoff', { cold, ping, compact }))).toBe(cents(cold - ping))
+  expect(cents(netSaving('compact', { cold, ping, compact })), 'a compaction reads the conversation as input').toBe(cents(cold - compact))
+  expect(cents(netSaving('ask', { cold, ping, compact })), 'ask is judged by its cheapest choice').toBe(cents(cold - Math.min(ping, compact)))
+  for (const action of ['warm', 'handoff', 'compact', 'ask'] as const) expect(netSaving(action, { cold, ping, compact }), `${action}: a saving of any size counts`).toBeGreaterThan(0)
+  // An action that costs as much as, or more than, coming back cold nets nothing: the row does not act.
+  expect(netSaving('compact', { cold: 0.1, ping: 0.01, compact: 0.1 })).toBe(0)
+  expect(netSaving('compact', { cold: 0.1, ping: 0.01, compact: 0.12 })).toBeLessThan(0)
+  expect(netSaving('warm', { cold: 0.005, ping: 0.01, compact: 0.1 })).toBeLessThan(0)
+  expect(netSaving('off', { cold: 1, ping: 0.01, compact: 0.1 }), 'off does nothing').toBe(0)
   expect(DAY).toBe(86_400_000)
 })
 

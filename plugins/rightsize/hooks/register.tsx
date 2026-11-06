@@ -101,7 +101,7 @@ import {
 } from './settings'
 import { BRIEF_MAX, cutRequest, parseRating, ratingPrompt, ratingSystem } from './rate'
 import { isApprovalStep } from './approval'
-import { LIMITS, type Limits, type Signals, type Struggle, blockedError, callKey, isSensitivity, isTestCommand, noSignals, noteCall, oneUp, refusedByPerson, struggle, testsOutcome } from './struggle'
+import { LIMITS, type Limits, type Signals, type Struggle, blockedError, callKey, isEditTool, isSensitivity, isTestCommand, noSignals, noteCall, oneUp, refusedByPerson, struggle, testsOutcome } from './struggle'
 import { type Change, type HelperLine, type RunLine, type SwitchLine, type Windows, SESSION_TOTAL, SESSION_TOTAL_FROM, bandShareText, buildReport, costTag, parseLines, ratedInSession, sessionTotal, shareMessage, shareOf, usedTag, windowCostText, windowRates } from './report'
 import { LIMIT_BUTTON, LIMIT_COMPACT, LIMIT_HIDE, LIMIT_MORE, LIMIT_WHY, LIMIT_WHY_ID, isLimitId, limitDue, limitText } from './limit'
 import { SIZE_BUTTON, SIZE_COMPACT, SIZE_HIDE, SIZE_MORE, SIZE_WHY, SIZE_WHY_ID, isSizeId, sizeStep, sizeText } from './size'
@@ -3365,7 +3365,7 @@ async function noteHelperCall($: EngineInterface, id: string, w: Watch, e: Recor
     return
   }
   const tool = String(e.tool)
-  w.signals = noteCall(w.signals, callKey(tool, e), isError, isTestCommand(tool, e))
+  w.signals = noteCall(w.signals, callKey(tool, e), isError, isTestCommand(tool, e), isEditTool(tool))
 }
 
 // A moved subagent's answer: what its own requests cost teaches the estimate for its
@@ -4487,7 +4487,7 @@ export const register: Register = (on, options) => {
       else if (isError) active.errors += 1
       if (!(result as { deny?: string }).deny && !refused && isApprovalStep(String(e.tool), e as Record<string, unknown>)) active.approvalSteps += 1
       // A refused call (a hook's deny, or the person's no) says nothing about the work.
-      if (!(result as { deny?: string }).deny && !refused && !blocked) active.signals = noteCall(active.signals, callKey(String(e.tool), e as Record<string, unknown>), isError, isTestCommand(String(e.tool), e as Record<string, unknown>))
+      if (!(result as { deny?: string }).deny && !refused && !blocked) active.signals = noteCall(active.signals, callKey(String(e.tool), e as Record<string, unknown>), isError, isTestCommand(String(e.tool), e as Record<string, unknown>), isEditTool(String(e.tool)))
     }
     return result
   }).catch((_, e, next) => next(e))

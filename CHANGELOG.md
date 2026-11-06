@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **A long turn raises effort only when it stops making progress.** The `long` sign used to fire on step count alone, so a healthy turn working through a big plan (editing files, passing tests) was raised and then ran slower and cost more per step. Past 3x the rated steps (at least 15), rightsize now also checks the last 10 calls: it raises only when none was a file edit or write that worked or a test run that passed, and fewer than half were calls not made earlier in the turn. Reading many new files counts as progress. The check repeats on later steps, so a turn that stalls late is still caught. Relaxed looks at the last 12 calls (under 40% new) and Sensitive at the last 8 (under 60% new).
+
 ## 0.9.0 (2026-11-05)
 
 - **New tagline and README.** "Make every Claude token count." The README opens with the benefits (same outcome at up to 30% lower cost from an Opus start; stronger reviews, possibly at a higher cost, from a Sonnet start; less manual switching; lower cache and compact costs), a feature table with how to use each feature, and a note that rightsize works better with whatsnext. The sections on how it works, what it runs and its limits now cover compacting, the context warning and whatsnext.

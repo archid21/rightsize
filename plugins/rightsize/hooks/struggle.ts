@@ -3,11 +3,13 @@ import { LEVELS, levelRank } from './cost'
 
 // Signs, inside one turn, that the main chat is struggling at the effort it runs
 // at: tool calls failing, the same call failing again, the same call going round,
-// or a turn running far past the rating's step guess. An error that comes from the
-// environment (blockedError) is not one of them, and a failing test run is often an
-// expected red (isTestCommand), so it counts less. Each kind can raise effort
-// once a turn. How soon each sign counts is the Stuck sensitivity setting (LIMITS).
-// Pure functions, no engine calls.
+// or a turn running far past the rating's step guess with nothing to show for the
+// last calls. A long turn that keeps editing files, passes its tests or reads new
+// things is just working through a big plan, so it is not one. An error that comes
+// from the environment (blockedError) is not a sign either, and a failing test run
+// is often an expected red (isTestCommand), so it counts less. Each kind can raise
+// effort once a turn. How soon each sign counts is the Stuck sensitivity setting
+// (LIMITS). Pure functions, no engine calls.
 
 /** What the turn's tool calls have shown so far. */
 export type Signals = {
@@ -18,6 +20,11 @@ export type Signals = {
   fired: Kind[]
   /** How the last test run in the turn ended: the objective outcome of the work, where there was one. */
   lastTest?: 'passed' | 'failed'
+  /**
+   * The last few calls, oldest first, bounded at RECENT_MAX. `novel`: the call had not run earlier in the
+   * turn. `progress`: a file edit or write that worked, or a test run that passed. Absent in an old shape.
+   */
+  recent?: { novel: boolean; progress: boolean }[]
 }
 
 /** What the turn's test runs say about the work: how the last one ended, or nothing when none ran. */
@@ -35,15 +42,20 @@ export const LOOP = 3
 /** A turn this many times past the rating's step guess, and at least LONG_MIN steps, is long. */
 export const LONG_X = 3
 export const LONG_MIN = 15
+/** A long turn is stuck only when the last WINDOW calls hold no progress and under NOVEL of them are new calls. */
+export const WINDOW = 10
+export const NOVEL = 0.5
 
 /** How soon each sign counts. */
-export type Limits = { repeat: number; errors: number; loop: number; longX: number; longMin: number }
+export type Limits = { repeat: number; errors: number; loop: number; longX: number; longMin: number; window: number; novel: number }
 /** Stuck sensitivity: normal is the values above; relaxed waits for more, sensitive for less. */
 export const LIMITS = {
-  relaxed: { repeat: 3, errors: 4, loop: 4, longX: 4, longMin: 20 },
-  normal: { repeat: REPEAT, errors: ERRORS, loop: LOOP, longX: LONG_X, longMin: LONG_MIN },
-  sensitive: { repeat: 2, errors: 2, loop: 2, longX: 2, longMin: 10 },
+  relaxed: { repeat: 3, errors: 4, loop: 4, longX: 4, longMin: 20, window: 12, novel: 0.4 },
+  normal: { repeat: REPEAT, errors: ERRORS, loop: LOOP, longX: LONG_X, longMin: LONG_MIN, window: WINDOW, novel: NOVEL },
+  sensitive: { repeat: 2, errors: 2, loop: 2, longX: 2, longMin: 10, window: 8, novel: 0.6 },
 } as const satisfies Record<string, Limits>
+/** How many recent calls the signals keep: enough for the widest window. */
+export const RECENT_MAX = Math.max(...Object.values(LIMITS).map(l => l.window))
 export type Sensitivity = keyof typeof LIMITS
 export const isSensitivity = (v: unknown): v is Sensitivity => typeof v === 'string' && Object.hasOwn(LIMITS, v)
 /** Raises in one turn, and the highest level a raise goes to: max stays a person's choice. */
@@ -118,12 +130,22 @@ export function isTestCommand(tool: string, input: Record<string, unknown>): boo
   return tool === 'Bash' && typeof input.command === 'string' && TEST_RUNNER.test(input.command)
 }
 
-/** A test run that fails does not add to `errors`, but its repeats are still counted, one more allowed. */
-export function noteCall(s: Signals, key: string, isError: boolean, test = false): Signals {
+/** Tools that change a file: a call to one that works is progress. */
+const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
+export const isEditTool = (tool: string): boolean => EDIT_TOOLS.has(tool)
+
+/**
+ * A test run that fails does not add to `errors`, but its repeats are still counted, one more allowed.
+ * `edit` marks a file edit or write. The call joins the recent window: new or a repeat, and progress
+ * when it is an edit that worked or a test run that passed.
+ */
+export function noteCall(s: Signals, key: string, isError: boolean, test = false, edit = false): Signals {
   const c = s.calls[key] ?? { n: 0, errors: 0 }
   const isTest = test || c.test === true
+  const step = { novel: s.calls[key] === undefined, progress: !isError && (edit || test) }
   return {
     ...s,
+    recent: [...(s.recent ?? []), step].slice(-RECENT_MAX),
     errors: s.errors + (isError && !test ? 1 : 0),
     calls: { ...s.calls, [key]: { n: c.n + 1, errors: c.errors + (isError ? 1 : 0), ...(isTest ? { test: true as const } : {}) } },
     ...(isTest ? { lastTest: isError ? ('failed' as const) : ('passed' as const) } : {}),
@@ -149,7 +171,12 @@ export function struggle(s: Signals, step: number, ratedSteps: number, limits: L
   // Running the tests again after each change is the normal way to work, not going round.
   if (calls.some(c => !c.test && c.n >= limits.loop)) found.push({ kind: 'loop', why: `the same tool call ran ${limits.loop} times` })
   const long = Math.max(limits.longMin, limits.longX * Math.max(1, ratedSteps))
-  if (step >= long) found.push({ kind: 'long', why: `the turn passed ${long} steps, ${limits.longX}x the estimate` })
+  if (step >= long) {
+    // Only the last `window` calls count, so a turn that stalls later is still caught. A short record is not enough to say.
+    const last = (s.recent ?? []).slice(-limits.window)
+    if (last.length >= limits.window && !last.some(r => r.progress) && last.filter(r => r.novel).length / last.length < limits.novel)
+      found.push({ kind: 'long', why: `the turn passed ${long} steps, ${limits.longX}x the estimate, and the last ${limits.window} calls made no progress` })
+  }
   return found.find(f => !s.fired.includes(f.kind))
 }
 

@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { ERRORS, LIMITS, LONG_MIN, LONG_X, LOOP, REPEAT, blockedError, callKey, isSensitivity, isTestCommand, noSignals, noteCall, oneUp, refusedByPerson, struggle, testsOutcome } from './struggle'
+import { type Signals, ERRORS, LIMITS, LONG_MIN, LONG_X, LOOP, NOVEL, RECENT_MAX, REPEAT, WINDOW, blockedError, callKey, isEditTool, isSensitivity, isTestCommand, noSignals, noteCall, oneUp, refusedByPerson, struggle, testsOutcome } from './struggle'
 
 // Claude labels each Bash call afresh, so the description differs between runs of one command.
 const bash = (command: string) => callKey('Bash', { tool: 'Bash', tool_use_id: Math.random().toString(), command, description: `run ${command} (${Math.random()})` })
@@ -24,12 +24,75 @@ test('three failures of different calls count; each kind raises once, two raises
   expect(struggle(s, 40, 5), 'two raises already').toBeUndefined()
 })
 
-test('a long turn: three times the rated steps, never under 15', async () => {
-  const s = noSignals()
+// `keys` different calls, then the same calls again `rounds` times over: no edit, no passing test, and each
+// call run `rounds` times. Keep `rounds` under the loop limit, or the loop sign fires first.
+const going = (keys: number, rounds: number, s = noSignals(), name = 'file') => {
+  for (let r = 0; r < rounds; r++) for (let k = 0; k < keys; k++) s = noteCall(s, bash(`cat ${name}${k}`), false)
+  return s
+}
+const edit = (s: Signals, file = 'a.ts', isError = false) => noteCall(s, callKey('Edit', { file_path: file, old_string: 'x', new_string: 'y' }), isError, false, true)
+
+test('a long turn: three times the rated steps, never under 15, and the last calls show no progress', async () => {
+  // 6 calls, twice each: the last 10 hold 4 new calls and no progress.
+  const s = going(6, 2)
   expect(struggle(s, 14, 2)).toBeUndefined()
-  expect(struggle(s, 15, 2)?.why).toBe('the turn passed 15 steps, 3x the estimate')
+  expect(struggle(s, 15, 2)).toEqual({ kind: 'long', why: 'the turn passed 15 steps, 3x the estimate, and the last 10 calls made no progress' })
   expect(struggle(s, 29, 10)).toBeUndefined()
   expect(struggle(s, 30, 10)?.kind).toBe('long')
+})
+
+test('a long turn that is working is not stuck: edits, a passing test, or new reads count as progress', async () => {
+  const base = going(6, 2)
+  expect(struggle(base, 40, 2)?.kind, 'the base case fires').toBe('long')
+  expect(struggle(edit(base), 40, 2), 'a recent edit that worked').toBeUndefined()
+  expect(struggle(edit(base, 'a.ts', true), 40, 2)?.kind, 'an edit that failed is not progress').toBe('long')
+  const written = noteCall(base, callKey('Write', { file_path: 'b.ts', content: 'x' }), false, false, true)
+  expect(struggle(written, 40, 2), 'a write counts').toBeUndefined()
+  expect(struggle(noteCall(base, bash('npm test'), false, true), 40, 2), 'a passing test').toBeUndefined()
+  expect(struggle(noteCall(base, bash('npm test'), true, true), 40, 2)?.kind, 'a failing test is not progress').toBe('long')
+  // Research: every call is a new one.
+  let research = noSignals()
+  for (let i = 0; i < 20; i++) research = noteCall(research, bash(`cat file${i}`), false)
+  expect(struggle(research, 40, 2), 'new reads are progress').toBeUndefined()
+  // Half new is still enough at normal (the limit is the share below which it is stuck).
+  let half = going(5, 1)
+  for (let k = 0; k < 5; k++) half = noteCall(half, bash(`cat file${k}`), false)
+  expect(struggle(half, 40, 2), '5 of 10 new').toBeUndefined()
+})
+
+test('the check slides: progress that falls out of the window stops counting, and a stall after a busy stretch is caught', async () => {
+  // 10 different reads, an edit, then the same 10 reads again: none of the last 10 is new or progress.
+  const first = going(5, 1, going(5, 1, noSignals(), 'file'), 'other')
+  let s = edit(first)
+  expect(struggle(s, 40, 2), 'the edit is in the window').toBeUndefined()
+  s = going(5, 1, going(5, 1, s, 'file'), 'other')
+  expect(s.recent?.slice(-10).some(r => r.progress), 'the edit is 10 calls back').toBe(false)
+  expect(struggle(s, 40, 2)?.kind).toBe('long')
+  expect(struggle(edit(s, 'c.ts'), 40, 2), 'a new edit starts it over').toBeUndefined()
+})
+
+test('a long turn needs a full window of calls and the step threshold, both', async () => {
+  const s = going(6, 2)
+  expect(struggle(s, 14, 2), 'below the threshold, no progress').toBeUndefined()
+  expect(struggle(going(4, 2), 40, 2), '8 calls: the window of 10 is not full').toBeUndefined()
+  expect(struggle(noSignals(), 40, 2), 'no calls recorded').toBeUndefined()
+  expect(struggle({ errors: 0, calls: {}, fired: [] }, 40, 2), 'an old shape without a record').toBeUndefined()
+  expect(struggle(going(6, 2), 15, 2)?.kind, 'a full window at the threshold').toBe('long')
+})
+
+test('the record of recent calls keeps the newest, bounded', async () => {
+  let s = noSignals()
+  for (let i = 0; i < 40; i++) s = noteCall(s, bash(`cat file${i}`), false)
+  expect(s.recent).toHaveLength(RECENT_MAX)
+  expect(RECENT_MAX, 'the widest window').toBe(Math.max(LIMITS.relaxed.window, LIMITS.normal.window, LIMITS.sensitive.window))
+  // The newest call is last: an edit, then a repeat of it.
+  s = edit(s)
+  s = edit(s)
+  expect(s.recent?.slice(-2)).toEqual([{ novel: true, progress: true }, { novel: false, progress: true }])
+  expect(s.recent).toHaveLength(RECENT_MAX)
+  expect(s.recent?.[0], 'the oldest went first').toEqual({ novel: true, progress: false })
+  expect(isEditTool('Edit') && isEditTool('Write') && isEditTool('MultiEdit') && isEditTool('NotebookEdit')).toBe(true)
+  expect(isEditTool('Read') || isEditTool('Bash')).toBe(false)
 })
 
 test('one level up, never to max', async () => {
@@ -40,11 +103,19 @@ test('one level up, never to max', async () => {
 })
 
 test('Stuck sensitivity: normal is today\'s thresholds, relaxed waits for more, sensitive for less', async () => {
-  expect(LIMITS.normal).toEqual({ repeat: 2, errors: 3, loop: 3, longX: 3, longMin: 15 })
-  expect(LIMITS.normal).toEqual({ repeat: REPEAT, errors: ERRORS, loop: LOOP, longX: LONG_X, longMin: LONG_MIN })
+  expect(LIMITS.normal).toEqual({ repeat: 2, errors: 3, loop: 3, longX: 3, longMin: 15, window: 10, novel: 0.5 })
+  expect(LIMITS.normal).toEqual({ repeat: REPEAT, errors: ERRORS, loop: LOOP, longX: LONG_X, longMin: LONG_MIN, window: WINDOW, novel: NOVEL })
+  expect(LIMITS.relaxed).toEqual({ repeat: 3, errors: 4, loop: 4, longX: 4, longMin: 20, window: 12, novel: 0.4 })
+  expect(LIMITS.sensitive).toEqual({ repeat: 2, errors: 2, loop: 2, longX: 2, longMin: 10, window: 8, novel: 0.6 })
   for (const k of Object.keys(LIMITS.normal) as (keyof typeof LIMITS.normal)[]) {
-    expect(LIMITS.relaxed[k], `relaxed ${k}`).toBeGreaterThanOrEqual(LIMITS.normal[k])
-    expect(LIMITS.sensitive[k], `sensitive ${k}`).toBeLessThanOrEqual(LIMITS.normal[k])
+    // A lower novel share fires less often, so a relaxed one has the lower number.
+    if (k === 'novel') {
+      expect(LIMITS.relaxed[k], 'relaxed novel').toBeLessThanOrEqual(LIMITS.normal[k])
+      expect(LIMITS.sensitive[k], 'sensitive novel').toBeGreaterThanOrEqual(LIMITS.normal[k])
+    } else {
+      expect(LIMITS.relaxed[k], `relaxed ${k}`).toBeGreaterThanOrEqual(LIMITS.normal[k])
+      expect(LIMITS.sensitive[k], `sensitive ${k}`).toBeLessThanOrEqual(LIMITS.normal[k])
+    }
   }
   expect(isSensitivity('relaxed') && isSensitivity('normal') && isSensitivity('sensitive')).toBe(true)
   expect(isSensitivity('on') || isSensitivity('toString')).toBe(false)
@@ -83,16 +154,28 @@ test('Stuck sensitivity: normal is today\'s thresholds, relaxed waits for more, 
   expect(struggle(ran(3), 3, 5, LIMITS.relaxed)).toBeUndefined()
   expect(struggle(ran(4), 3, 5, LIMITS.relaxed)?.why).toBe('the same tool call ran 4 times')
 
-  // A long turn.
-  const none = noSignals()
-  expect([struggle(none, 9, 2, LIMITS.sensitive), struggle(none, 10, 2, LIMITS.sensitive)?.why]).toEqual([undefined, 'the turn passed 10 steps, 2x the estimate'])
-  expect(struggle(none, 19, 2, LIMITS.relaxed)).toBeUndefined()
-  expect(struggle(none, 20, 2, LIMITS.relaxed)?.why).toBe('the turn passed 20 steps, 4x the estimate')
+  // A long turn with no progress. Sensitive goes round after 2 runs of one call, so these runs mark `loop` as
+  // fired already: it is `long` that is under test.
+  const stalled = (s: Signals) => ({ ...s, fired: ['loop' as const] })
+  // Sensitive: a window of 8, and under 60% of it new. 4 calls, twice each: 4 of 8 are new.
+  const sens = stalled(going(4, 2))
+  expect([struggle(sens, 9, 2, LIMITS.sensitive), struggle(sens, 10, 2, LIMITS.sensitive)?.why]).toEqual([undefined, 'the turn passed 10 steps, 2x the estimate, and the last 8 calls made no progress'])
+  expect(struggle(sens, 10, 2, LIMITS.normal), 'normal waits for 10 calls').toBeUndefined()
+  expect(struggle(stalled(going(5, 1, going(3, 1))), 10, 2, LIMITS.sensitive), '5 of the last 8 are new: that is over 60%').toBeUndefined()
+  // Relaxed: a window of 12, and under 40% of it new. 4 calls, 3 times each: 4 of 12 are new. (Its loop limit is 4.)
+  const rel = going(4, 3)
+  expect(struggle(rel, 19, 2, LIMITS.relaxed)).toBeUndefined()
+  expect(struggle(rel, 20, 2, LIMITS.relaxed)?.why).toBe('the turn passed 20 steps, 4x the estimate, and the last 12 calls made no progress')
+  expect(struggle(going(6, 2), 20, 2, LIMITS.relaxed), '6 of 12 are new: relaxed wants under 40%').toBeUndefined()
+  expect(struggle(going(5, 2), 20, 2, LIMITS.relaxed), 'only 10 calls: the window of 12 is not full').toBeUndefined()
   // Past the minimum, the multiple of the rated steps decides: 10 rated steps.
-  expect([struggle(none, 19, 10, LIMITS.sensitive), struggle(none, 20, 10, LIMITS.sensitive)?.kind]).toEqual([undefined, 'long'])
-  expect([struggle(none, 39, 10, LIMITS.relaxed), struggle(none, 40, 10, LIMITS.relaxed)?.kind]).toEqual([undefined, 'long'])
+  expect([struggle(sens, 19, 10, LIMITS.sensitive), struggle(sens, 20, 10, LIMITS.sensitive)?.kind]).toEqual([undefined, 'long'])
+  expect([struggle(rel, 39, 10, LIMITS.relaxed), struggle(rel, 40, 10, LIMITS.relaxed)?.kind]).toEqual([undefined, 'long'])
+  // Progress stops it at every sensitivity.
+  expect(struggle(edit(sens), 20, 10, LIMITS.sensitive)).toBeUndefined()
+  expect(struggle(edit(rel), 40, 10, LIMITS.relaxed)).toBeUndefined()
   // Without limits given: normal.
-  expect(struggle(none, 15, 2)?.why).toBe('the turn passed 15 steps, 3x the estimate')
+  expect(struggle(going(6, 2), 15, 2)?.why).toBe('the turn passed 15 steps, 3x the estimate, and the last 10 calls made no progress')
 })
 
 test('a raise stops at Highest effort, and never goes past xhigh', async () => {

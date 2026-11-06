@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **The context-size warning shows while keep warm runs.** Keep warm starts at the end of a turn, just before the warning is checked, and the warning used to wait while the cache row was in use. On a profile that keeps warm, it was almost never said. It now joins the keep-warm row (warning first, then "Warm until …"), with **Compact now** beside **Stop keeping warm**. The usage-limit advice works the same way. **Compact now** also stops keep warm, since the summary replaces the conversation it was keeping.
 - **A long turn raises effort only when it stops making progress.** The `long` sign used to fire on step count alone, so a healthy turn working through a big plan (editing files, passing tests) was raised and then ran slower and cost more per step. Past 3x the rated steps (at least 15), rightsize now also checks the last 10 calls: it raises only when none was a file edit or write that worked or a test run that passed, and fewer than half were calls not made earlier in the turn. Reading many new files counts as progress. The check repeats on later steps, so a turn that stalls late is still caught. Relaxed looks at the last 12 calls (under 40% new) and Sensitive at the last 8 (under 60% new).
 
 ## 0.9.0 (2026-11-05)

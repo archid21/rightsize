@@ -89,6 +89,30 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(log(h)).toContain("context warning: compacted on the person's button")
   })
 
+  // Keep warm starts at the same turn end, just before this check. The warning used to wait for a free row, so on a profile that
+  // keeps warm it was never said. Now it joins the keep-warm row; Compact now stops keep warm, since the summary replaces what it kept.
+  test(`while keep warm runs, the warning joins its row, and Compact now stops keep warm (${surface})`, { timeoutMs: 30000, options: { ...API, beforeCold: 'keep warm 8 h' } }, async ($, on) => {
+    const h = setup(on, 120_000, undefined, { beforeCold: 'keep warm 8 h' })
+    h.virtual = true
+    h.stepUsage = { input_tokens: 200, output_tokens: 400, cache_read_input_tokens: 119_000, cache_creation_input_tokens: 400 }
+    const d = drive($, h)
+    await d.start(surface)
+    await turn(d, 't1')
+    expect(log(h)).toContain('keeping warm until')
+    expect(log(h)).toContain('context warning: shown at 60%')
+    const r = await row($)
+    expect(r.text).toContain('Context is 60% full (120K of 200K tokens). A compact now makes every later turn cheaper. Warm until ')
+    expect(r.buttons).toContain('cold-size-compact')
+    expect(r.buttons, 'Stop keeping warm stays').toContain('cold-stop')
+    const ui = await mount($, surface)
+    await ui.press({ key: 'cold-size-compact' })
+    await ui.unmount()
+    expect(h.compactCalls).toEqual([{ instructions: COMPACT_BASE }])
+    expect(log(h)).toContain('keep warm stopped (Compact now pressed)')
+    await h.advance(60 * 60_000)
+    expect(h.forks.length, 'no keep-warm request after the compaction').toBe(0)
+  })
+
   test(`Don't show again hides the warning for good (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
     const h = setup(on, 120_000)
     h.answers = { Options: "Don't show again" }

@@ -2565,8 +2565,8 @@ async function limitCheck($: EngineInterface) {
     const tier = (await situation($)).tier
     const saving = limitSaving(prices, tier, context)
     if (saving <= 0) return
-    // The cache path owns the cache row while it keeps warm or has an offer up.
-    if (warming || coldTurn?.offer) {
+    // An offer up owns the cache row; a keep-warm run takes the advice beside its own line (showAdvice).
+    if (coldTurn?.offer || warming?.note) {
       await log($, 'usage-limit advice: not shown, the cache row is in use')
       return
     }
@@ -2580,7 +2580,7 @@ async function limitCheck($: EngineInterface) {
     }
     if (bandMode === 'off') return
     await $.store.set(LIMIT_WINDOW, due.resetsAt).catch(() => undefined)
-    await showCold($, text, [LIMIT_BUTTON], true, [...LIMIT_MORE])
+    await showAdvice($, { text, button: LIMIT_BUTTON, more: LIMIT_MORE })
     await log($, `usage-limit advice: shown, compacting now saves ${money(saving)} after the reset (${Math.round(context / 1000)}K tokens on ${TIER_NAME[tier]}, resets ${clockText(due.resetAt)})`)
   } catch {
     // Advice must never hold up a turn.
@@ -2608,9 +2608,10 @@ async function sizeCheck($: EngineInterface) {
     if (typeof tokens === 'number' && typeof window === 'number' && window > 0 && (tokens / window) * 100 < sizeShown) sizeShown = 0 // compacted: start over
     const step = sizeStep(tokens, window, ctx?.breakdown?.autoCompactThreshold, sizeShown)
     if (step === undefined || typeof tokens !== 'number' || typeof window !== 'number') return
-    // The usage-limit advice, a keep-warm run and an offer own the cache row: this step is said at a later turn's end.
+    // An offer, or advice with its own button (the usage-limit advice, alone or on a keep-warm row), owns the cache row: this
+    // step is said at a later turn's end. A keep-warm run takes the warning beside its own line (showAdvice).
     const had = (await $.state.get(BAND).catch(() => undefined))?.value
-    if (warming || coldTurn?.offer || had?.coldText) {
+    if (coldTurn?.offer || warming?.note || (!warming && had?.cold?.length)) {
       await log($, `context warning: ${step}% not shown, the cache row is in use`)
       return
     }
@@ -2621,7 +2622,7 @@ async function sizeCheck($: EngineInterface) {
       return
     }
     if (bandMode === 'off') return
-    await showCold($, text, [SIZE_BUTTON], true, [...SIZE_MORE])
+    await showAdvice($, { text, button: SIZE_BUTTON, more: SIZE_MORE })
     await log($, `context warning: shown at ${step}% (${Math.round(tokens / 1000)}K of ${Math.round(window / 1000)}K tokens)`)
   } catch {
     // A warning must never hold up a turn.
@@ -2637,7 +2638,7 @@ async function pressSize($: EngineInterface, id: string): Promise<void> {
     }
     if (id === SIZE_HIDE) {
       await $.store.set(SIZE_HIDDEN, true).catch(() => undefined)
-      await clearColdRow($)
+      await clearAdvice($)
       $.ui.toast('Rightsize: the context-size warning is hidden.')
       await log($, 'context warning: hidden for good ("Don\'t show again")')
       return
@@ -2655,6 +2656,7 @@ async function pressSize($: EngineInterface, id: string): Promise<void> {
 
 /** Runs the compaction the person asked for with "Compact now" on the warning: whatsnext's way when it is installed, else rightsize's own. */
 async function compactForSize($: EngineInterface) {
+  cancelCold($, 'Compact now pressed')
   coldDone = true
   const done = (noFresh?: boolean) => async () => {
     sizeShown = 0
@@ -2685,7 +2687,7 @@ async function pressLimit($: EngineInterface, id: string): Promise<void> {
     }
     if (id === LIMIT_HIDE) {
       await $.store.set(LIMIT_HIDDEN, true).catch(() => undefined)
-      await clearColdRow($)
+      await clearAdvice($)
       $.ui.toast('Rightsize: the usage-limit advice is hidden.')
       await log($, 'usage-limit advice: hidden for good ("Don\'t show again")')
       return
@@ -2703,6 +2705,7 @@ async function pressLimit($: EngineInterface, id: string): Promise<void> {
 
 /** Runs the compaction the person asked for with "Compact now" on the advice. Only the button calls it. */
 async function compactForLimit($: EngineInterface) {
+  cancelCold($, 'Compact now pressed')
   coldDone = true
   const own = async () => {
     const skip = await ownCompact($)
@@ -2772,7 +2775,9 @@ type ColdAsk = { kind: 'always'; choice: string } | { kind: 'stop' }
 let coldTurn: ColdTurn | null = null
 /** An offer is on the band and nobody has answered it: its outcome goes in the run log when it is. */
 let offerOpen = false
-type Warming = { until: number; pings: number; spent: number; rates: Awaited<ReturnType<typeof windowPerDollar>> }
+type Warming = { until: number; pings: number; spent: number; rates: Awaited<ReturnType<typeof windowPerDollar>>; note?: CacheNote }
+/** Advice said on the keep-warm row while it runs (the usage-limit advice or the context warning): its text goes first, its button beside Stop. */
+type CacheNote = { text: string; button: { id: string; label: string }; more: readonly { id: string; label: string }[] }
 let warming: Warming | null = null
 /** A handoff or a compaction ran since the person's last prompt: the turn it caused does not start another round. */
 let coldDone = false
@@ -3024,7 +3029,37 @@ const usedText = (w: Warming) => (w.pings === 0 && w.spent === 0 ? undefined : u
 
 /** The keep-warm status row: one Stop button; "Don't keep warm again" (the row set to off) waits in the ⋯ menu. Before the first request it shows the zero text in the band's unit. */
 function showWarming($: EngineInterface, w: Warming) {
-  return showCold($, warmingText({ until: w.until, used: usedText(w) ?? (billing === 'subscription' ? '~0% used' : '$0.00') }), [{ id: 'stop', label: 'Stop keeping warm' }], true, [{ id: 'off', label: "Don't keep warm again" }])
+  const text = warmingText({ until: w.until, used: usedText(w) ?? (billing === 'subscription' ? '~0% used' : '$0.00') })
+  const stop = { id: 'stop', label: 'Stop keeping warm' }
+  const off = { id: 'off', label: "Don't keep warm again" }
+  const n = w.note
+  return n ? showCold($, `${n.text} ${text}`, [n.button, stop], true, [...n.more, off]) : showCold($, text, [stop], true, [off])
+}
+
+/**
+ * Puts advice on the cache row. While keep warm runs it joins that row (keep warm goes on, and Stop stays); a run that already
+ * carries advice, or an offer up, keeps the row, and the advice waits for a later turn's end. False when it was not shown.
+ */
+async function showAdvice($: EngineInterface, note: CacheNote): Promise<boolean> {
+  if (coldTurn?.offer) return false
+  if (warming) {
+    if (warming.note) return false
+    warming.note = note
+    await showWarming($, warming)
+    return true
+  }
+  await showCold($, note.text, [note.button], true, [...note.more])
+  return true
+}
+
+/** Takes advice off the cache row: off the keep-warm row while it runs, else the whole row. */
+async function clearAdvice($: EngineInterface) {
+  if (warming?.note) {
+    warming.note = undefined
+    await showWarming($, warming)
+    return
+  }
+  await clearColdRow($)
 }
 
 /** The keep-warm run ends: `what` is the band's last word on it, without a full stop. */

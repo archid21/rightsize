@@ -39,6 +39,8 @@ export type RightsizeBand = {
   canStay?: boolean
   /** A session switch can be dropped. */
   canClear?: boolean
+  /** The person stepped up the model or effort and rightsize is paused: the band offers Resume rightsize. */
+  canResume?: boolean
   /** A suggested starting model and level (`sonnet:high`): the band offers Not now and Stop suggesting. */
   tip?: string
   /** The command that makes the suggested switch (`/model sonnet`): the band offers a button that puts it in the prompt box. */
@@ -78,6 +80,10 @@ declare module 'claude-code' {
       sessionEffort: RightsizeLevel | null
       /** The session's own level, as last seen on a main-thread request; null before the first. */
       seenEffort: RightsizeLevel | null
+      /** The person's effort as the first step of the last main-chat turn carried it (the engine's own setting, before any rewrite); null before the first. A rise from it is a manual step up. */
+      personEffort: RightsizeLevel | null
+      /** Set while rightsize is paused because the person stepped up the model or effort: what they stepped to (`model`, `effort`), what they had before (`fromModel`, `fromEffort`), when (`at`, ms) and which step it was (`by`). Rightsize changes neither model nor effort until they resume. Null when not paused. */
+      manualPause: { model?: RightsizeTier; effort?: RightsizeLevel; fromModel?: RightsizeTier; fromEffort?: RightsizeLevel; at: number; by: 'model' | 'effort' } | null
       /** The main thread's model id, as last reported by the API; null before the first. */
       seenModel: string | null
       /** The task in progress, from the last rating that started one; null before the first. A prompt that continues it is planned as its type and carries its id. `brief` is the first 600 characters of the prompt that started it, and `prompts` how many prompts it has had (rated or not): the rater is told both. */

@@ -417,6 +417,16 @@ let skipOnce: string | null = null
  * claims a saving, whatever the setting says.
  */
 let workflowSeen = false
+/**
+ * The person stepped up (a stronger model or a higher effort): rightsize changes neither until they resume. The same value is in
+ * $.state ('manualPause') for the session; this copy is what the hooks read without awaiting. See manualCheck() and noteEffort().
+ */
+type ManualPause = { model?: Tier; effort?: Level; fromModel?: Tier; fromEffort?: Level; at: number; by: 'model' | 'effort' }
+let manualPause: ManualPause | null = null
+/** The pause row of this prompt's band, until the next prompt, a × or a resume: a later band of the turn (a cache offer) carries it. */
+let pauseRow: string | null = null
+/** The last main-chat turn whose first step was read for the person's effort. */
+let effortTurn: string | undefined
 /** Workflows: `ask` counts as `pause rightsize` until the person answers. */
 let workflows: 'ask' | 'pause rightsize' | 'follow my rules' | 'right-size every agent' = 'ask'
 /** Workflow calls already asked about, by tool_use_id: a call is asked about once, even if its hook runs again. */
@@ -822,6 +832,12 @@ async function sessionEffort($: EngineInterface) {
 /** The session switch in force: none while Routing is off (a switch made earlier is left stored, and applies again when Routing is back on). */
 async function sessionEffortInUse($: EngineInterface) {
   return routing ? sessionEffort($) : null
+}
+
+/** The person's effort as the first step of the last turn carried it: the engine's own setting, before rightsize rewrote any step. */
+async function personEffort($: EngineInterface) {
+  const v = (await $.state.get({ plugin: 'rightsize', key: 'personEffort' }).catch(() => undefined))?.value
+  return isLevel(v) ? v : null
 }
 
 async function seenEffort($: EngineInterface) {
@@ -1538,7 +1554,7 @@ async function askRater($: EngineInterface, model: Rater, tier: Tier, level: Lev
 // so they are left as they are; so are forks, resumes and teammates, and workflow agents
 // unless Workflows says to right-size every agent.
 async function sizeSpawn($: EngineInterface, e: AgentSpawnInput, run: Run | null) {
-  if (off || !handOffs || subagentMode === 'off') return undefined
+  if (off || manualPause || !handOffs || subagentMode === 'off') return undefined
   if (e.parentAgentId !== undefined || e.fork || e.isTeammate || e.resume) return undefined
   if (e.workflow && workflows !== 'right-size every agent') return undefined
   if (e.subagentType !== 'general-purpose' || (e.model !== undefined && e.model !== 'inherit')) return undefined
@@ -1768,6 +1784,7 @@ function startRun(r: Rating, s: Situation, d: Decision, p: Plan, base: Level, ov
 // ---- Reporting -------------------------------------------------------------
 
 async function showStatus($: EngineInterface) {
+  if (manualPause) return $.ui.status(pauseStatus(manualPause))
   const run = active ?? pending[0] ?? null
   if (run?.delegate) return $.ui.status(`Handing this to a ${TIER_NAME[run.delegate.tier]} subagent`)
   if (run?.switchTo) return $.ui.status(`Running this review on ${TIER_NAME[run.switchTo.tier]} at ${run.switchTo.level} effort`)
@@ -1803,14 +1820,19 @@ function setBand($: EngineInterface, from: Band | null, rating = false) {
   let text = band.text.replace(SESSION_TOTAL, '')
   let coldText = band.coldText?.replace(SESSION_TOTAL, '')
   if (bandNote && !text.includes(bandNote)) text = `${text} ${bandNote}`
+  // The pause row stays on the band of the prompt it began on, with its Resume button, when a later band of the turn is set.
+  const held = pauseRow !== null && manualPause !== null
+  if (held && !text.includes(pauseRow)) text = `${pauseRow} ${text}`.trim()
   // Not before the session's 3rd rated prompt (SESSION_TOTAL_FROM); the report counts from the first.
   const total = ratedInSession(runLog, sessionId) + (rating ? 1 : 0) >= SESSION_TOTAL_FROM ? sessionTotal(runLog, sessionId, billing === 'subscription') : undefined
   // The total goes after the route's text; a band with only the cache line carries it there.
   const after = (t: string) => `${t}${/[.!?]$/.test(t) ? '' : '.'} ${total}`
-  if (total && text) text = after(text)
+  if (held) {
+    // A pause claims no saving: no total on it.
+  } else if (total && text) text = after(text)
   else if (total && coldText) coldText = after(coldText)
   const { coldText: droppedCold, ...rest } = band
-  return $.state.set(BAND, { ...rest, text, ...(coldText ? { coldText } : {}) }).catch(() => undefined).then(() => showQuestion($))
+  return $.state.set(BAND, { ...rest, text, ...(coldText ? { coldText } : {}), ...(held ? { acted: true, canResume: true } : {}) }).catch(() => undefined).then(() => showQuestion($))
 }
 
 async function setBandMode($: EngineInterface, v: BandMode) {
@@ -3585,6 +3607,7 @@ async function summary($: EngineInterface) {
     'Now',
     `  In use: hand-off threshold ${Math.round(cur.handOff * 100)}%, pause at ${cur.maxMiss === null ? 'no' : `${Math.round(cur.maxMiss * 100)}%`} misses${cur.minTasks ? ` and ${cur.minTasks} logged tasks` : ''}, rater check ${cur.raterEvery === null ? 'off' : `every ${cur.raterEvery}`}, ${cur.chances} ${cur.chances === 1 ? 'chance' : 'chances'} per task`,
     `  Session switch: ${session ?? 'none'}`,
+    ...(manualPause ? [`  Paused: ${pauseStatus(manualPause).replace(/^Rightsize paused /, '')}`] : []),
     ...(billingYours() ? [] : [`  Reports: ${billing} (${billingBy ?? 'default'})`]),
     ...(billingYours() && detectedBilling && detectedBilling !== billing ? [`  Rate limits look like ${sees}; Reports is set to ${billing} by you.`] : []),
     ...(pacing && paceText(true) ? [`  ${paceText(true)}`] : []),
@@ -3672,6 +3695,7 @@ const COMMANDS: readonly (readonly [string, string])[] = [
   ['report', 'what it saved and what went wrong'],
   ['retry', 're-run the last auto-lowered prompt at the original effort'],
   ['clear', 'drop the session switch'],
+  ['resume', 'start changing the model and effort again, after you stepped up and rightsize paused'],
   ['prices', 'check prices now'],
   ['share', 'message you can paste to tell others'],
   ['reset', 'settings back to defaults, or restart cost measurement (reset <setting> resets one)'],
@@ -4063,6 +4087,137 @@ async function releaseStale($: EngineInterface) {
   for (const r of stale) await unbind($, r, r.during !== undefined ? 'delivered into the running turn' : 'cancelled before its turn started')
 }
 
+// ---- Manual step up: rightsize holds ------------------------------------------
+
+// When the person steps up (a stronger model with /model, or a higher effort with /effort), they have said what this work needs.
+// Rightsize then changes neither until they resume: no rating, no plan, no hand-off, no effort change, no review switch, no
+// mid-turn raise, and no subagent moved to another model. Cost tracking, the report, keep-warm and the context and usage-limit
+// warnings go on. A held prompt claims no saving and teaches no calibration: it has no run.
+// A step down never pauses: rightsize plans from the new base.
+//
+// Order: models by tierRank, effort by levelRank. Two detections:
+//  - Model, at prompt.submit before the rating (manualCheck): the model in use now ($.session.model()) against `seenModel`, the model
+//    of the last main-chat step that was not rightsize's own review switch. An empty seenModel (a new session, or one started with
+//    --model) is no switch, and neither is the review switch itself: it never reaches seenModel and does not change /model.
+//  - Effort, on the first main-chat step of a turn (noteEffort): the engine gives a hook no read of the person's effort at prompt time
+//    (settings.effortLevel is only the saved default: /effort max, --effort and a model's own default are not in it), and the effort
+//    that arrives on a step is the engine's setting before rightsize rewrites it. So the person's effort is read there, against
+//    `personEffort` (the first step of the last turn). That prompt has been rated by then: the pause drops its run (logged as
+//    dropped, its rating cost counted as overhead), and nothing of it is applied from that step on. The hand-off note a plan may have
+//    added to the prompt cannot be taken back. Following prompts are held at prompt.submit, as for a model.
+// An effort that moved only because the model changed, to that model's default level, is not the person's step.
+
+const PAUSE = { plugin: 'rightsize', key: 'manualPause' } as const
+const HOLD_NOTE = "Rightsize won't change the model or effort until you resume."
+
+function pauseText(p: ManualPause) {
+  return p.by === 'model' && p.model ? `Paused: you switched to ${TIER_NAME[p.model]}. ${HOLD_NOTE}` : `Paused: you raised effort to ${p.effort}. ${HOLD_NOTE}`
+}
+
+function pauseStatus(p: ManualPause) {
+  return `Rightsize paused (${p.by === 'model' && p.model ? `you picked ${TIER_NAME[p.model]}` : `you raised effort to ${p.effort}`}) · /${CMD} resume`
+}
+
+/** The person is back at the model and the effort they had before the pause, or below them (what is not known counts as back). */
+function backDown(p: ManualPause, model: Tier | undefined, effort: Level | undefined) {
+  const modelOk = !p.fromModel || !model || tierRank(model) <= tierRank(p.fromModel)
+  const effortOk = !p.fromEffort || !effort || levelRank(effort) <= levelRank(p.fromEffort)
+  return modelOk && effortOk
+}
+
+async function seenTier($: EngineInterface) {
+  const v = (await $.state.get({ plugin: 'rightsize', key: 'seenModel' }).catch(() => undefined))?.value
+  return tierOf(typeof v === 'string' ? v : undefined)
+}
+
+/** Starts the pause, or moves a running one up to what the person stepped to now (the model and effort before the first step stay). */
+async function holdFor($: EngineInterface, now: ManualPause, why: string) {
+  manualPause = now
+  pauseRow = pauseText(now)
+  await $.state.set(PAUSE, now).catch(() => undefined)
+  await log($, `paused: ${why}; no rating, plan, effort change, switch or subagent move until the person resumes`)
+}
+
+/** Rightsize takes over again, from the person's model and effort now: the last seen model and effort are set to them, so the resume does not read as a step. */
+async function resumeRightsize($: EngineInterface, how: 'asked' | 'back') {
+  const was = manualPause
+  if (!was) return 'Rightsize is not paused.'
+  manualPause = null
+  pauseRow = null
+  await $.state.set(PAUSE, null).catch(() => undefined)
+  const live = await $.session.model().catch(() => undefined)
+  if (typeof live === 'string' && live) await $.state.set({ plugin: 'rightsize', key: 'seenModel' }, live).catch(() => undefined)
+  // A session switch from before the pause would stand over the person's effort as the base.
+  await $.state.set({ plugin: 'rightsize', key: 'sessionEffort' }, null).catch(() => undefined)
+  lastApplied = undefined
+  lastSwitched = false
+  const band = (await $.state.get(BAND).catch(() => undefined))?.value
+  if (band?.canResume) await setBand($, null)
+  await showStatus($)
+  await log($, how === 'back' ? 'resumed: the person is back at the model and effort they had before the pause' : 'resumed: the person asked')
+  if (how === 'back') await $.ui.toast('Rightsize resumed: you switched back.')
+  return 'Rightsize resumed.'
+}
+
+/** At a prompt, before any rating. Resumes when the person is back down; pauses when the model is stronger than the last step's. Says whether rightsize is held for this prompt, and whether the pause row shows now. */
+async function manualCheck($: EngineInterface): Promise<{ held: boolean; row: boolean }> {
+  const live = tierOf(await $.session.model().catch(() => undefined))
+  const seen = await seenTier($)
+  const effort = (await personEffort($)) ?? undefined
+  if (manualPause && backDown(manualPause, live, effort)) await resumeRightsize($, 'back')
+  if (!live || !seen || tierRank(live) <= tierRank(seen)) return { held: manualPause !== null, row: false }
+  const was = manualPause
+  const fromEffort = was ? was.fromEffort : effort
+  const now: ManualPause = {
+    model: live,
+    ...(effort ? { effort } : was?.effort ? { effort: was.effort } : {}),
+    fromModel: was?.fromModel ?? seen,
+    ...(fromEffort ? { fromEffort } : {}),
+    at: await $.clock.now(),
+    by: 'model',
+  }
+  await holdFor($, now, `the person switched to ${TIER_NAME[live]} from ${TIER_NAME[was?.fromModel ?? seen]}`)
+  return { held: true, row: true }
+}
+
+/** The first main-chat step of a turn: reads the person's effort, and pauses or resumes rightsize by it. */
+async function noteEffort($: EngineInterface, now: Level, model: string | undefined): Promise<void> {
+  const prev = await personEffort($)
+  await $.state.set({ plugin: 'rightsize', key: 'personEffort' }, now).catch(() => undefined)
+  if (off || (!routing && !handOffs)) return
+  const live = tierOf(await $.session.model().catch(() => undefined))
+  const seen = await seenTier($)
+  const stepModel = tierOf(model)
+  const byDefault = seen !== undefined && stepModel !== undefined && stepModel !== seen && now === DEFAULT_LEVEL[stepModel]
+  const raised = prev !== null && levelRank(now) > levelRank(prev) && !byDefault
+  const was = manualPause
+  if (!raised) {
+    if (was && backDown(was, live, now)) await resumeRightsize($, 'back')
+    return
+  }
+  const next: ManualPause = {
+    effort: now,
+    ...(live ? { model: live } : {}),
+    ...(was ? (was.fromModel ? { fromModel: was.fromModel } : {}) : live ? { fromModel: live } : {}),
+    fromEffort: was?.fromEffort ?? prev,
+    at: await $.clock.now(),
+    by: 'effort',
+  }
+  await holdFor($, next, `the person raised effort from ${prev} to ${now}`)
+  await setBand($, { text: pauseText(next), acted: true })
+  await showStatus($)
+}
+
+/** A run rated before the person's step up showed: it is dropped, and nothing of it applies. */
+async function dropForPause($: EngineInterface, run: Run) {
+  if (active === run) active = null
+  pending = pending.filter(r => r !== run)
+  if (lastAuto) lastAuto = null
+  await log($, `prompt dropped (the person stepped up, rightsize is paused): its rating cost counts as overhead`)
+  const line: RunLine = { at: new Date().toISOString(), kind: 'dropped', id: run.id, session: sessionId, task: run.task, reason: 'the person stepped up', overhead: round(run.overhead) }
+  await append($, 'runs.jsonl', JSON.stringify(line), RUNS_LOG_MAX)
+}
+
 export const register: Register = (on, options) => {
   declared = (options ?? {}) as Record<string, unknown>
   cfg = valuesOf(declared)
@@ -4119,6 +4274,11 @@ export const register: Register = (on, options) => {
     lastSwitched = false
     lastContext = 0
     workflowSeen = false
+    manualPause = null
+    pauseRow = null
+    effortTurn = undefined
+    await $.state.set(PAUSE, null).catch(() => undefined)
+    await $.state.set({ plugin: 'rightsize', key: 'personEffort' }, null).catch(() => undefined)
     askedWorkflows.clear()
     // A question an earlier session left on the band goes, unanswered: its default applies.
     await endBand($, 'turn')
@@ -4237,6 +4397,7 @@ export const register: Register = (on, options) => {
       return { text: shareMessage(runs, { now: await $.clock.now(), subscription: billing === 'subscription', ...(measureFrom ? { measureFrom: new Date(measureFrom).toISOString() } : {}) }) }
     }
     if (arg === 'clear') return { text: await clearSession($) }
+    if (arg === 'resume') return { text: await resumeRightsize($, 'asked') }
     if (arg === 'help') return { text: helpText() }
     if (arg === 'status') return { text: await summary($) }
     if (arg === '') return { text: await openSettings($) }
@@ -4284,6 +4445,7 @@ export const register: Register = (on, options) => {
     if (off || !fromPerson(e) || e.command || e.isMeta) return next(e)
     // A new prompt replaces the last one's band.
     bandNote = null
+    pauseRow = null
     await setBand($, null)
     const text = e.text.trim()
     if (skipOnce !== null && text === skipOnce) {
@@ -4307,6 +4469,19 @@ export const register: Register = (on, options) => {
       const idle = idleNote
       idleNote = ''
       if (idle) await setBand($, { text: idle, acted: true })
+      await showStatus($)
+      return next(e)
+    }
+    // The person stepped up (or is back down): see manualCheck(). Held, the prompt goes through as typed, like the case above: no
+    // rating call, no run line, no task. The pause row shows on the prompt the pause began on, and not again.
+    const manual = await manualCheck($).catch(() => ({ held: false, row: false }))
+    if (manual.held) {
+      if (cacheOn) await knowBilling($, true)
+      lastAuto = null
+      const idle = idleNote
+      idleNote = ''
+      if (manual.row) await setBand($, { text: idle ? `${pauseRow ?? ''} ${idle}` : (pauseRow ?? ''), acted: true })
+      else if (idle) await setBand($, { text: idle, acted: true })
       await showStatus($)
       return next(e)
     }
@@ -4506,12 +4681,13 @@ export const register: Register = (on, options) => {
       const watch = await helperWatch($, e.agentId)
       if (watch) {
         watch.steps += 1
-        if (raising() && !off && !watch.returned) {
+        if (raising() && !off && !manualPause && !watch.returned) {
           const sign = struggle(watch.signals, watch.steps, watch.rated, limits, Infinity)
           if (sign) await escalateHelper($, e.agentId, watch, sign)
         }
       }
-      const level = watch?.raisedTo ?? ours?.level ?? sized?.level
+      // Held (the person stepped up): a subagent from before runs at the effort Claude asked for.
+      const level = manualPause ? undefined : watch?.raisedTo ?? ours?.level ?? sized?.level
       const send = level && e.effort !== undefined ? { ...e, effort: level } : e
       if (run && ours && isLevel(send.effort)) run.subLevel = send.effort
       const out = yield* next(send)
@@ -4532,9 +4708,21 @@ export const register: Register = (on, options) => {
         await bind($, only, e.turnId)
       }
     }
-    const run = active?.turnId === e.turnId ? active : null
+    let run = active?.turnId === e.turnId ? active : null
+    // The person's effort is read on the first step of a turn: a step up pauses rightsize from here, for this turn too.
+    if (isLevel(e.effort) && e.turnId !== effortTurn) {
+      effortTurn = e.turnId
+      await noteEffort($, e.effort, e.model)
+    }
     if (isLevel(e.effort)) await $.state.set({ plugin: 'rightsize', key: 'seenEffort' }, e.effort)
-    const session = await sessionEffortInUse($)
+    // Held: the step goes as the engine made it, on the person's model and effort. Nothing below rewrites it. A run rated before
+    // the pause (this turn's, or one still running when the person stepped up) is dropped: it claims no saving and teaches nothing.
+    const held = manualPause !== null
+    if (held && run) {
+      await dropForPause($, run)
+      run = null
+    }
+    const session = held ? null : await sessionEffortInUse($)
     const own = session ?? (isLevel(e.effort) ? e.effort : undefined)
     // A switched turn (a review on Opus) runs every step on that model at its level, and only that turn.
     const sw = run?.switchTo
@@ -4555,7 +4743,8 @@ export const register: Register = (on, options) => {
     }
     if (run?.raisedTo && (!level || levelRank(run.raisedTo) > levelRank(level))) level = run.raisedTo
     const send = sw && level ? { ...e, model: sw.tier, effort: level } : level && e.effort !== undefined ? { ...e, effort: level } : e
-    const applied = isLevel(send.effort) ? send.effort : undefined
+    const applied = !held && isLevel(send.effort) ? send.effort : undefined
+    if (held) lastApplied = undefined
     const out = yield* next(send)
     const u = out.usage
     if (u) {
@@ -4624,7 +4813,7 @@ export const register: Register = (on, options) => {
     if (String(e.tool) === 'Workflow' && !off) {
       if (askingWorkflow) await askingWorkflow
       // With Routing and Hand-offs both off, rightsize has nothing to pause or follow: no question.
-      if (workflows === 'ask' && (routing || handOffs)) {
+      if (workflows === 'ask' && (routing || handOffs) && !manualPause) {
         const id = (e as { tool_use_id?: unknown }).tool_use_id
         askingWorkflow = askWorkflow($, typeof id === 'string' && id ? id : undefined).finally(() => {
           askingWorkflow = null
@@ -4756,6 +4945,16 @@ export const register: Register = (on, options) => {
           },
         })
       }
+      if (band.canResume) {
+        buttons.push({
+          key: 'resume',
+          label: 'Resume rightsize',
+          press: async () => {
+            const text = await resumeRightsize($, 'asked')
+            return $.ui.toast(text)
+          },
+        })
+      }
       if (band.canClear) {
         buttons.push({
           key: 'clear',
@@ -4794,6 +4993,8 @@ export const register: Register = (on, options) => {
     }
     // × closes every row: a question closed this way gets its no-answer default. A question alone has no ⋯.
     const close = async () => {
+      // × hides the pause row; the pause itself stays (the status line still says it).
+      pauseRow = null
       if (band && (shown.route || shown.cold)) await setBand($, null)
       if (question) await answerBand($, question.id, undefined)
     }

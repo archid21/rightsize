@@ -86,6 +86,8 @@ declare module 'claude-code' {
       retries: { task: string; used: number } | null
       /** Tokens in the main conversation's last request. */
       context: number
+      /** Whether Claude Code will compact this session by itself while it sits idle (ADR 0019), as read at the last main turn's end: `context` is the size it was read at, `at` the time in ms. Absent before the first turn that ended with a conversation. */
+      idleCompact: { on: boolean; context: number; at: number }
       /** Answers to Q1-Q4 for this session. */
       choices: RightsizeChoices
       /** True once "Use these choices in every session?" was answered this session. */

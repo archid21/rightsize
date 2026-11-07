@@ -220,7 +220,9 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.stepUsage = { ...BIG_TURN, cache_read_input_tokens: 139_500 }
     await coldOffer(h, d, 't4')
     expect(await bandText($, surface)).toBe('Goes cold in 55 min (19:00) · coming back after costs about $0.55')
-    // Opus at exactly 200K tokens is offered, and so is one token more: the size ceiling is gone.
+    // Opus at exactly 200K tokens is offered, and so is one token more: the size ceiling is gone. (With Claude's idle compaction
+    // on, its default, nothing is offered at 200K: register.idlecompact.test.ts.)
+    h.settings.idleCompaction = false
     h.model = 'claude-opus-5-5'
     h.stepUsage = { ...BIG_TURN, cache_read_input_tokens: 199_500 }
     await coldOffer(h, d, 't5')

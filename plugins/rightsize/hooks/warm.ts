@@ -83,6 +83,52 @@ export function warmPlan(o: { ms: number; ttl: number; cold: number; ping: numbe
   return { pings, wanted, capped: pings < wanted, cost: pings * o.ping, endsAt }
 }
 
+// ---- Claude Code's idle auto-compact ------------------------------------------
+//
+// Measured twice (2026-11-06 and 2026-11-07 UTC): with idleCompaction on (the default), Claude Code compacts a session 54:00
+// after the last main-thread request when its context is at or above CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS (default 200,000,
+// floor 100,000). Keep-warm requests do not reset that timer, and after the compact each ping paid about 25K uncached tokens
+// (the fork does not re-cache the summary). So in that state rightsize does not keep warm, compact or offer; it notices the
+// compact when it has happened. Pure functions here; register.tsx reads the settings and acts.
+
+/** The default and the floor of CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS. */
+export const IDLE_COMPACT_DEFAULT = 200_000
+export const IDLE_COMPACT_FLOOR = 100_000
+/** An idle gap this long, or longer, with a drop in context and no /compact from the person, is Claude's idle compact (it fires at 54 minutes). */
+export const COMPACT_GAP_MIN = 50 * MIN
+
+/** The idle-compact threshold in tokens: the variable's value, at least the floor; the default when it is unset or not a number. */
+export function idleCompactThreshold(raw: string | undefined): number {
+  const n = Number(raw?.trim())
+  if (!raw?.trim() || !Number.isFinite(n)) return IDLE_COMPACT_DEFAULT
+  return Math.max(IDLE_COMPACT_FLOOR, Math.floor(n))
+}
+
+/** What the idle-compact state reads: the two settings (undefined: not set), DISABLE_AUTO_COMPACT, the cache's life, the context and CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS. */
+export type IdleCompactInput = { idleCompaction: unknown; autoCompactEnabled: unknown; disableAutoCompact: string | undefined; ttl: number; context: number; minTokens: string | undefined }
+
+/**
+ * True when Claude Code will compact this session on its own while it sits idle: idleCompaction is not false, autoCompactEnabled
+ * is not false, DISABLE_AUTO_COMPACT is unset (an empty value counts as unset), the cache lives 1 hour, and the context is at or
+ * above the threshold. Below the threshold, or with any of these off, keep warm and the before-cold options are as they were.
+ */
+export function idleCompactState(o: IdleCompactInput): boolean {
+  return o.idleCompaction !== false && o.autoCompactEnabled !== false && !o.disableAutoCompact?.trim() && o.ttl >= HOUR && o.context >= idleCompactThreshold(o.minTokens)
+}
+
+/**
+ * A compact boundary: the context dropped after an idle gap of 50 minutes or more, and the person did not run /compact. Claude
+ * compacted it. A drop with a shorter gap is the engine's ordinary auto-compact or a rewind, and not this.
+ */
+export const compactBoundary = (o: { gap: number; before: number; after: number; manual: boolean }) => !o.manual && o.gap >= COMPACT_GAP_MIN && o.before > 0 && o.after > 0 && o.after < o.before
+
+/** "Claude compacted this while you were away (210K to 18K tokens)", then the handoff path when whatsnext reported one. */
+export function compactedText(o: { before: number; after: number; handoff?: string }) {
+  const k = (n: number) => `${Math.round(n / 1000)}K`
+  const base = `Claude compacted this while you were away (${k(o.before)} to ${k(o.after)} tokens).`
+  return o.handoff ? `${base} Handoff: ${o.handoff}` : base
+}
+
 // ---- How long the session will probably sit idle -------------------------------
 
 /** Idle gaps shorter than this are a pause, not an absence: they are not recorded. */

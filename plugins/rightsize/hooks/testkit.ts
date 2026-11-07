@@ -142,6 +142,8 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
     configKey: start.configKey ?? 'rightsize@archid21',
     /** True: settings cannot be read. */
     settingsFail: false,
+    /** Other top-level settings a read of one key returns (`idleCompaction`, `autoCompactEnabled`). */
+    settings: {} as Record<string, unknown>,
     /** What reached the engine, in order: each question asked (`ask:<header>`) and each workflow started (`workflow`). */
     events: [] as string[],
     // A gateway's spend limit by default: billed per token, so reports show dollars.
@@ -216,6 +218,10 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
     /** What each $.session.compact() call was given. */
     compactCalls: [] as unknown[],
     compactSkip: undefined as string | undefined,
+    /** The sizes a compaction reports (`tokensBefore`, `tokensAfter`); left out, the engine reports none. */
+    compactTokens: undefined as { before: number; after: number } | undefined,
+    /** Every $.state.set, in order: the key, the plugin it was given with (a bare name has none) and the value. */
+    stateWrites: [] as { key: string; plugin?: string; value: unknown }[],
     /** What $.session.cwd() answers; `git rev-parse --show-toplevel` answers it too, so it is the project folder. */
     cwd: '/repo',
     /** Every slash command the plugin ran with $.command.run, and a reason to make the next one fail. */
@@ -275,9 +281,11 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
     return { value: undefined } as never
   })
   // The merged settings, as the engine holds them: a read of one key is this object, projected.
-  reg('settings.read', async () => {
+  reg('settings.read', async ($, e) => {
     if (h.settingsFail) throw new Error('settings could not be read')
-    return { value: { pluginConfigs: { other: { options: { floor: 'high' } }, ...(Object.keys(h.stored).length ? { [h.configKey]: { options: h.stored } } : {}) } } } as never
+    const all: Record<string, unknown> = { pluginConfigs: { other: { options: { floor: 'high' } }, ...(Object.keys(h.stored).length ? { [h.configKey]: { options: h.stored } } : {}) }, ...h.settings }
+    const key = (e as { key?: string }).key
+    return { value: key === undefined ? all : all[key] } as never
   })
   reg('session.messages', async () => {
     if (h.messagesFail) throw new Error('messages could not be read')
@@ -449,7 +457,8 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
   // A timed question on the band, answered from `answers` as the dialog's are.
   reg('state.set', async ($, e, next) => {
     const result = await next(e)
-    const { key, value } = e as { key: string; value: unknown }
+    const { key, value, plugin } = e as { key: string; value: unknown; plugin?: string }
+    h.stateWrites.push({ key, ...(plugin ? { plugin } : {}), value })
     if (key === 'question') {
       h.question = (value as BandAsk | null) ?? null
       if (h.question && !h.bandAnswered.has(h.question.id)) {
@@ -529,7 +538,7 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
   reg('session.compact', async ($, e) => {
     h.compactions += 1
     h.compactCalls.push(e)
-    return (h.compactSkip !== undefined ? { skip: h.compactSkip } : { messages: [{ role: 'user', text: 'Summary of the conversation.', toolUses: [] }] }) as never
+    return (h.compactSkip !== undefined ? { skip: h.compactSkip } : { messages: [{ role: 'user', text: 'Summary of the conversation.', toolUses: [] }], ...(h.compactTokens ? { tokensBefore: h.compactTokens.before, tokensAfter: h.compactTokens.after } : {}) }) as never
   })
   // The engine's own band above the prompt: an empty row.
   reg('ui.render', ($, e) => {

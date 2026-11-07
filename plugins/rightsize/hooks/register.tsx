@@ -106,7 +106,7 @@ import { type Change, type HelperLine, type Lifetime, type RunLine, type SwitchL
 import { LIMIT_BUTTON, LIMIT_COMPACT, LIMIT_HIDE, LIMIT_MORE, LIMIT_WHY, LIMIT_WHY_ID, isLimitId, limitDue, limitText } from './limit'
 import { SIZE_BUTTON, SIZE_COMPACT, SIZE_HIDE, SIZE_MORE, SIZE_WHY, SIZE_WHY_ID, isSizeId, sizeStep, sizeText } from './size'
 import { COMPACT_BASE, NO_FRESH_HANDOFF, WRAP_HEADROOM, WRAP_TURNS, isWhatsnext } from './whatsnext'
-import { PING_PROMPT, ROW_OF, WRAP_UP, addGap, alwaysText, compactWorth, idleEstimate, breakEvenMs, cacheHeld, clockText, coldPlan, ignoredLately, keepWarmChoices, leadMs, learnedChoice, COLD_MIN, netSaving, nextStart, offerAt, offerText, pingCost, pingEvery, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText } from './warm'
+import { COMPACT_GAP_MIN, PING_PROMPT, ROW_OF, WRAP_UP, addGap, alwaysText, compactBoundary, compactWorth, compactedText, idleCompactState, idleEstimate, breakEvenMs, cacheHeld, clockText, coldPlan, ignoredLately, keepWarmChoices, leadMs, learnedChoice, COLD_MIN, netSaving, nextStart, offerAt, offerText, pingCost, pingEvery, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText } from './warm'
 
 // Before a prompt is sent, a quick Haiku call rates the effort, the model and
 // the work needs on each model, and the cost model prices each route that fits. The first time
@@ -475,6 +475,12 @@ let profileChose: (keyof Choices)[] = []
 const profileNoted = new Set<keyof Choices>()
 /** A note for the prompt's band: the cache went cold, so this prompt writes the conversation again. */
 let idleNote = ''
+/** Claude Code compacted the session while it sat idle: what the return says. `shown` is true once the band has said it. Cleared by the returning turn's first request. */
+let compactedAway: { before: number; after?: number; handoff?: string; shown: boolean } | null = null
+/** The person or a plugin compacted the session since the last turn ended: a drop in context after that is not Claude's idle compact. */
+let manualCompact = false
+/** The next main-chat request is the first since a turn ended: the idle gap and the context are checked on it. */
+let boundaryCheck = false
 /** One close call in five takes the route the guide did not pick. Off in every profile. */
 let explore = false
 /** What happens to the answers to the four questions: ask whether to keep them, keep them, or forget them at the end of the session. */
@@ -2355,6 +2361,14 @@ function coldCostText(d: number, rates: Awaited<ReturnType<typeof windowPerDolla
 // /compact would have cost, so the person knows for next time.
 async function noteIdle($: EngineInterface) {
   idleNote = ''
+  if (cacheOn && !compactedAway) await detectCompact($)
+  // Claude compacted the session while it was idle: the cache did not simply go cold, the conversation is small now.
+  if (compactedAway) {
+    idleNote = compactedAway.after === undefined ? '' : compactedText({ before: compactedAway.before, after: compactedAway.after, ...(compactedAway.handoff ? { handoff: compactedAway.handoff } : {}) })
+    compactedAway.shown = idleNote !== ''
+    idleWarnedFor = lastTurnAt
+    return
+  }
   if (!cacheOn || idleWarning === null || billingBy === null) return
   const last: LastTurn | undefined = lastTurnAt ? { at: lastTurnAt, context: lastContext } : (await lastTurns($))[sessionId]
   if (!last || last.at === idleWarnedFor) return
@@ -2369,6 +2383,69 @@ async function noteIdle($: EngineInterface) {
   const rates = billing === 'subscription' ? await windowPerDollar($) : undefined
   idleNote = `Idle ${idleFor(idle)}: the cache went cold, so this prompt writes the conversation (~${Math.round(context / 1000)}K tokens) again, ${usageCostText(c.resend, rates)} more than warm; /compact first would have cost ${usageCostText(c.compact, rates)}.`
   await log($, `idle ${idleFor(idle)} with ${context} tokens: noted on the band (${money(c.resend)} to write again)`)
+}
+
+// ---- Claude Code's idle auto-compact (ADR 0019) -------------------------------------------------------------------
+//
+// With idleCompaction on (the default), Claude Code compacts a session 54 minutes after its last request when the context is
+// at or above CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS. Keep-warm pings do not reset that timer and, after the compact, each pays
+// for the uncached summary. So above the threshold on a 1-hour cache rightsize sends no pings, makes no offer and compacts
+// nothing itself (coldCheck), and it notices the compact when it has happened (the signals below).
+
+const IDLE_COMPACT = { plugin: 'rightsize', key: 'idleCompact' } as const
+
+/** True when Claude Code will compact this session by itself while it sits idle. The result, with the context it was read at, is kept in $.state. */
+async function idleCompactNow($: EngineInterface, context: number): Promise<boolean> {
+  const idleCompaction = await $.settings.read({ key: 'idleCompaction' }).catch(() => undefined)
+  const autoCompactEnabled = await $.settings.read({ key: 'autoCompactEnabled' }).catch(() => undefined)
+  const disableAutoCompact = await $.env.get('DISABLE_AUTO_COMPACT').catch(() => undefined)
+  const minTokens = await $.env.get('CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS').catch(() => undefined)
+  const idle = idleCompactState({ idleCompaction, autoCompactEnabled, disableAutoCompact: typeof disableAutoCompact === 'string' ? disableAutoCompact : undefined, ttl: cacheTtl, context, minTokens: typeof minTokens === 'string' ? minTokens : undefined })
+  await $.state.set(IDLE_COMPACT, { on: idle, context, at: await $.clock.now() }).catch(() => undefined)
+  return idle
+}
+
+/** The conversation is `tokens` now (a compact): the stored size, in memory, in $.state and in the session's last-turn record. */
+async function replaceContext($: EngineInterface, tokens: number) {
+  lastContext = tokens
+  await $.state.set({ plugin: 'rightsize', key: 'context' }, tokens).catch(() => undefined)
+  const all = await lastTurns($)
+  const had = all[sessionId]
+  if (had) await $.store.set(LAST_TURNS, { ...all, [sessionId]: { ...had, context: tokens } }).catch(() => undefined)
+}
+
+/** The handoff whatsnext says this session has, as it shows the path; undefined when whatsnext is not there, has none, or the one it has is another session's. */
+async function reportedHandoff($: EngineInterface): Promise<string | undefined> {
+  if ((await whatsnextInstalled($)) !== true || !/^[A-Za-z0-9_-]+$/.test(sessionId)) return undefined
+  const got = await whatsnextRun($, ['compact-instructions', '--session', sessionId, '--json'])
+  if ('why' in got || got.run.exitCode !== 0) return undefined
+  try {
+    const out = JSON.parse(got.run.stdout) as { handoff?: unknown; handoff_exists?: unknown; handoff_foreign?: unknown }
+    return out.handoff_exists === true && out.handoff_foreign !== true && typeof out.handoff === 'string' && out.handoff ? out.handoff : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * A compact boundary was seen: Claude compacted the session while it was idle. Pings stop, the cache path is dropped, the stored
+ * size is replaced (when the new size is known), and the return is remembered so that it is never counted as a cache miss.
+ */
+async function noteCompacted($: EngineInterface, before: number, after?: number) {
+  await dropCache($, 'Claude compacted the session')
+  const handoff = await reportedHandoff($)
+  compactedAway = { before, ...(after ? { after } : {}), ...(handoff ? { handoff } : {}), shown: false }
+  if (after) await replaceContext($, after)
+  await log($, `idle compact: Claude compacted this session while it was idle (${before} to ${after ?? 'an unknown number of'} tokens): keep warm stopped, and the return is not counted as a cache miss${handoff ? `; handoff ${handoff}` : ''}`)
+}
+
+/** At the person's prompt: the live context, against the size when the turn ended. A drop after an idle gap of 50 minutes or more, with no /compact, is Claude's idle compact. */
+async function detectCompact($: EngineInterface) {
+  const last: LastTurn | undefined = lastTurnAt ? { at: lastTurnAt, context: lastContext } : (await lastTurns($))[sessionId]
+  if (!last || last.context <= 0) return
+  const tokens = (await usageNow($))?.context?.tokens
+  if (typeof tokens !== 'number') return
+  if (compactBoundary({ gap: (await $.clock.now()) - last.at, before: last.context, after: tokens, manual: manualCompact })) await noteCompacted($, last.context, tokens)
 }
 
 /** True when whatsnext's commands or skills are listed (so it is installed and on); false when they are not; undefined when the list cannot be read. */
@@ -2916,6 +2993,12 @@ async function coldCheck($: EngineInterface) {
   if (off || !cacheOn || coldDone || coldMode === 'off') return
   const context = lastContext
   if (!context) return
+  // Claude Code compacts this session by itself while it sits idle: no pings (they do not reset its timer and would pay for the
+  // uncached summary after it), no offer, no rightsize compact; whatsnext's wrapup.autoIdle saves the handoff.
+  if (await idleCompactNow($, context)) {
+    await log($, `before the cache goes cold: nothing to do, Claude Code compacts this session by itself 54 minutes after the last request (${context} tokens, at or above its idle-compact threshold)`)
+    return
+  }
   const tier = (await situation($)).tier
   const idle = idleCost(prices[tier], context)
   const cold = idle.resend
@@ -4003,6 +4086,21 @@ export const register: Register = (on, options) => {
     return result
   }).catch((_, e, next) => next(e))
 
+  // Claude Code's idle auto-compact: the engine's own compaction (trigger `auto`) after an idle gap of 50 minutes or more, between
+  // turns. The person's /compact and a plugin's compact are not it; they only say the drop in context that follows is not one.
+  on('session.compact', async ($, e, next) => {
+    const result = await next(e)
+    if (off || e.agentId !== undefined || result.skip !== undefined) return result
+    if (e.trigger === 'manual' || e.trigger === 'plugin') {
+      manualCompact = true
+      return result
+    }
+    if (e.trigger !== 'auto' || mainBusy || !lastTurnAt || manualCompact || (await $.clock.now()) - lastTurnAt < COMPACT_GAP_MIN) return result
+    const after = result.tokensAfter ?? (await usageNow($))?.context?.tokens
+    await noteCompacted($, result.tokensBefore ?? lastContext, typeof after === 'number' && after > 0 ? after : undefined)
+    return result
+  }).catch((_, e, next) => next(e))
+
   on('session.start', async ($, e, next) => {
     const result = await next(e)
     // The plugin can live anywhere (a clone, ~/Projects), so ask for HOME rather than reading it off the path.
@@ -4040,6 +4138,9 @@ export const register: Register = (on, options) => {
     mainBusy = false
     lastWarmAt = 0
     warmReturn = null
+    compactedAway = null
+    manualCompact = false
+    boundaryCheck = false
     await $.command.register({ name: CMD, description: 'Rightsize: settings, status, report, share, retry or clear' })
     // Claude Code hands over every value with its default filled in; only settings.json tells which ones are yours.
     const configs = await $.settings.read({ key: 'pluginConfigs' }).catch(() => undefined)
@@ -4460,7 +4561,14 @@ export const register: Register = (on, options) => {
     if (u) {
       // An effort switch may make this request re-write the conversation: measure it.
       // A model rewritten on this step or the last one makes the cache miss the model's, not an effort switch's: not measured.
-      if (!sw && !lastSwitched && applied && lastApplied && applied !== lastApplied && lastContext > 5000) {
+      // The first request after a turn ended: a drop in context after an idle gap of 50 minutes or more, with no /compact, is Claude's
+      // idle compact. It is never a cache miss: the conversation is small and its summary is not in the cache.
+      if (boundaryCheck) {
+        boundaryCheck = false
+        if (!compactedAway && lastTurnAt && compactBoundary({ gap: (await $.clock.now()) - lastTurnAt, before: lastContext, after: contextOf(u), manual: manualCompact })) await noteCompacted($, lastContext, contextOf(u))
+        manualCompact = false
+      }
+      if (!sw && !lastSwitched && !compactedAway && applied && lastApplied && applied !== lastApplied && lastContext > 5000) {
         const missed = u.cache_read_input_tokens < lastContext * 0.5
         teach(SWITCH_KEY, missed ? 1 : 0)
         // One line per measured switch: the evidence for whether the engine keeps the cache.
@@ -4486,10 +4594,17 @@ export const register: Register = (on, options) => {
       if (applied) lastApplied = applied
       lastSwitched = sw !== undefined
       // The first request of a prompt that came back to a kept-warm cache shows whether the cache held.
+      if (compactedAway) warmReturn = null
       if (warmReturn) {
         const c = warmReturn
         warmReturn = null
         await settleWarm($, c, u)
+      }
+      // A compact seen only now, or one the band has not said yet: say it, in the prompt's place.
+      if (compactedAway) {
+        const gone = compactedAway
+        compactedAway = null
+        if (!gone.shown) await setBand($, { text: compactedText({ before: gone.before, after: gone.after ?? contextOf(u), ...(gone.handoff ? { handoff: gone.handoff } : {}) }), acted: true })
       }
       lastContext = contextOf(u)
       await $.state.set({ plugin: 'rightsize', key: 'context' }, lastContext)
@@ -4763,6 +4878,8 @@ export const register: Register = (on, options) => {
     if (sized) await finishSubagent($, sized, e.isAborted, watched)
     if (e.agentId === undefined) {
       mainBusy = false
+      boundaryCheck = true
+      manualCompact = false
       completed.add(e.turnId)
       await knowBilling($, false)
       await rememberTurn($)

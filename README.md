@@ -111,7 +111,7 @@ A routine edit stays on Sonnet; a review switches to Opus for one turn; the band
 | Cold: the conversation is written to the cache again | About $1.20 |
 | Kept warm for 8 hours: one cheap cache read per hour | About $0.25 |
 
-On a subscription, the rebuild doesn't eat into your usage window. The band shows `Warm until 8:30 · $0.00 so far`, with a Stop button.
+On a subscription, a keep-warm request draws a small share of your usage window, far less than rebuilding the cache; the band shows the running share. The band shows `Warm until 8:30 · ~0% used so far`, with a Stop button.
 
 **Compact before it costs you.** As a conversation fills the window, the band says so at 40, 50, 60, 70, 80 and 90%, skipping any point where Claude Code would compact by itself. Near your 5-hour limit it advises a compact while the cache is warm. Nothing compacts until you press the button.
 

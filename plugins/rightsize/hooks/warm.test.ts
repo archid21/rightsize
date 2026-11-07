@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import { DEFAULT_PRICES, idleCost } from './cost'
-import { COMPACT_VALUE, IDLE_CAP, addGap, compactWorth, idleEstimate, ALWAYS_AFTER, BACK_OFF_AFTER, LEARN_OVER, OFFER_AFTER_MS, DEFAULT_START, ROW_OF, breakEvenMs, breakEvenPings, clockText, coldPlan, alwaysText, ignoredLately, keepWarmChoices, leadMs, learnedChoice, netSaving, nextStart, offerAt, offerText, pingCost, pingEvery, pingsFor, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText, WARM_PROOF, cacheHeld } from './warm'
+import { COMPACT_GAP_MIN, IDLE_COMPACT_DEFAULT, IDLE_COMPACT_FLOOR, compactBoundary, compactedText, idleCompactState, idleCompactThreshold, COMPACT_VALUE, IDLE_CAP, addGap, compactWorth, idleEstimate, ALWAYS_AFTER, BACK_OFF_AFTER, LEARN_OVER, OFFER_AFTER_MS, DEFAULT_START, ROW_OF, breakEvenMs, breakEvenPings, clockText, coldPlan, alwaysText, ignoredLately, keepWarmChoices, leadMs, learnedChoice, netSaving, nextStart, offerAt, offerText, pingCost, pingEvery, pingsFor, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText, WARM_PROOF, cacheHeld } from './warm'
 
 const MIN = 60_000
 const HOUR = 60 * MIN
@@ -321,4 +321,45 @@ test('compact only when keeping warm over E costs at least 3 times the compactio
   expect(w.worth, '$2.40 is at least $1.80').toBe(true)
   expect(compactWorth({ ...base, estimate: 30 * MIN, ping: 0.3 }).keepWarm, 'under one cache life is one request').toBe(0.3)
   expect(compactWorth({ ...base, estimate: 6 * HOUR, ping: 0.4 }).worth, '6 x 0.40 = $2.40 clears $1.80').toBe(true)
+})
+
+test('the idle-compact threshold is the variable, at least 100,000; 200,000 when it is unset or not a number', async () => {
+  expect([IDLE_COMPACT_DEFAULT, IDLE_COMPACT_FLOOR]).toEqual([200_000, 100_000])
+  expect(idleCompactThreshold(undefined)).toBe(200_000)
+  expect(idleCompactThreshold('')).toBe(200_000)
+  expect(idleCompactThreshold('soon')).toBe(200_000)
+  expect(idleCompactThreshold('50000'), 'under the floor').toBe(100_000)
+  expect(idleCompactThreshold('150000')).toBe(150_000)
+  expect(idleCompactThreshold(' 300000 ')).toBe(300_000)
+})
+
+test('the idle-compact state: both settings not false, DISABLE_AUTO_COMPACT unset, a 1-hour cache, and the context at or above the threshold', async () => {
+  const on = { idleCompaction: undefined, autoCompactEnabled: undefined, disableAutoCompact: undefined, ttl: HOUR, context: 200_000, minTokens: undefined }
+  expect(idleCompactState(on)).toBe(true)
+  expect(idleCompactState({ ...on, idleCompaction: true, autoCompactEnabled: true, disableAutoCompact: '' })).toBe(true)
+  expect(idleCompactState({ ...on, context: 199_999 }), 'one token under').toBe(false)
+  expect(idleCompactState({ ...on, idleCompaction: false })).toBe(false)
+  expect(idleCompactState({ ...on, autoCompactEnabled: false })).toBe(false)
+  expect(idleCompactState({ ...on, disableAutoCompact: '1' })).toBe(false)
+  expect(idleCompactState({ ...on, ttl: 5 * MIN }), 'a 5-minute cache').toBe(false)
+  expect(idleCompactState({ ...on, context: 120_000, minTokens: '100000' })).toBe(true)
+  expect(idleCompactState({ ...on, context: 120_000, minTokens: '10' }), 'the floor').toBe(true)
+  expect(idleCompactState({ ...on, context: 99_999, minTokens: '10' })).toBe(false)
+})
+
+test('a compact boundary: a drop after a gap of 50 minutes or more with no /compact from the person', async () => {
+  expect(COMPACT_GAP_MIN).toBe(50 * MIN)
+  const base = { gap: 54 * MIN, before: 200_000, after: 18_000, manual: false }
+  expect(compactBoundary(base)).toBe(true)
+  expect(compactBoundary({ ...base, gap: 50 * MIN }), 'exactly 50 minutes').toBe(true)
+  expect(compactBoundary({ ...base, gap: 50 * MIN - 1 })).toBe(false)
+  expect(compactBoundary({ ...base, manual: true })).toBe(false)
+  expect(compactBoundary({ ...base, after: 200_000 }), 'no drop').toBe(false)
+  expect(compactBoundary({ ...base, after: 0 }), 'size unknown').toBe(false)
+  expect(compactBoundary({ ...base, before: 0 })).toBe(false)
+})
+
+test('the return note says what Claude did, with the handoff path when there is one', async () => {
+  expect(compactedText({ before: 210_400, after: 18_300 })).toBe('Claude compacted this while you were away (210K to 18K tokens).')
+  expect(compactedText({ before: 210_400, after: 18_300, handoff: 'docs/project/HANDOFF.md' })).toBe('Claude compacted this while you were away (210K to 18K tokens). Handoff: docs/project/HANDOFF.md')
 })

@@ -184,6 +184,13 @@ An "ask" answer opens its own timed dialog (see **Question wait**); every other 
 - Default: normal
 - How soon Claude counts as stuck. normal: the same tool call failing twice, 3 tool calls failing, the same call running 3 times, or a turn passing 3x the rated steps (at least 15). relaxed: the same call failing 3 times, 4 calls failing, a call running 4 times, or 4x the steps (at least 20). sensitive: the same call failing twice, 2 calls failing, a call running twice, or 2x the steps (at least 10).
 
+### Helper call cap
+
+- Key: `helperCap`
+- Options: tight · normal · loose · off
+- Default: normal
+- The most tool calls a helper on a cheaper model may make for one task, however well they go. normal: 25 for Haiku, 40 for Sonnet. tight: 15 and 25. loose: 40 and 60. off: no cap. At the cap the helper's next call is refused and it reports back; the main chat finishes the task, as for a helper that is struggling. Opus and Fable helpers have no cap.
+
 ### Rater
 
 - Key: `rater`

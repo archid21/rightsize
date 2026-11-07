@@ -101,8 +101,8 @@ import {
 } from './settings'
 import { BRIEF_MAX, cutRequest, parseRating, ratingPrompt, ratingSystem } from './rate'
 import { isApprovalStep } from './approval'
-import { LIMITS, type Limits, type Signals, type Struggle, blockedError, callKey, isEditTool, isSensitivity, isTestCommand, noSignals, noteCall, oneUp, refusedByPerson, struggle, testsOutcome } from './struggle'
-import { type Change, type HelperLine, type RunLine, type SwitchLine, type Windows, SESSION_TOTAL, SESSION_TOTAL_FROM, bandShareText, buildReport, costTag, parseLines, ratedInSession, sessionTotal, shareMessage, shareOf, usedTag, windowCostText, windowRates } from './report'
+import { LIMITS, type CapSetting, type Limits, type Signals, type Struggle, blockedError, callKey, isEditTool, isSensitivity, isCapSetting, helperCap, isTestCommand, noSignals, noteCall, oneUp, refusedByPerson, struggle, testsOutcome } from './struggle'
+import { type Change, type HelperLine, type Lifetime, type RunLine, type SwitchLine, type Windows, SESSION_TOTAL, SESSION_TOTAL_FROM, bandShareText, buildReport, costTag, foldLifetime, parseLifetime, parseLines, ratedInSession, sessionTotal, shareMessage, shareOf, usedTag, windowCostText, windowRates } from './report'
 import { LIMIT_BUTTON, LIMIT_COMPACT, LIMIT_HIDE, LIMIT_MORE, LIMIT_WHY, LIMIT_WHY_ID, isLimitId, limitDue, limitText } from './limit'
 import { SIZE_BUTTON, SIZE_COMPACT, SIZE_HIDE, SIZE_MORE, SIZE_WHY, SIZE_WHY_ID, isSizeId, sizeStep, sizeText } from './size'
 import { COMPACT_BASE, NO_FRESH_HANDOFF, WRAP_HEADROOM, WRAP_TURNS, isWhatsnext } from './whatsnext'
@@ -481,6 +481,8 @@ let explore = false
 let rememberMode: 'ask' | 'every session' | 'this session' = 'ask'
 /** How soon Claude counts as stuck. */
 let limits: Limits = LIMITS.normal
+/** The most tool calls a helper on a cheaper tier may make for one task. */
+let callCap: CapSetting = 'normal'
 /** The pace the prompt being rated was decided at. */
 let paceNow: Pace = NORMAL_PACE
 /** The pace note, for a subscription only: it quotes how full a usage window is, and a window share is never shown on the API. */
@@ -552,6 +554,12 @@ type Watch = {
   stall?: 'struggling' | 'blocked'
   /** Stopped and sent back: its tool calls are refused from here on. */
   returned?: true
+  /** The tier it runs on when that is a cheaper one than the session's (a hand-down or a moved subagent): the call cap applies to these. */
+  tier?: Tier
+  /** Tool calls it has made, counted as they go out. */
+  calls: number
+  /** The call cap that sent it back, when that is why. */
+  capped?: number
   /** The can't-tell and blocked cases are logged once. */
   said?: boolean
 }
@@ -656,6 +664,30 @@ function readRuns($: EngineInterface): Promise<RunLine[]> {
 }
 function readSwitchLines($: EngineInterface): Promise<SwitchLine[]> {
   return readAll($, 'switches.jsonl', LEGACY_SWITCHES)
+}
+
+// The lifetime roll-up: totals of every run line older than 30 days, kept in the plugin's own store (~/.claude/plugins/store,
+// outside any repository) so the report's Lifetime column survives the logs being trimmed and pruned. It holds sums only.
+const LIFETIME_STORE = 'lifetime'
+const ROLLUP_AFTER_DAYS = 30
+
+async function readLifetime($: EngineInterface): Promise<Lifetime | undefined> {
+  return parseLifetime(await $.store.get(LIFETIME_STORE).catch(() => undefined))
+}
+
+// Folds the lines older than 30 days into the roll-up once. It runs before pruneSessions, which only removes folders idle for 45 days.
+// The store is read again just before the write, so a session that started at the same moment does not fold the same lines twice.
+async function rollUpLifetime($: EngineInterface) {
+  try {
+    const now = await $.clock.now()
+    const cutoff = now - ROLLUP_AFTER_DAYS * 24 * 60 * 60_000
+    const before = await readLifetime($)
+    const next = foldLifetime(before, await readRuns($), cutoff)
+    // Another session folded while this one read the logs: its fold stands, and this one's lines are in it too.
+    if (next && next !== before && (await readLifetime($))?.through === before?.through) await $.store.set(LIFETIME_STORE, next)
+  } catch {
+    // The lines stay in the logs and are folded at the next start.
+  }
 }
 
 // Removes the folders of sessions that have not written for 45 days. Only a folder inside the
@@ -3311,6 +3343,8 @@ const APPROVAL_DENY =
 
 const HELPER_RETURN =
   'rightsize: stop now. You are stuck, and this task\'s retry budget is used up, so more effort or more tries will not help. Do not make more tool calls: report what you tried, what failed, and where you are stuck. The main chat takes it from here.'
+const capReturn = (cap: number) =>
+  `rightsize: stop now. You have used the ${cap} tool calls this task allows a helper. Do not make more tool calls: report what you did, what is left and where you are. The main chat takes it from here.`
 const REWORK_DENY =
   'rightsize: this task\'s retry budget is used up, so the helper gets no more rework rounds. Finish the task yourself in the main chat, from what the helper did.'
 
@@ -3364,10 +3398,10 @@ async function helperWatch($: EngineInterface, id: string): Promise<Watch | unde
   const startedAt = await $.clock.now()
   let w: Watch | undefined
   if (run?.delegate && run.subAgents.includes(id)) {
-    w = { kind: 'handoff', run: run.id, task: run.task, level: run.delegate.level, rated: run.rating.steps, signals: noSignals(), steps: 0, startedAt, blocked: 0, raises: [] }
+    w = { kind: 'handoff', run: run.id, task: run.task, level: run.delegate.level, rated: run.rating.steps, signals: noSignals(), steps: 0, startedAt, blocked: 0, raises: [], calls: 0, ...(run.delegate.dir === 'down' ? { tier: run.delegate.tier } : {}) }
   } else if (sized) {
     const task = sized.task ?? (await currentTask($))?.id ?? sessionId
-    w = { kind: 'moved', ...(sized.run ? { run: sized.run } : {}), task, level: sized.level, rated: sized.steps ?? 5, signals: noSignals(), steps: 0, startedAt, blocked: 0, raises: [] }
+    w = { kind: 'moved', ...(sized.run ? { run: sized.run } : {}), task, level: sized.level, rated: sized.steps ?? 5, signals: noSignals(), steps: 0, startedAt, blocked: 0, raises: [], calls: 0, tier: sized.tier }
   }
   const raced = watches.get(id)
   if (raced) return raced
@@ -3384,6 +3418,7 @@ const helperLine = (w: Watch, now: number): HelperLine => ({
   ...(w.stall ? { stall: w.stall } : {}),
   ...(w.raises.length ? { raises: w.raises } : {}),
   ...(w.returned ? { returned: true as const } : {}),
+  ...(w.capped ? { capped: w.capped } : {}),
 })
 
 // A helper's tool call, after it ran. An error from the environment is a Blocked stall: more effort
@@ -3839,6 +3874,9 @@ function applyOption(key: SettingKey) {
     case 'stuck':
       if (isSensitivity(v)) limits = LIMITS[v]
       return
+    case 'helperCap':
+      if (isCapSetting(v)) callCap = v
+      return
     case 'rater':
       rater = v === 'haiku' ? 'haiku' : 'sonnet'
       return
@@ -4055,7 +4093,7 @@ export const register: Register = (on, options) => {
     // Answers an earlier session saved show in /config too, so the rows say what rightsize follows.
     if (kept && typeof kept === 'object') await mirrorRules($, followed)
     // Clearing out old sessions never holds up the start.
-    void pruneSessions($)
+    void rollUpLifetime($).finally(() => pruneSessions($))
     runLog = await readRuns($)
     ratedRuns.clear()
     await refreshMisses($)
@@ -4085,12 +4123,13 @@ export const register: Register = (on, options) => {
     if (arg === 'report') {
       const runs = await readRuns($)
       const switches = await readSwitchLines($)
+      const lifetime = await readLifetime($)
       const now = await $.clock.now()
       const start = startBlock(adviseStart(runs, await startContext($), now), billing === 'subscription', money)
       // The desktop app (any surface but the terminal) renders the report as Markdown.
       const surfaces = await $.session.surfaces()
       const markdown = surfaces.some(x => x !== 'terminal')
-      return { text: buildReport(runs, switches, { now, session: sessionId, subscription: billing === 'subscription', start, pause: missBlock, markdown, watching, ...(measureFrom ? { measureFrom: new Date(measureFrom).toISOString() } : {}) }) }
+      return { text: buildReport(runs, switches, { now, session: sessionId, subscription: billing === 'subscription', start, pause: missBlock, markdown, watching, ...(lifetime ? { lifetime } : {}), ...(measureFrom ? { measureFrom: new Date(measureFrom).toISOString() } : {}) }) }
     }
     if (arg === 'share') {
       const runs = await readRuns($)
@@ -4489,7 +4528,21 @@ export const register: Register = (on, options) => {
     }
     // A helper that was sent back stays stopped, so that it reports instead of trying again.
     const helper = e.agentId === undefined ? undefined : await helperWatch($, e.agentId)
-    if (helper?.returned) return { deny: HELPER_RETURN }
+    if (helper?.returned) return { deny: helper.capped ? capReturn(helper.capped) : HELPER_RETURN }
+    // A helper on a cheaper tier gets a fixed number of tool calls, however well they go. At the cap it is struggling:
+    // it goes back to the main chat, the way a helper with no retry left does.
+    if (helper && e.agentId !== undefined && !off) {
+      const cap = helper.tier ? helperCap(callCap, helper.tier) : undefined
+      if (cap !== undefined && helper.calls >= cap) {
+        helper.returned = true
+        helper.stall = 'struggling'
+        helper.capped = cap
+        await setBand($, { text: `Helper stopped and sent back to the main chat: it used its ${cap} tool calls.`, acted: true })
+        await log($, `returned helper ${e.agentId} to the main chat at step ${helper.steps}: it reached the ${cap}-call cap for ${helper.tier}`)
+        return { deny: capReturn(cap) }
+      }
+      helper.calls += 1
+    }
     // The main chat reworking a hand-off (a message to the subagent, or a second one started on its model) uses a chance of the task's budget.
     if (active?.delegate && e.agentId === undefined) {
       const model = (e as { model?: unknown }).model

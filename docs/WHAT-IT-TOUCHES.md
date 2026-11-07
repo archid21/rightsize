@@ -8,10 +8,11 @@ rightsize is a mod: it runs inside Claude Code and hooks some of its events. Thi
 - `turn.start`: matches a turn that is starting to the prompt it was rated for (by its text), so a prompt typed while another turn runs is measured in its own turn. It changes nothing.
 - `turn.step`: watches each step to see when Claude is stuck and raises effort under your Raising rule.
 - `agent.spawn`: passes the event on with `next(e)` and never denies. It changes only the `model` of a general-purpose subagent that names none, moving it to a cheaper model (see **Claude's subagents**).
-- `tool.call`: passes every call on unchanged with `next(e)`. It notes whether each tool call failed and whether a test command passed or failed (for stuck turns and for the miss rate), and asks before a workflow starts, at each Workflow call until you answer. It denies three things:
+- `tool.call`: passes every call on unchanged with `next(e)`. It notes whether each tool call failed and whether a test command passed or failed (for stuck turns and for the miss rate), and asks before a workflow starts, at each Workflow call until you answer. It denies four things:
   - steps only you can approve (shell commands that push, publish, release, deploy or merge; MCP tools whose action name starts with send, publish, deploy, merge or post) inside a hand-off helper;
   - the calls of a helper that was stopped and sent back to the main chat;
-  - rework past the task's retry budget (the main chat then finishes the work).
+  - rework past the task's retry budget (the main chat then finishes the work);
+  - the calls of a helper on a cheaper model once it has made its **Helper call cap** (25 for Haiku, 40 for Sonnet by default). The helper is sent back to the main chat.
 
   It never approves a call and never changes a permission decision anywhere else.
 - `config.set`: passes every event on with `next(e)` and never denies. It ignores rows that are not its own, and watches its own `rightsize.*` rows in `/config`, to know which values you set. The write goes through as you made it.
@@ -42,7 +43,7 @@ One, and only one fixed text: `wrap up`, submitted once before a big session's c
 ## Files it writes
 
 - The logs listed below.
-- Its own store in Claude Code's plugin store (your answers, calibration and counters), `~/.claude/plugins/store/rightsize_*.json`.
+- Its own store in Claude Code's plugin store (your answers, calibration, counters, and the lifetime roll-up of the report: sums of cost and saving for runs older than 30 days, no prompt text), `~/.claude/plugins/store/rightsize_*.json`.
 - `prices.json` in its own plugin folder, keeping the old file as `prices.json.bak` (the monthly price check).
 
 These are all the places it writes. Nothing in your project is written, and none of its files is opened by rightsize: it only checks that `.whatsnext/config.json` exists, the sign that whatsnext was started there.

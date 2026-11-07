@@ -63,7 +63,7 @@ A stall caused by the helper waiting on the user, such as a permission prompt or
 A stall caused by the environment, such as a network failure, a missing login or tests that already failed. More effort would not fix it.
 
 **Struggling**:
-A stall the helper caused itself, such as repeating a failing command or undoing its own edits. Only a struggling stall can lead to a miss.
+A stall the helper caused itself, such as repeating a failing command, undoing its own edits, or using up its call cap. Only a struggling stall can lead to a miss.
 
 **Chance**:
 One attempt a struggling helper gets before the task goes back to the main chat. Each profile allows a set number of chances.

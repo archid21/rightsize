@@ -154,6 +154,8 @@ export type HelperLine = {
   raises?: { step: number; from: string; to: string; why: string }[]
   /** Stopped and sent back to the main chat: the task's retry budget was used up while it was still stuck. */
   returned?: true
+  /** The helper call cap it reached, when that is why it was sent back. */
+  capped?: number
 }
 
 export type SwitchLine = { at: string; kept?: boolean }
@@ -190,7 +192,7 @@ export function counterfactual(l: RunLine) {
   return l.stay
 }
 
-type Totals = {
+export type Totals = {
   rated: number
   /** Claude's own subagents moved to a cheaper model. */
   subagents: number
@@ -253,6 +255,75 @@ export function totals(lines: readonly RunLine[]): Totals {
     else if (SPENDING.includes(c)) t.extra -= diff
   }
   return t
+}
+
+const zeroTotals = (): Totals => totals([])
+
+/** Two totals added: every field of Totals is a count or a sum, so a period's total is the sum of its parts. */
+export function addTotals(a: Totals, b: Totals): Totals {
+  const changed = { ...a.changed }
+  for (const k of Object.keys(b.changed) as Change[]) changed[k] = (changed[k] ?? 0) + b.changed[k]
+  return {
+    rated: a.rated + b.rated,
+    subagents: a.subagents + b.subagents,
+    unrated: a.unrated + b.unrated,
+    changed,
+    declined: a.declined + b.declined,
+    saved: a.saved + b.saved,
+    extra: a.extra + b.extra,
+    overhead: a.overhead + b.overhead,
+    spent: a.spent + b.spent,
+    returns: a.returns + b.returns,
+    keptSaved: a.keptSaved + b.keptSaved,
+  }
+}
+
+/**
+ * The lifetime roll-up: the totals of every run line older than `through`, folded in once so the run logs can be
+ * trimmed and pruned without the lifetime figure losing them. `since` is the date of the earliest line folded.
+ * It holds sums only: no prompt text, no ids. Lines after `through` are still in the logs and are added live.
+ */
+export type Lifetime = { since: string; through: string; t: Totals }
+
+/** A stored value read back as a Lifetime, or undefined when it is not one (a missing or damaged store counts for nothing). */
+export function parseLifetime(v: unknown): Lifetime | undefined {
+  if (!v || typeof v !== 'object') return undefined
+  const { since, through, t } = v as { since?: unknown; through?: unknown; t?: unknown }
+  if (typeof since !== 'string' || typeof through !== 'string' || !Number.isFinite(Date.parse(since)) || !Number.isFinite(Date.parse(through))) return undefined
+  if (!t || typeof t !== 'object') return undefined
+  // Rebuilt field by field from numbers, so a damaged store cannot put anything else into the report.
+  const x = t as Record<string, unknown>
+  const changed = (x.changed ?? {}) as Record<string, unknown>
+  const base = zeroTotals()
+  const out: Totals = {
+    ...base,
+    rated: num(x.rated),
+    subagents: num(x.subagents),
+    unrated: num(x.unrated),
+    declined: num(x.declined),
+    saved: num(x.saved),
+    extra: num(x.extra),
+    overhead: num(x.overhead),
+    spent: num(x.spent),
+    returns: num(x.returns),
+    keptSaved: num(x.keptSaved),
+    changed: Object.fromEntries(Object.keys(base.changed).map(k => [k, num(changed[k])])) as Record<Change, number>,
+  }
+  return { since, through, t: out }
+}
+
+/**
+ * The roll-up after folding in every line at or before `cutoff` that the roll-up does not hold yet. Lines are written
+ * with the time they happened, so nothing later than `cutoff` is ever missing from the live part. Returns `prev`
+ * unchanged when there is nothing to fold.
+ */
+export function foldLifetime(prev: Lifetime | undefined, lines: readonly RunLine[], cutoff: number): Lifetime | undefined {
+  const from = prev ? Date.parse(prev.through) : -Infinity
+  const old = lines.filter(l => Date.parse(l.at) <= cutoff && Date.parse(l.at) > from)
+  if (!old.length) return prev
+  const first = old.reduce((m, l) => Math.min(m, Date.parse(l.at)), Infinity)
+  const since = prev && Date.parse(prev.since) <= first ? prev.since : new Date(first).toISOString()
+  return { since, through: new Date(cutoff).toISOString(), t: addTotals(prev?.t ?? zeroTotals(), totals(old)) }
 }
 
 /** Close calls between two models, from hand-offs and from Claude's moved subagents: broken by the task-type guide (or by the stronger model), and explored. */
@@ -388,6 +459,21 @@ function stats(lines: readonly RunLine[], subscription: boolean, withTies = fals
   const t = totals(lines)
   const kept = subscription ? windowKept(lines, t) : undefined
   return { t, net: t.saved - t.overhead, empty: !t.rated && !t.overhead && !t.subagents && !t.unrated && !t.returns, ...(kept ? { kept } : {}), ...(withTies ? { ties: tieCounts(lines) } : {}) }
+}
+
+/** Lifetime: the roll-up plus every line after it, as a period's numbers. Window shares need the lines themselves, so there are none. */
+function lifetimeStats(life: Lifetime | undefined, lines: readonly RunLine[]): Stats {
+  const live = life ? lines.filter(l => Date.parse(l.at) > Date.parse(life.through)) : lines
+  const t = addTotals(life?.t ?? zeroTotals(), totals(live))
+  return { t, net: t.saved - t.overhead, empty: !t.rated && !t.overhead && !t.subagents && !t.unrated && !t.returns }
+}
+
+/** The date lifetime counts from: the earlier of the roll-up's first line and the first line still in the logs, in the person's time. */
+function lifetimeSince(life: Lifetime | undefined, lines: readonly RunLine[]) {
+  const first = Math.min(life ? Date.parse(life.since) : Infinity, ...lines.map(l => Date.parse(l.at)).filter(Number.isFinite))
+  if (!Number.isFinite(first)) return ''
+  const d = new Date(first)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
 const DAYS_30 = 'in the last 30 days'
@@ -534,6 +620,13 @@ function periodTable(cols: readonly [Stats, Stats, Stats], subscription: boolean
   const rows = tableRows(subscription).filter(r => cols.some(r.any))
   const cell = (r: Row, s: Stats) => (s.empty && !r.counts ? '–' : r.cell(s))
   return grid([['', 'Session', '7 days', '30 days'], ...rows.map(r => [r.label, ...cols.map(s => cell(r, s))])], [1, 2, 3])
+}
+
+/** Today and lifetime in two columns, with the same rows and cells as the table above. */
+function rollupTable(cols: readonly [Stats, Stats], subscription: boolean) {
+  const rows = tableRows(subscription).filter(r => cols.some(r.any))
+  const cell = (r: Row, s: Stats) => (s.empty && !r.counts ? '–' : r.cell(s))
+  return grid([['', 'Today', 'Lifetime'], ...rows.map(r => [r.label, ...cols.map(s => cell(r, s))])], [1, 2])
 }
 
 /** How far estimates were from what turns cost: the mean of max(actual/estimate, estimate/actual). */
@@ -904,7 +997,7 @@ export function fixedBlock(lines: readonly RunLine[], subscription = false) {
 export function buildReport(
   lines: readonly RunLine[],
   switches: readonly SwitchLine[],
-  opts: { now: number; session: string; subscription: boolean; start?: StartBlock; pause?: number | null; measureFrom?: string; markdown?: boolean; watching?: boolean },
+  opts: { now: number; session: string; subscription: boolean; start?: StartBlock; pause?: number | null; measureFrom?: string; markdown?: boolean; watching?: boolean; lifetime?: Lifetime },
 ) {
   const since = (days: number) => (l: { at: string }) => opts.now - Date.parse(l.at) <= days * DAY
   const month = lines.filter(since(30))
@@ -920,9 +1013,17 @@ export function buildReport(
 
   const cols = [stats(lines.filter(l => opts.session !== '' && l.session === opts.session), sub), stats(lines.filter(since(7)), sub, true), stats(month, sub, true)] as const
   const nothing = cols.every(s => s.empty)
-  const out = ['rightsize report', nothing ? 'Nothing rated yet.' : headline(cols[2], sub)]
+  // Today (since local midnight) and lifetime, in the same rows. Both are estimates, like every figure here.
+  const midnight = new Date(opts.now).setHours(0, 0, 0, 0)
+  const rolled = [stats(lines.filter(l => Date.parse(l.at) >= midnight), sub), lifetimeStats(opts.lifetime, lines)] as const
+  const out = ['rightsize report', nothing ? (rolled[1].empty ? 'Nothing rated yet.' : 'Nothing rated in the last 30 days.') : headline(cols[2], sub)]
   if (opts.measureFrom) out.push(`Cost measurement restarted on ${opts.measureFrom.slice(0, 10)}.`)
-  if (!nothing) out.push('', ...indent(periodTable(cols, sub)), '', 'Everything below covers the last 30 days.')
+  if (!nothing) out.push('', ...indent(periodTable(cols, sub)))
+  if (!rolled.every(s => s.empty)) {
+    const note = `Estimates. Lifetime counts from ${lifetimeSince(opts.lifetime, lines)}: older runs are kept as totals, and anything from before rightsize kept them is not in it.`
+    out.push('', ...indent(rollupTable(rolled, sub)), ...(md ? ['', note] : wrap(note, '', '', 78)))
+  }
+  if (!nothing) out.push('', 'Everything below covers the last 30 days.')
   // Keep warm's own line: its saving is in Total saved above, and so is the cost of its requests.
   const kept = keepWarmLine(month, sub)
   if (kept) out.push('', ...(md ? [kept] : wrap(kept, '', '  ')))

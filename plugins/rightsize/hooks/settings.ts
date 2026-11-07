@@ -53,6 +53,7 @@ export const SETTINGS = {
   pacing: { title: 'Advanced · Budget pacing', options: ['on', 'off'], default: 'on' },
   escalation: { title: 'Advanced · Raise when stuck', options: ['on', 'off'], default: 'on' },
   stuck: { title: 'Advanced · Stuck sensitivity', options: ['relaxed', 'normal', 'sensitive'], default: 'normal' },
+  helperCap: { title: 'Advanced · Helper call cap', options: ['tight', 'normal', 'loose', 'off'], default: 'normal' },
   rater: { title: 'Advanced · Rater', options: ['sonnet', 'haiku'], default: 'sonnet' },
   raterCheck: { title: 'Advanced · Rater check', options: ['every 25', 'every 50', 'every 100', 'off'], default: 'every 50' },
   startTips: { title: 'Advanced · Start suggestions', options: ['weekly', 'monthly', 'off'], default: 'weekly' },

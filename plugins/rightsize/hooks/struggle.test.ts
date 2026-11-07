@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { type Signals, ERRORS, LIMITS, LONG_MIN, LONG_X, LOOP, NOVEL, RECENT_MAX, REPEAT, WINDOW, blockedError, callKey, isEditTool, isSensitivity, isTestCommand, noSignals, noteCall, oneUp, refusedByPerson, struggle, testsOutcome } from './struggle'
+import { type Signals, ERRORS, helperCap, isCapSetting, LIMITS, LONG_MIN, LONG_X, LOOP, NOVEL, RECENT_MAX, REPEAT, WINDOW, blockedError, callKey, isEditTool, isSensitivity, isTestCommand, noSignals, noteCall, oneUp, refusedByPerson, struggle, testsOutcome } from './struggle'
 
 // Claude labels each Bash call afresh, so the description differs between runs of one command.
 const bash = (command: string) => callKey('Bash', { tool: 'Bash', tool_use_id: Math.random().toString(), command, description: `run ${command} (${Math.random()})` })
@@ -315,4 +315,13 @@ test('the last test run in a turn is its objective outcome', async () => {
   s = noteCall(s, bash('npm test'), false, true)
   expect(testsOutcome(s)).toBe('passed')
   expect(testsOutcome(noteCall(noSignals(), bash('ls'), true)), 'no test run: no outcome').toBeUndefined()
+})
+
+test('helper call cap: Haiku 25 and Sonnet 40 by default, tight and loose move both, off and a tier with no entry have none', () => {
+  expect([helperCap('normal', 'haiku'), helperCap('normal', 'sonnet')]).toEqual([25, 40])
+  expect([helperCap('tight', 'haiku'), helperCap('tight', 'sonnet')]).toEqual([15, 25])
+  expect([helperCap('loose', 'haiku'), helperCap('loose', 'sonnet')]).toEqual([40, 60])
+  expect([helperCap('off', 'haiku'), helperCap('off', 'sonnet')]).toEqual([undefined, undefined])
+  expect([helperCap('normal', 'opus'), helperCap('normal', 'fable')], 'a stronger tier has no cap').toEqual([undefined, undefined])
+  expect([isCapSetting('tight'), isCapSetting('nope'), isCapSetting(undefined)]).toEqual([true, false, false])
 })

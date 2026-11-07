@@ -180,6 +180,22 @@ export function struggle(s: Signals, step: number, ratedSteps: number, limits: L
   return found.find(f => !s.fired.includes(f.kind))
 }
 
+/**
+ * Helper call cap: the most tool calls a helper on a cheaper tier may make for one task, however well they go.
+ * A stall is otherwise found by lack of progress; this is the hard limit for a helper that keeps busy and never finishes.
+ * A tier with no entry (Opus, Fable) has no cap. `tight` and `loose` move both numbers; `off` removes the cap.
+ */
+export const CAPS = {
+  tight: { haiku: 15, sonnet: 25 },
+  normal: { haiku: 25, sonnet: 40 },
+  loose: { haiku: 40, sonnet: 60 },
+  off: {},
+} as const satisfies Record<string, Partial<Record<'haiku' | 'sonnet', number>>>
+export type CapSetting = keyof typeof CAPS
+export const isCapSetting = (v: unknown): v is CapSetting => typeof v === 'string' && Object.hasOwn(CAPS, v)
+/** The cap for a helper on `tier` under the setting; undefined when that tier has none. */
+export const helperCap = (setting: CapSetting, tier: string): number | undefined => (CAPS[setting] as Partial<Record<string, number>>)[tier]
+
 /** One level up, at most CEILING and the Highest effort setting; undefined when already there. */
 export function oneUp(level: Level, ceiling: Level = 'max'): Level | undefined {
   const top = levelRank(ceiling) < levelRank(CEILING) ? ceiling : CEILING

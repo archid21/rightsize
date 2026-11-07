@@ -156,6 +156,10 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
     completions: [] as string[],
     /** The text of every rating call (the rater's, not the spot-check's), in order. */
     ratingPrompts: [] as string[],
+    /** The system text of every model.complete call, in order: what a separate call's own cache prefix is made of. */
+    completionSystems: [] as string[],
+    /** Every key each $.model.fork call was given, in order: a keep-warm request may carry only its prompt. */
+    forkKeys: [] as string[][],
     /** The conversation as $.session.messages() reports it: Claude's last reply is what the rater is shown. */
     messages: [{ role: 'assistant', text: 'Done: the change is in.' }] as { role: string; text: string }[],
     /** The transcript file's tail as the cold-return check reads it (JSONL); undefined: this session has no transcript file. */
@@ -412,6 +416,7 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
   reg('model.complete', async ($, e) => {
     const model = String((e as { model?: unknown }).model ?? '')
     h.completions.push(model)
+    h.completionSystems.push(String((e as { system?: unknown }).system ?? ''))
     // The spot-check is the only call with a 15 s timeout; a rating call has what is left of its prompt's 12 s.
     if (model === 'sonnet' && (e as { timeoutMs?: number }).timeoutMs === 15_000) {
       if (h.checkHold) await h.checkHold
@@ -516,6 +521,7 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
   })
   reg('model.fork', async ($, e) => {
     h.forks.push((e as { prompt: string }).prompt)
+    h.forkKeys.push(Object.keys(e as object).sort())
     const queued = h.forkReplies.shift()
     if (queued !== undefined) return { value: queued } as never
     return { value: { isAnswered: true, text: 'OK', ...(h.forkUsage ? { usage: h.forkUsage } : {}) } } as never

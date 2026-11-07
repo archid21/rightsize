@@ -263,6 +263,18 @@
         "sensitive"
       ]
     },
+    "helperCap": {
+      "type": "string",
+      "title": "Advanced · Helper call cap",
+      "description": "The most tool calls a helper on a cheaper model may make for one task, however well they go. At the cap the helper stops and the main chat takes the task over, as for a helper that is struggling. normal: 25 for Haiku, 40 for Sonnet. tight: 15 and 25. loose: 40 and 60. off: no cap. Opus and Fable helpers have none.",
+      "default": "normal",
+      "options": [
+        "tight",
+        "normal",
+        "loose",
+        "off"
+      ]
+    },
     "rater": {
       "type": "string",
       "title": "Advanced · Rater",

@@ -290,6 +290,29 @@ for (const surface of ['desktop', 'terminal'] as const) {
       def: 'medium',
     },
     {
+      key: 'helperCap',
+      value: 'tight',
+      start: { model: 'claude-fable-5-1', effort: 'high', store: { remember: true, choices: { raise: 'auto', down: 'auto' } } },
+      see: async c => {
+        c.h.subModel = 'claude-haiku-5-5'
+        await c.d.step('t0')
+        await c.d.complete('t0')
+        c.h.rating = '{"fit":{"haiku":"low","sonnet":"low","opus":"low","fable":"low"},"type":"search","read":150000,"write":3000,"steps":30,"continues":false}'
+        await c.d.submit('find every call site of the old logger across the whole repo and list them')
+        const t = c.turn()
+        await c.d.step(t, 0)
+        await c.d.agent('haiku')
+        await c.d.spawn('helper', 'haiku')
+        await c.d.step(t, 0, 'agent-helper')
+        let denied: string | undefined
+        // The 16th call of a Haiku helper: refused at the tight cap of 15, allowed at the default 25.
+        for (let i = 0; i < 16; i++) denied = ((await c.d.bash(`ls dir${i}`, 'agent-helper')) as { deny?: string }).deny
+        return denied !== undefined
+      },
+      set: true,
+      def: false,
+    },
+    {
       key: 'rater',
       value: 'haiku',
       start: OPUS,

@@ -1,13 +1,13 @@
 import { expect, test } from 'claude-code/testing'
-import { SESSION_TOTAL, accuracyRows, type RunLine, bandShareText, buildReport, costTag, counterfactual, fixedBlock, keepWarmLine, parseLines, problems, sessionTotal, shareMessage, shareText, span, taskActual, taskEstimated, taskExtra, taskStay, tieCounts, totals, usedTag, watchLine, wholeTaskRows, wholeTasks, windowCostText, windowRates } from './report'
+import { SESSION_TOTAL, accuracyRows, addTotals, foldLifetime, parseLifetime, type Lifetime, type RunLine, bandShareText, buildReport, costTag, counterfactual, fixedBlock, keepWarmLine, parseLines, problems, sessionTotal, shareMessage, shareText, span, taskActual, taskEstimated, taskExtra, taskStay, tieCounts, totals, usedTag, watchLine, wholeTaskRows, wholeTasks, windowCostText, windowRates } from './report'
 import { DEFAULT_PRICES } from './cost'
 import type { StartBlock } from './start'
 
 const NOW = Date.parse('2026-10-23T18:00:00.000Z')
 const ago = (days: number) => new Date(NOW - days * 24 * 60 * 60 * 1000).toISOString()
 const run = (x: Partial<RunLine>): RunLine => ({ at: ago(0), kind: 'run', session: 's1', change: 'none', offered: 'none', actual: 0.1, stay: 0.1, taken: 0.1, overhead: 0, ...x })
-const report = (lines: RunLine[], opts: { subscription?: boolean; switches?: { at: string; kept?: boolean }[]; start?: StartBlock; pause?: number | null; measureFrom?: string; markdown?: boolean } = {}) =>
-  buildReport(lines, opts.switches ?? [], { now: NOW, session: 's1', subscription: opts.subscription ?? false, markdown: opts.markdown === true, ...(opts.start ? { start: opts.start } : {}), ...(opts.pause !== undefined ? { pause: opts.pause } : {}), ...(opts.measureFrom ? { measureFrom: opts.measureFrom } : {}) })
+const report = (lines: RunLine[], opts: { subscription?: boolean; switches?: { at: string; kept?: boolean }[]; start?: StartBlock; pause?: number | null; measureFrom?: string; markdown?: boolean; lifetime?: Lifetime } = {}) =>
+  buildReport(lines, opts.switches ?? [], { now: NOW, session: 's1', subscription: opts.subscription ?? false, markdown: opts.markdown === true, ...(opts.start ? { start: opts.start } : {}), ...(opts.pause !== undefined ? { pause: opts.pause } : {}), ...(opts.measureFrom ? { measureFrom: opts.measureFrom } : {}), ...(opts.lifetime ? { lifetime: opts.lifetime } : {}) })
 /** A table row's cells (session, 7 days, 30 days), by its label. */
 const cells = (text: string, label: string) => text.split('\n').find(l => l.startsWith(`  ${label}`))?.slice(2 + label.length).trim().split(/ {2,}/)
 /** The report's section titles, in order. */
@@ -1044,3 +1044,78 @@ test('the watch-only line sums what the planned routes would have saved against 
   expect(line).toBe('Watch only: 3 prompts rated, 2 would have been changed, which would have saved ~$0.80 API-equivalent against staying (estimates; nothing was applied). Mode in /config turns rightsize on.')
 })
 
+// ---- Today and lifetime ------------------------------------------------------------------------------------------
+
+/** The Today / Lifetime table's cells for a row: the second table, which repeats the labels of the first. */
+const rollCells = (text: string, label: string) => {
+  const out = text.split('\n')
+  const at = out.findIndex(l => /^\s*Today\s+Lifetime/.test(l))
+  const row = out.slice(at + 1).find(l => l.startsWith(`  ${label}`))
+  return row?.slice(2 + label.length).trim().split(/ {2,}/)
+}
+const SAVER = (x: Partial<RunLine> = {}) => run({ change: 'lower', offered: 'lower', actual: 0.1, stay: 0.3, taken: 0.1, ...x })
+
+test('today: runs since local midnight, in the same rows as the period table', () => {
+  const out = report([SAVER({ at: ago(0) }), SAVER({ at: ago(0) }), SAVER({ at: ago(2) })])
+  expect(cells(out, 'Prompts rated')?.at(-1), 'the 30-day column has all three').toBe('3')
+  expect(rollCells(out, 'Prompts rated'), 'today has two; lifetime has all three').toEqual(['2', '3'])
+  expect(rollCells(out, 'Total saved')).toEqual(['~$0.40', '~$0.60'])
+})
+
+test('lifetime: the folded roll-up plus every line after it, and runs from before it are not counted twice', () => {
+  const old = [SAVER({ at: ago(40) }), SAVER({ at: ago(35) })]
+  const life = foldLifetime(undefined, old, NOW - 30 * 24 * 60 * 60 * 1000)
+  expect(life?.t.rated).toBe(2)
+  expect(life?.since).toBe(ago(40))
+  // The logs still hold the old lines (not pruned yet): they are not added a second time.
+  const out = report([...old, SAVER({ at: ago(1) })], { lifetime: life })
+  expect(rollCells(out, 'Prompts rated')?.[1]).toBe('3')
+  // The logs are pruned: the figure keeps them.
+  const pruned = report([SAVER({ at: ago(1) })], { lifetime: life })
+  expect(rollCells(pruned, 'Prompts rated')?.[1], 'two folded and one live').toBe('3')
+  expect(rollCells(pruned, 'Total saved')?.[1]).toBe('~$0.60')
+  expect(cells(pruned, 'Prompts rated')?.at(-1), 'the 30-day column holds only what the logs have').toBe('1')
+})
+
+test('lifetime: labelled as an estimate, with the date it counts from', () => {
+  const life = foldLifetime(undefined, [SAVER({ at: ago(50) })], NOW - 30 * 24 * 60 * 60 * 1000)
+  const out = report([SAVER({ at: ago(0) })], { lifetime: life }).replace(/\s+/g, ' ')
+  expect(out).toMatch(/Estimates\. Lifetime counts from \d{4}-\d{2}-\d{2}: older runs are kept as totals/)
+})
+
+test('lifetime with nothing in 30 days: the headline says so, and lifetime still shows', () => {
+  const life = foldLifetime(undefined, [SAVER({ at: ago(50) })], NOW - 30 * 24 * 60 * 60 * 1000)
+  const out = report([], { lifetime: life })
+  expect(out.split('\n')[1]).toBe('Nothing rated in the last 30 days.')
+  expect(rollCells(out, 'Prompts rated')).toEqual(['0', '1'])
+})
+
+test('no lines and no roll-up: no Today or Lifetime table', () => {
+  expect(report([])).not.toMatch(/Today\s+Lifetime/)
+})
+
+test('on a subscription the dollars are labelled API-equivalent and window shares are not shown for lifetime', () => {
+  const life = foldLifetime(undefined, [SAVER({ at: ago(40) })], NOW - 30 * 24 * 60 * 60 * 1000)
+  const out = report([SAVER({ at: ago(0) })], { lifetime: life, subscription: true })
+  expect(out).toContain('Total saved (API-equivalent)')
+  expect(rollCells(out, '5-hour window saved'), 'no window figure for a roll-up').toBeUndefined()
+})
+
+test('folding: only lines at or before the cutoff and after the last fold, once; nothing to fold leaves it as it was', () => {
+  const cutoff = NOW - 30 * 24 * 60 * 60 * 1000
+  const a = foldLifetime(undefined, [SAVER({ at: ago(60) }), SAVER({ at: ago(5) })], cutoff)
+  expect(a?.t.rated, 'the recent line waits').toBe(1)
+  expect(foldLifetime(a, [SAVER({ at: ago(60) }), SAVER({ at: ago(5) })], cutoff), 'the same lines again fold nothing').toBe(a)
+  const b = foldLifetime(a, [SAVER({ at: ago(60) }), SAVER({ at: ago(5) })], NOW)
+  expect(b?.t.rated, 'the 5-day-old line is folded once the cutoff passes it').toBe(2)
+  expect(foldLifetime(undefined, [], cutoff)).toBeUndefined()
+})
+
+test('a stored roll-up is read back as numbers only: a damaged one counts for nothing', () => {
+  const life = foldLifetime(undefined, [SAVER({ at: ago(60) })], NOW)
+  expect(parseLifetime(JSON.parse(JSON.stringify(life)))).toEqual(life)
+  expect(parseLifetime(undefined)).toBeUndefined()
+  expect(parseLifetime({ since: 'x', through: 'y', t: {} })).toBeUndefined()
+  expect(parseLifetime({ since: ago(9), through: ago(1), t: { rated: 'many', saved: { a: 1 }, changed: { lower: 'x' } } })?.t.rated).toBe(0)
+  expect(addTotals(life!.t, life!.t).rated).toBe(2)
+})

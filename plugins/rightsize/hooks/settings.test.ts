@@ -3,8 +3,7 @@ import {
   ADVANCED,
   KEYS,
   NOT_SET,
-  PROFILES,
-  PROFILE_NAMES,
+  FIXED,
   RULE_KEYS,
   RULE_LABELS,
   SETTINGS,
@@ -18,8 +17,10 @@ import {
   manifestGaps,
   mark,
   missPauseOf,
+  answersOf,
+  askFirstOn,
+  legacyAskFirst,
   plainTitle,
-  profileOf,
   raterEvery,
   ruleLabel,
   ruleValue,
@@ -214,19 +215,30 @@ test('a reset field is not yours while its stored value is the default, and is a
   expect(fieldsSet(undefined, { floor: 'low', ceiling: 'high' }, ['floor'])).toEqual(set('ceiling'))
 })
 
-test('Profile is the first row: Quality, Balanced or Economy, Balanced by default', async () => {
-  expect(KEYS[0]).toBe('profile')
-  expect(SETTINGS.profile.title).toBe('Profile')
-  expect([...SETTINGS.profile.options]).toEqual(['Quality', 'Balanced', 'Economy'])
-  expect(SETTINGS.profile.default).toBe('Balanced')
-  expect([...PROFILE_NAMES]).toEqual([...SETTINGS.profile.options])
-  expect(profileOf('Economy')).toBe('Economy')
-  expect(profileOf('balanced'), 'not an option: Balanced').toBe('Balanced')
-  expect(profileOf(undefined)).toBe('Balanced')
+test('there is no Profile row (ADR 0021): Ask before changing is the fourth row, off or on, off by default', async () => {
+  expect(isKey('profile')).toBe(false)
+  expect(KEYS[3]).toBe('askFirst')
+  expect(SETTINGS.askFirst.title).toBe('Ask before changing')
+  expect([...SETTINGS.askFirst.options]).toEqual(['off', 'on'])
+  expect(SETTINGS.askFirst.default).toBe('off')
+  expect(plainTitle(SETTINGS.askFirst.title)).toBe('Ask before changing')
+  expect(settingNamed('ask before changing')).toBe('askFirst')
+  expect(settingNamed('askFirst')).toBe('askFirst')
+  expect([askFirstOn('on'), askFirstOn('off'), askFirstOn(undefined)]).toEqual([true, false, false])
+  expect(answersOf(false)).toEqual({ lower: 'auto', raise: 'auto', up: 'auto', down: 'auto' })
+  expect(answersOf(true)).toEqual({ lower: 'ask', raise: 'ask', up: 'ask', down: 'ask' })
+  // A Profile row an older release stored: Quality reads as on, the others and nothing stored as off.
+  expect(legacyAskFirst({ rightsize: { options: { profile: 'Quality' } } })).toBe(true)
+  expect(legacyAskFirst({ rightsize: { options: { profile: 'Balanced' } } })).toBe(false)
+  expect(legacyAskFirst({ rightsize: { options: { profile: 'Economy' } } })).toBe(false)
+  expect(legacyAskFirst({ 'rightsize@archid21': { options: { profile: 'Quality' } } }), 'under a marketplace key too').toBe(true)
+  expect(legacyAskFirst(undefined)).toBe(false)
+  // The stored row is not a setting: it is never yours and never a value.
+  expect(fieldsSet({ rightsize: { options: { profile: 'Quality' } } })).toEqual(set())
 })
 
-test('Mode is the second row: act or watch only, act by default, a plain row without the Advanced prefix', async () => {
-  expect(KEYS[1]).toBe('mode')
+test('Mode is the first row: act or watch only, act by default, a plain row without the Advanced prefix', async () => {
+  expect(KEYS[0]).toBe('mode')
   expect(SETTINGS.mode.title).toBe('Mode')
   expect([...SETTINGS.mode.options]).toEqual(['act', 'watch only'])
   expect(SETTINGS.mode.default).toBe('act')
@@ -237,8 +249,8 @@ test('Mode is the second row: act or watch only, act by default, a plain row wit
   expect(valueOf('mode', 'off'), 'not an option: act').toBe('act')
 })
 
-test('Routing, Hand-offs and Cache are rows 3 to 5: on or off, on by default, plain rows without the Advanced prefix', async () => {
-  expect(KEYS.slice(0, 5)).toEqual(['profile', 'mode', 'routing', 'handOffs', 'cache'])
+test('Routing, Hand-offs and Cache are rows 2, 3 and 5: on or off, on by default, plain rows without the Advanced prefix', async () => {
+  expect(KEYS.slice(0, 5)).toEqual(['mode', 'routing', 'handOffs', 'askFirst', 'cache'])
   const titles = { routing: 'Routing', handOffs: 'Hand-offs', cache: 'Cache' } as const
   for (const [k, title] of Object.entries(titles) as [keyof typeof titles, string][]) {
     expect(SETTINGS[k].title).toBe(title)
@@ -254,13 +266,13 @@ test('Routing, Hand-offs and Cache are rows 3 to 5: on or off, on by default, pl
 
 test('every other row is titled Advanced, so /config lists the five plain rows first and the rest as advanced', async () => {
   expect(ADVANCED).toBe('Advanced · ')
-  for (const k of KEYS.filter(k => !['profile', 'mode', 'routing', 'handOffs', 'cache'].includes(k))) {
+  for (const k of KEYS.filter(k => !['mode', 'routing', 'handOffs', 'askFirst', 'cache'].includes(k))) {
     expect(SETTINGS[k].title.startsWith(ADVANCED), k).toBe(true)
     expect(plainTitle(SETTINGS[k].title).length, `${k} has a title after the prefix`).toBeGreaterThan(0)
   }
   expect(SETTINGS.floor.title).toBe('Advanced · Lowest effort')
   expect(plainTitle(SETTINGS.floor.title)).toBe('Lowest effort')
-  expect(plainTitle('Profile'), 'no prefix to take off').toBe('Profile')
+  expect(plainTitle('Mode'), 'no prefix to take off').toBe('Mode')
 })
 
 test('exploring close calls is off by default', async () => {
@@ -268,39 +280,31 @@ test('exploring close calls is off by default', async () => {
   expect(defaults().explore).toBe('off')
 })
 
-test('the profiles hold the values of the table', async () => {
-  const p = PROFILES
-  expect([p.Quality.evidence, p.Balanced.evidence, p.Economy.evidence]).toEqual([
-    { minTasks: 10, maxMiss: 0.1 },
-    { minTasks: 0, maxMiss: 0.2 },
-    { minTasks: 0, maxMiss: 0.3 },
-  ])
-  expect([p.Quality.handOff, p.Balanced.handOff, p.Economy.handOff]).toEqual([0.5, 0.7, 0.85])
-  expect([p.Quality.raterEvery, p.Balanced.raterEvery, p.Economy.raterEvery]).toEqual([10, 20, 30])
-  expect([p.Quality.chances, p.Balanced.chances, p.Economy.chances]).toEqual([1, 2, 3])
-  expect(p.Quality.answers).toEqual({ lower: 'ask', raise: 'auto', up: 'auto', down: 'ask' })
-  expect(p.Balanced.answers).toEqual({ lower: 'auto', raise: 'auto', up: 'auto', down: 'auto' })
-  expect(p.Economy.answers).toEqual({ lower: 'auto', raise: 'auto', up: 'stay', down: 'auto' })
+test('the fixed values are what the Balanced profile held (ADR 0021)', async () => {
+  expect(FIXED).toEqual({ evidence: { minTasks: 0, maxMiss: 0.2 }, handOff: 0.7, raterEvery: 20, chances: 2, beforeCold: 'keep warm until my usual start', reviewCeiling: 'max' })
 })
 
-test('a row you set wins over the profile; a row you did not set takes the profile value', async () => {
+test('a row you set wins over the fixed value; a row you did not set takes the fixed value', async () => {
   const values = { ...defaults(), handOff: '60%', missPause: '40%', raterCheck: 'every 100' }
-  // Nothing set: the profile's own.
-  expect(inUse('Quality', values, set())).toMatchObject({ handOff: 0.5, minTasks: 10, maxMiss: 0.1, raterEvery: 10, chances: 1 })
-  expect(inUse('Economy', values, set())).toMatchObject({ handOff: 0.85, minTasks: 0, maxMiss: 0.3, raterEvery: 30, chances: 3 })
+  // Nothing set: the fixed values.
+  expect(inUse(values, set())).toMatchObject({ handOff: 0.7, minTasks: 0, maxMiss: 0.2, raterEvery: 20, chances: 2 })
   // Each row set replaces only its own value.
-  expect(inUse('Quality', values, set('handOff'))).toMatchObject({ handOff: 0.6, maxMiss: 0.1, raterEvery: 10 })
-  expect(inUse('Quality', values, set('raterCheck'))).toMatchObject({ handOff: 0.5, raterEvery: 100 })
+  expect(inUse(values, set('handOff'))).toMatchObject({ handOff: 0.6, maxMiss: 0.2, raterEvery: 20 })
+  expect(inUse(values, set('raterCheck'))).toMatchObject({ handOff: 0.7, raterEvery: 100 })
   // The evidence rule is one value, held by Pause after misses: set, it is the whole rule.
-  expect(inUse('Quality', values, set('missPause'))).toMatchObject({ minTasks: 0, maxMiss: 0.4, handOff: 0.5 })
-  expect(inUse('Balanced', { ...values, missPause: 'off' }, set('missPause')).maxMiss, 'off is never').toBeNull()
-  expect(inUse('Balanced', { ...values, raterCheck: 'off' }, set('raterCheck')).raterEvery, 'off is never').toBeNull()
-  // Chances and the questions have no row: always the profile's.
-  expect(inUse('Economy', values, set('handOff', 'missPause', 'raterCheck')).chances).toBe(3)
-  expect(inUse('Economy', values, set('handOff')).answers.up).toBe('stay')
+  expect(inUse(values, set('missPause'))).toMatchObject({ minTasks: 0, maxMiss: 0.4, handOff: 0.7 })
+  expect(inUse({ ...values, missPause: 'off' }, set('missPause')).maxMiss, 'off is never').toBeNull()
+  expect(inUse({ ...values, raterCheck: 'off' }, set('raterCheck')).raterEvery, 'off is never').toBeNull()
+  // Chances and the review cap have no row: always the fixed value.
+  expect(inUse(values, set('handOff', 'missPause', 'raterCheck')).chances).toBe(2)
+  expect(inUse(values, set('handOff')).reviewCeiling).toBe('max')
+  // The questions' first options follow Ask before changing: the row, or the value passed for an old Quality profile.
+  expect(inUse(values, set()).answers).toEqual(answersOf(false))
+  expect(inUse({ ...values, askFirst: 'on' }, set('askFirst')).answers).toEqual(answersOf(true))
+  expect(inUse(values, set(), true).answers, 'an old Quality profile').toEqual(answersOf(true))
 })
 
-test('Before the cache goes cold is the 29th row: seven options, asking by default, and /config names it', async () => {
+test('Before the cache goes cold is a row: seven options, asking by default, and /config names it', async () => {
   expect(SETTINGS.beforeCold.options).toEqual(['ask', 'keep warm 2 h', 'keep warm 8 h', 'keep warm until my usual start', 'save a handoff', 'compact', 'off'])
   expect(SETTINGS.beforeCold.default).toBe('ask')
   expect(SETTINGS.beforeCold.title).toBe('Advanced · Before the cache goes cold')
@@ -308,26 +312,21 @@ test('Before the cache goes cold is the 29th row: seven options, asking by defau
   expect(settingNamed('beforeCold')).toBe('beforeCold')
 })
 
-test('Before the cache goes cold: the profile supplies the value until you set the row, and then your row wins', async () => {
-  expect([PROFILES.Quality.beforeCold, PROFILES.Balanced.beforeCold, PROFILES.Economy.beforeCold]).toEqual(['keep warm 8 h', 'keep warm until my usual start', 'off'])
+test('Before the cache goes cold: the fixed value applies until you set the row, and then your row wins', async () => {
+  expect(FIXED.beforeCold).toBe('keep warm until my usual start')
   const values = { ...defaults(), beforeCold: 'compact' }
-  // Not set: the row's own value (here compact) is only the default's stand-in, and the profile decides.
-  expect(inUse('Quality', defaults(), set()).beforeCold).toBe('keep warm 8 h')
-  expect(inUse('Balanced', defaults(), set()).beforeCold).toBe('keep warm until my usual start')
-  expect(inUse('Economy', defaults(), set()).beforeCold).toBe('off')
-  expect(inUse('Quality', values, set()).beforeCold, 'a value that is not yours changes nothing').toBe('keep warm 8 h')
-  // Set: yours, whatever the profile.
-  for (const profile of PROFILE_NAMES) expect(inUse(profile, values, set('beforeCold')).beforeCold, profile).toBe('compact')
-  expect(inUse('Quality', { ...defaults(), beforeCold: 'off' }, set('beforeCold')).beforeCold).toBe('off')
-  expect(inUse('Economy', { ...defaults(), beforeCold: 'keep warm 2 h' }, set('beforeCold')).beforeCold, 'your setting wins over the profile').toBe('keep warm 2 h')
-  // Set back to the default "ask", it is still yours: Quality then asks.
-  expect(inUse('Quality', defaults(), set('beforeCold')).beforeCold).toBe('ask')
+  // Not set: the row's own value (here compact) is only the default's stand-in, and the fixed value applies.
+  expect(inUse(defaults(), set()).beforeCold).toBe('keep warm until my usual start')
+  expect(inUse(values, set()).beforeCold, 'a value that is not yours changes nothing').toBe('keep warm until my usual start')
+  // Set: yours.
+  expect(inUse(values, set('beforeCold')).beforeCold).toBe('compact')
+  expect(inUse({ ...defaults(), beforeCold: 'off' }, set('beforeCold')).beforeCold).toBe('off')
+  expect(inUse({ ...defaults(), beforeCold: 'keep warm 2 h' }, set('beforeCold')).beforeCold, 'your setting wins over the fixed value').toBe('keep warm 2 h')
+  // Set back to the default "ask", it is still yours: it asks.
+  expect(inUse(defaults(), set('beforeCold')).beforeCold).toBe('ask')
 })
 
-test('each profile decides keep warm and the review cap while the rows are not set', async () => {
-  expect(PROFILES.Quality).toMatchObject({ beforeCold: 'keep warm 8 h', reviewCeiling: 'max' })
-  expect(PROFILES.Balanced).toMatchObject({ beforeCold: 'keep warm until my usual start', reviewCeiling: 'max' })
-  expect(PROFILES.Economy).toMatchObject({ beforeCold: 'off', reviewCeiling: 'high' })
+test('Mode: watch only is read off its value', async () => {
   expect(watchOnly('watch only')).toBe(true)
   expect(watchOnly('act')).toBe(false)
 })

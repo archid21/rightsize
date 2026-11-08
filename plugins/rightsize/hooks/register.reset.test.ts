@@ -40,12 +40,13 @@ for (const surface of ['desktop', 'terminal'] as const) {
   const OPUS = { model: 'claude-opus-5-5', effort: 'medium' }
   const noteOf = (h: ReturnType<typeof engine>) => last(h.submitted)?.context?.join('\n') ?? ''
   const handedTo = (h: ReturnType<typeof engine>) => /model "(\w+)"/.exec(noteOf(h))?.[1]
-  const RAISE_HIGH = '{"level":"high","model":"same","type":"debug","read":20000,"write":3000,"steps":8,"reason":"unknown cause"}'
+  // A raise fixture: a review, the one task type whose rated raise is still taken at prompt time on Opus (ADR 0021).
+  const RAISE_HIGH = '{"level":"high","model":"same","type":"review","read":20000,"write":3000,"steps":8,"reason":"unknown cause"}'
   const lookupLog = (h: { now: number }, steppedUp: number) =>
     Array.from({ length: 6 }, (_, i) => JSON.stringify({ at: new Date(h.now - (6 - i) * 60_000).toISOString(), kind: 'run', type: 'lookup', route: 'main', tier: 'opus', change: 'lower', steppedUp: i < steppedUp })).join('\n') + '\n'
 
-  // Remember follows a rule the person sets, here from the band's ⋯ menu on a raise (the profile's own answers are not asked about).
-  /** A prompt rated for a raise (Balanced raises on its own), and the person picks "Never raise" in the band's ⋯ menu. */
+  // Remember follows a rule the person sets, here from the band's ⋯ menu on a raise (the default answers are not asked about).
+  /** A prompt rated for a raise (the default raises on its own), and the person picks "Never raise" in the band's ⋯ menu. */
   const setRaiseFromBand = async ($: unknown, h: ReturnType<typeof engine>, d: ReturnType<typeof drive>, answers: Record<string, string> = {}) => {
     h.rating = RAISE_HIGH
     await d.submit(DEBUG)
@@ -151,12 +152,12 @@ for (const surface of ['desktop', 'terminal'] as const) {
       expect(h.stored.billing).toBe('api')
       expect(h.store.choices, 'saved answers cleared').toBeNull()
       for (const key of ROWS_RESET) expect(h.store.resetFields, `${key} is on the list`).toContain(key)
-      // The saved answers are gone from this session too: Raising (saved as automatic) is no rule now, so the profile decides again.
+      // The saved answers are gone from this session too: Raising (saved as automatic) is no rule now, so the default decides again.
       h.rating = RAISE_HIGH
       const asked = h.asked.length
       await d.submit(DEBUG)
       expect(h.asked.slice(asked), 'nothing is asked').toEqual([])
-      expect(h.files[LOG_PATH] ?? '').toContain('Raising: no rule set, the Balanced profile decides (raise automatically)')
+      expect(h.files[LOG_PATH] ?? '').toContain('Raising: no rule set, the default decides (raise automatically)')
       // A new session still shows defaults: the stored values equal them, and no answer was given since.
       await d.start(surface)
       const again = await settingsText(d)
@@ -248,13 +249,13 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.stored.handOff).toBe('50%')
   })
 
-  test(`/rightsize reset on a rule row forgets that answer, and the profile decides that case again; the other answers stay (${surface})`, { timeoutMs: 30000, options: { lowerRule: 'never lower', raiseRule: 'never raise' } }, async ($, on) => {
+  test(`/rightsize reset on a rule row forgets that answer, and the default decides that case again; the other answers stay (${surface})`, { timeoutMs: 30000, options: { lowerRule: 'never lower', raiseRule: 'never raise' } }, async ($, on) => {
     const h = engine(on, { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES }, stored: { lowerRule: 'never lower', raiseRule: 'never raise' } })
     const d = drive($, h)
     await d.start(surface)
     h.answers = { Confirm: 'Yes' }
     const out = await d.command('reset Lowering')
-    expect(h.asked[0]?.question).toBe("Reset Lowering? It goes back to its default, not set. Your profile decides that case again. This can't be undone.")
+    expect(h.asked[0]?.question).toBe("Reset Lowering? It goes back to its default, not set. The default decides that case again. This can't be undone.")
     expect(out.text).toContain('Lowering is back to its default, not set.')
     const text = await settingsText(d)
     expect(text).not.toContain('Lowering:')
@@ -262,10 +263,10 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.rating = LOWER
     const asked = h.asked.length
     await d.submit(LOOKUP)
-    expect(h.asked.slice(asked), 'the profile decides: nothing is asked').toEqual([])
-    expect(h.files[LOG_PATH] ?? '').toContain('Lowering: no rule set, the Balanced profile decides (lower automatically)')
+    expect(h.asked.slice(asked), 'the default decides: nothing is asked').toEqual([])
+    expect(h.files[LOG_PATH] ?? '').toContain('Lowering: no rule set, the default decides (lower automatically)')
     await d.step('t1')
-    expect(last(h.sent)?.effort, 'lowered, as Balanced does').toBe('low')
+    expect(last(h.sent)?.effort, 'lowered, as the default does').toBe('low')
   })
 
   test(`/rightsize reset on Reports forgets the answer, and the rate limits read the billing again (${surface})`, { timeoutMs: 30000, options: { billing: 'api' } }, async ($, on) => {
@@ -445,7 +446,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const d = drive($, h)
     await d.start(surface)
     const text = await settingsText(d)
-    expect(text.startsWith('Profile: Balanced\nOn.\n'), 'the profile on the first line').toBe(true)
+    expect(text.startsWith('Ask before changing: off\nOn.\n'), 'Ask before changing on the first line').toBe(true)
     expect(text).not.toContain('Rightsize is')
     expect(text).toContain('(list them with claude plugin configure rightsize@archid21)')
   })
@@ -699,7 +700,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: { remember: true, choices: { down: 'auto' } } })
     const d = drive($, h)
     await d.start(surface)
-    // Raising set to ask: the profile's own answer (auto) would raise without a question.
+    // Raising set to ask: the default answer (auto) would raise without a question.
     await d.config('raiseRule', 'ask me')
     await warm(d, h)
     h.rating = HAND_OFF()
@@ -736,7 +737,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: { remember: true, choices: { down: 'auto' } } })
     const d = drive($, h)
     await d.start(surface)
-    // Raising set to ask: the profile's own answer (auto) would raise without a question.
+    // Raising set to ask: the default answer (auto) would raise without a question.
     await d.config('raiseRule', 'ask me')
     await warm(d, h)
     h.rating = HAND_OFF()
@@ -758,7 +759,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: { remember: true, choices: { down: 'auto' } } })
     const d = drive($, h)
     await d.start(surface)
-    // Raising set to ask: the profile's own answer (auto) would raise without a question.
+    // Raising set to ask: the default answer (auto) would raise without a question.
     await d.config('raiseRule', 'ask me')
     await warm(d, h)
     h.rating = HAND_OFF()
@@ -923,7 +924,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
     const d = drive($, h)
     await d.start(surface)
-    // Raising set to ask: the profile's own answer (auto) would raise without a question.
+    // Raising set to ask: the default answer (auto) would raise without a question.
     await d.config('raiseRule', 'ask me')
     h.rating = NO_CHANGE
     await d.submit(LOOKUP)

@@ -39,7 +39,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
   const noteOf = (h: ReturnType<typeof engine>) => last(h.submitted)?.context?.join('\n') ?? ''
   const handedTo = (h: ReturnType<typeof engine>) => /model "(\w+)"/.exec(noteOf(h))?.[1]
   const YES_REMEMBER = { Remember: 'This session' }
-  const RAISE_HIGH = '{"level":"high","model":"same","type":"debug","read":20000,"write":3000,"steps":8,"reason":"unknown cause"}'
+  // A raise fixture: a review, the one task type whose rated raise is still taken at prompt time on Opus (ADR 0021).
+  const RAISE_HIGH = '{"level":"high","model":"same","type":"review","read":20000,"write":3000,"steps":8,"reason":"unknown cause"}'
   const NEEDS_FABLE = '{"level":"high","model":"fable","size":"small","type":"debug","read":30000,"write":4000,"steps":12,"reason":"subtle concurrency bug"}'
   const HAIKU_SEARCH = '{"level":"low","model":"haiku","size":"bulky","type":"search","read":150000,"write":3000,"steps":30,"reason":"repo-wide search"}'
   const lookupLog = (h: { now: number }, steppedUp: number) =>
@@ -427,8 +428,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.rating = LOWER
     await d.submit(LOOKUP)
     expect(h.asked, 'nothing is asked: the profile decides').toEqual([])
-    expect(h.files[LOG_PATH] ?? '', 'no rule is set, so the profile decides').toContain('Lowering: no rule set, the Balanced profile decides (lower automatically)')
-    expect(await bandText($, surface)).toMatch(/Your Balanced profile decided \(Lowering\); ⋯ changes it\.$/)
+    expect(h.files[LOG_PATH] ?? '', 'no rule is set, so the profile decides').toContain('Lowering: no rule set, the default decides (lower automatically)')
+    expect(await bandText($, surface)).toMatch(/The default decided \(Lowering\); ⋯ changes it\.$/)
     // A new session keeps the other rule.
     await d.start(surface)
     expect(await settingsText(d)).toContain('Raising: raise automatically')
@@ -567,7 +568,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t2')
     expect(last(h.sent)?.effort, 'acting: lowered, the profile deciding').toBe('low')
     await d.complete('t2')
-    expect(h.files[LOG_PATH] ?? '').toContain('Lowering: no rule set, the Balanced profile decides (lower automatically)')
+    expect(h.files[LOG_PATH] ?? '').toContain('Lowering: no rule set, the default decides (lower automatically)')
     await d.config('mode', 'watch only')
     await d.submit(LOOKUP)
     await d.step('t3')

@@ -2,47 +2,39 @@
 
 Every row is a picker in `/config` (rightsize section). In a terminal session a change applies at once. In the desktop app there is no `/config` menu: change values from a terminal (`claude plugin configure rightsize@archid21 --values-stdin <<< '{"handOff":"60%"}'`), then quit the app and reopen it. `/rightsize` opens the same list as a pane, and `/rightsize reset <key>` resets one row by its key.
 
-**Profile** is the first row, **Mode** the second, and **Routing**, **Hand-offs** and **Cache** the third to fifth: each of these three turns one feature on or off. Every other row is titled "Advanced · ..." in `/config`; the names below leave that off. **Your setting wins:** a row you set always beats what your profile supplies for it, and automatic behavior (pacing, the profile) acts only on rows you left alone. Rows marked "not set" mean your profile decides.
+**Mode** is the first row, **Routing**, **Hand-offs** and **Cache** turn one feature each on or off, and **Ask before changing** makes every automatic move ask first. Every other row is titled "Advanced · ..." in `/config`; the names below leave that off. **Your setting wins:** a row you set always beats rightsize's own value for it, and automatic behavior (pacing, the fixed values) acts only on rows you left alone. Rows marked "not set" mean Ask before changing decides: off acts, on asks.
 
-## Profiles
+## One rule set
 
-| | Quality | Balanced (default) | Economy |
-|---|---|---|---|
-| Evidence for a cheaper route (hand-down, a Claude subagent moved down, lowering effort) | The rating says it fits, and at least 10 logged tasks of that kind on that route with under 10% misses | The rating says it fits; the kind of work pauses at 20% misses | The rating says it fits; the kind of work pauses at 30% misses |
-| Hand-off threshold: a helper must cost under this share of staying | 50% | 70% | 85% |
-| Rater check: Sonnet checks every Nth Haiku rating | every 10 | every 20 | every 30 |
-| Chances per task for a struggling helper | 1 | 2 | 3 |
-| Before the cache goes cold, while the row is not set | Keep warm for 8 hours | Keep warm until your usual start (at most 8 hours; 9:00 until 5 days of data) | Let it go cold |
-| A review switched to Opus runs at most at | Highest effort | Highest effort | high effort |
-| Lowering, while not set | ask me | lower automatically | lower automatically |
-| Raising, while not set | raise automatically | raise automatically | raise automatically |
-| Stronger model, while not set | always send | always send | stay, raise effort only |
-| Cheaper model, while not set | ask first | always send | always send |
+rightsize has one rule set and no profiles (the Quality, Balanced and Economy profiles of releases before 0.9 are gone; a stored Quality reads as Ask before changing on). The values a profile used to hold are fixed, and each has an Advanced row that wins once you set it:
 
-An "ask" answer opens its own timed dialog (see **Question wait**); every other answer acts without asking, and the band says what the profile decided the first time each case comes up in a session. A row you set under Advanced replaces what the profile supplies for it: Hand-off threshold, Pause after misses (it replaces the whole evidence rule, so Quality's 10 logged tasks go too), Rater check, Before the cache goes cold, and the four case rules. The chances and the review cap have no row, so they always follow the profile. Switching the profile applies at once. Every profile starts from rightsize's research priors (see [HOW-IT-DECIDES.md](HOW-IT-DECIDES.md)).
+| | Fixed value | Row |
+|---|---|---|
+| Evidence for a cheaper route (hand-down, a Claude subagent moved down, lowering effort) | The rating says it fits; the kind of work pauses at 20% misses, with no minimum of logged tasks | Pause after misses |
+| Hand-off threshold: a helper must cost under this share of staying | 70% | Hand-off threshold |
+| Rater check: Sonnet checks every Nth Haiku rating | every 20 | Rater check |
+| Chances per task for a struggling helper | 2 | none |
+| Before the cache goes cold, while the row is not set | Keep warm until your usual start (at most 8 hours; 9:00 until 5 days of data) | Before the cache goes cold |
+| A review switched to Opus runs at most at | Highest effort | Highest effort |
+| Lowering, Raising, Stronger model, Cheaper model, while not set | act without asking; with Ask before changing on, ask first | the four rule rows |
+
+An "ask" answer opens its own timed dialog (see **Question wait**); every other answer acts without asking, and the band says what decided the first time each case comes up in a session. Pause after misses replaces the whole evidence rule. The chances have no row. Every rating starts from rightsize's research priors (see [HOW-IT-DECIDES.md](HOW-IT-DECIDES.md)).
 
 ## Rows
-
-### Profile
-
-- Key: `profile`
-- Options: Quality · Balanced · Economy
-- Default: Balanced
-- How much evidence rightsize needs before it picks a cheaper route, and what each of the four cases does while its rule row is not set (the profile decides; nothing asks). Quality: cheaper routes only with strong evidence (at least 10 logged tasks of that kind on that route, under 10% misses, and the route under 50% of staying), asks before lowering effort or using a cheaper model, gives a struggling helper 1 retry, keeps a big session's cache warm for 8 hours. Balanced (default): a cheaper route when the rating says it fits and it is under 70% of staying; pauses a kind of work at 20% misses; 2 retries; lowers, raises, switches and hands off without asking; keeps the cache warm until your usual start time (at most 8 hours). Economy: cheaper routes on fit alone, under 85% of staying, paused only at 30% misses; 3 retries; stays on your model and raises effort instead of a stronger model; reviews on Opus stop at high effort; lets the cache go cold. A profile also sets how often Sonnet checks Haiku's ratings (every 10, 20 or 30). Every Advanced row below is yours to set: a row you set always wins over the profile.
 
 ### Mode
 
 - Key: `mode`
 - Options: act · watch only
 - Default: act
-- act (default): rightsize changes effort, switches reviews to Opus and hands work to helpers as your profile and rules say. watch only: it rates and plans every prompt, applies nothing, and the band says what it would have done; /rightsize report sums what that would have saved. Use it for a week to see rightsize's calls on your own work before turning it on.
+- act (default): rightsize changes effort, switches reviews to Opus and hands work to helpers as your rules say. watch only: it rates and plans every prompt, applies nothing, and the band says what it would have done; /rightsize report sums what that would have saved. Use it for a week to see rightsize's calls on your own work before turning it on.
 
 ### Routing
 
 - Key: `routing`
 - Options: on · off
 - Default: on
-- on (default): rightsize changes effort on your main chat (lowering for easy prompts, raising for hard ones, a session switch you pick), runs a review on Opus for one turn, and raises effort mid-turn when Claude looks stuck, as your profile and rules say. off: none of those happen; your effort and model stay as you set them. With Routing and Hand-offs both off, rightsize rates no prompt and spends nothing on rating (the cache features still work). A row below that belongs to Routing, such as Raise when stuck, is then not used.
+- on (default): rightsize changes effort on your main chat (lowering for easy prompts, raising for hard ones, a session switch you pick), runs a review on Opus for one turn, and raises effort mid-turn when Claude looks stuck, as your rules say. off: none of those happen; your effort and model stay as you set them. With Routing and Hand-offs both off, rightsize rates no prompt and spends nothing on rating (the cache features still work). A row below that belongs to Routing, such as Raise when stuck, is then not used.
 
 ### Hand-offs
 
@@ -50,6 +42,13 @@ An "ask" answer opens its own timed dialog (see **Question wait**); every other 
 - Options: on · off
 - Default: on
 - on (default): rightsize hands work to a helper subagent (a cheaper model for routine work, a stronger one for hard work) that your main chat briefs and checks, and runs Claude's own subagents on the cheapest model that fits. off: no hand-offs, and Claude's subagents stay on their model; when Routing is on, an effort change replaces the hand-off. With Routing and Hand-offs both off, rightsize rates no prompt and spends nothing on rating (the cache features still work).
+
+### Ask before changing
+
+- Key: `askFirst`
+- Options: off · on
+- Default: off
+- off (default): rightsize lowers or raises effort, switches a review to Opus and hands work to a helper without asking, and the band says what it did. on: every move rightsize would make on its own asks first, in a timed dialog (see **Question wait**), and nothing changes until you answer. Either way an Advanced rule row you set (Lowering, Raising, Stronger model, Cheaper model) wins for its case. A Quality profile saved by an older release reads as on until you set this row.
 
 ### Cache
 
@@ -76,29 +75,29 @@ An "ask" answer opens its own timed dialog (see **Question wait**); every other 
 
 - Key: `lowerRule`
 - Options: ask me · lower automatically · never lower · not set
-- Default: not set. Left at not set, your Profile decides.
-- When a prompt needs less effort. ask me: ask each time. lower automatically: lower without asking. never lower: never. not set (the default): your Profile decides, and the band says so the first time the case comes up in a session, with the other rules in its ⋯ menu. A rule set here is used as it is. The band's ⋯ menu and /rightsize settings set it too; set it back to not set to let the profile decide again.
+- Default: not set. Left at not set, Ask before changing decides.
+- When a prompt needs less effort. ask me: ask each time. lower automatically: lower without asking. never lower: never. not set (the default): Ask before changing decides (off: done without asking; on: asked first), and the band says so the first time the case comes up in a session, with the other rules in its ⋯ menu. A rule set here is used as it is. The band's ⋯ menu and /rightsize settings set it too; set it back to not set to let Ask before changing decide again.
 
 ### Raising
 
 - Key: `raiseRule`
 - Options: ask me · raise automatically · never raise · not set
-- Default: not set. Left at not set, your Profile decides.
-- When a prompt needs more effort on the same model. ask me: ask each time. raise automatically: raise without asking. never raise: never. This rule also decides raises mid-turn when Claude looks stuck. not set (the default): your Profile decides, and the band says so the first time the case comes up in a session, with the other rules in its ⋯ menu. A rule set here is used as it is. The band's ⋯ menu and /rightsize settings set it too; set it back to not set to let the profile decide again.
+- Default: not set. Left at not set, Ask before changing decides.
+- When a prompt needs more effort on the same model. ask me: ask each time. raise automatically: raise without asking. never raise: never. This rule also decides raises mid-turn when Claude looks stuck. not set (the default): Ask before changing decides (off: done without asking; on: asked first), and the band says so the first time the case comes up in a session, with the other rules in its ⋯ menu. A rule set here is used as it is. The band's ⋯ menu and /rightsize settings set it too; set it back to not set to let Ask before changing decide again.
 
 ### Stronger model
 
 - Key: `upRule`
 - Options: ask first · always send · stay, raise effort only · ask each time · not set
-- Default: not set. Left at not set, your Profile decides.
-- When a stronger model than yours would do better, or a review runs on Opus for one turn. ask first: ask before it. always send: do it without asking. stay, raise effort only: stay on your model and raise effort. ask each time: ask what to do each time. not set (the default): your Profile decides, and the band says so the first time the case comes up in a session, with the other rules in its ⋯ menu. A rule set here is used as it is. The band's ⋯ menu and /rightsize settings set it too; set it back to not set to let the profile decide again.
+- Default: not set. Left at not set, Ask before changing decides.
+- When a stronger model than yours would do better, or a review runs on Opus for one turn. ask first: ask before it. always send: do it without asking. stay, raise effort only: stay on your model and raise effort. ask each time: ask what to do each time. not set (the default): Ask before changing decides (off: done without asking; on: asked first), and the band says so the first time the case comes up in a session, with the other rules in its ⋯ menu. A rule set here is used as it is. The band's ⋯ menu and /rightsize settings set it too; set it back to not set to let Ask before changing decide again.
 
 ### Cheaper model
 
 - Key: `downRule`
 - Options: ask first · always send · stay, lower effort only · ask each time · not set
-- Default: not set. Left at not set, your Profile decides.
-- When a task could run on a cheaper model than yours. ask first: ask before sending it to a subagent on that model. always send: send it without asking. stay, lower effort only: stay on your model and lower effort. ask each time: ask what to do each time. not set (the default): your Profile decides, and the band says so the first time the case comes up in a session, with the other rules in its ⋯ menu. A rule set here is used as it is. The band's ⋯ menu and /rightsize settings set it too; set it back to not set to let the profile decide again.
+- Default: not set. Left at not set, Ask before changing decides.
+- When a task could run on a cheaper model than yours. ask first: ask before sending it to a subagent on that model. always send: send it without asking. stay, lower effort only: stay on your model and lower effort. ask each time: ask what to do each time. not set (the default): Ask before changing decides (off: done without asking; on: asked first), and the band says so the first time the case comes up in a session, with the other rules in its ⋯ menu. A rule set here is used as it is. The band's ⋯ menu and /rightsize settings set it too; set it back to not set to let Ask before changing decide again.
 
 ### Remember choices
 
@@ -111,8 +110,8 @@ An "ask" answer opens its own timed dialog (see **Question wait**); every other 
 
 - Key: `handOff`
 - Options: 50% · 60% · 70% · 80% · 90%
-- Default: 70%. Stored default 70%. Left alone, your Profile sets the value (50%, 70% or 85%).
-- Send a big task to a cheaper subagent only when it is estimated to cost under this share of staying on your model, counting the brief, check and likely rework. Lower is stricter. Left alone, your Profile sets it: Quality 50%, Balanced 70%, Economy 85%.
+- Default: 70%.
+- Send a big task to a cheaper subagent only when it is estimated to cost under this share of staying on your model, counting the brief, check and likely rework. Lower is stricter. Left alone, it is 70%.
 
 ### Lowering threshold
 
@@ -160,8 +159,8 @@ An "ask" answer opens its own timed dialog (see **Question wait**); every other 
 
 - Key: `missPause`
 - Options: off · 20% · 30% · 40% · 50%
-- Default: 30%. The row shows 30% until you set it. Left alone, your Profile sets the value (10%, 20% or 30%).
-- The rating is scored against what happens: rework on hand-offs, lowered turns that stepped back up, mid-turn raises, a test run that failed at the turn's end, a next prompt that corrects the reply, your 👍 and 👎 (in the band's ⋯ menu), and Sonnet's checks. When the miss rate for a kind of work on a model reaches this share, rightsize stops handing that work down to that model and stops lowering effort on it, until the rate falls back under it. off: never pause. Left alone, your Profile sets it: Quality pauses at 10% misses and also needs at least 10 logged tasks of that kind on that model before it uses a cheaper route, Balanced pauses at 20%, Economy at 30%. A value you set here replaces the whole rule.
+- Default: 30%. The row shows 30% until you set it; left alone, rightsize pauses at 20%.
+- The rating is scored against what happens: rework on hand-offs, lowered turns that stepped back up, mid-turn raises, a test run that failed at the turn's end, a next prompt that corrects the reply, your 👍 and 👎 (in the band's ⋯ menu), and Sonnet's checks. When the miss rate for a kind of work on a model reaches this share, rightsize stops handing that work down to that model and stops lowering effort on it, until the rate falls back under it. off: never pause. Left alone, it pauses at 20%. A value you set here replaces the whole rule.
 
 ### Budget pacing
 
@@ -202,8 +201,8 @@ An "ask" answer opens its own timed dialog (see **Question wait**); every other 
 
 - Key: `raterCheck`
 - Options: every 25 · every 50 · every 100 · off
-- Default: every 50. The row shows every 50 until you set it. Left alone, your Profile sets the value (every 10, 20 or 30).
-- every 25, every 50 or every 100: on every that many prompts rated by Haiku (Rater set to haiku, or Sonnet failed), ask Sonnet in the background to rate the same prompt, and log where it says a model would struggle that Haiku said does the work. These checks and the other outcomes give a miss rate per task type and model (see Pause after misses). Each check costs one Sonnet call and never delays the prompt. off: no checks (the other outcomes still count). Left alone, your Profile sets it: every 10 (Quality), every 20 (Balanced) or every 30 (Economy).
+- Default: every 50. The row shows every 50 until you set it; left alone, rightsize checks every 20.
+- every 25, every 50 or every 100: on every that many prompts rated by Haiku (Rater set to haiku, or Sonnet failed), ask Sonnet in the background to rate the same prompt, and log where it says a model would struggle that Haiku said does the work. These checks and the other outcomes give a miss rate per task type and model (see Pause after misses). Each check costs one Sonnet call and never delays the prompt. off: no checks (the other outcomes still count). Left alone, it is every 20.
 
 ### Start suggestions
 
@@ -223,8 +222,8 @@ An "ask" answer opens its own timed dialog (see **Question wait**); every other 
 
 - Key: `beforeCold`
 - Options: ask · keep warm 2 h · keep warm 8 h · keep warm until my usual start · save a handoff · compact · off
-- Default: ask. The row shows ask until you set it. Left alone, your Profile decides (Quality 8 hours, Balanced until your usual start, Economy cold).
-- What rightsize does when a session that ends a turn with a big conversation (a cold return would cost at least the Idle warning amount, $0.50 by default and while Idle warning is off, API-equivalent on a subscription) is about to lose its prompt cache. keep warm 2 h, keep warm 8 h, keep warm until my usual start (the time you usually send your first prompt, at most 8 hours): send one tiny request just before each expiry to keep the cache warm until then, with a status row on the band (Stop keeping warm; Don't keep warm again in ⋯), and stop when you type, press Stop, a request fails, or keeping warm would cost more than coming back cold. ask: offer the choices on the band 5 minutes after the turn, each with its cost, and do nothing if you do not pick. save a handoff: run whatsnext's wrap-up once before expiry (compact when whatsnext is not installed or not started in the project). compact: compact once before expiry (with whatsnext, using its instructions). off: nothing. Nothing runs during a turn. Not set here, your Profile decides: Quality keeps warm 8 hours, Balanced until your usual start, Economy lets it go cold.
+- Default: ask. The row shows ask until you set it; left alone, rightsize keeps warm until your usual start.
+- What rightsize does when a session that ends a turn with a big conversation (a cold return would cost at least the Idle warning amount, $0.50 by default and while Idle warning is off, API-equivalent on a subscription) is about to lose its prompt cache. keep warm 2 h, keep warm 8 h, keep warm until my usual start (the time you usually send your first prompt, at most 8 hours): send one tiny request just before each expiry to keep the cache warm until then, with a status row on the band (Stop keeping warm; Don't keep warm again in ⋯), and stop when you type, press Stop, a request fails, or keeping warm would cost more than coming back cold. ask: offer the choices on the band 5 minutes after the turn, each with its cost, and do nothing if you do not pick. save a handoff: run whatsnext's wrap-up once before expiry (compact when whatsnext is not installed or not started in the project). compact: compact once before expiry (with whatsnext, using its instructions). off: nothing. Nothing runs during a turn. Not set here, rightsize keeps warm until your usual start.
 
 ### Reports
 

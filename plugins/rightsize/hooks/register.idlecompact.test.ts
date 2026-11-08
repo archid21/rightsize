@@ -9,8 +9,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
   const HOUR = 60 * MIN
   /** 18:00 local. */
   const EVENING = new Date(2027, 0, 15, 18, 0, 0, 0).getTime()
-  /** The keep-warm row, set by the person: the profile's own choice is not in play. */
-  const KEEP_WARM = { options: { profile: 'Balanced', beforeCold: 'keep warm 8 h' }, stored: { profile: 'Balanced', beforeCold: 'keep warm 8 h' } }
+  /** The keep-warm row, set by the person: the fixed value is not in play. */
+  const KEEP_WARM = { options: { beforeCold: 'keep warm 8 h' }, stored: { beforeCold: 'keep warm 8 h' } }
   /** A turn that leaves the conversation at exactly `tokens` (BIG_TURN's 500 other tokens counted). */
   const turnOf = (tokens: number) => ({ ...BIG_TURN, cache_read_input_tokens: tokens - 500 })
   const AFTER = { input_tokens: 500, output_tokens: 100, cache_read_input_tokens: 0, cache_creation_input_tokens: 18_000 }

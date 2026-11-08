@@ -16,8 +16,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
   const settingsText = async (d: ReturnType<typeof drive>) => (await d.command('status')).text ?? ''
   const OPUS = { model: 'claude-opus-5-5', effort: 'medium' }
   const logOf = (h: ReturnType<typeof engine>) => h.files[LOG_PATH] ?? ''
-  /** Opts a session into a profile the way /config does: declared at load, and stored. */
-  const inProfile = (profile: string, more: Record<string, string> = {}) => ({ options: { profile, ...more }, stored: { profile, ...more } })
+  /** Rows set the way /config does: declared at load, and stored. */
+  const inProfile = (_profile: string, more: Record<string, string> = {}) => ({ options: { ...more }, stored: { ...more } })
 
 
   // ---- Before the cache goes cold ------------------------------------------------------------------------------
@@ -31,7 +31,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   type ColdOver = {
     /** The rows the person set (settings.json); Before the cache goes cold is "ask" unless these say otherwise, since only that row offers. */
     stored?: Record<string, string>
-    /** True: leave Before the cache goes cold unset, so the profile decides. */
+    /** True: leave Before the cache goes cold unset, so the fixed value applies. */
     unset?: boolean
     commands?: typeof WHATSNEXT
     prices?: string
@@ -610,18 +610,11 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await bandText($, surface)).toBe('')
   })
 
-  const PROFILE_COLD = (profile: string) => ({ options: inProfile(profile).options, over: { stored: inProfile(profile).stored, unset: true } })
+  /** Before the cache goes cold left unset: the fixed value (keep warm until your usual start) applies. */
+  const FIXED_COLD = { options: {}, over: { stored: {}, unset: true } }
 
-  test(`profiles: Quality keeps warm for 8 hours when the row is not set (${surface})`, { timeoutMs: 30000, options: PROFILE_COLD('Quality').options }, async ($, on) => {
-    const { h, d } = await coldSession($, on, PROFILE_COLD('Quality').over)
-    await coldTurn(d, 't1')
-    expect(await bandText($, surface)).toBe('Warm until 2:00 · $0.00 so far')
-    await h.advance(57 * MIN)
-    expect(NOTHING_DONE(h)).toEqual({ forks: 1, submitted: 0, compactions: 0 })
-  })
-
-  test(`profiles: Balanced keeps warm until your usual start when the row is not set: at once, with no question, at most 8 hours (${surface})`, { timeoutMs: 30000, options: PROFILE_COLD('Balanced').options }, async ($, on) => {
-    const { h, d } = await coldSession($, on, PROFILE_COLD('Balanced').over)
+  test(`the fixed value keeps warm until your usual start when the row is not set: at once, with no question, at most 8 hours (${surface})`, { timeoutMs: 30000, options: FIXED_COLD.options }, async ($, on) => {
+    const { h, d } = await coldSession($, on, FIXED_COLD.over)
     await coldTurn(d, 't1')
     // 18:00: the usual start (9:00 with nothing in the log) is 15 hours away, so the 8-hour cap ends it.
     expect(await bandText($, surface), 'no offer, no wait: it starts at the turn\'s end').toBe('Warm until 2:00 · $0.00 so far')
@@ -635,8 +628,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(coldLog(h)).toContain('keep warm ended at 2:00: 8 pings')
   })
 
-  test(`profiles: Balanced keeps warm until your usual start when that is under 8 hours away, and the usual start comes from the run log (${surface})`, { timeoutMs: 30000, options: PROFILE_COLD('Balanced').options }, async ($, on) => {
-    const { h, d } = await coldSession($, on, PROFILE_COLD('Balanced').over)
+  test(`the fixed value keeps warm until your usual start when that is under 8 hours away, and the usual start comes from the run log (${surface})`, { timeoutMs: 30000, options: FIXED_COLD.options }, async ($, on) => {
+    const { h, d } = await coldSession($, on, FIXED_COLD.over)
     // Six days whose first prompt was at 8:21, 8:22 ... 8:26: the median, 8:23.5, rounds to 8:30.
     const day = (n: number) => JSON.stringify({ at: new Date(2027, 0, 15 - n, 9, 30).toISOString(), submittedAt: new Date(2027, 0, 15 - n, 8, 20 + n).toISOString(), kind: 'run' })
     h.files[LEGACY_RUNS] = `${[1, 2, 3, 4, 5, 6].map(day).join('\n')}\n`
@@ -651,8 +644,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(coldLog(h)).toContain('keep warm ended at 8:30')
   })
 
-  test(`profiles: Balanced's Stop keeping warm stops it, and Don't keep warm again in ⋯ turns the row off as yours (${surface})`, { timeoutMs: 30000, options: PROFILE_COLD('Balanced').options }, async ($, on) => {
-    const { h, d } = await coldSession($, on, PROFILE_COLD('Balanced').over)
+  test(`Stop keeping warm stops it, and Don't keep warm again in ⋯ turns the row off as yours (${surface})`, { timeoutMs: 30000, options: FIXED_COLD.options }, async ($, on) => {
+    const { h, d } = await coldSession($, on, FIXED_COLD.over)
     await coldTurn(d, 't1')
     await h.advance(57 * MIN)
     await pressBand($, 'cold-stop')
@@ -668,17 +661,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.stored.beforeCold, 'the person\'s own now').toBe('off')
     await h.advance(4 * HOUR)
     expect(h.forks.length, 'and it stopped').toBe(1)
-  })
-
-  test(`profiles: Economy lets the cache go cold when the row is not set: no offer, no pings (${surface})`, { timeoutMs: 30000, options: PROFILE_COLD('Economy').options }, async ($, on) => {
-    const { h, d } = await coldSession($, on, PROFILE_COLD('Economy').over)
-    await coldTurn(d, 't1')
-    await h.advance(5 * MIN)
-    expect(await bandText($, surface)).toBe('')
-    expect(h.asked, 'no question').toEqual([])
-    await h.advance(9 * HOUR)
-    expect(NOTHING_DONE(h)).toEqual(NONE)
-    expect(h.afters, 'no timer was armed').toEqual([])
   })
 
   test(`profiles: the ask value still offers, for Balanced and Economy too, when the row is set to it (${surface})`, { timeoutMs: 30000, options: inProfile('Economy', { beforeCold: 'ask' }).options }, async ($, on) => {

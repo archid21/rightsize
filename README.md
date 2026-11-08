@@ -40,7 +40,7 @@ Switching by hand with `/model` works until you forget, which is most of the tim
 
 | Feature | What it delivers | How to use it |
 |---|---|---|
-| Smart routing | Routine work on cheaper models, Opus where it counts | Automatic. Pick a **Profile** in `/config`. |
+| Smart routing | Routine work on cheaper models, Opus where it counts | Automatic. **Ask before changing** in `/config` makes it ask first. |
 | Effort control | Lower effort for easy prompts, higher for hard ones | Automatic. The **Lowering** and **Raising** rows set ask, automatic or never. |
 | Cheaper helpers | Big routine edits handled at lower cost | Automatic from Opus or Fable sessions. Press **Run on your model** on the band to undo one. |
 | Opus reviews | Stronger reviews without switching models | Automatic. The **Stronger model** row sets ask first or always send. |
@@ -104,7 +104,7 @@ A routine edit stays on Sonnet; a review switches to Opus for one turn; the band
 
 **Big routine jobs, done cheaper.** Working on Opus? A large, mechanical job such as the same edit across many files can go to a Haiku helper. Your main chat writes the brief, checks the result against it, and sends it back if anything is off. On our benchmark these hand-offs passed as often as Opus at a bit under half the cost. rightsize hands off only when the brief and the check still leave a saving, so from a Sonnet session it never does.
 
-**Come back to a warm session.** A long session is cheap only while its prompt cache (the stored copy of your conversation) is warm. Step away past the cache's hour and your next prompt pays to rebuild it. rightsize keeps a big session warm while you are away, for as long as your profile says, and never past the point where coming back cold would be cheaper. When keeping warm over your usual idle time would cost at least 3 times a compact, rightsize compacts instead.
+**Come back to a warm session.** A long session is cheap only while its prompt cache (the stored copy of your conversation) is warm. Step away past the cache's hour and your next prompt pays to rebuild it. rightsize keeps a big session warm while you are away, until your usual start time, and never past the point where coming back cold would be cheaper. When keeping warm over your usual idle time would cost at least 3 times a compact, rightsize compacts instead.
 
 | Coming back to a 150k-token Opus session | Cost at API prices |
 |---|---|
@@ -165,21 +165,22 @@ Want to watch first? In `/config`, set **Mode** to watch only.
 
 ## Make it yours
 
-Pick a profile in `/config`. Balanced is the default.
+One rule set, two switches. **Hand-offs** turns helper subagents off (effort still changes). **Ask before changing** makes every move ask first. Everything else has an Advanced row you can set.
 
-| | Quality | Balanced | Economy |
-|---|---|---|---|
-| Moves to a cheaper model when | Your own log shows it works | The rating says it fits | It fits at all |
-| Reviews on Opus | Yes, highest effort | Yes, highest effort | Stays, raises effort only |
-| Keeps the cache warm while you're away | 8 hours | Until your usual start time | No |
+| | Default | Row |
+|---|---|---|
+| Moves to a cheaper model when | The rating says it fits and the helper costs under 70% of staying | **Hand-off threshold** |
+| Lowers effort when | The rating says the lower level fits | **Lowering** |
+| Reviews on Opus | Yes, highest effort | **Stronger model** |
+| Keeps the cache warm while you're away | Until your usual start time | **Before the cache goes cold** |
 
-When keeping warm over your usual idle time would cost at least 3 times a compact, the profile's keep warm becomes a compact instead. A **Before the cache goes cold** row you set yourself always wins.
+When keeping warm over your usual idle time would cost at least 3 times a compact, keep warm becomes a compact instead. A **Before the cache goes cold** row you set yourself always wins.
 
 **Recipes**
 
 - **Opus reviews, but no helper subagents:** set **Hand-offs** to off.
 - **Just effort, no model changes:** set **Stronger model** to stay and **Cheaper model** to stay.
-- **Ask before anything changes:** set **Profile** to Quality, or set any of the four rules to ask me.
+- **Ask before anything changes:** set **Ask before changing** to on, or set any of the four rules to ask me.
 
 **Routing**, **Hand-offs** and **Cache** each turn one feature off. Every setting, with its options and default: [docs/SETTINGS.md](docs/SETTINGS.md). Every rule and number: [docs/HOW-IT-DECIDES.md](docs/HOW-IT-DECIDES.md).
 
@@ -189,7 +190,7 @@ When keeping warm over your usual idle time would cost at least 3 times a compac
 |---|---|
 | `/rightsize` | Settings pane |
 | `/rightsize report` | What each choice cost and saved |
-| `/rightsize status` | Your profile and the settings you changed |
+| `/rightsize status` | What is in use and the settings you changed |
 | `/rightsize retry` | Runs the last lowered prompt at normal effort |
 | `/mods` | Turns rightsize on or off |
 

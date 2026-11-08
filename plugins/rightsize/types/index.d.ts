@@ -86,8 +86,8 @@ declare module 'claude-code' {
       manualPause: { model?: RightsizeTier; effort?: RightsizeLevel; fromModel?: RightsizeTier; fromEffort?: RightsizeLevel; at: number; by: 'model' | 'effort' } | null
       /** The main thread's model id, as last reported by the API; null before the first. */
       seenModel: string | null
-      /** The task in progress, from the last rating that started one; null before the first. A prompt that continues it is planned as its type and carries its id. `brief` is the first 600 characters of the prompt that started it, and `prompts` how many prompts it has had (rated or not): the rater is told both. */
-      task: { id: string; type: RightsizeTaskType; brief: string; prompts: number } | null
+      /** The task in progress, from the last rating that started one; null before the first. A prompt that continues it is planned as its type and carries its id. `brief` is the first 600 characters of the prompt that started it, and `prompts` how many prompts it has had (rated or not): the rater is told both. `tests` is how its last turn ended when a test runner ran in it; after a failed run the next prompt is not lowered or handed down (ADR 0021). */
+      task: { id: string; type: RightsizeTaskType; brief: string; prompts: number; tests?: 'passed' | 'failed' } | null
       /** The task's retry budget: how many of its chances are used, by a helper raised a level or a rework round on a hand-off. Resets when a new task starts; null before the first. */
       retries: { task: string; used: number } | null
       /** Tokens in the main conversation's last request. */

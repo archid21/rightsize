@@ -69,8 +69,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     }
   })
 
-  test(`cache prefix: every keep-warm request is a fork that adds the one fixed prompt and nothing else (${surface})`, { timeoutMs: 30000, options: { profile: 'Balanced', beforeCold: 'keep warm 2 h' } }, async ($, on) => {
-    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', stored: { profile: 'Balanced', beforeCold: 'keep warm 2 h' } })
+  test(`cache prefix: every keep-warm request is a fork that adds the one fixed prompt and nothing else (${surface})`, { timeoutMs: 30000, options: { beforeCold: 'keep warm 2 h' } }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', stored: { beforeCold: 'keep warm 2 h' } })
     h.now = EVENING
     h.virtual = true
     h.stepUsage = BIG_TURN

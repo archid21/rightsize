@@ -70,8 +70,8 @@ test('the public prompt quotes no benchmark numbers or task names', async () => 
   expect(prompt).not.toMatch(/benchmark|pass rate|\bruns?\b of/i)
 })
 
-test('the prompt has one effort sentence: routine debugging does not need more than medium, subtle or high-stakes work does', async () => {
-  expect(prompt).toContain("Effort: routine debugging with a clear symptom does not need a higher level than the model's medium; raise the level for subtle bugs, hard reasoning or high stakes.")
+test('the prompt has one effort paragraph: difficulty, not size; raise for subtle bugs, hard reasoning or high stakes, not for more of the same', async () => {
+  expect(prompt).toContain('Effort is difficulty, not size. A change across many files or many steps is rated by its hardest step; its size goes in steps. A long plan with routine steps is medium. Raise the level for subtle bugs, hard reasoning or high stakes, not for more work of the same kind.')
 })
 
 test('a broken ending after the last complete field is cut, and the object closed again', async () => {
@@ -105,4 +105,13 @@ test('the parser stays strict: no value is guessed, and garbage is still refused
   ]) {
     expect(parseRating(bad, 'opus'), JSON.stringify(bad)).toBeUndefined()
   }
+})
+
+test('the rater is told that effort is difficulty, not size: many files or steps do not make high or xhigh', async () => {
+  expect(prompt).toContain('Effort is difficulty, not size.')
+  expect(prompt).toContain('A change across many files or many steps is rated by its hardest step; its size goes in steps.')
+  expect(prompt).toContain('- medium: ordinary edits and features with a clear path, in one file or several,')
+  expect(prompt).toContain('- high: only with a reason you can name:')
+  expect(prompt).not.toContain('multi-file changes')
+  expect(prompt).not.toContain('long multi-step plans')
 })

@@ -617,15 +617,21 @@ const capRaise = (target: Level, s: Situation) => {
   return levelRank(capped) > levelRank(s.level) ? capped : s.level
 }
 
-// A rated raise to a higher level for debugging is not taken from the rating alone on a Sonnet session:
-// the rater cannot tell a routine bug from a subtle one from the prompt, and a raise there bought no
-// passes. The session stays at its level (a lowering still goes through), and raising is left to stuck
-// detection (struggle.ts), which sees the turn go wrong.
+// A rated raise is not taken from the rating alone where it bought no passes. On Opus and Fable it is never taken
+// (ADR 0021: on 145 Django runs the rated level did not predict the misses, and low passed as often as medium); on a
+// Sonnet session it is not taken for debugging (the rater cannot tell a routine bug from a subtle one from the prompt).
+// The session stays at its level (a lowering still goes through), and raising is left to stuck detection
+// (struggle.ts), which sees the turn go wrong. A review is never held: reviewPlan raises Opus to high on purpose.
+export const NO_PROMPT_RAISE: readonly Tier[] = ['opus', 'fable']
 const DEBUG_HOLD_TIER: Tier = 'sonnet'
 function heldRating(r: Rating, s: Situation): Rating {
   const own = r.fit[s.tier]
-  if (r.type !== 'debug' || s.tier !== DEBUG_HOLD_TIER || !own || levelRank(own) <= levelRank(s.level)) return r
-  return { ...r, level: levelRank(r.level) > levelRank(s.level) ? s.level : r.level, fit: { ...r.fit, [s.tier]: s.level } }
+  // A model the rater says would struggle at any level is not held: the raise is the fallback when no stronger route exists.
+  if (!own) return r
+  if (levelRank(own) <= levelRank(s.level) && levelRank(r.level) <= levelRank(s.level)) return r
+  const held = NO_PROMPT_RAISE.includes(s.tier) ? r.type !== 'review' : r.type === 'debug' && s.tier === DEBUG_HOLD_TIER
+  if (!held) return r
+  return { ...r, level: levelRank(r.level) > levelRank(s.level) ? s.level : r.level, fit: { ...r.fit, [s.tier]: levelRank(own) > levelRank(s.level) ? s.level : own } }
 }
 
 // The effort-only plan: lower or raise on the main model, or nothing.
@@ -678,8 +684,9 @@ function reviewPlan(r: Rating, s: Situation, floor: Level): Plan | undefined {
 // would struggle, the cheapest stronger route that fits. Otherwise the cheapest
 // cheaper route, when it costs under the hand-off share of staying at the level
 // the work needs (a raise counted with its switch there and back); else an effort change.
-export function plan(r0: Rating, s: Situation, floor: Level): Plan {
-  const r = heldRating(r0, s)
+export function plan(r: Rating, s: Situation, floor: Level): Plan {
+  // The routes and the hand-off bar use the rating as given: a hand-off is judged against the level the work needs.
+  // Only the effort plan holds a rated raise back (heldRating, in effortPlan).
   // A subagent cannot see the person's approval, so it would refuse the work.
   if (r.approval) return effortPlan(r, s, floor)
   if (r.type === 'review') {

@@ -151,7 +151,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
     const d = drive($, h)
     await d.start(surface)
-    // Raising set to ask: the profile's own answer (auto) would raise without a question.
+    // Raising set to ask: the default answer (auto) would raise without a question.
     await d.config('raiseRule', 'ask me')
     h.rating = NO_CHANGE
     await d.submit(LOOKUP)
@@ -389,7 +389,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t2')
     expect(last(h.sent)?.effort, 'not lowered: the rater did not see all of it').toBe('medium')
     expect(h.files[LOG_PATH] ?? '').toContain('no downgrade: context cut')
-    expect(h.asked, 'nothing was asked: the profile decides Lowering, and a rule it decided is not kept').toEqual([])
+    expect(h.asked, 'nothing was asked: the default decides Lowering, and a rule it decided is not kept').toEqual([])
     await d.complete('t2')
     expect(unsureOf(h)).toEqual([null, 'cut'])
   })
@@ -423,7 +423,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.complete('t3')
 
     // A raise is not held back.
-    h.rating = '{"level":"high","model":"same","type":"debug","read":20000,"write":3000,"steps":8,"reason":"unknown cause"}'
+    // A review: the one task type whose rated raise is still taken at prompt time on Opus (ADR 0021).
+    h.rating = '{"level":"high","model":"same","type":"review","read":20000,"write":3000,"steps":8,"reason":"unknown cause"}'
     await d.submit(DEBUG)
     await d.step('t4')
     expect(last(h.sent)?.effort, 'raised').toBe('high')

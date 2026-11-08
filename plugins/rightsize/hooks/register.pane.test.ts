@@ -27,11 +27,11 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const opened = (await d.command('')).text ?? ''
     expect(h.paneOpens, 'one pane, focused, Esc closes it, toasts held').toEqual([{ id: PANE_ID, title: 'Rightsize', focus: true, closeOnEscape: true, holdToasts: true }])
     expect(opened).toContain('settings are open in a pane')
-    expect(opened, 'the summary moved').not.toContain('Profile: Balanced')
+    expect(opened, 'the summary moved').not.toContain('Ask before changing: off')
     expect(h.asked, 'no question').toEqual([])
     expect(h.paneCloses).toEqual([])
     const status = (await d.command('status')).text ?? ''
-    expect(status.startsWith('Profile: Balanced')).toBe(true)
+    expect(status.startsWith('Ask before changing: off')).toBe(true)
     expect(status).toContain(`All ${KEYS.length} settings are at their defaults`)
     expect(status.endsWith('Commands: /rightsize help')).toBe(true)
     expect(h.paneOpens.length, 'status opens no pane').toBe(1)
@@ -51,9 +51,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     }
     const order = await drawn(ui)
     expect(order[0], 'the keys, above the rows').toContain('Tab: next setting · ↑↓: choose a value · Enter: set · Esc: close.')
-    expect(order.indexOf('row-profile'), 'Profile first, above the heading').toBe(1)
-    expect(order.indexOf('row-mode'), 'Mode second, above the heading: it is not an Advanced row').toBe(2)
-    expect(order.slice(3, 6), 'the three switches follow, above the heading: they are not Advanced rows').toEqual(['row-routing', 'row-handOffs', 'row-cache'])
+    expect(order.indexOf('row-mode'), 'Mode first, above the heading: it is not an Advanced row').toBe(1)
+    expect(order.slice(2, 6), 'the three switches and Ask before changing follow, above the heading: they are not Advanced rows').toEqual(['row-routing', 'row-handOffs', 'row-askFirst', 'row-cache'])
     expect(order[6], 'the heading').toBe('Advanced')
     expect(order.filter(x => x === 'Advanced').length).toBe(1)
     expect(order.slice(7), 'the Advanced rows follow it, in order').toEqual(KEYS.slice(5).map(k => `row-${k}`))
@@ -114,13 +113,13 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(log.split('keep warm stopped (Before the cache goes cold changed)').length - 1, 'followRow ran once').toBe(1)
   })
 
-  test(`picking Profile draws every row again and changes what is in use (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`picking Ask before changing draws every row again and changes what is in use (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const { h, d } = await start($, on)
     const ui = await mountPane($, surface)
-    await ui.select({ key: 'row-profile', value: 'Economy' })
-    expect(await selectOf(ui, 'profile')).toMatchObject({ label: 'Profile (yours)', value: 'Economy' })
-    expect(last(h.sets)).toMatchObject({ key: 'rightsize.profile', value: 'Economy' })
-    expect(((await d.command('status')).text ?? '').startsWith('Profile: Economy')).toBe(true)
+    await ui.select({ key: 'row-askFirst', value: 'on' })
+    expect(await selectOf(ui, 'askFirst')).toMatchObject({ label: 'Ask before changing (yours)', value: 'on' })
+    expect(last(h.sets)).toMatchObject({ key: 'rightsize.askFirst', value: 'on' })
+    expect(((await d.command('status')).text ?? '').startsWith('Ask before changing: on')).toBe(true)
     // A rule row set to "not set" goes back to unset, not yours.
     await ui.select({ key: 'row-lowerRule', value: 'never lower' })
     expect(await selectOf(ui, 'lowerRule')).toMatchObject({ label: 'Lowering (yours)', value: 'never lower' })
@@ -144,8 +143,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.answerQueue = { Setting: ['More…', 'Done'], 'More rows': BAND_PAGE, Value: ['off'] }
     const r = (await d.command('')).text ?? ''
     expect(h.paneCloses, 'the unplaced pane is closed, not left open').toEqual([PANE_ID])
-    expect(h.asked[0]?.options, 'Done first, then the rows as Row: value, three to a page').toEqual(['Done', 'Profile: Balanced', 'Mode: act', 'More…'])
-    expect(h.asked[1]?.options, 'the three switches fill the second page').toEqual(['Routing: on', 'Hand-offs: on', 'Cache: on', 'More…'])
+    expect(h.asked[0]?.options, 'Done first, then the rows as Row: value, three to a page').toEqual(['Done', 'Mode: act', 'Routing: on', 'More…'])
+    expect(h.asked[1]?.options, 'the switches and Ask before changing fill the second page').toEqual(['Hand-offs: on', 'Ask before changing: off', 'Cache: on', 'More…'])
     expect(h.asked[2]?.options).toEqual(['Lowest effort: low', 'Highest effort: max', 'Lowering: not set', 'More…'])
     const value = h.asked.find(a => a.options.includes('off (current)') || a.options.includes('when it acts (current)'))
     expect(value?.options, 'the values of the row, the current one marked').toEqual(['when it acts (current)', 'always', 'off'])
@@ -163,13 +162,13 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.panePlaced = false
     h.answers = {}
     expect((await d.command('')).text, 'dismissed at once').toBe('No setting changed.')
-    h.answerQueue = { Setting: ['Profile: Balanced', 'Done'] }
+    h.answerQueue = { Setting: ['More…', 'Done'], 'More rows': ['Ask before changing: off'] }
     expect((await d.command('')).text, 'the value was dismissed: back to the rows').toBe('No setting changed.')
-    h.answerQueue = { Setting: ['Profile: Balanced', 'Done'], Value: ['Balanced (current)'] }
+    h.answerQueue = { Setting: ['More…', 'Done'], 'More rows': ['Ask before changing: off'], Value: ['off (current)'] }
     expect((await d.command('')).text, 'the current value again: nothing to write').toBe('No setting changed.')
-    expect(h.sets.filter(x => x.key === 'rightsize.profile')).toEqual([])
-    h.answerQueue = { Setting: ['Profile: Balanced', 'Done'], Value: ['Quality'] }
-    expect((await d.command('')).text).toBe('Changed Profile: Quality.')
+    expect(h.sets.filter(x => x.key === 'rightsize.askFirst')).toEqual([])
+    h.answerQueue = { Setting: ['More…', 'Done'], 'More rows': ['Ask before changing: off'], Value: ['on'] }
+    expect((await d.command('')).text).toBe('Changed Ask before changing: on.')
   })
 }
 
@@ -177,15 +176,15 @@ test('on the mobile app, which has no picker, bare /rightsize asks at once, and 
   const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
   const d = drive($, h)
   await d.start('mobile')
-  h.answerQueue = { Setting: ['Profile: Balanced', 'Done'], Value: ['Quality'] }
-  expect((await d.command('')).text).toBe('Changed Profile: Quality.')
+  h.answerQueue = { Setting: ['More…', 'Done'], 'More rows': ['Ask before changing: off'], Value: ['on'] }
+  expect((await d.command('')).text).toBe('Changed Ask before changing: on.')
   expect(h.paneOpens, 'no pane for a surface with no picker').toEqual([])
   const ui = await mountPane($, 'mobile')
   expect(await ui.findAll({ type: 'Select' })).toEqual([])
-  expect((await ui.find({ type: 'Text', text: /^Profile/ }))?.text).toBe('Profile (yours): Quality')
+  expect((await ui.find({ type: 'Text', text: /^Ask before changing/ }))?.text).toBe('Ask before changing (yours): on')
   expect((await ui.find({ type: 'Text', text: /^Band/ }))?.text).toBe('Band (default): when it acts')
-  h.answerQueue = { Setting: ['Profile: Quality', 'Done'], Value: ['Economy'] }
+  h.answerQueue = { Setting: ['More…', 'Done'], 'More rows': ['Ask before changing: on'], Value: ['off'] }
   await ui.press({ key: 'change' })
   await ui.unmount()
-  expect(last(h.sets)).toMatchObject({ key: 'rightsize.profile', value: 'Economy' })
+  expect(last(h.sets)).toMatchObject({ key: 'rightsize.askFirst', value: 'off' })
 })

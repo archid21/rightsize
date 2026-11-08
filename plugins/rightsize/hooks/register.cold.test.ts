@@ -7,9 +7,10 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
   const MIN = 60_000
   const settingsText = async (d: ReturnType<typeof drive>) => (await d.command('status')).text ?? ''
-  const RAISE_HIGH = '{"level":"high","model":"same","type":"debug","read":20000,"write":3000,"steps":8,"reason":"unknown cause"}'
-  /** Opts a session into a profile the way /config does: declared at load, and stored. */
-  const inProfile = (profile: string, more: Record<string, string> = {}) => ({ options: { profile, ...more }, stored: { profile, ...more } })
+  // A raise fixture: a review, the one task type whose rated raise is still taken at prompt time on Opus (ADR 0021).
+  const RAISE_HIGH = '{"level":"high","model":"same","type":"review","read":20000,"write":3000,"steps":8,"reason":"unknown cause"}'
+  /** Rows set the way /config does: declared at load, and stored. */
+  const inProfile = (_profile: string, more: Record<string, string> = {}) => ({ options: { ...more }, stored: { ...more } })
 
 
   // ---- Before the cache goes cold ------------------------------------------------------------------------------
@@ -23,7 +24,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   type ColdOver = {
     /** The rows the person set (settings.json); Before the cache goes cold is "ask" unless these say otherwise, since only that row offers. */
     stored?: Record<string, string>
-    /** True: leave Before the cache goes cold unset, so the profile decides. */
+    /** True: leave Before the cache goes cold unset, so the fixed value applies. */
     unset?: boolean
     commands?: typeof WHATSNEXT
     prices?: string
@@ -254,7 +255,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await bandText($, surface)).toBe('')
   })
 
-  test(`Don't offer again saves the row as yours, says where it is, and no profile offers again (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`Don't offer again saves the row as yours, says where it is, and nothing offers again (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const { h, d } = await coldSession($, on)
     await coldOffer(h, d, 't1')
     await openMenu($, h, { ...CACHE_MENU, 'More options': "Don't offer again" }, 2)
@@ -265,9 +266,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await bandText($, surface), 'the offer closes').toBe('')
     await coldTurn(d, 't2')
     expect(await bandText($, surface), 'and does not come back').toBe('')
-    // Not for Quality either, which would keep warm by default, and not in the next session.
-    await d.config('profile', 'Quality')
-    await coldTurn(d, 't3')
+    // Not in the next session either.
     await d.start(surface)
     await coldTurn(d, 't4')
     await h.advance(3 * HOUR)

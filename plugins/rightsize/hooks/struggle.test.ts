@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { type Signals, ERRORS, helperCap, isCapSetting, LIMITS, LONG_MIN, LONG_X, LOOP, NOVEL, RECENT_MAX, REPEAT, WINDOW, blockedError, callKey, isEditTool, isSensitivity, isTestCommand, noSignals, noteCall, oneUp, refusedByPerson, struggle, testsOutcome } from './struggle'
+import { type Signals, AFTER_FAIL, ERRORS, helperCap, isCapSetting, LIMITS, LONG_MIN, LONG_X, LOOP, NOVEL, RECENT_MAX, REPEAT, WINDOW, blockedError, callKey, isEditTool, isSensitivity, isTestCommand, noSignals, noteCall, oneUp, refusedByPerson, struggle, testsOutcome } from './struggle'
 
 // Claude labels each Bash call afresh, so the description differs between runs of one command.
 const bash = (command: string) => callKey('Bash', { tool: 'Bash', tool_use_id: Math.random().toString(), command, description: `run ${command} (${Math.random()})` })
@@ -103,10 +103,10 @@ test('one level up, never to max', async () => {
 })
 
 test('Stuck sensitivity: normal is today\'s thresholds, relaxed waits for more, sensitive for less', async () => {
-  expect(LIMITS.normal).toEqual({ repeat: 2, errors: 3, loop: 3, longX: 3, longMin: 15, window: 10, novel: 0.5 })
-  expect(LIMITS.normal).toEqual({ repeat: REPEAT, errors: ERRORS, loop: LOOP, longX: LONG_X, longMin: LONG_MIN, window: WINDOW, novel: NOVEL })
-  expect(LIMITS.relaxed).toEqual({ repeat: 3, errors: 4, loop: 4, longX: 4, longMin: 20, window: 12, novel: 0.4 })
-  expect(LIMITS.sensitive).toEqual({ repeat: 2, errors: 2, loop: 2, longX: 2, longMin: 10, window: 8, novel: 0.6 })
+  expect(LIMITS.normal).toEqual({ repeat: 2, errors: 3, loop: 3, longX: 3, longMin: 15, window: 10, novel: 0.5, afterFail: 4 })
+  expect(LIMITS.normal).toEqual({ repeat: REPEAT, errors: ERRORS, loop: LOOP, longX: LONG_X, longMin: LONG_MIN, window: WINDOW, novel: NOVEL, afterFail: AFTER_FAIL })
+  expect(LIMITS.relaxed).toEqual({ repeat: 3, errors: 4, loop: 4, longX: 4, longMin: 20, window: 12, novel: 0.4, afterFail: 6 })
+  expect(LIMITS.sensitive).toEqual({ repeat: 2, errors: 2, loop: 2, longX: 2, longMin: 10, window: 8, novel: 0.6, afterFail: 3 })
   for (const k of Object.keys(LIMITS.normal) as (keyof typeof LIMITS.normal)[]) {
     // A lower novel share fires less often, so a relaxed one has the lower number.
     if (k === 'novel') {
@@ -251,8 +251,30 @@ test('isTestCommand: a Bash call that starts a test runner', async () => {
     'CI=1 npm test',
     'npm run build; pytest',
     'uv run pytest',
+    'python tests/runtests.py template_tests --parallel 1',
+    'cd /repo && python tests/runtests.py auth_tests.test_management --parallel 1',
+    'python3 ./tests/runtests.py basic.tests',
+    'python manage.py test app',
+    './manage.py test',
+    'django-admin test',
+    'python -m django test',
+    'tox -e py312',
+    'nox -s tests',
+    'bundle exec rspec',
+    'rake test',
+    'bin/rails test',
+    'vendor/bin/phpunit',
+    'dotnet test',
+    'swift test',
+    'mix test',
+    'deno test',
+    './gradlew test',
+    'ctest --output-on-failure',
+    'make check',
+    'npx playwright test',
+    'mocha',
   ]) expect(isTestCommand('Bash', { command }), command).toBe(true)
-  for (const command of ['npm install', 'npm run build', 'ls tests', 'echo npm test', 'fail npm test', 'git commit -m "npm test"', 'cat jest.config.js', 'make testdata', 'pytest-cov --help'])
+  for (const command of ['npm install', 'python manage.py migrate', 'python tests/helper.py', 'cat tests/runtests.py', 'echo tox', 'toxic --help', 'make checkout','npm run build', 'ls tests', 'echo npm test', 'fail npm test', 'git commit -m "npm test"', 'cat jest.config.js', 'make testdata', 'pytest-cov --help'])
     expect(isTestCommand('Bash', { command }), command).toBe(false)
   expect(isTestCommand('Read', { command: 'npm test' }), 'only a Bash call').toBe(false)
   expect(isTestCommand('Bash', {}), 'no command').toBe(false)
@@ -324,4 +346,30 @@ test('helper call cap: Haiku 25 and Sonnet 40 by default, tight and loose move b
   expect([helperCap('off', 'haiku'), helperCap('off', 'sonnet')]).toEqual([undefined, undefined])
   expect([helperCap('normal', 'opus'), helperCap('normal', 'fable')], 'a stronger tier has no cap').toEqual([undefined, undefined])
   expect([isCapSetting('tight'), isCapSetting('nope'), isCapSetting(undefined)]).toEqual([true, false, false])
+})
+
+test('failed-check: a failing test run left behind for AFTER_FAIL calls is a sign; a green run or a fresh red one resets it', async () => {
+  let s = noteCall(noSignals(), bash('npm test'), true, true)
+  expect(s.afterFail).toBe(0)
+  for (let i = 0; i < AFTER_FAIL - 1; i++) s = noteCall(s, bash(`cat f${i}`), false)
+  expect(struggle(s, AFTER_FAIL + 1, 5), 'one call short').toBeUndefined()
+  s = noteCall(s, callKey('Edit', { file_path: 'a.ts' }), false, false, true)
+  expect(struggle(s, AFTER_FAIL + 2, 5), 'an edit counts as going on: the fix is unproven').toEqual({ kind: 'failed-check', why: `the last test run failed and ${AFTER_FAIL} calls later it has not run again` })
+  expect(struggle({ ...s, fired: ['failed-check'] }, AFTER_FAIL + 2, 5), 'fires once a turn').toBeUndefined()
+  // Running the tests again resets the count: green ends it, red starts it over.
+  const green = noteCall(s, bash('npm test'), false, true)
+  expect(green.afterFail).toBeUndefined()
+  expect(struggle(green, AFTER_FAIL + 3, 5)).toBeUndefined()
+  let red = noteCall(s, bash('npm test'), true, true)
+  expect(red.afterFail).toBe(0)
+  expect(struggle(red, AFTER_FAIL + 3, 5)?.kind, 'the second red of the same run is not yet a repeat (a test needs one more)').toBeUndefined()
+  for (let i = 0; i < AFTER_FAIL; i++) red = noteCall(red, bash(`cat g${i}`), false)
+  expect(struggle(red, AFTER_FAIL * 2 + 3, 5)?.kind).toBe('failed-check')
+  // Sensitivity moves the count; a turn with no test run never fires it.
+  expect(LIMITS.sensitive.afterFail).toBeLessThan(LIMITS.normal.afterFail)
+  expect(LIMITS.relaxed.afterFail).toBeGreaterThan(LIMITS.normal.afterFail)
+  let none = noSignals()
+  for (let i = 0; i < 10; i++) none = noteCall(none, bash(`cat h${i}`), false)
+  expect(none.afterFail).toBeUndefined()
+  expect(struggle(none, 11, 5)).toBeUndefined()
 })

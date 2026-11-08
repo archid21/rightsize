@@ -109,7 +109,7 @@ test('the map for plan() holds each type and model with a rate above zero, keyed
   expect(map['search:opus'], 'no outcomes on Opus').toBeUndefined()
 })
 
-test('research priors: every profile starts from them, and real outcomes take the place of the pseudo-outcomes', async () => {
+test('research priors: the evidence rule starts from them, and real outcomes take the place of the pseudo-outcomes', async () => {
   const hand = (type: string, n: number, bad = 0): RunLine[] => Array.from({ length: n }, (_, i) => handDown({ type, agentCalls: i < bad ? 2 : 1 }))
   expect(missRate({}, 'review', 'haiku'), 'review on Haiku starts high').toBe(RESEARCH_PRIORS['review:haiku'])
   expect(missRate({}, 'review', 'haiku'), 'at or over the pause line').toBeGreaterThanOrEqual(MISS_BLOCK)

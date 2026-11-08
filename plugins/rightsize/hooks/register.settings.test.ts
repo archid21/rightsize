@@ -79,7 +79,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
   const handedTo = (h: ReturnType<typeof engine>) => /model "(\w+)"/.exec(noteOf(h))?.[1]
   const YES_REMEMBER = { Remember: 'This session' }
   const LOWER_300 = '{"level":"low","model":"same","size":"small","type":"lookup","read":2000,"write":300,"steps":1}'
-  const RAISE_HIGH = '{"level":"high","model":"same","type":"debug","read":20000,"write":3000,"steps":8,"reason":"unknown cause"}'
+  // A raise fixture: a review, the one task type whose rated raise is still taken at prompt time on Opus (ADR 0021).
+  const RAISE_HIGH = '{"level":"high","model":"same","type":"review","read":20000,"write":3000,"steps":8,"reason":"unknown cause"}'
   const NEEDS_FABLE = '{"level":"high","model":"fable","size":"small","type":"debug","read":30000,"write":4000,"steps":12,"reason":"subtle concurrency bug"}'
   const HAIKU_SEARCH = '{"level":"low","model":"haiku","size":"bulky","type":"search","read":150000,"write":3000,"steps":30,"reason":"repo-wide search"}'
   const FIT_LOW = '{"fit":{"haiku":"low","sonnet":"low","fable":"low"},"size":"bulky","type":"search","read":150000,"write":3000,"steps":30,"reason":"repo-wide search"}'
@@ -128,7 +129,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
   ]
 
   const CASES: Case[] = [
-    { key: 'profile', value: 'Economy', start: { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES } }, see: async c => (await handOff(c, SEARCH, NEAR)).to, set: 'haiku', def: undefined },
+    // Ask before changing on: the lowering asks in the Effort dialog (answered Keep as is); off: lowered with no question.
+    { key: 'askFirst', value: 'on', start: { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES } }, see: c => asking(c, LOOKUP, LOWER, { Effort: 'Keep as is' }), set: { asked: ['Effort'], effort: 'medium' }, def: { asked: [], effort: 'low' } },
     {
       key: 'mode',
       value: 'watch only',
@@ -163,11 +165,11 @@ for (const surface of ['desktop', 'terminal'] as const) {
       key: 'ceiling',
       value: 'high',
       start: OPUS,
-      see: c => effortOf(c, DEBUG, '{"level":"xhigh","model":"same","type":"refactor"}'),
+      see: c => effortOf(c, DEBUG, '{"level":"xhigh","model":"same","type":"review"}'),
       set: 'high',
       def: 'xhigh',
     },
-    // A rule row left at not set means the profile decides (Balanced: automatically), with nothing asked: the scenarios set the other value.
+    // A rule row left at not set means the default decides (automatically), with nothing asked: the scenarios set the other value.
     { key: 'lowerRule', value: 'never lower', start: { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES } }, see: c => asking(c, LOOKUP, LOWER), set: { asked: [], effort: 'medium' }, def: { asked: [], effort: 'low' } },
     { key: 'raiseRule', value: 'never raise', start: OPUS, see: c => asking(c, DEBUG, RAISE_HIGH), set: { asked: [], effort: 'medium' }, def: { asked: [], effort: 'high' } },
     { key: 'upRule', value: 'stay, raise effort only', start: OPUS, see: c => handOff(c, DEBUG, NEEDS_FABLE), set: { asked: [], to: undefined }, def: { asked: [], to: 'fable' } },
@@ -177,7 +179,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
       value: 'this session',
       start: { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES }, stored: NO_COLD },
       see: async c => {
-        // Nothing is asked for the profile's answers: Remember follows a rule the person sets, here from the band's ⋯ menu.
+        // Nothing is asked for the default answers: Remember follows a rule the person sets, here from the band's ⋯ menu.
         c.h.rating = RAISE_HIGH
         await c.d.submit(DEBUG)
         const t = c.turn()
@@ -505,7 +507,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   const HANDOFFS_OFF = switches({ handOffs: 'off' })
   const BOTH_OFF = switches({ routing: 'off', handOffs: 'off' })
   const logOf = (h: ReturnType<typeof engine>) => h.files[LOG_PATH] ?? ''
-  const KEEP8 = { profile: 'Balanced', beforeCold: 'keep warm 8 h' }
+  const KEEP8 = { beforeCold: 'keep warm 8 h' }
 
   test(`Routing off: a lowering is not applied, nothing is asked, the band says nothing, and the log says why (${surface})`, { timeoutMs: 30000, options: ROUTING_OFF.options }, async ($, on) => {
     const h = engine(on, { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES }, stored: { ...ROUTING_OFF.stored, ...NO_COLD } })
@@ -521,7 +523,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.complete('t1')
     expect(await bandText($, surface), 'nothing to say about a feature that is off').toBe('')
     expect(logOf(h)).toContain('effort change skipped: Routing is off')
-    expect(logOf(h), 'the profile decided nothing').not.toContain('Lowering: no rule set')
+    expect(logOf(h), 'the default decided nothing').not.toContain('Lowering: no rule set')
     expect(h.ratings, 'the prompt is still rated: Hand-offs is on').toBe(1)
     expect(runLines(h).find(l => l.type === 'lookup')).toMatchObject({ change: 'none' })
   })
@@ -913,7 +915,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   type ColdOver = {
     /** The rows the person set (settings.json); Before the cache goes cold is "ask" unless these say otherwise, since only that row offers. */
     stored?: Record<string, string>
-    /** True: leave Before the cache goes cold unset, so the profile decides. */
+    /** True: leave Before the cache goes cold unset, so the fixed value applies. */
     unset?: boolean
     commands?: typeof WHATSNEXT
     prices?: string

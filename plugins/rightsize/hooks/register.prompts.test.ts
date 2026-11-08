@@ -3,7 +3,7 @@ import { CAL_STORE } from './cost'
 import { RUNS_FILE, SWITCHES_FILE, LOG_PATH, LEGACY_RUNS, LOOKUP, DEBUG, SEARCH, REVIEW, NO_CHANGE, FREE_SWITCHES, NO_COLD, BIG_TURN, cellsOf, engine, drive, flush, settle, untilAsked, last, mount, bandText, LOWER } from './testkit'
 
 for (const surface of ['desktop', 'terminal'] as const) {
-  test(`Q1 is the profile's: Balanced lowers on its own with no question, says so on the band once, steps up when the turn gets long, and retries at the original effort (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`Q1 by default: it lowers on its own with no question, says so on the band once, stays low for the whole turn, and retries at the original effort (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES } })
     const d = drive($, h)
     await d.start(surface)
@@ -13,15 +13,15 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.rating = '{"level":"low","model":"same","size":"small","type":"lookup","read":2000,"write":3000,"steps":1,"reason":"one function lookup"}'
     await d.submit(LOOKUP)
     expect(h.asked, 'no Lowering question: the profile decides').toEqual([])
-    expect(h.files[LOG_PATH] ?? '').toContain('Lowering: no rule set, the Balanced profile decides (lower automatically)')
-    expect(await bandText($, surface), 'the band says who decided, once').toMatch(/^Effort lowered: medium → low for this prompt \(automatically\)\..* Your Balanced profile decided \(Lowering\); ⋯ changes it\.$/)
+    expect(h.files[LOG_PATH] ?? '').toContain('Lowering: no rule set, the default decides (lower automatically)')
+    expect(await bandText($, surface), 'the band says who decided, once').toMatch(/^Effort lowered: medium → low for this prompt \(automatically\)\..* The default decided \(Lowering\); ⋯ changes it\.$/)
     await d.step('t1', 0)
     expect(last(h.sent)?.effort, 'runs low').toBe('low')
     await d.step('t1', 5)
-    expect(last(h.sent)?.effort, 'back to medium on step 6').toBe('medium')
+    expect(last(h.sent)?.effort, 'still low on step 6: a lowered turn stays lowered (ADR 0021)').toBe('low')
     await d.complete('t1')
     const stepped = ((h.files[RUNS_FILE] ?? '').trim().split('\n').map(l => JSON.parse(l) as Record<string, unknown>)).filter(r => r.steppedUp)
-    expect(stepped, 'the 5-step rule alone: stepped up, but not a miss').toMatchObject([{ steppedUpBy: 'steps' }])
+    expect(stepped, 'no step-up: a step count is size, not difficulty').toEqual([])
     expect(h.store.remember, 'nothing is saved: the profile decided').toBeUndefined()
     expect(h.store.choices, 'no rule is kept either').toBeUndefined()
     expect(h.asked, 'Remember follows only a rule the person set').toEqual([])
@@ -29,7 +29,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     // Same situation again: no question, lowered on its own, and the band does not say it again.
     await d.submit(LOOKUP)
     expect(h.asked.length, 'no new question').toBe(0)
-    expect(await bandText($, surface), 'said once per session').not.toContain('profile decided')
+    expect(await bandText($, surface), 'said once per session').not.toContain('decided')
     await d.step('t2')
     expect(last(h.sent)?.effort).toBe('low')
     await d.complete('t2')
@@ -46,30 +46,31 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(last(h.sent)?.effort).toBe('medium')
     await d.complete('t3')
 
-    // Each effort switch leaves one line of evidence: low, back to medium, low, medium.
+    // Each effort switch leaves one line of evidence: low for t1 and t2, back to medium for the retry.
     const switches = h.files[SWITCHES_FILE] ?? ''
     expect(Object.keys(h.files).every(k => k.startsWith('/home/test/.claude/mods-logs/')), 'logs go to HOME, wherever the plugin lives').toBe(true)
     const lines = switches.trim().split('\n').map(l => JSON.parse(l) as { from: string; to: string; kept: boolean })
-    expect(lines.map(l => `${l.from}>${l.to}`)).toEqual(['medium>low', 'low>medium', 'medium>low', 'low>medium'])
+    expect(lines.map(l => `${l.from}>${l.to}`)).toEqual(['medium>low', 'low>medium'])
     expect(lines.every(l => l.kept), 'the fake engine keeps the cache').toBe(true)
 
-    // Calibration: t1 stepped back up and teaches nothing; t2 is stored.
+    // Calibration: t1 and t2 both ran at one level, so both teach.
     const cal = h.store[CAL_STORE] as Record<string, { n: number }>
-    expect(cal['lookup:main']?.n, 'one measured lookup turn').toBe(1)
+    expect(cal['lookup:main']?.n, 'two measured lookup turns').toBe(2)
   })
 
-  test(`Q2 is the profile's: Balanced raises effort with no question, and does not lower when the cache would cost more (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`Q2 by default: it raises effort with no question, and does not lower when the cache would cost more (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
     const d = drive($, h)
     await d.start(surface)
     await d.step('t0')
     await d.complete('t0')
 
-    h.rating = '{"level":"high","model":"same","type":"debug","read":20000,"write":3000,"steps":8,"reason":"unknown cause"}'
+    // A review: the one task type whose rated raise is still taken at prompt time on Opus (ADR 0021).
+    h.rating = '{"level":"high","model":"same","type":"review","read":20000,"write":3000,"steps":8,"reason":"unknown cause"}'
     await d.submit(DEBUG)
-    expect(h.asked, 'no Raising question: the profile decides').toEqual([])
-    expect(h.files[LOG_PATH] ?? '').toContain('Raising: no rule set, the Balanced profile decides (raise automatically)')
-    expect(await bandText($, surface)).toMatch(/Your Balanced profile decided \(Raising\); ⋯ changes it\.$/)
+    expect(h.asked, 'no Raising question: the default decides').toEqual([])
+    expect(h.files[LOG_PATH] ?? '').toContain('Raising: no rule set, the default decides (raise automatically)')
+    expect(await bandText($, surface)).toMatch(/The default decided \(Raising\); ⋯ changes it\.$/)
     await d.step('t1')
     expect(last(h.sent)?.effort).toBe('high')
     await d.complete('t1')
@@ -90,10 +91,10 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.start(surface)
     await d.step('t3')
     await d.complete('t3')
-    h.rating = '{"level":"xhigh","model":"same","type":"refactor"}'
+    h.rating = '{"level":"xhigh","model":"same","type":"review"}'
     await d.submit(DEBUG)
     expect(h.asked.length).toBe(0)
-    expect(await bandText($, surface), 'the band says it again in a new session').toMatch(/Your Balanced profile decided \(Raising\)/)
+    expect(await bandText($, surface), 'the band says it again in a new session').toMatch(/The default decided \(Raising\)/)
     await d.step('t4')
     expect(last(h.sent)?.effort).toBe('xhigh')
     await d.complete('t4')
@@ -143,7 +144,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.rating = REVIEW
     await d.submit(DEBUG)
     expect(h.asked, 'no Stronger question: the Balanced profile switches on its own').toEqual([])
-    expect(h.files[LOG_PATH] ?? '').toContain('Stronger model: no rule set, the Balanced profile decides (always send)')
+    expect(h.files[LOG_PATH] ?? '').toContain('Stronger model: no rule set, the default decides (always send)')
     expect(h.submitted.at(-1)?.context ?? [], 'no subagent note').toEqual([])
     await d.step('t1', 0)
     await d.step('t1', 1)
@@ -151,7 +152,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(turn.map(s => s.model), 'every step on Opus').toEqual(['opus', 'opus'])
     expect(turn.map(s => s.effort), 'at high').toEqual(['high', 'high'])
     await d.complete('t1')
-    expect(await bandText($, surface)).toMatch(/^Running this review on Opus at high effort, then back to Sonnet\. \$[\d.]+ vs ~\$[\d.]+ on Sonnet\..* Your Balanced profile decided \(Stronger model\); ⋯ changes it\.$/)
+    expect(await bandText($, surface)).toMatch(/^Running this review on Opus at high effort, then back to Sonnet\. \$[\d.]+ vs ~\$[\d.]+ on Sonnet\..* The default decided \(Stronger model\); ⋯ changes it\.$/)
 
     // The next prompt goes back to the session's model and level.
     h.rating = NO_CHANGE
@@ -307,8 +308,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.rating = '{"level":"low","model":"haiku","size":"bulky","type":"search","read":150000,"write":3000,"steps":30,"reason":"repo-wide search"}'
     await d.submit(SEARCH)
     expect(h.asked, 'no Cheaper question: the Balanced profile sends it on its own').toEqual([])
-    expect(h.files[LOG_PATH] ?? '').toContain('Cheaper model: no rule set, the Balanced profile decides (always send)')
-    expect(await bandText($, surface)).toMatch(/Your Balanced profile decided \(Cheaper model\); ⋯ changes it\.$/)
+    expect(h.files[LOG_PATH] ?? '').toContain('Cheaper model: no rule set, the default decides (always send)')
+    expect(await bandText($, surface)).toMatch(/The default decided \(Cheaper model\); ⋯ changes it\.$/)
     const note = last(h.submitted)?.context?.join('\n') ?? ''
     expect(note).toContain('model "haiku"')
     expect(note).toContain('finish the task yourself')
@@ -446,7 +447,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.rating = '{"fit":{"haiku":"high","sonnet":"high","opus":"high","fable":"medium"},"size":"small","type":"feature","read":20000,"write":2000,"steps":6,"reason":"small helper with tests"}'
     await d.submit(DEBUG)
     expect(h.asked, 'no question: Cheaper model is the profile\'s, and it is the one that decided, not Raising').toEqual([])
-    expect(h.files[LOG_PATH] ?? '', 'Q4, not Q2: a cheaper model, not more effort').toContain('Cheaper model: no rule set, the Balanced profile decides')
+    expect(h.files[LOG_PATH] ?? '', 'Q4, not Q2: a cheaper model, not more effort').toContain('Cheaper model: no rule set, the default decides')
     expect(h.files[LOG_PATH] ?? '').not.toContain('Raising: no rule set')
     const note = last(h.submitted)?.context?.join('\n') ?? ''
     expect(note).toContain('model "haiku", effort "high"')
@@ -669,7 +670,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.start(surface)
     await d.step('t0')
     await d.complete('t0')
-    h.rating = '{"fit":{"haiku":"no","sonnet":"no","opus":"high","fable":"medium"},"size":"small","type":"debug","read":8000,"write":800,"steps":6,"reason":"race"}'
+    // A review: the one task type whose rated raise is still taken at prompt time on Opus (ADR 0021).
+    h.rating = '{"fit":{"haiku":"no","sonnet":"no","opus":"high","fable":"medium"},"size":"small","type":"review","read":8000,"write":800,"steps":6,"reason":"race"}'
     await d.submit(DEBUG)
     expect(h.asked.length, 'no raise to ask about').toBe(0)
     await d.step('t1')
@@ -699,7 +701,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.start(surface)
     await d.step('t0')
     await d.complete('t0')
-    h.rating = '{"fit":{"haiku":"no","sonnet":"no","opus":"high","fable":"medium"},"size":"small","type":"debug","read":8000,"write":800,"steps":6,"reason":"race"}'
+    h.rating = '{"fit":{"haiku":"no","sonnet":"no","opus":"high","fable":"medium"},"size":"small","type":"review","read":8000,"write":800,"steps":6,"reason":"race"}'
     await d.config('raiseRule', 'ask me')
     h.answers = { Effort: 'Keep medium' }
     await d.submit(DEBUG)
@@ -1082,7 +1084,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t4')
     await d.complete('t4')
     await d.submit(SEARCH)
-    expect(h.files[LOG_PATH] ?? '').toContain('Cheaper model: no rule set, the Balanced profile decides (always send)')
+    expect(h.files[LOG_PATH] ?? '').toContain('Cheaper model: no rule set, the default decides (always send)')
     expect(last(h.submitted)?.context?.join('\n') ?? '').toContain('model "haiku"')
   })
 
@@ -1096,7 +1098,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
     h.rating = LOWER
     await d.submit(LOOKUP)
-    expect(await bandText($, surface), 'what was done, why, how confident, and who decided').toBe('Effort lowered: medium → low for this prompt (automatically). Why: One function lookup. Confidence: low. Your Balanced profile decided (Lowering); ⋯ changes it.')
+    expect(await bandText($, surface), 'what was done, why, how confident, and who decided').toBe('Effort lowered: medium → low for this prompt (automatically). Why: One function lookup. Confidence: low. The default decided (Lowering); ⋯ changes it.')
     const ui = await mount($, surface)
     expect((await ui.findAll({ type: 'Button' })).map(b => b.key), '👍 and 👎 are in the ⋯ menu now, not buttons').toEqual(['retry', 'mode', 'close'])
 
@@ -1108,7 +1110,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await bandText($, surface)).toBe('')
   })
 
-  const HIGH = '{"level":"high","model":"same","type":"debug","read":20000,"write":3000,"steps":8,"reason":"unknown cause"}'
+  // A raise fixture: a review, the one task type whose rated raise is still taken at prompt time on Opus (ADR 0021).
+  const HIGH = '{"level":"high","model":"same","type":"review","read":20000,"write":3000,"steps":8,"reason":"unknown cause"}'
 
   test(`the ⋯ menu of a band lists the other rules; one pick sets the rule's /config row, and Remember follows it (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES }, stored: NO_COLD })
@@ -1119,7 +1122,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
     h.rating = HIGH
     await d.submit(DEBUG)
-    expect(await bandText($, surface)).toMatch(/Effort raised: medium → high.* Your Balanced profile decided \(Raising\); ⋯ changes it\.$/)
+    expect(await bandText($, surface)).toMatch(/Effort raised: medium → high.* The default decided \(Raising\); ⋯ changes it\.$/)
     expect(h.asked, 'nothing asked yet: Remember follows only a rule the person sets').toEqual([])
     const ui = await mount($, surface)
     expect((await ui.findAll({ type: 'Button' })).map(b => b.key), 'no marks on a raise').toEqual(['mode', 'close'])

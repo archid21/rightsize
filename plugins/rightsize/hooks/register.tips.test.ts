@@ -183,11 +183,13 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(cal['lookup:main']?.n, "this session's run is added").toBe(1)
     expect(cal['cache:effort-switch']?.n, 'the switch record is kept').toBe(20)
 
-    // An auto-lowered turn that steps back up teaches nothing.
+    // An auto-lowered turn that steps back up (a tool error brings the session's level back) teaches nothing.
     h.rating = LOWER
     await d.submit(LOOKUP)
     await d.step('t2', 0)
-    await d.step('t2', 5)
+    await d.bash('fail x')
+    await d.step('t2', 1)
+    expect(last(h.sent)?.effort, 'back to medium after the error').toBe('medium')
     await d.complete('t2')
     cal = h.store[CAL_STORE] as Record<string, { n: number }>
     expect(cal['lookup:main']?.n, 'the stepped-up turn is not counted').toBe(1)
@@ -942,7 +944,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.start(surface)
     await d.step('t0')
     await d.complete('t0')
-    h.rating = '{"level":"high","model":"same","type":"debug","read":20000,"write":3000,"steps":8,"reason":"unknown cause"}'
+    // A review: the one task type whose rated raise is still taken at prompt time on Opus (ADR 0021).
+    h.rating = '{"level":"high","model":"same","type":"review","read":20000,"write":3000,"steps":8,"reason":"unknown cause"}'
     await d.submit(DEBUG)
     expect(await bandText($, surface)).toContain('Effort raised')
     expect(await buttons($)).toEqual(['mode', 'close'])
@@ -1017,7 +1020,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.start(surface)
     await d.step('t0')
     await d.complete('t0')
-    h.rating = '{"level":"high","model":"same","type":"debug","read":20000,"write":3000,"steps":8,"reason":"unknown cause"}'
+    // A review: the one task type whose rated raise is still taken at prompt time on Opus (ADR 0021).
+    h.rating = '{"level":"high","model":"same","type":"review","read":20000,"write":3000,"steps":8,"reason":"unknown cause"}'
     await d.submit(DEBUG)
     const text = await bandText($, surface)
     expect(text).toContain('Effort raised')
@@ -1034,7 +1038,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.complete('t0')
     h.rating = LOWER.replace(',"reason":"one function lookup"', '')
     await d.submit(LOOKUP)
-    expect(await bandText($, surface)).toBe('Effort lowered: medium → low for this prompt (automatically). Confidence: low. Your Balanced profile decided (Lowering); ⋯ changes it.')
+    expect(await bandText($, surface)).toBe('Effort lowered: medium → low for this prompt (automatically). Confidence: low. The default decided (Lowering); ⋯ changes it.')
   })
 
   test(`the band says only the confidence level; the ⋯ menu question carries the counts (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -1049,7 +1053,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.rating = LOWER
     await d.submit(LOOKUP)
     const text = await bandText($, surface)
-    expect(text).toMatch(/Why: One function lookup\. Confidence: (high|medium)\. Your Balanced profile decided \(Lowering\); ⋯ changes it\.$/)
+    expect(text).toMatch(/Why: One function lookup\. Confidence: (high|medium)\. The default decided \(Lowering\); ⋯ changes it\.$/)
     expect(text, 'no counts on the band').not.toMatch(/of your tasks|missed|How sure/)
     h.answers = {}
     const before = h.asked.length

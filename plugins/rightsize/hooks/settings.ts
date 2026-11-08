@@ -7,9 +7,9 @@ import { DEFAULT_RULES, MISS_BLOCK, parseShare } from './cost'
 // changed or bypassed by rightsize's own behaviour, so it has to know which
 // values are yours. Claude Code hands the module every value with defaults filled
 // in, so it cannot tell them apart; it reads them off settings.json instead, and
-// follows the changes made in /config. The first row, Profile, supplies the defaults of a few of
-// the others (PROFILES). Mode and the three feature switches (Routing, Hand-offs, Cache) follow it as plain rows; the
-// rest are Advanced, as their titles say, since /config has no groups.
+// follows the changes made in /config. Mode, the three feature switches (Routing, Hand-offs, Cache) and Ask before
+// changing are plain rows; the rest are Advanced, as their titles say, since /config has no groups. The values a
+// profile used to supply (ADR 0021 removed the Profile row) are fixed (FIXED), each with its Advanced row.
 // Pure functions, no engine calls.
 
 type Spec = { title: string; options: readonly string[]; default: string }
@@ -30,10 +30,10 @@ const ruleOptions = (rule: keyof Choices) => [...RULE_LABELS[rule].map(l => l[0]
 export const RULE_KEYS = { lower: 'lowerRule', raise: 'raiseRule', up: 'upRule', down: 'downRule' } as const
 
 export const SETTINGS = {
-  profile: { title: 'Profile', options: ['Quality', 'Balanced', 'Economy'], default: 'Balanced' },
   mode: { title: 'Mode', options: ['act', 'watch only'], default: 'act' },
   routing: { title: 'Routing', options: ['on', 'off'], default: 'on' },
   handOffs: { title: 'Hand-offs', options: ['on', 'off'], default: 'on' },
+  askFirst: { title: 'Ask before changing', options: ['off', 'on'], default: 'off' },
   cache: { title: 'Cache', options: ['on', 'off'], default: 'on' },
   floor: { title: 'Advanced · Lowest effort', options: ['low', 'medium', 'high'], default: 'low' },
   ceiling: { title: 'Advanced · Highest effort', options: ['high', 'xhigh', 'max'], default: 'max' },
@@ -65,7 +65,7 @@ export const SETTINGS = {
   priceCheck: { title: 'Advanced · Price check', options: ['monthly', 'off'], default: 'monthly' },
 } as const satisfies Record<string, Spec>
 
-/** Every row but the first five (Profile, Mode, Routing, Hand-offs, Cache) is titled with this prefix, so /config lists those first and the rest as Advanced. */
+/** Every row but the first five (Mode, Routing, Hand-offs, Ask before changing, Cache) is titled with this prefix, so /config lists those first and the rest as Advanced. */
 export const ADVANCED = 'Advanced · '
 /** The row's title without the prefix: what /rightsize and its messages call it. */
 export const plainTitle = (title: string) => (title.startsWith(ADVANCED) ? title.slice(ADVANCED.length) : title)
@@ -220,11 +220,7 @@ export function raterEvery(v: string): number | null {
 /** "30%" as 0.3; "off" as null. */
 export const missPauseOf = (v: string): number | null => (v === 'off' ? null : parseShare(v, MISS_BLOCK))
 
-// ---- Profiles ------------------------------------------------------------------
-
-export const PROFILE_NAMES = ['Quality', 'Balanced', 'Economy'] as const
-export type Profile = (typeof PROFILE_NAMES)[number]
-export const isProfile = (v: unknown): v is Profile => PROFILE_NAMES.some(p => p === v)
+// ---- Fixed values and Ask before changing -----------------------------------------
 
 /**
  * The evidence a cheaper route needs (a hand-down, a moved subagent, a lowering): the fit the rating
@@ -236,7 +232,7 @@ export type Evidence = { minTasks: number; maxMiss: number }
 /** The option each question has first, marked (Recommended). */
 export type Answers = { [K in keyof Choices]-?: NonNullable<Choices[K]> }
 
-export type ProfileValues = {
+export type FixedValues = {
   evidence: Evidence
   /** A cheaper route must cost under this share of staying (Hand-off threshold). */
   handOff: number
@@ -244,62 +240,47 @@ export type ProfileValues = {
   raterEvery: number
   /** Chances a task has to retry: a helper raised a level, or the main chat reworking a hand-off. */
   chances: number
-  answers: Answers
   /** What a big session does before its cache goes cold, while Before the cache goes cold is not yours. */
-  beforeCold: 'keep warm 8 h' | 'keep warm until my usual start' | 'off'
-  /** The highest level a review switched to Opus runs at: Economy stops at high, the others at Highest effort. */
+  beforeCold: 'keep warm until my usual start'
+  /** The highest level a review switched to Opus runs at. */
   reviewCeiling: Level
 }
 
-// What each profile stands for. The Quality and Balanced values are starting points, to be recalibrated
-// after the benchmark; Economy's follow from them. Values outside a row's options (a 10% miss pause, an
-// 85% hand-off threshold, a spot-check every 20) are profile values: a row can only hold its own options.
-// The answers are what the four cases do while their rule rows are not set: the profile decides, and
-// nothing asks (an 'ask' answer opens that case's own dialog, by the profile's choice).
-export const PROFILES: Record<Profile, ProfileValues> = {
-  Quality: {
-    evidence: { minTasks: 10, maxMiss: 0.1 },
-    handOff: 0.5,
-    raterEvery: 10,
-    chances: 1,
-    answers: { lower: 'ask', raise: 'auto', up: 'auto', down: 'ask' },
-    beforeCold: 'keep warm 8 h',
-    reviewCeiling: 'max',
-  },
-  Balanced: {
-    evidence: { minTasks: 0, maxMiss: 0.2 },
-    handOff: 0.7,
-    raterEvery: 20,
-    chances: 2,
-    answers: { lower: 'auto', raise: 'auto', up: 'auto', down: 'auto' },
-    beforeCold: 'keep warm until my usual start',
-    reviewCeiling: 'max',
-  },
-  Economy: {
-    evidence: { minTasks: 0, maxMiss: 0.3 },
-    handOff: 0.85,
-    raterEvery: 30,
-    chances: 3,
-    answers: { lower: 'auto', raise: 'auto', up: 'stay', down: 'auto' },
-    beforeCold: 'off',
-    reviewCeiling: 'high',
-  },
+// One rule set (ADR 0021): the values the Balanced profile used to hold. Each has its Advanced row, and a row you
+// set wins. A value outside a row's options (a 20% pause, a spot-check every 20) is a fixed value: a row can only
+// hold its own options. Chances and the review cap have no row.
+export const FIXED: FixedValues = {
+  evidence: { minTasks: 0, maxMiss: 0.2 },
+  handOff: 0.7,
+  raterEvery: 20,
+  chances: 2,
+  beforeCold: 'keep warm until my usual start',
+  reviewCeiling: 'max',
 }
 
-/** The profile a Profile row's value names; Balanced for anything else. */
-export const profileOf = (v: unknown): Profile => (isProfile(v) ? v : 'Balanced')
+/** Ask before changing: on, every move rightsize would make on its own asks first (while the case's rule row is not set); off, it acts. */
+export const askFirstOn = (v: unknown) => v === 'on'
+/** What the four cases do while their rule rows are not set: all ask, or all act. */
+export const answersOf = (askFirst: boolean): Answers => (askFirst ? { lower: 'ask', raise: 'ask', up: 'ask', down: 'ask' } : { lower: 'auto', raise: 'auto', up: 'auto', down: 'auto' })
 
-/** What the profile governs, as it applies now. */
+/**
+ * A Profile row stored by a release before ADR 0021 (`rightsize.profile` in settings.json): Quality asked before
+ * lowering effort or using a cheaper model, so it reads as Ask before changing on while that row is not yours.
+ * Balanced and Economy read as the defaults.
+ */
+export const legacyAskFirst = (configs: unknown): boolean => storedOptions(configs)?.profile === 'Quality'
+
+/** What the fixed values govern, as they apply now. */
 export type InUse = { handOff: number; minTasks: number; maxMiss: number | null; raterEvery: number | null; chances: number; answers: Answers; beforeCold: string; reviewCeiling: Level }
 
 /**
- * The profile's values, each replaced by its row where the row is yours: your setting wins. The evidence rule
- * is one value held by the Pause after misses row, so a row you set replaces all of it, the minimum of logged
- * tasks too (Pause after misses "off" has to mean off). Chances and the questions' first options have no row.
- * Before the cache goes cold is one value: the row you set, else the profile's.
+ * The fixed values, each replaced by its row where the row is yours: your setting wins. The evidence rule
+ * is one value held by the Pause after misses row, so a row you set replaces all of it (Pause after misses
+ * "off" has to mean off). Chances and the review cap have no row. The questions' first options follow
+ * Ask before changing. Before the cache goes cold is one value: the row you set, else the fixed one.
  */
-export function inUse(profile: Profile, values: Readonly<Record<string, string>>, yours: ReadonlySet<SettingKey>): InUse {
-  const p = PROFILES[profile]
+export function inUse(values: Readonly<Record<string, string>>, yours: ReadonlySet<SettingKey>, askFirst = askFirstOn(values.askFirst)): InUse {
+  const p = FIXED
   const miss = yours.has('missPause')
   return {
     handOff: yours.has('handOff') ? parseShare(values.handOff ?? '', DEFAULT_RULES.handOff) : p.handOff,
@@ -307,7 +288,7 @@ export function inUse(profile: Profile, values: Readonly<Record<string, string>>
     maxMiss: miss ? missPauseOf(values.missPause ?? '') : p.evidence.maxMiss,
     raterEvery: yours.has('raterCheck') ? raterEvery(values.raterCheck ?? '') : p.raterEvery,
     chances: p.chances,
-    answers: p.answers,
+    answers: answersOf(askFirst),
     beforeCold: yours.has('beforeCold') ? (values.beforeCold ?? p.beforeCold) : p.beforeCold,
     reviewCeiling: p.reviewCeiling,
   }

@@ -13,12 +13,12 @@ Return JSON only, no prose, no code fences:
 
 fit, for each model: the lowest reasoning effort at which that model would do this work well, or "no" when it would likely struggle at any effort. A weaker model needs the same or a higher level than a stronger one for the same work. The levels:
 - low: quick lookups, one-line answers, renames, typo fixes, running one known command, simple questions.
-- medium: ordinary single-file edits, short explanations, small scripts, routine tasks with a clear path.
-- high: multi-file changes, debugging with an unknown cause, design choices with trade-offs, tests for real logic, careful reviews.
-- xhigh: large refactors, tricky concurrency or security work, hard algorithms, long multi-step plans.
+- medium: ordinary edits and features with a clear path, in one file or several, routine debugging with a clear symptom, short explanations, small scripts, refactors with a stated goal.
+- high: only with a reason you can name: a bug whose cause is unknown after an attempt failed, a design choice with real trade-offs, tests for subtle logic, careful reviews, a check in the task so far that failed.
+- xhigh: tricky concurrency or security work, hard algorithms, reasoning where a step is easy to get wrong.
 - max: the hardest problems only, where a wrong answer is costly and deep reasoning clearly pays off.
 
-Effort: routine debugging with a clear symptom does not need a higher level than the model's medium; raise the level for subtle bugs, hard reasoning or high stakes.
+Effort is difficulty, not size. A change across many files or many steps is rated by its hardest step; its size goes in steps. A long plan with routine steps is medium. Raise the level for subtle bugs, hard reasoning or high stakes, not for more work of the same kind.
 
 A stronger model fits whatever a weaker one fits. Say "no" for the current model only when it is likely to struggle (hard reasoning, subtle bugs, high-stakes design). A cheaper model fits work that is clearly specified: haiku for finding, listing and lookups, mechanical edits across files, pulling out data, formatting, and coding against a clear spec or a failing test (small features, bug fixes with a known cause, refactors with a stated goal); sonnet for routine coding and writing that needs some judgement. A bulk-edit, extract or summarize request with a clear rule to apply fits haiku at medium: say so unless the rule itself is unclear. Say "no" for haiku on open-ended review and hunting for subtle bugs, design with trade-offs, writing that is judged on style, and long requests where a key constraint comes last. When unsure whether a cheaper model fits work that is clearly specified, give it the level it needs; when the work is unclear or open-ended, say "no" for it.
 

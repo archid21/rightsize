@@ -75,21 +75,22 @@ import {
   ADVANCED,
   KEYS,
   NOT_SET,
-  PROFILES,
+  FIXED,
   RULE_KEYS,
   SETTINGS,
-  type Profile,
   type SettingKey,
   type Values,
   afterSet,
+  answersOf,
+  askFirstOn,
   defaults,
   fieldsSet,
   inOptions,
   inUse,
+  legacyAskFirst,
   manifestGaps,
   mark,
   plainTitle,
-  profileOf,
   resetKeys,
   ruleLabel,
   ruleValue,
@@ -134,8 +135,6 @@ const CMD = 'rightsize'
 /** The rater tried second, when the first is not available, and the one Rater row can pick first. */
 const FALLBACK_RATER = 'haiku'
 type Rater = 'sonnet' | 'haiku'
-/** An auto-lowered turn steps back up from this step on. */
-const STEP_UP_AFTER = 5
 /** Claude Code's own system prompt and tools, before the first request is seen. */
 const DEFAULT_CONTEXT = 20_000
 /** About 30 days of heavy use, for /rightsize report. */
@@ -155,7 +154,7 @@ type Spawning = { description: string; type: string; run?: Run; size?: Omit<Meas
 type SubagentMode = 'cheaper when it fits' | 'off'
 type Question<V> = { header: string; question: string; options: readonly (readonly [string, V])[]; ifNone?: string }
 
-// The four questions list the answer the profile prefers first, marked (Recommended). The answer's
+// The four questions list the answer Ask before changing prefers first, marked (Recommended). The answer's
 // value comes from its own option, so it is right whatever the order.
 function recommend<V>(q: Question<V>, first: V): Question<V> {
   const at = q.options.findIndex(o => o[1] === first)
@@ -385,7 +384,7 @@ let billingAsked = false
 let detectedBilling: Billing | undefined
 let priceCheck: 'monthly' | 'off' = 'monthly'
 let bandMode: BandMode = 'when it acts'
-let rules: Rules = { ...DEFAULT_RULES, handOff: PROFILES.Balanced.handOff }
+let rules: Rules = { ...DEFAULT_RULES, handOff: FIXED.handOff }
 let checking: Promise<string> | null = null
 let prices: Prices = DEFAULT_PRICES
 let cal: Calibration = {}
@@ -449,8 +448,10 @@ let declared: Readonly<Record<string, unknown>> = {}
 let ceiling: Level = 'max'
 /** Models rightsize sends no work to (Use Haiku, Use Fable off). The rater is set apart: Rater picks it. */
 let without: Tier[] = []
-/** The profile in use (Profile). It supplies the defaults of the values below it, where their rows are not yours (settings.ts inUse). */
-let profile: Profile = 'Balanced'
+/** Ask before changing: on, every move rightsize would make on its own asks first while the case's rule row is not set. */
+let askFirst = false
+/** A Profile row a release before ADR 0021 stored as Quality: Ask before changing on, while that row is not yours. */
+let legacyQuality = false
 /** The miss rate at which hand-downs and lowering pause; null: never. */
 let missBlock: number | null = MISS_BLOCK
 /** The tasks a kind of work must have logged on a model before a cheaper route to it is used; 0: no minimum. */
@@ -464,11 +465,11 @@ let ownCounts: Record<string, number> = {}
  * Chances a task has to retry: a helper raised a level, or the main chat reworking a hand-off. When they
  * are used up, the helper goes back to the main chat and the main chat finishes the task itself.
  */
-let chances = PROFILES.Balanced.chances
+let chances = FIXED.chances
 /** The first option of each of the four questions. */
-let answers = PROFILES.Balanced.answers
-/** The highest level a review switched to Opus runs at: the profile's. */
-let reviewCeiling: Level = PROFILES.Balanced.reviewCeiling
+let answers = answersOf(false)
+/** The highest level a review switched to Opus runs at. */
+let reviewCeiling: Level = FIXED.reviewCeiling
 /** Mode: watch only rates and plans every prompt, applies nothing, and says what it would have done. */
 let watching = false
 /**
@@ -480,7 +481,7 @@ let watching = false
 let routing = true
 let handOffs = true
 let cacheOn = true
-/** The cases the profile decided for the prompt being rated (no rule set), and those the band has already said so for this session. */
+/** The cases decided with no rule set for the prompt being rated (the default, or Ask before changing), and those the band has already said so for this session. */
 let profileChose: (keyof Choices)[] = []
 const profileNoted = new Set<keyof Choices>()
 /** A note for the prompt's band: the cache went cold, so this prompt writes the conversation again. */
@@ -491,7 +492,7 @@ let compactedAway: { before: number; after?: number; handoff?: string; shown: bo
 let manualCompact = false
 /** The next main-chat request is the first since a turn ended: the idle gap and the context are checked on it. */
 let boundaryCheck = false
-/** One close call in five takes the route the guide did not pick. Off in every profile. */
+/** One close call in five takes the route the guide did not pick. Off by default. */
 let explore = false
 /** What happens to the answers to the four questions: ask whether to keep them, keep them, or forget them at the end of the session. */
 let rememberMode: 'ask' | 'every session' | 'this session' = 'ask'
@@ -521,7 +522,7 @@ const raising = () => escalation && routing
 /** Days between suggestions of a different starting model and level; null: off. */
 let startEvery: number | null = START_CHECK_DAYS.weekly
 /** Ask Sonnet for a second opinion on every this many Haiku ratings, in the background; null: off. */
-let spotEvery: number | null = PROFILES.Balanced.raterEvery
+let spotEvery: number | null = FIXED.raterEvery
 /** The model that rates first (Rater). The other one is the fallback. */
 let rater: Rater = 'sonnet'
 /** The run log's last 30 days, kept in memory to score the rater (misses.ts) without re-reading the file. */
@@ -534,11 +535,11 @@ let runSeq = 0
 /** Warn before sending into an expired cache when that costs over this many dollars; null: off. */
 let idleWarning: number | null = 0.1
 let cacheTtl = 60 * 60_000
-/** What a big session does before its cache goes cold (Before the cache goes cold, or the profile's value while that row is not yours). */
-let coldMode: string = PROFILES.Balanced.beforeCold
+/** What a big session does before its cache goes cold (Before the cache goes cold, or the fixed value while that row is not yours). */
+let coldMode: string = FIXED.beforeCold
 /** What whatsnext last said about this folder (`project` in compact-instructions --json), and when. */
 let projectFlag: { at: number; value: boolean } | null = null
-/** True when the Before the cache goes cold row is the person's own (a row they set always wins over the profile). */
+/** True when the Before the cache goes cold row is the person's own (a row they set always wins over the fixed value). */
 let coldYours = false
 /** When this session's last main turn ended, in this process; 0 before one did (a resume reads the store). */
 let lastTurnAt = 0
@@ -850,10 +851,26 @@ async function seenEffort($: EngineInterface) {
 // id, so the log ties the brief, the follow-ups, the repairs and the subagents to one task. It also keeps how the task
 // began (the first 600 characters of its prompt) and how many prompts it has had, which the rater is told so that a
 // short follow-up is read in its task. A task stored before those were kept reads as one prompt with no brief.
-async function currentTask($: EngineInterface) {
+type CurrentTask = { id: string; type: TaskType; brief: string; prompts: number; tests?: 'passed' | 'failed' }
+async function currentTask($: EngineInterface): Promise<CurrentTask | null> {
   const v = (await $.state.get({ plugin: 'rightsize', key: 'task' }).catch(() => undefined))?.value
   if (!v || typeof v.id !== 'string' || !isTaskType(v.type)) return null
-  return { id: v.id, type: v.type, brief: typeof v.brief === 'string' ? v.brief : '', prompts: Number.isInteger(v.prompts) && v.prompts > 0 ? v.prompts : 1 }
+  return {
+    id: v.id,
+    type: v.type,
+    brief: typeof v.brief === 'string' ? v.brief : '',
+    prompts: Number.isInteger(v.prompts) && v.prompts > 0 ? v.prompts : 1,
+    // How the task's last turn ended, when a test runner ran in it: a red run means the next prompt is not lowered (ADR 0021).
+    ...(v.tests === 'failed' || v.tests === 'passed' ? { tests: v.tests } : {}),
+  }
+}
+
+// Notes on the task in progress how its turn ended, when a test runner ran in the turn. A turn that is not the task's writes nothing.
+async function noteTests($: EngineInterface, task: string, tests: 'passed' | 'failed' | undefined) {
+  if (!tests) return
+  const kept = await currentTask($)
+  if (!kept || kept.id !== task) return
+  await $.state.set({ plugin: 'rightsize', key: 'task' }, { ...kept, tests }).catch(() => undefined)
 }
 
 // The text of a failed tool call, as the model read it.
@@ -1206,10 +1223,10 @@ const RULE_IDS = Object.keys(RULE_KEYS) as (keyof Choices)[]
 // The return type makes a new row without a case here fail the type check.
 function writeSetting($: EngineInterface, key: SettingKey, value: string): Promise<ConfigSetResult> {
   switch (key) {
-    case 'profile': return $.config.set({ key: 'rightsize.profile', value: value })
     case 'mode': return $.config.set({ key: 'rightsize.mode', value: value })
     case 'routing': return $.config.set({ key: 'rightsize.routing', value: value })
     case 'handOffs': return $.config.set({ key: 'rightsize.handOffs', value: value })
+    case 'askFirst': return $.config.set({ key: 'rightsize.askFirst', value: value })
     case 'cache': return $.config.set({ key: 'rightsize.cache', value: value })
     case 'floor': return $.config.set({ key: 'rightsize.floor', value: value })
     case 'ceiling': return $.config.set({ key: 'rightsize.ceiling', value: value })
@@ -1350,15 +1367,15 @@ async function followRuleRow($: EngineInterface, rule: keyof Choices, label: str
   if (saved && typeof saved === 'object' && !Array.isArray(saved)) await $.store.set('choices', change(saved as Choices)).catch(() => undefined)
 }
 
-// The answer for one situation: a rule you set, or the saved answer, else the profile's answer. Nothing asks and nothing
-// is saved: a rule row left at "not set" means the profile decides, and the band says so the first time each case comes up
+// The answer for one situation: a rule you set, or the saved answer, else the default (act, or ask while Ask before changing
+// is on). Nothing is saved: a rule row left at "not set" means the default decides, and the band says so the first time each case comes up
 // in a session, with the other rules in its ⋯ menu. The question itself (`q`) is kept for /rightsize settings.
 async function choice<K extends keyof Choices>($: EngineInterface, key: K, _q: Question<NonNullable<Choices[K]>>) {
   const have = (await choices($))[key]
   if (have) return have
   const v = answers[key] as NonNullable<Choices[K]>
   if (!profileChose.includes(key)) profileChose.push(key)
-  await log($, `${RULE_NAME[key]}: no rule set, the ${profile} profile decides (${ruleLabel(key, v)})`)
+  await log($, `${RULE_NAME[key]}: no rule set, ${askFirst ? 'Ask before changing' : 'the default'} decides (${ruleLabel(key, v)})`)
   return v
 }
 
@@ -1666,8 +1683,8 @@ async function resolve($: EngineInterface, p: Plan, r: Rating, s: Situation): Pr
 }
 
 /** The hidden note that hands the request to a subagent and has the main chat check it. */
-export function delegateNote(d: NonNullable<Run['delegate']>, rounds = PROFILES.Balanced.chances) {
-  // The task's chances are its rework rounds: the profile sets how many.
+export function delegateNote(d: NonNullable<Run['delegate']>, rounds = FIXED.chances) {
+  // The task's chances are its rework rounds: a fixed count.
   const n = rounds === 1 ? '1 rework' : `${rounds} reworks`
   const name = TIER_NAME[d.tier]
   const why = d.dir === 'up' ? 'it needs a stronger model' : 'a cheaper model can do it for less'
@@ -2043,6 +2060,7 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
   const r = run.rating
   const delegated = run.delegate !== undefined && run.delegated
   const tests = testsOutcome(run.signals) ?? run.subAgents.map(id => watches.get(id)).map(w => (w ? testsOutcome(w.signals) : undefined)).find(t => t !== undefined)
+  await noteTests($, run.task, tests)
   const tokens = run.mainCost + run.subCost
   // The ledger prices each response as /cost does, with the cache TTL it was really
   // written at; a background agent from an earlier turn finishing now counts in it too.
@@ -2190,7 +2208,7 @@ async function escalate($: EngineInterface, run: Run, sign: Struggle, from: Leve
     await log($, `mid-turn raise to ${to} skipped (${sign.why}): the usage window is nearly used up`)
     return
   }
-  // No rule set: the profile's Raising answer decides, as for a rated raise.
+  // No rule set: the default Raising answer decides, as for a rated raise.
   const rule = set ?? answers.raise
   if (rule === 'never') return
   if (rule !== 'auto') {
@@ -3026,7 +3044,7 @@ async function coldCheck($: EngineInterface) {
   const cold = idle.resend
   const { whatsnext } = await neighbours($)
   let plan = coldPlan(coldMode, whatsnext)
-  // A row the person did not set is the profile's keep warm: when keeping warm over the idle time this project usually shows
+  // A row the person did not set is the fixed keep warm: when keeping warm over the idle time this project usually shows
   // costs at least 3 times a compaction and its summary's cold read, compact instead. A row they set is theirs.
   if (!coldYours && plan.action === 'warm') {
     const estimate = idleEstimate(await idleGaps($))
@@ -3586,7 +3604,7 @@ async function summary($: EngineInterface) {
   const sees = detectedBilling === 'subscription' ? 'a subscription' : 'API billing'
   // Only the settings you set in /config or answered: the rest are defaults, and /config shows them.
   const changed: string[] = []
-  const cur = inUse(profile, cfg, yours)
+  const cur = inUse(cfg, yours, askFirst)
   for (const key of KEYS) {
     const rule = RULE_IDS.find(r => RULE_KEYS[r] === key)
     if (rule) {
@@ -3596,7 +3614,7 @@ async function summary($: EngineInterface) {
   const n = changed.length
   return [
     // Claude Code shows the output under "rightsize:", so the line leaves the name out.
-    `Profile: ${profile}`,
+    `Ask before changing: ${askFirst ? 'on' : 'off'}${legacyQuality && !yours.has('askFirst') ? ' (from your old Quality profile)' : ''}`,
     off ? 'Off. Turn it on with /mods.' : 'On.',
     '',
     n
@@ -3738,7 +3756,7 @@ function confirmText(what: ResetWhat | SettingKey) {
   if (what === 'settings') return `Reset settings? ${SETTINGS_GO} ${UNDONE}`
   if (what === 'measurement') return `Reset cost measurement? ${MEASURE_GO} ${UNDONE}`
   if (what === 'both') return `Reset settings and cost measurement? ${SETTINGS_GO} ${MEASURE_GO} ${UNDONE}`
-  const rule = RULE_IDS.some(r => RULE_KEYS[r] === what) ? ' Your profile decides that case again.' : ''
+  const rule = RULE_IDS.some(r => RULE_KEYS[r] === what) ? ' The default decides that case again.' : ''
   return `Reset ${plainTitle(SETTINGS[what].title)}? It goes back to its default, ${SETTINGS[what].default}.${rule} ${UNDONE}`
 }
 
@@ -3904,11 +3922,12 @@ async function stopStartTips($: EngineInterface) {
 
 // ---- Hooks -----------------------------------------------------------------
 
-// Sets what the profile governs: its own values, each replaced by its row where the row is yours. It runs
-// again whenever the profile or `yours` changes, so a profile switched in /config applies at once.
-function applyProfile() {
-  profile = profileOf(cfg.profile)
-  const u = inUse(profile, cfg, yours)
+// Sets what the fixed values govern, each replaced by its row where the row is yours, and the questions' first
+// options from Ask before changing. It runs again whenever one of those rows or `yours` changes, so a change in
+// /config applies at once. A Quality profile stored by an older release reads as Ask before changing on, until the row is yours.
+function applyFixed() {
+  askFirst = yours.has('askFirst') ? askFirstOn(cfg.askFirst) : askFirstOn(cfg.askFirst) || legacyQuality
+  const u = inUse(cfg, yours, askFirst)
   rules = { handOff: u.handOff, lower: parseShare(cfg.lowering, DEFAULT_RULES.lower) }
   missBlock = u.maxMiss
   minTasks = u.minTasks
@@ -3951,13 +3970,13 @@ function applyOption(key: SettingKey) {
     case 'cache':
       cacheOn = v !== 'off'
       return
-    case 'profile':
+    case 'askFirst':
     case 'handOff':
     case 'lowering':
     case 'missPause':
     case 'raterCheck':
     case 'beforeCold':
-      applyProfile()
+      applyFixed()
       return
     case 'useHaiku':
     case 'useFable':
@@ -4306,8 +4325,9 @@ export const register: Register = (on, options) => {
     const configs = await $.settings.read({ key: 'pluginConfigs' }).catch(() => undefined)
     const resetBefore = resetKeys(await $.store.get('resetFields').catch(() => undefined))
     yours = fieldsSet(configs, declared, resetBefore)
-    // What the profile governs depends on which rows are yours, now known.
-    applyProfile()
+    legacyQuality = legacyAskFirst(configs)
+    // What the fixed values govern depends on which rows are yours, now known.
+    applyFixed()
     resetFields = new Set(stillReset(configs, declared, resetBefore))
     if (resetFields.size !== resetBefore.length) await $.store.set('resetFields', [...resetFields]).catch(() => undefined)
     const from = await $.store.get('measureFrom').catch(() => undefined)
@@ -4523,8 +4543,11 @@ export const register: Register = (on, options) => {
         const fanned = gated.plan
         // A request that was cut, or a task whose last reply the rater could not read, may be harder than it looks:
         // that is no ground to lower effort or hand work to a cheaper model. Raising and stronger models are left alone.
-        const noDowngrade = unsure !== undefined && ((fanned.kind === 'effort' && fanned.dir === 'lower') || (fanned.kind === 'delegate' && fanned.dir === 'down'))
-        const unfanned: Plan = noDowngrade ? { kind: 'none', why: 'the context was cut or missing, so no downgrade' } : fanned
+        const downgrade = (fanned.kind === 'effort' && fanned.dir === 'lower') || (fanned.kind === 'delegate' && fanned.dir === 'down')
+        const noDowngrade = unsure !== undefined && downgrade
+        // The task's last turn ended on a failing test run: the work is harder than it looked, so a prompt that continues it is not lowered or handed down either.
+        const afterRed = follows && kept.tests === 'failed' && downgrade
+        const unfanned: Plan = noDowngrade ? { kind: 'none', why: 'the context was cut or missing, so no downgrade' } : afterRed ? { kind: 'none', why: 'the last turn of this task ended with a failing test run, so no downgrade' } : fanned
         // A window nearly used up: nothing that costs more than staying, unless the matching rule
         // (Raising for more effort, Stronger model for a stronger one) is yours: then it follows your rule.
         const costlier = (unfanned.kind === 'effort' && unfanned.dir === 'raise') || unfanned.kind === 'switch' || (unfanned.kind === 'delegate' && unfanned.dir === 'up')
@@ -4582,10 +4605,10 @@ export const register: Register = (on, options) => {
           : p !== unfanned
           ? { text: `Kept ${s.level} on ${TIER_NAME[s.tier]} instead of ${unfanned.kind === 'delegate' ? `a ${TIER_NAME[unfanned.tier]} subagent` : unfanned.kind === 'switch' ? `running on ${TIER_NAME[unfanned.tier]}` : `raising to ${unfanned.kind === 'effort' ? unfanned.level : ''}`}.`, acted: true }
           : bandFor(run, d, p)
-        // The first time a case comes up in a session with no rule set, the band says the profile decided it.
+        // The first time a case comes up in a session with no rule set, the band says what decided it.
         const fresh = profileChose.filter(k => !profileNoted.has(k))
         for (const k of fresh) profileNoted.add(k)
-        const byProfile = fresh.length ? `Your ${profile} profile decided (${fresh.map(k => RULE_NAME[k]).join(', ')}); ⋯ changes it.` : ''
+        const byProfile = fresh.length ? `${askFirst ? 'Ask before changing' : 'The default'} decided (${fresh.map(k => RULE_NAME[k]).join(', ')}); ⋯ changes it.` : ''
         const extras = [note, byProfile, idleNote].filter(Boolean).join(' ')
         const hadIdle = idleNote !== ''
         idleNote = ''
@@ -4727,11 +4750,13 @@ export const register: Register = (on, options) => {
     // A switched turn (a review on Opus) runs every step on that model at its level, and only that turn.
     const sw = run?.switchTo
     let level: Level | undefined = sw?.level ?? run?.level ?? session ?? undefined
-    if (run?.auto && (e.index >= STEP_UP_AFTER || run.errors > 0)) {
+    // An auto-lowered turn stays lowered for its whole length (ADR 0021: a step count is size, not difficulty). A tool error
+    // is a sign the work is harder than rated: the session's level comes back, and the misses log counts it.
+    if (run?.auto && run.errors > 0) {
       level = own
       if (!run.steppedUp) {
         run.steppedUp = true
-        run.steppedUpBy = run.errors > 0 ? 'error' : 'steps'
+        run.steppedUpBy = 'error'
         await setBand($, { text: `Effort back to ${run.normal}: the task got harder.`, acted: true, rule: 'lower' })
         await showStatus($)
       }

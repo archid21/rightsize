@@ -111,6 +111,8 @@ export type RunLine = {
   retries?: number
   /** A subagent line, when it was watched: the same fields as one entry of a run line's `helpers`. A run line's `steps` is the rater's guess; `errors` and `blocked` there are the main chat's. */
   steps?: number
+  /** A subagent line, when it was watched: its tool calls. */
+  calls?: number
   ms?: number
   errors?: number
   blocked?: number
@@ -142,6 +144,8 @@ type Tie = { by?: string; over?: string }
 export type HelperLine = {
   /** Requests it made. */
   steps: number
+  /** Tool calls it made, counted as they go out (from 0.8; absent on older lines). */
+  calls?: number
   /** How long it ran, in ms: from its start to its answer, or to the end of the run if it had not answered. */
   ms: number
   /** Tool calls of its own that failed, test runs included; blocked errors are counted apart. */

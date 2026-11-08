@@ -3535,6 +3535,7 @@ async function helperWatch($: EngineInterface, id: string): Promise<Watch | unde
 /** What the log keeps of a watched helper. `ms` runs to its answer, or to now while it has not answered. */
 const helperLine = (w: Watch, now: number): HelperLine => ({
   steps: w.steps,
+  calls: w.calls,
   ms: w.ms ?? Math.max(0, now - w.startedAt),
   errors: Object.values(w.signals.calls).reduce((n, c) => n + c.errors, 0),
   blocked: w.blocked,

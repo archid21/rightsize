@@ -1,0 +1,99 @@
+{
+  "source": "https://github.com/mohamedzhioua/agentpace",
+  "commit": "1fa53286ae9b4c09f2e8732420d2e9a07747e95e",
+  "license": {
+    "data": "CC0-1.0",
+    "code": "MIT"
+  },
+  "credit": "Subagent run data from agentpace by Mohamed Zhioua (https://github.com/mohamedzhioua/agentpace), released under CC0-1.0. This file holds only percentiles of tool_calls computed from it.",
+  "filter": "harness=claude-code, outcome=completed; model matched by substring; cells with n < 20 dropped",
+  "quantile": "upper nearest-rank: sorted[floor(p * n)], capped at the last value",
+  "models": {
+    "fable": {
+      "n": 244,
+      "p25": 14,
+      "p50": 26,
+      "p75": 42,
+      "p90": 63
+    },
+    "opus": {
+      "n": 1570,
+      "p25": 7,
+      "p50": 13,
+      "p75": 26,
+      "p90": 69
+    },
+    "sonnet": {
+      "n": 1384,
+      "p25": 3,
+      "p50": 4,
+      "p75": 6,
+      "p90": 17
+    }
+  },
+  "cells": {
+    "fable/other": {
+      "n": 46,
+      "p25": 17,
+      "p50": 28,
+      "p75": 58,
+      "p90": 82
+    },
+    "fable/review": {
+      "n": 198,
+      "p25": 14,
+      "p50": 26,
+      "p75": 40,
+      "p90": 59
+    },
+    "opus/feature": {
+      "n": 205,
+      "p25": 29,
+      "p50": 66,
+      "p75": 95,
+      "p90": 152
+    },
+    "opus/other": {
+      "n": 107,
+      "p25": 33,
+      "p50": 62,
+      "p75": 105,
+      "p90": 164
+    },
+    "opus/review": {
+      "n": 1255,
+      "p25": 6,
+      "p50": 10,
+      "p75": 18,
+      "p90": 28
+    },
+    "sonnet/docs": {
+      "n": 21,
+      "p25": 5,
+      "p50": 6,
+      "p75": 12,
+      "p90": 28
+    },
+    "sonnet/feature": {
+      "n": 1148,
+      "p25": 3,
+      "p50": 4,
+      "p75": 5,
+      "p90": 6
+    },
+    "sonnet/other": {
+      "n": 107,
+      "p25": 10,
+      "p50": 25,
+      "p75": 44,
+      "p90": 88
+    },
+    "sonnet/review": {
+      "n": 107,
+      "p25": 4,
+      "p50": 10,
+      "p75": 19,
+      "p90": 30
+    }
+  }
+}

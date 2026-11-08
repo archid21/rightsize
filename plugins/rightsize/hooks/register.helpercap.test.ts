@@ -10,7 +10,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   const SONNET_FIT = '{"fit":{"haiku":"no","sonnet":"low","opus":"low","fable":"low"},"type":"search","read":150000,"write":3000,"steps":30,"continues":false,"reason":"repo-wide search"}'
   const log = (h: ReturnType<typeof engine>) => h.files[LOG_PATH] ?? ''
   type Drive = ReturnType<typeof drive>
-  type HelperEntry = { agent: string; kind: string; stall?: string; returned?: boolean; capped?: number; raises?: unknown[] }
+  type HelperEntry = { agent: string; kind: string; calls?: number; stall?: string; returned?: boolean; capped?: number; raises?: unknown[] }
   const runLine = (h: ReturnType<typeof engine>) => (h.files[RUNS_FILE] ?? '').trim().split('\n').map(l => JSON.parse(l) as { kind?: string; helpers?: HelperEntry[]; retries?: number }).find(l => l.kind === 'run')
 
   async function warm(d: Drive, h: ReturnType<typeof engine>, sub: string) {
@@ -51,6 +51,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.complete('t1')
     const run = runLine(h)
     expect(run?.helpers?.map(x => [x.stall, x.returned, x.capped, x.raises])).toEqual([['struggling', true, 25, undefined]])
+    expect(run?.helpers?.map(x => x.calls), 'the helper logs the 25 calls it made; the refused ones do not count').toEqual([25])
     expect('retries' in (run ?? {}), 'no retry is spent: the cap goes straight back to the main chat').toBe(false)
   })
 

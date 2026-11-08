@@ -633,7 +633,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const run = readRuns(h).find(l => l.kind === 'run') as { helpers?: HelperEntry[]; retries?: number }
     expect(run.retries, 'one chance used').toBe(1)
     expect(run.helpers).toEqual([
-      { agent: 'agent-helper', kind: 'handoff', steps: 4, ms: 0, errors: 2, blocked: 0, stall: 'struggling', raises: [{ step: 3, from: 'low', to: 'medium', why: 'the same tool call failed twice' }] },
+      { agent: 'agent-helper', kind: 'handoff', steps: 4, calls: 2, ms: 0, errors: 2, blocked: 0, stall: 'struggling', raises: [{ step: 3, from: 'low', to: 'medium', why: 'the same tool call failed twice' }] },
     ])
   })
 

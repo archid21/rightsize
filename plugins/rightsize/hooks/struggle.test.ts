@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { type Signals, AFTER_FAIL, ERRORS, helperCap, isCapSetting, LIMITS, LONG_MIN, LONG_X, LOOP, NOVEL, RECENT_MAX, REPEAT, WINDOW, blockedError, callKey, isEditTool, isSensitivity, isTestCommand, noSignals, noteCall, oneUp, refusedByPerson, struggle, testsOutcome } from './struggle'
+import { type Signals, FAILED_TRIES, ERRORS, helperCap, isCapSetting, LIMITS, LONG_MIN, LONG_X, LOOP, NOVEL, RECENT_MAX, REPEAT, WINDOW, blockedError, callKey, isEditTool, isSensitivity, isTestCommand, noSignals, noteCall, oneUp, refusedByPerson, struggle, testsOutcome } from './struggle'
 
 // Claude labels each Bash call afresh, so the description differs between runs of one command.
 const bash = (command: string) => callKey('Bash', { tool: 'Bash', tool_use_id: Math.random().toString(), command, description: `run ${command} (${Math.random()})` })
@@ -103,10 +103,10 @@ test('one level up, never to max', async () => {
 })
 
 test('Stuck sensitivity: normal is today\'s thresholds, relaxed waits for more, sensitive for less', async () => {
-  expect(LIMITS.normal).toEqual({ repeat: 2, errors: 3, loop: 3, longX: 3, longMin: 15, window: 10, novel: 0.5, afterFail: 4 })
-  expect(LIMITS.normal).toEqual({ repeat: REPEAT, errors: ERRORS, loop: LOOP, longX: LONG_X, longMin: LONG_MIN, window: WINDOW, novel: NOVEL, afterFail: AFTER_FAIL })
-  expect(LIMITS.relaxed).toEqual({ repeat: 3, errors: 4, loop: 4, longX: 4, longMin: 20, window: 12, novel: 0.4, afterFail: 6 })
-  expect(LIMITS.sensitive).toEqual({ repeat: 2, errors: 2, loop: 2, longX: 2, longMin: 10, window: 8, novel: 0.6, afterFail: 3 })
+  expect(LIMITS.normal).toEqual({ repeat: 2, errors: 3, loop: 3, longX: 3, longMin: 15, window: 10, novel: 0.5, failedTries: 2 })
+  expect(LIMITS.normal).toEqual({ repeat: REPEAT, errors: ERRORS, loop: LOOP, longX: LONG_X, longMin: LONG_MIN, window: WINDOW, novel: NOVEL, failedTries: FAILED_TRIES })
+  expect(LIMITS.relaxed).toEqual({ repeat: 3, errors: 4, loop: 4, longX: 4, longMin: 20, window: 12, novel: 0.4, failedTries: 3 })
+  expect(LIMITS.sensitive).toEqual({ repeat: 2, errors: 2, loop: 2, longX: 2, longMin: 10, window: 8, novel: 0.6, failedTries: 1 })
   for (const k of Object.keys(LIMITS.normal) as (keyof typeof LIMITS.normal)[]) {
     // A lower novel share fires less often, so a relaxed one has the lower number.
     if (k === 'novel') {
@@ -348,28 +348,42 @@ test('helper call cap: Haiku 25 and Sonnet 40 by default, tight and loose move b
   expect([isCapSetting('tight'), isCapSetting('nope'), isCapSetting(undefined)]).toEqual([true, false, false])
 })
 
-test('failed-check: a failing test run left behind for AFTER_FAIL calls is a sign; a green run or a fresh red one resets it', async () => {
-  let s = noteCall(noSignals(), bash('npm test'), true, true)
-  expect(s.afterFail).toBe(0)
-  for (let i = 0; i < AFTER_FAIL - 1; i++) s = noteCall(s, bash(`cat f${i}`), false)
-  expect(struggle(s, AFTER_FAIL + 1, 5), 'one call short').toBeUndefined()
-  s = noteCall(s, callKey('Edit', { file_path: 'a.ts' }), false, false, true)
-  expect(struggle(s, AFTER_FAIL + 2, 5), 'an edit counts as going on: the fix is unproven').toEqual({ kind: 'failed-check', why: `the last test run failed and ${AFTER_FAIL} calls later it has not run again` })
-  expect(struggle({ ...s, fired: ['failed-check'] }, AFTER_FAIL + 2, 5), 'fires once a turn').toBeUndefined()
-  // Running the tests again resets the count: green ends it, red starts it over.
-  const green = noteCall(s, bash('npm test'), false, true)
-  expect(green.afterFail).toBeUndefined()
-  expect(struggle(green, AFTER_FAIL + 3, 5)).toBeUndefined()
-  let red = noteCall(s, bash('npm test'), true, true)
-  expect(red.afterFail).toBe(0)
-  expect(struggle(red, AFTER_FAIL + 3, 5)?.kind, 'the second red of the same run is not yet a repeat (a test needs one more)').toBeUndefined()
-  for (let i = 0; i < AFTER_FAIL; i++) red = noteCall(red, bash(`cat g${i}`), false)
-  expect(struggle(red, AFTER_FAIL * 2 + 3, 5)?.kind).toBe('failed-check')
-  // Sensitivity moves the count; a turn with no test run never fires it.
-  expect(LIMITS.sensitive.afterFail).toBeLessThan(LIMITS.normal.afterFail)
-  expect(LIMITS.relaxed.afterFail).toBeGreaterThan(LIMITS.normal.afterFail)
-  let none = noSignals()
+test('failed-check: fixes that keep leaving the tests red are a sign; how many calls a fix takes does not matter; a green run resets it', async () => {
+  const edit = (s: Signals, f: string) => noteCall(s, callKey('Edit', { file_path: f }), false, false, true)
+  const red = (s: Signals, cmd = 'npm test') => noteCall(s, bash(cmd), true, true)
+  const green = (s: Signals) => noteCall(s, bash('npm test'), false, true)
+  // The first red is not an attempt; reading and editing for any number of calls after it is not one either.
+  let s = red(noSignals())
+  expect([s.failedTries, s.editedSinceRed]).toEqual([0, false])
+  for (let i = 0; i < 12; i++) s = noteCall(s, bash(`cat f${i}`), false)
+  s = edit(s, 'a.ts')
+  expect(s.editedSinceRed).toBe(true)
+  expect(struggle(s, 15, 5), 'many calls after a red run, still fixing: not a sign').toBeUndefined()
+  // Red again after an edit: one failed attempt. Normal waits for FAILED_TRIES of them; a different test command still counts.
+  s = red(s, 'pytest tests/x.py')
+  expect([s.failedTries, s.editedSinceRed]).toEqual([1, false])
+  expect(struggle(s, 16, 5), 'one failed fix is not yet a sign at normal').toBeUndefined()
+  expect(struggle(s, 16, 5, LIMITS.sensitive), 'sensitive fires on the first').toEqual({ kind: 'failed-check', why: 'a fix left the tests red' })
+  // The same red again with no edit between is not another attempt.
+  s = red(s, 'pytest tests/x.py')
+  expect(s.failedTries).toBe(1)
+  s = edit(s, 'b.ts')
+  s = red(s, 'pytest tests/y.py')
+  expect(s.failedTries).toBe(2)
+  expect(struggle(s, 19, 5)).toEqual({ kind: 'failed-check', why: `${FAILED_TRIES} fixes in a row left the tests red` })
+  expect(struggle({ ...s, fired: ['failed-check'] }, 19, 5), 'fires once a turn').toBeUndefined()
+  expect(struggle(s, 19, 5, LIMITS.relaxed), 'relaxed waits for a third').toBeUndefined()
+  // A green run ends it; a later red starts over from nothing.
+  const g = green(s)
+  expect([g.failedTries, g.editedSinceRed]).toEqual([undefined, undefined])
+  expect(struggle(g, 20, 5)).toBeUndefined()
+  const again = red(edit(g, 'c.ts'))
+  expect(again.failedTries, 'an edit after a green run does not arm the next red').toBe(0)
+  // Sensitivity moves the count; a turn with no test run never fires it; an edit before any red does nothing.
+  expect(LIMITS.sensitive.failedTries).toBeLessThan(LIMITS.normal.failedTries)
+  expect(LIMITS.relaxed.failedTries).toBeGreaterThan(LIMITS.normal.failedTries)
+  let none = edit(noSignals(), 'z.ts')
   for (let i = 0; i < 10; i++) none = noteCall(none, bash(`cat h${i}`), false)
-  expect(none.afterFail).toBeUndefined()
+  expect([none.failedTries, none.editedSinceRed]).toEqual([undefined, undefined])
   expect(struggle(none, 11, 5)).toBeUndefined()
 })

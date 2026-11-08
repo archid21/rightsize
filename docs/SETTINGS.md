@@ -181,7 +181,7 @@ An "ask" answer opens its own timed dialog (see **Question wait**); every other 
 - Key: `stuck`
 - Options: relaxed · normal · sensitive
 - Default: normal
-- How soon Claude counts as stuck. normal: the same tool call failing twice, 3 tool calls failing, the same call running 3 times, or a turn passing 3x the rated steps (at least 15). relaxed: the same call failing 3 times, 4 calls failing, a call running 4 times, or 4x the steps (at least 20). sensitive: the same call failing twice, 2 calls failing, a call running twice, or 2x the steps (at least 10).
+- How soon Claude counts as stuck. normal: the same tool call failing twice, 3 tool calls failing, the same call running 3 times, a turn passing 3x the rated steps (at least 15), or 2 fixes in a row leaving the tests red. relaxed: the same call failing 3 times, 4 calls failing, a call running 4 times, 4x the steps (at least 20), or 3 failed fixes. sensitive: the same call failing twice, 2 calls failing, a call running twice, 2x the steps (at least 10), or 1 failed fix.
 
 ### Helper call cap
 

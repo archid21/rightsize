@@ -121,7 +121,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(note).toContain('At most 2 rework rounds')
     expect(last(h.submitted)?.text, 'the prompt itself is unchanged').toBe(DEBUG)
 
-    h.subModel = 'claude-fable-5-1'
+    h.subModel = 'claude-fable-5-2'
     await d.step('t1', 0)
     await d.agent('fable')
     await d.step('t1', 0, 'a1')
@@ -337,7 +337,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   test(`Q4 hands a big search on Fable down to Haiku, and says so when Claude does not (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high' })
+    const h = engine(on, { model: 'claude-fable-5-2', effort: 'high' })
     const d = drive($, h)
     await d.start(surface)
     await d.step('t0')
@@ -371,7 +371,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   test(`a hand-off kept in the main chat for a push is not counted as skipped (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high' })
+    const h = engine(on, { model: 'claude-fable-5-2', effort: 'high' })
     const d = drive($, h)
     await d.start(surface)
     await d.step('t0')
@@ -415,7 +415,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   test(`a request that is mainly an approval step is not handed off (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high' })
+    const h = engine(on, { model: 'claude-fable-5-2', effort: 'high' })
     const d = drive($, h)
     await d.start(surface)
     await d.step('t0')
@@ -1015,12 +1015,67 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const line = JSON.parse(last(runs) ?? '{}') as { requests?: number; fixed?: unknown }
     expect(line.requests).toBe(2)
     // Deferred MCP tools are not in the context: 20K MCP, 6K memory, 1K agents, 3K skills and commands.
-    expect(line.fixed).toEqual({ tokens: 30000, mcp: 20000, memory: 6000, agents: 1000, skills: 3000, servers: { linear: 12000, github: 8000 }, cost: 0.012 })
+    expect(line.fixed).toEqual({ tokens: 30000, mcp: 20000, memory: 6000, agents: 1000, skills: 3000, hooks: 0, files: { 'CLAUDE.md': 6000 }, servers: { linear: 12000, github: 8000 }, cost: 0.012 })
     h.now = Date.now()
     const fixed = (await d.command('report')).text ?? ''
     expect(fixed).toContain('FIXED CONTEXT  ~30K tokens sent with every request')
     // Largest first, the last part closing the tree.
-    expect(fixed).toMatch(/├─ MCP tools +20K +linear 12K, github 8K\n +├─ Memory +6K\n +├─ Skills +3K\n +└─ Agents +1K\n/)
+    expect(fixed).toMatch(/├─ MCP tools +20K +linear 12K, github 8K\n +├─ Memory +6K +CLAUDE\.md 6K\n +├─ Skills +3K\n +└─ Agents +1K\n/)
+  })
+
+  /** The engine's compaction of a conversation (the main chat's, or a helper's): what the plugin's `session.compact` hook sees. */
+  const compactMain = (api: unknown, trigger = 'auto', agentId?: string) =>
+    (api as unknown as { session: { compact: (x: unknown) => Promise<unknown> } }).session.compact({ trigger, messages: [{ role: 'user', text: 'The conversation.', toolUses: [] }], ...(agentId ? { agentId } : {}) })
+
+  test(`counts what SessionStart hooks add: once per text, not helpers' or the engine's, reset by a session start and a compaction (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    const d = drive($, h)
+    h.breakdown = { mcpTools: [], memoryFiles: [{ path: '/repo/CLAUDE.md', type: 'Project', tokens: 600 }], agents: [], skills: { totalSkills: 0, includedSkills: 0, tokens: 0, skillFrontmatter: [] }, slashCommands: { totalCommands: 0, includedCommands: 0, tokens: 0 } }
+    await d.start(surface)
+    h.rating = NO_CHANGE
+    let turn = 0
+    // One main-chat turn; what the run line it logs says the fixed context was.
+    const logged = async () => {
+      const id = `t${++turn}`
+      await d.submit(LOOKUP)
+      await d.step(id, 0)
+      await d.complete(id)
+      const line = JSON.parse(last((h.files[RUNS_FILE] ?? '').trim().split('\n')) ?? '{}') as { fixed?: { hooks?: number; tokens?: number } }
+      return line.fixed
+    }
+    const text = (n: number, c = 'a') => c.repeat(n * 4)
+    expect(await logged(), 'nothing raised yet').toMatchObject({ hooks: 0, tokens: 600 })
+
+    // The text the chain answers is what counts: 1000 tokens (4,000 characters, rounded up).
+    expect(await d.attach(text(1000))).toEqual({ text: text(1000) })
+    expect(await logged()).toMatchObject({ hooks: 1000, tokens: 1600 })
+    // The same text raised on another request counts once; a different one adds up. 4,001 characters round up to 1001.
+    await d.attach(text(1000))
+    await d.attach(`${text(500, 'b')}`)
+    await d.attach('c'.repeat(4001))
+    expect(await logged()).toMatchObject({ hooks: 1000 + 500 + 1001 })
+    // A helper's, the engine's own, another hook event's and a plugin's text are not SessionStart output of the main chat.
+    await d.attach(text(700, 'd'), { kind: 'hook', event: 'SessionStart' }, 'agent-helper')
+    await d.attach(text(700, 'e'), { kind: 'engine' })
+    await d.attach(text(700, 'f'), { kind: 'hook', event: 'UserPromptSubmit' })
+    await d.attach(text(700, 'g'), { kind: 'plugin', event: 'prompt.submit' })
+    expect(await logged()).toMatchObject({ hooks: 2501 })
+
+    // A compaction the engine skipped changes nothing; one that ran starts the count again.
+    h.compactSkip = 'nothing to compact'
+    await compactMain($)
+    expect(await logged()).toMatchObject({ hooks: 2501 })
+    h.compactSkip = undefined
+    await compactMain($, 'auto', 'agent-helper')
+    expect(await logged(), "a helper's compaction is not the main chat's").toMatchObject({ hooks: 2501 })
+    await compactMain($)
+    expect(await logged(), 'SessionStart runs again after a compaction: nothing counted until it does').toMatchObject({ hooks: 0 })
+    await d.attach(text(300, 'h'))
+    expect(await logged()).toMatchObject({ hooks: 300 })
+
+    // A new session starts from nothing.
+    await d.start(surface)
+    expect(await logged()).toMatchObject({ hooks: 0 })
   })
 
   const MIN = 60_000
@@ -1136,7 +1191,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   test(`a workflow pauses hand-offs and learning for the session, and the report lists it (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { model: 'claude-fable-5-1', effort: 'low' })
+    const h = engine(on, { model: 'claude-fable-5-2', effort: 'low' })
     const d = drive($, h)
     await d.start(surface)
     await d.step('t0')

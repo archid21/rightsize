@@ -1,5 +1,5 @@
 import type { RightsizeTier as Tier } from '../types'
-import { TIERS } from './cost'
+import { NEWEST, TIERS, versionName } from './cost'
 
 // The price check: read Anthropic's pricing page, find the four models' rows,
 // and say what differs from prices.json. Pure functions, no engine calls.
@@ -13,12 +13,7 @@ export type PageRows = Partial<Record<Tier, PageRow>> & { haikuOver100k?: PageRo
 
 // The page's model table names each model like this. Haiku's first row is the
 // up-to-100K-tokens price, the one the mod uses.
-const ROW_NAME: Record<Tier, string> = {
-  haiku: 'Claude Haiku 5.5',
-  sonnet: 'Claude Sonnet 5.5',
-  opus: 'Claude Opus 5.5',
-  fable: 'Claude Fable 5.2',
-}
+const ROW_NAME = Object.fromEntries(TIERS.map(t => [t, `Claude ${versionName(t, NEWEST[t])}`])) as Record<Tier, string>
 const FIELDS = ['input', 'cacheWrite5m', 'cacheWrite1h', 'cacheRead', 'output'] as const
 
 const dollarsIn = (cell: string) => {
@@ -58,7 +53,7 @@ const LABEL: Record<(typeof FIELDS)[number], string> = {
   cacheRead: 'cache read',
   output: 'output',
 }
-const NAME: Record<Tier, string> = { haiku: 'Haiku 5.5', sonnet: 'Sonnet 5.5', opus: 'Opus 5.5', fable: 'Fable 5.2' }
+const NAME = Object.fromEntries(TIERS.map(t => [t, versionName(t, NEWEST[t])])) as Record<Tier, string>
 const fmt = (v: unknown) => (typeof v === 'number' ? `$${v}` : 'unset')
 
 /** "Sonnet 5.5 cache read: $0.2 → $0.1", one line per price that differs. */

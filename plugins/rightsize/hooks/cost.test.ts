@@ -116,7 +116,7 @@ test('still reads the older one-level rating', async () => {
 
 test('knows the model family from an API model id', async () => {
   expect(tierOf('claude-opus-5-5')).toBe('opus')
-  expect(tierOf('claude-fable-5-1[1m]')).toBe('fable')
+  expect(tierOf('claude-fable-5-2[1m]')).toBe('fable')
   expect(tierOf('claude-haiku-5-5')).toBe('haiku')
   expect(tierOf('gpt-5')).toBeUndefined()
 })

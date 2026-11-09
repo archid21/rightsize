@@ -74,7 +74,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   const listed = (t: string, title: string) => new RegExp(`^  ${title}: [^(\\n]+$`, 'm').test(t.split('\nNow\n')[0] ?? t)
   const changedCount = (t: string) => Number(/You changed (\d+) setting/.exec(t)?.[1] ?? 0)
   const OPUS = { model: 'claude-opus-5-5', effort: 'medium' }
-  const FABLE = { model: 'claude-fable-5-1', effort: 'high' }
+  const FABLE = { model: 'claude-fable-5-2', effort: 'high' }
   const noteOf = (h: ReturnType<typeof engine>) => last(h.submitted)?.context?.join('\n') ?? ''
   const handedTo = (h: ReturnType<typeof engine>) => /model "(\w+)"/.exec(noteOf(h))?.[1]
   const YES_REMEMBER = { Remember: 'This session' }

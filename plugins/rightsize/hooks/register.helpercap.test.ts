@@ -34,7 +34,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   }
 
   test(`a Haiku helper may make 25 tool calls; the 26th is refused and sends it back to the main chat (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: HELPERS })
+    const h = engine(on, { model: 'claude-fable-5-2', effort: 'high', store: HELPERS })
     const d = drive($, h)
     await d.start(surface)
     await warm(d, h, 'claude-haiku-5-5')
@@ -56,7 +56,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   test(`a Sonnet helper may make 40 tool calls (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: HELPERS })
+    const h = engine(on, { model: 'claude-fable-5-2', effort: 'high', store: HELPERS })
     const d = drive($, h)
     await d.start(surface)
     await warm(d, h, 'claude-sonnet-5-5')
@@ -68,7 +68,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   test(`a refused call does not count: the denied approval steps of a helper leave its calls untouched (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: HELPERS })
+    const h = engine(on, { model: 'claude-fable-5-2', effort: 'high', store: HELPERS })
     const d = drive($, h)
     await d.start(surface)
     await warm(d, h, 'claude-haiku-5-5')

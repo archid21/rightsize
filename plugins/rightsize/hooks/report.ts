@@ -119,8 +119,8 @@ export type RunLine = {
   stall?: HelperLine['stall']
   raises?: HelperLine['raises']
   returned?: true
-  /** Tokens every request carried that the person can trim (MCP tools, memory, agents, skills), and what re-reading them cost. */
-  fixed?: { tokens: number; mcp: number; memory: number; agents: number; skills: number; cost: number; servers?: Record<string, number> }
+  /** Tokens every request carried that the person can trim (MCP tools, memory, agents, skills, SessionStart hook output), and what re-reading them cost. `files`: the largest memory files by name. */
+  fixed?: { tokens: number; mcp: number; memory: number; agents: number; skills: number; cost: number; servers?: Record<string, number>; hooks?: number; files?: Record<string, number> }
   before?: Windows
   after?: Windows
   /** The session's own level, before rightsize's change, and the conversation's size: from 0.7. */
@@ -955,43 +955,60 @@ export function keepWarmLine(lines: readonly RunLine[], subscription: boolean): 
   return `Keep warm: ${plural(runs, 'run')} · ${gain} · cost ${tildeMoney(cost)} · ${result}${subscription ? ' (API-equivalent)' : ''}`
 }
 
+/** A part or memory file this large (tokens) is flagged in the fixed-context block. About the 40,000 characters at which Claude Code itself warns about a large CLAUDE.md. */
+export const LARGE_FIXED = 10_000
+
+/**
+ * Names, largest first, as many as fit in `room` columns with the rest counted ("+N more"); the largest is always named.
+ * Each name carries its size.
+ */
+function nameWithin(items: readonly (readonly [string, number])[], room: number) {
+  const named: string[] = []
+  for (const [n, t] of items) {
+    const rest = items.length - named.length - 1
+    const row = [...named, `${n} ${k(t)}`].join(', ') + (rest ? `, +${rest} more` : '')
+    if (named.length && row.length > room) break
+    named.push(`${n} ${k(t)}`)
+  }
+  return named.join(', ') + (named.length < items.length ? `, +${items.length - named.length} more` : '')
+}
+
 /** The context every request carried, by part (largest first), request-weighted, what re-reading it cost, and how to cut it. */
 export function fixedBlock(lines: readonly RunLine[], subscription = false) {
   const runs = lines.filter(l => isRun(l) && l.fixed && num(l.requests) > 0)
   const requests = runs.reduce((n, l) => n + num(l.requests), 0)
   const cost = runs.reduce((n, l) => n + num(l.fixed?.cost), 0)
   if (!requests || cost < 0.005) return undefined
-  const avg = (part: 'tokens' | 'mcp' | 'memory' | 'agents' | 'skills') => runs.reduce((n, l) => n + num(l.fixed?.[part]) * num(l.requests), 0) / requests
-  const servers = Object.entries(runs[runs.length - 1]?.fixed?.servers ?? {}).sort((a, b) => b[1] - a[1])
+  const avg = (part: 'tokens' | 'mcp' | 'memory' | 'agents' | 'skills' | 'hooks') => runs.reduce((n, l) => n + num(l.fixed?.[part]) * num(l.requests), 0) / requests
+  const last = runs[runs.length - 1]?.fixed
+  const byLargest = (r: Record<string, number> | undefined) => Object.entries(r ?? {}).sort((a, b) => b[1] - a[1])
+  const servers = byLargest(last?.servers)
+  const files = byLargest(last?.files)
   const parts = [
-    [avg('mcp'), 'MCP tools', 'servers', "disconnect MCP servers you don't use (/mcp)"],
-    [avg('memory'), 'Memory', '', 'trim CLAUDE.md and memory files'],
-    [avg('skills'), 'Skills', '', "turn off plugins and skills you don't use (/plugin)"],
-    [avg('agents'), 'Agents', '', "remove custom agents you don't use (/agents)"],
+    [avg('mcp'), 'MCP tools', servers, "disconnect MCP servers you don't use (/mcp)"],
+    [avg('memory'), 'Memory', files, 'trim CLAUDE.md and MEMORY.md (/memory)'],
+    [avg('skills'), 'Skills', [], "turn off plugins and skills you don't use (/plugin)"],
+    [avg('agents'), 'Agents', [], "remove custom agents you don't use (/agents)"],
+    [avg('hooks'), 'SessionStart hooks', [], "turn off plugins whose SessionStart hooks you don't use (/plugin), or trim your own hooks' output"],
   ] as const
   const big = parts.filter(([t]) => t >= 500).sort((a, b) => b[0] - a[0])
   const labels = big.map(([, label], i) => `${i === big.length - 1 ? '└─' : '├─'} ${label}`)
-  // Servers are named largest first while the row stays within 80 columns (indent, label, size and gaps come first); the rest are counted. The largest is always named.
+  // Servers and files are named largest first while the row stays within 80 columns (indent, label, size and gaps come first); the rest are counted. The largest is always named.
   const room = 80 - (2 + Math.max(0, ...labels.map(l => l.length)) + 3 + Math.max(0, ...big.map(([t]) => k(t).length)) + 3)
-  const named: string[] = []
-  for (const [n, t] of servers) {
-    const rest = servers.length - named.length - 1
-    const row = [...named, `${n} ${k(t)}`].join(', ') + (rest ? `, +${rest} more` : '')
-    if (named.length && row.length > room) break
-    named.push(`${n} ${k(t)}`)
-  }
-  const note = named.join(', ') + (named.length < servers.length ? `, +${servers.length - named.length} more` : '')
-  const tree = big.map(([t, , own], i) => [labels[i] ?? '', k(t), ...((own ? note : '') ? [note] : [])])
+  const tree = big.map(([t, , names], i) => [labels[i] ?? '', k(t), ...(names.length ? [nameWithin(names, room)] : [])])
   // The advice follows the biggest parts, so it names what would cut the most.
   const how = big.slice(0, 2).map(([, , , fix]) => fix).join(', or ')
   const spent = runs.reduce((n, l) => n + num(l.actual), 0)
   // The share is of what those same turns cost (their actual spend), not of all spend.
   const pct = spent > 0 ? `, ~${Math.round((cost / spent) * 100)}% of what those turns cost` : ''
+  // A memory file or the start hooks at LARGE_FIXED or more, largest first.
+  const large = [...files.map(([n, t]) => [n, t] as const), ['SessionStart hooks', avg('hooks')] as const].filter(([, t]) => t >= LARGE_FIXED).sort((a, b) => b[1] - a[1])
   return {
     head: `~${k(avg('tokens'))} tokens sent with every request`,
     notes: [
       `Fixed context adds to your ${subscription ? 'usage' : 'cost'} in every session. Cutting it saves more.`,
       `At least ~${money(cost)}${subscription ? ' API-equivalent' : ''} over ${plural(requests, 'request')}${pct}.`,
+      ...(large.length ? [`Large: ${large.map(([n, t]) => `${n} ${k(t)}`).join(', ')}.`] : []),
     ],
     tree,
     ...(how ? { fix: `rightsize can't trim fixed context. To cut it: ${how}.` } : {}),

@@ -12,7 +12,7 @@ export type LooseStep = (event: 'turn.step', hook: (api: unknown, e: StepInput) 
 export type Run = { text?: string }
 export type Engine = {
   session: { start: (x: unknown) => Promise<unknown> }
-  prompt: { submit: (x: unknown) => Promise<unknown> }
+  prompt: { submit: (x: unknown) => Promise<unknown>; attachment: (x: unknown) => Promise<unknown> }
   turn: { start: (x: unknown) => Promise<unknown>; step: (x: unknown) => unknown; complete: (x: unknown) => Promise<unknown> }
   tool: { call: (x: unknown) => Promise<unknown> }
   agent: { spawn: (x: unknown) => Promise<unknown> }
@@ -513,6 +513,8 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
     if (during) await during()
     return { text: e.text } as never
   })
+  // An attachment the engine raises: the text it would carry, unchanged.
+  reg('prompt.attachment', async ($, e) => ({ text: e.text }) as never)
   reg('turn.start', async ($, e) => ({ turnId: e.turnId }) as never)
   reg('turn.step', async function* ($, e) {
     h.sent.push({ effort: e.effort, model: e.model, agentId: e.agentId, turnId: e.turnId })
@@ -584,6 +586,9 @@ export const drive = (api: unknown, h: ReturnType<typeof engine>) => {
     start: (surface: string) => e.session.start({ source: 'startup', cwd: '/tmp', surface, isInteractive: true }),
     /** `turnId`: the turn that was running when the prompt was typed; left out, the session was idle. */
     submit: (text: string, turnId?: string) => e.prompt.submit({ text, origin: { kind: 'composer' }, wait: false, ...(turnId ? { turnId } : {}) }),
+    /** The engine raising an attachment for a request: `origin` says who wrote it (a SessionStart hook's output by default); `agentId` puts it on a helper's request. */
+    attach: (text: string, origin: { kind: string; event?: string } = { kind: 'hook', event: 'SessionStart' }, agentId?: string) =>
+      e.prompt.attachment({ type: 'hook_additional_context', text, origin, ...(agentId ? { agentId } : {}) }),
     /** The engine starting a main-chat turn for this text ("" for a continuation). */
     turnStart: (turnId: string, text: string) => e.turn.start({ turnId, text }),
     step: async (turnId: string, index = 0, agentId?: string) => {

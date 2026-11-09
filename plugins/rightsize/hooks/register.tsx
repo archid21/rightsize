@@ -62,6 +62,9 @@ import {
   sizeSubagent,
   subagentKeys,
   tierOf,
+  olderModel,
+  NEWEST,
+  versionName,
   tierRank,
   usageCost,
   type Usage,
@@ -375,6 +378,12 @@ type Run = {
 let home = ''
 let sessionId = ''
 let off = false
+/** The person's on/off switch; `off` is this or an older main-chat model (ADR 0032). */
+let switchedOff = false
+/** "Opus 4.8" while the main chat runs an older model version than prices.json prices; null otherwise. */
+let olderPause: string | null = null
+/** Older models whose pause line this session already showed. */
+const olderShown = new Set<string>()
 let floor: Level = 'low'
 let billing: Billing = 'api'
 /**
@@ -423,6 +432,16 @@ let skipOnce: string | null = null
  * claims a saving, whatever the setting says.
  */
 let workflowSeen = false
+/** Characters per token, the rough estimate rightsize uses for text it has no count for. */
+const CHARS_PER_TOKEN = 4
+/**
+ * What the SessionStart hooks of settings and plugins put into this session, by text: the estimated tokens of each distinct text.
+ * It sits in the conversation's messages, so every request reads it from the cache. The engine may raise the same attachment on
+ * more than one request, so a text counts once. Cleared at a session start and after a main-chat compaction (SessionStart runs again).
+ */
+const startHooks = new Map<string, number>()
+/** The estimated tokens of the SessionStart hooks' text so far. */
+const startHookTokens = () => [...startHooks.values()].reduce((n, t) => n + t, 0)
 /**
  * The person stepped up (a stronger model or a higher effort): rightsize changes neither until they resume. The same value is in
  * $.state ('manualPause') for the session; this copy is what the hooks read without awaiting. See manualCheck() and noteEffort().
@@ -1821,6 +1840,7 @@ function startRun(r: Rating, s: Situation, d: Decision, p: Plan, base: Level, ov
 // ---- Reporting -------------------------------------------------------------
 
 async function showStatus($: EngineInterface) {
+  if (olderPause) return $.ui.status(`rightsize paused: ${olderPause} is an older model`)
   if (manualPause) return $.ui.status(pauseStatus(manualPause))
   const run = active ?? pending[0] ?? null
   if (run?.delegate) return $.ui.status(`Handing this to a ${TIER_NAME[run.delegate.tier]} subagent`)
@@ -2061,7 +2081,10 @@ function windows(limits: readonly { kind: string; percentUsed: number }[] | unde
   return Object.fromEntries(limits.map(l => [l.kind, l.percentUsed]))
 }
 
-/** What every request carries that the person can trim and rightsize can't: MCP tools, memory files, agents, skills and commands. */
+/** The smallest memory file the fixed-context log names. */
+const FILE_MIN = 500
+
+/** What every request carries that the person can trim and rightsize can't: MCP tools, memory files, agents, skills and commands, and what SessionStart hooks added. */
 async function fixedContext($: EngineInterface) {
   const b = (await $.session.usage({ breakdown: 'summary' }).catch(() => undefined))?.context.breakdown
   if (!b) return undefined
@@ -2073,8 +2096,13 @@ async function fixedContext($: EngineInterface) {
   const memory = sum(b.memoryFiles)
   const agents = sum(b.agents)
   const skills = (b.skills?.tokens ?? 0) + (b.slashCommands?.tokens ?? 0)
+  const hooks = startHookTokens()
   const servers = Object.fromEntries([...byServer.entries()].sort((a, c) => c[1] - a[1]).slice(0, 3))
-  return { tokens: mcp + memory + agents + skills, mcp, memory, agents, skills, servers }
+  // The memory files worth naming, largest first. Two with the same name are told apart by their type (Project, User).
+  const big = b.memoryFiles.filter(f => f.tokens >= FILE_MIN).sort((x, y) => y.tokens - x.tokens).slice(0, 3)
+  const base = (f: { path: string }) => f.path.split('/').pop() || f.path
+  const files = Object.fromEntries(big.map(f => [big.filter(o => base(o) === base(f)).length > 1 ? `${base(f)} (${f.type})` : base(f), f.tokens]))
+  return { tokens: mcp + memory + agents + skills + hooks, mcp, memory, agents, skills, hooks, ...(big.length ? { files } : {}), servers }
 }
 
 async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs: number) {
@@ -4307,6 +4335,30 @@ async function manualCheck($: EngineInterface): Promise<{ held: boolean; row: bo
   return { held: true, row: true }
 }
 
+/**
+ * ADR 0032: rightsize prices only the newest version of each family, so on an older main-chat model it is off, as if the
+ * person turned it off. Sets `off` from the switch and the model; shows the pause line once per model per session.
+ */
+async function checkOlder($: EngineInterface): Promise<void> {
+  const older = olderModel(await $.session.model().catch(() => undefined)) ?? null
+  const was = olderPause
+  olderPause = older
+  off = switchedOff || older !== null
+  if (off && (warming || coldTurn)) {
+    cancelCold($, older ? `the main chat moved to ${older}, an older model` : 'rightsize was turned off')
+    coldTurn = null
+  }
+  if (older === was) return
+  if (older && !olderShown.has(older)) {
+    olderShown.add(older)
+    const t = tierOf(older)
+    const newest = t ? versionName(t, NEWEST[t]) : 'the newest models'
+    await log($, `paused: ${older} is an older model`)
+    await setBand($, { text: `rightsize is paused: it is built for ${newest}, and prices ${older} wrongly. Switch with /model ${t ?? 'opus'} to turn it back on.`, acted: true })
+  } else if (!older && was) await log($, `resumed: the main chat left ${was}`)
+  await showStatus($)
+}
+
 /** The first main-chat step of a turn: reads the person's effort, and pauses or resumes rightsize by it. */
 async function noteEffort($: EngineInterface, now: Level, model: string | undefined): Promise<void> {
   const prev = await personEffort($)
@@ -4372,6 +4424,8 @@ export const register: Register = (on, options) => {
   // turns. The person's /compact and a plugin's compact are not it; they only say the drop in context that follows is not one.
   on('session.compact', async ($, e, next) => {
     const result = await next(e)
+    // A compaction drops the old messages, and the SessionStart hooks run again with new output.
+    if (e.agentId === undefined && result.skip === undefined) startHooks.clear()
     if (off || e.agentId !== undefined || result.skip !== undefined) return result
     if (e.trigger === 'manual' || e.trigger === 'plugin') {
       manualCompact = true
@@ -4383,8 +4437,18 @@ export const register: Register = (on, options) => {
     return result
   }).catch((_, e, next) => next(e))
 
+  // What a settings or plugin SessionStart hook adds to the conversation: counted by text, never changed. Helpers' attachments are not the main chat's.
+  on('prompt.attachment', async ($, e, next) => {
+    const result = await next(e)
+    if (e.agentId === undefined && e.origin.kind === 'hook' && e.origin.event === 'SessionStart' && result.text !== null) {
+      startHooks.set(result.text, Math.ceil(result.text.length / CHARS_PER_TOKEN))
+    }
+    return result
+  }).catch((_, e, next) => next(e))
+
   on('session.start', async ($, e, next) => {
     const result = await next(e)
+    startHooks.clear()
     // The plugin can live anywhere (a clone, ~/Projects), so ask for HOME rather than reading it off the path.
     const fromEnv = await $.env.get('HOME').catch(() => undefined)
     const root = $.plugin.root
@@ -4488,20 +4552,22 @@ export const register: Register = (on, options) => {
     runLog = await readRuns($)
     ratedRuns.clear()
     await refreshMisses($)
-    off = (await readSwitches($))[NAME] === false
+    switchedOff = (await readSwitches($))[NAME] === false
+    off = switchedOff
+    olderShown.clear()
+    olderPause = null
     profileNoted.clear()
     await checkStart($).catch(() => undefined)
     await dayOneTip($).catch(() => undefined)
     $.clock.every(3000, () => {
       void readSwitches($).then(json => {
-        off = json[NAME] === false
-        if (off && (warming || coldTurn)) {
-          cancelCold($, 'rightsize was turned off')
-          coldTurn = null
-        }
+        switchedOff = json[NAME] === false
+        void checkOlder($)
       })
       void tickOffer($)
     })
+    // After the band is reset above, so the pause line stays (ADR 0032).
+    await checkOlder($)
     await showStatus($)
     return result
   })
@@ -4554,6 +4620,7 @@ export const register: Register = (on, options) => {
   }).catch((_, e, next) => next(e))
 
   on('prompt.submit', async ($, e, next) => {
+    await checkOlder($)
     // rightsize's own prompt (the handoff's "wrap up"): not rated, and it does not count as the person coming back.
     if (coldPrompt !== null && e.text.trim() === coldPrompt) {
       coldPrompt = null
@@ -5074,7 +5141,8 @@ export const register: Register = (on, options) => {
   // is a dim label (Prompt, Cache, the question's header), one line, and that row's buttons. With two rows or
   // more, a header line carries ⋯ and × for all of them; a single row carries them at its end.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    if (off || e.props.hasSurvey) return next(e)
+    // An older-model pause (ADR 0032) still shows its line.
+    if (switchedOff || e.props.hasSurvey) return next(e)
     const question = (await $.state.get(QUESTION).catch(() => undefined))?.value
     const mode = (await $.state.get(BAND_MODE).catch(() => undefined))?.value ?? bandMode
     const band = (await $.state.get(BAND).catch(() => undefined))?.value

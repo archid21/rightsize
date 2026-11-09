@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { SESSION_TOTAL, accuracyRows, addTotals, foldLifetime, parseLifetime, type Lifetime, type RunLine, bandShareText, buildReport, costTag, counterfactual, fixedBlock, keepWarmLine, parseLines, problems, sessionTotal, shareMessage, shareText, span, taskActual, taskEstimated, taskExtra, taskStay, tieCounts, totals, usedTag, watchLine, wholeTaskRows, wholeTasks, windowCostText, windowRates } from './report'
+import { SESSION_TOTAL, accuracyRows, addTotals, foldLifetime, parseLifetime, type Lifetime, type RunLine, bandShareText, LARGE_FIXED, buildReport, costTag, counterfactual, fixedBlock, keepWarmLine, parseLines, problems, sessionTotal, shareMessage, shareText, span, taskActual, taskEstimated, taskExtra, taskStay, tieCounts, totals, usedTag, watchLine, wholeTaskRows, wholeTasks, windowCostText, windowRates } from './report'
 import { DEFAULT_PRICES } from './cost'
 import type { StartBlock } from './start'
 
@@ -295,7 +295,7 @@ test('fixed context: request-weighted, the biggest parts first, nothing when it 
       ['├─ MCP tools', '18K', 'linear 20K'],
       ['└─ Memory', '4K'],
     ],
-    fix: "rightsize can't trim fixed context. To cut it: disconnect MCP servers you don't use (/mcp), or trim CLAUDE.md and memory files.",
+    fix: "rightsize can't trim fixed context. To cut it: disconnect MCP servers you don't use (/mcp), or trim CLAUDE.md and MEMORY.md (/memory).",
   })
   const skills = run({ requests: 5, actual: 1, fixed: { tokens: 15000, mcp: 300, memory: 1000, agents: 2500, skills: 11200, cost: 0.03 } })
   const block = fixedBlock([skills])
@@ -317,6 +317,51 @@ test('fixed context names servers only while the row fits in 80 columns, ending 
   // The largest is named even when it alone runs long.
   const huge = run({ requests: 5, actual: 1, fixed: { tokens: 30000, mcp: 25000, memory: 1000, agents: 0, skills: 0, cost: 0.5, servers: { [`${'x'.repeat(70)}`]: 9000, small: 1000 } } })
   expect(fixedBlock([huge])?.tree[0]?.[2]).toBe(`${'x'.repeat(70)} 9K, +1 more`)
+})
+
+test('fixed context names the memory files on the Memory row, from the last run', async () => {
+  const f = (files: Record<string, number> | undefined) => run({ requests: 5, actual: 1, fixed: { tokens: 12000, mcp: 3000, memory: 9000, agents: 0, skills: 0, hooks: 0, cost: 0.5, ...(files ? { files } : {}) } })
+  const block = fixedBlock([f({ 'CLAUDE.md': 1000 }), f({ 'MEMORY.md': 2000, 'CLAUDE.md': 6000 })])
+  expect(block?.tree).toEqual([['├─ Memory', '9K', 'CLAUDE.md 6K, MEMORY.md 2K'], ['└─ MCP tools', '3K']])
+  expect(block?.fix).toContain('trim CLAUDE.md and MEMORY.md (/memory)')
+  // An old line has no files: the row is as before.
+  expect(fixedBlock([f(undefined)])?.tree[0]).toEqual(['├─ Memory', '9K'])
+  // The row fits in 80 columns, the rest counted.
+  const wide = fixedBlock([f({ [`${'a'.repeat(40)}.md`]: 3000, [`${'b'.repeat(40)}.md`]: 2000 })])
+  expect(wide?.tree[0]?.[2]).toBe(`${'a'.repeat(40)}.md 3K, +1 more`)
+  const text = report([f({ 'CLAUDE.md': 6000, 'MEMORY.md (User)': 2000 })])
+  expect(text).toMatch(/ {2}├─ Memory +9K +CLAUDE\.md 6K, MEMORY\.md \(User\) 2K\n/)
+  expect(text.split('\n').filter(l => l.length > 80)).toEqual([])
+})
+
+test('fixed context counts SessionStart hooks, request-weighted, and advises on them when they are the biggest part', async () => {
+  const f = (hooks: number | undefined, requests: number) => run({ requests, actual: 1, fixed: { tokens: 6000 + (hooks ?? 0), mcp: 0, memory: 3000, agents: 0, skills: 3000, ...(hooks === undefined ? {} : { hooks }), cost: 0.5 } })
+  const block = fixedBlock([f(undefined, 10), f(8000, 30)])
+  expect(block?.tree).toEqual([['├─ SessionStart hooks', '6K'], ['├─ Memory', '3K'], ['└─ Skills', '3K']])
+  expect(block?.fix).toBe("rightsize can't trim fixed context. To cut it: turn off plugins whose SessionStart hooks you don't use (/plugin), or trim your own hooks' output, or trim CLAUDE.md and MEMORY.md (/memory).")
+  // Under 500 tokens a part is not listed, and a line without hooks counts as 0.
+  expect(fixedBlock([f(400, 10)])?.tree.map(r => r[0])).toEqual(['├─ Memory', '└─ Skills'])
+  expect(fixedBlock([f(undefined, 10)])?.tree.map(r => r[0])).toEqual(['├─ Memory', '└─ Skills'])
+  const text = report([f(8000, 10)])
+  expect(text).toMatch(/ {2}├─ SessionStart hooks +8K\n/)
+  expect(text.split('\n').filter(l => l.length > 80)).toEqual([])
+})
+
+test('fixed context flags a memory file or the SessionStart hooks of 10K tokens or more, largest first', async () => {
+  const f = (over: { hooks?: number; files?: Record<string, number> }, requests = 5) => run({ requests, actual: 1, fixed: { tokens: 30000, mcp: 5000, memory: 12000, agents: 0, skills: 0, hooks: over.hooks ?? 0, cost: 0.5, ...(over.files ? { files: over.files } : {}) } })
+  const notes = (...lines: ReturnType<typeof f>[]) => fixedBlock(lines)?.notes ?? []
+  expect(LARGE_FIXED).toBe(10000)
+  expect(notes(f({ files: { 'CLAUDE.md': 12000 }, hooks: 24000 }))[2]).toBe('Large: SessionStart hooks 24K, CLAUDE.md 12K.')
+  expect(notes(f({ files: { 'CLAUDE.md': 12000, 'MEMORY.md': 10000 } }))[2], 'files only, at the line').toBe('Large: CLAUDE.md 12K, MEMORY.md 10K.')
+  expect(notes(f({ hooks: 10000 })), 'hooks at the line').toHaveLength(3)
+  expect(notes(f({ hooks: 9999, files: { 'CLAUDE.md': 9999 } })), 'below the line: no note').toHaveLength(2)
+  expect(notes(f({})), 'old lines: no note').toHaveLength(2)
+  // The hooks are request-weighted: one big run among many small ones does not flag them.
+  expect(notes(f({ hooks: 40000 }, 1), f({ hooks: 0 }, 9))).toHaveLength(2)
+  // A file is judged on the last run.
+  expect(notes(f({ files: { 'CLAUDE.md': 12000 } }), f({ files: { 'CLAUDE.md': 3000 } }))).toHaveLength(2)
+  const text = report([f({ files: { 'CLAUDE.md': 12000 }, hooks: 24000 })])
+  expect(text).toMatch(/At least ~\$[\d.]+ over 5 requests[^\n]*\n {2}Large: SessionStart hooks 24K, CLAUDE\.md 12K\.\n/)
 })
 
 test('the fixed context tree and its tip in the report', async () => {

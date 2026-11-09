@@ -8,7 +8,7 @@ import { RUNS_FILE, LOG_PATH, LOOKUP, DEBUG, REVIEW, NO_CHANGE, LOWER, FREE_SWIT
 
 const SONNET = 'claude-sonnet-5-5'
 const OPUS_ID = 'claude-opus-5-5'
-const FABLE = 'claude-fable-5-1'
+const FABLE = 'claude-fable-5-2'
 const PAUSED_MODEL = "Paused: you switched to Opus. Rightsize won't change the model or effort until you resume."
 const PAUSED_EFFORT = "Paused: you raised effort to high. Rightsize won't change the model or effort until you resume."
 const LISTING = '{"fit":{"haiku":"low","sonnet":"low","opus":"low","fable":"low"},"type":"search","read":8000,"write":500,"steps":5,"reason":"list call sites"}'

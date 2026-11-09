@@ -173,7 +173,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   test(`a helper whose task has no retry left goes back without a question (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: { remember: true, choices: { down: 'auto' } } })
+    const h = engine(on, { model: 'claude-fable-5-2', effort: 'high', store: { remember: true, choices: { down: 'auto' } } })
     const d = drive($, h)
     await d.start(surface)
     await warm(d, h)
@@ -191,7 +191,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   test(`Raising set to never leaves a struggling helper alone: not raised, not sent back (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: { remember: true, choices: { down: 'auto', raise: 'never' } } })
+    const h = engine(on, { model: 'claude-fable-5-2', effort: 'high', store: { remember: true, choices: { down: 'auto', raise: 'never' } } })
     const d = drive($, h)
     await d.start(surface)
     await warm(d, h)
@@ -205,7 +205,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   test(`a failing test run in a helper is not an error of the work, and needs one more repeat (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: HELPERS })
+    const h = engine(on, { model: 'claude-fable-5-2', effort: 'high', store: HELPERS })
     const d = drive($, h)
     await d.start(surface)
     await warm(d, h)
@@ -242,7 +242,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   test(`the main chat's rework of a hand-off uses the task's chances, and is refused once they are used up (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: HELPERS })
+    const h = engine(on, { model: 'claude-fable-5-2', effort: 'high', store: HELPERS })
     const d = drive($, h)
     await d.start(surface)
     await warm(d, h)
@@ -265,7 +265,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   test(`a follow-up shares its task's retry budget; a new task starts a fresh one (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: HELPERS })
+    const h = engine(on, { model: 'claude-fable-5-2', effort: 'high', store: HELPERS })
     const d = drive($, h)
     await d.start(surface)
     await warm(d, h)
@@ -332,7 +332,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   test(`a new session starts with a fresh retry budget and no helpers watched (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: HELPERS })
+    const h = engine(on, { model: 'claude-fable-5-2', effort: 'high', store: HELPERS })
     const d = drive($, h)
     await d.start(surface)
     await warm(d, h)
@@ -435,7 +435,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   test(`a cut request is not handed to a cheaper model (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: HELPERS })
+    const h = engine(on, { model: 'claude-fable-5-2', effort: 'high', store: HELPERS })
     const d = drive($, h)
     await d.start(surface)
     await warm(d, h)
@@ -456,7 +456,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
   test(`a run line carries the learning note, and the real hand-off is still made (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     // The step exponent is stored under 'step-exponent-v1' (steps.ts state, register.tsx STEP_STORE).
-    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: { ...HELPERS, 'step-exponent-v1': { g: -0.4, since: 0, samples: [] } } })
+    const h = engine(on, { model: 'claude-fable-5-2', effort: 'high', store: { ...HELPERS, 'step-exponent-v1': { g: -0.4, since: 0, samples: [] } } })
     const d = drive($, h)
     await d.start(surface)
     await warm(d, h)

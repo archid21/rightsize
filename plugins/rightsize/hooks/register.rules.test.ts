@@ -35,7 +35,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   const LOG = LOG_PATH
   const settingsText = async (d: ReturnType<typeof drive>) => (await d.command('status')).text ?? ''
   const OPUS = { model: 'claude-opus-5-5', effort: 'medium' }
-  const FABLE = { model: 'claude-fable-5-1', effort: 'high' }
+  const FABLE = { model: 'claude-fable-5-2', effort: 'high' }
   const noteOf = (h: ReturnType<typeof engine>) => last(h.submitted)?.context?.join('\n') ?? ''
   const handedTo = (h: ReturnType<typeof engine>) => /model "(\w+)"/.exec(noteOf(h))?.[1]
   const YES_REMEMBER = { Remember: 'This session' }

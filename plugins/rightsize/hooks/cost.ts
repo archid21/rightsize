@@ -39,6 +39,31 @@ export const tierOf = (model: string | null | undefined): Tier | undefined => {
   return TIERS.find(t => m.includes(t))
 }
 
+/** The newest version of each family, the one prices.json prices (ADR 0032). The price check's page rows are named from it. */
+export const NEWEST: Record<Tier, readonly [number, number]> = { haiku: [5, 5], sonnet: [5, 5], opus: [5, 5], fable: [5, 2] }
+export const versionName = (t: Tier, [major, minor]: readonly [number, number]) => `${TIER_NAME[t]} ${major}${minor ? `.${minor}` : ''}`
+
+/**
+ * "Opus 4.8" when the model ID names a version older than NEWEST, else undefined. Reads `claude-opus-4-8`,
+ * `claude-opus-4-20250514` (an 8-digit part is a date), `claude-3-5-sonnet-…` and Bedrock or Vertex wraps of these.
+ * An ID with no version (`opus`, `sonnet[1m]`) is the newest.
+ */
+export function olderModel(model: string | null | undefined): string | undefined {
+  const m = (model ?? '').toLowerCase()
+  const t = tierOf(m)
+  if (!t) return undefined
+  const num = (s: string | undefined) => (s !== undefined && /^\d{1,2}$/.test(s) ? Number(s) : undefined)
+  const after = new RegExp(`${t}-(\\d+)(?:[-.](\\d+))?`).exec(m)
+  const before = new RegExp(`(?:^|[^a-z0-9])claude-(\\d+)(?:[-.](\\d+))?-${t}`).exec(m)
+  const hit = num(after?.[1]) !== undefined ? after : before
+  const major = num(hit?.[1])
+  if (major === undefined) return undefined
+  const v = [major, num(hit?.[2]) ?? 0] as const
+  const [nMajor, nMinor] = NEWEST[t]
+  const older = v[0] < nMajor || (v[0] === nMajor && v[1] < nMinor)
+  return older ? versionName(t, v) : undefined
+}
+
 // ---- Prices ----------------------------------------------------------------
 
 /** US dollars per 1 million tokens. */

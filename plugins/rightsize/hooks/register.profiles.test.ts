@@ -99,7 +99,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   test(`a run line takes tests from a helper when the main chat ran none, and the main chat's own run wins when it ran one (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: HELPERS })
+    const h = engine(on, { model: 'claude-fable-5-2', effort: 'high', store: HELPERS })
     const d = drive($, h)
     await d.start(surface)
     await warm(d, h)
@@ -331,7 +331,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   test(`a miss forgiven on a hand-off turn is shown on the band beside the hand-off's result (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: HELPERS })
+    const h = engine(on, { model: 'claude-fable-5-2', effort: 'high', store: HELPERS })
     const d = drive($, h)
     // The log's times are the wall clock's: the 30-day window counts from now.
     h.now = Date.now()
@@ -429,7 +429,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
   // Chances: a task's retries, two.
   test(`a task has two chances: a helper is raised twice, and the third struggle sends it back (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: HELPERS })
+    const h = engine(on, { model: 'claude-fable-5-2', effort: 'high', store: HELPERS })
     const d = drive($, h)
     await d.start(surface)
     await warm(d, h)
@@ -531,7 +531,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   test(`Ask before changing on: Cheaper model asks in the Subagent dialog, and the band says Ask before changing decided (${surface})`, { timeoutMs: 30000, options: withRows({ askFirst: 'on' }).options }, async ($, on) => {
-    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: { [CAL_STORE]: FREE_SWITCHES }, stored: withRows({ askFirst: 'on' }).stored })
+    const h = engine(on, { model: 'claude-fable-5-2', effort: 'high', store: { [CAL_STORE]: FREE_SWITCHES }, stored: withRows({ askFirst: 'on' }).stored })
     const d = drive($, h)
     await d.start(surface)
     await d.step('t0')
@@ -613,7 +613,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
   test(`close calls are never explored: a stored Explore close calls on is ignored (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const cal = { ...tieCal(0.9), ...FREE_SWITCHES }
-    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: { ...SEND, [CAL_STORE]: cal, ties: 4 }, stored: { explore: 'on' } })
+    const h = engine(on, { model: 'claude-fable-5-2', effort: 'high', store: { ...SEND, [CAL_STORE]: cal, ties: 4 }, stored: { explore: 'on' } })
     const d = drive($, h)
     await d.start(surface)
     h.rating = TIE_RATING

@@ -611,7 +611,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   type HelperEntry = { agent: string; kind: string; steps: number; ms: number; errors: number; blocked: number; stall?: string; raises?: { step: number; from: string; to: string; why: string }[]; returned?: boolean }
 
   test(`a struggling hand-off helper is raised one level, and its later steps go out at it (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: HELPERS })
+    const h = engine(on, { model: 'claude-fable-5-2', effort: 'high', store: HELPERS })
     const d = drive($, h)
     await d.start(surface)
     await warm(d, h)
@@ -638,7 +638,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   test(`a blocked helper is not raised, and a sign with only blocked errors behind it is not either (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: HELPERS })
+    const h = engine(on, { model: 'claude-fable-5-2', effort: 'high', store: HELPERS })
     const d = drive($, h)
     await d.start(surface)
     await warm(d, h)
@@ -666,7 +666,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   test(`the third struggle of a task with two chances used sends the helper back: every tool call after is refused (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: HELPERS })
+    const h = engine(on, { model: 'claude-fable-5-2', effort: 'high', store: HELPERS })
     const d = drive($, h)
     await d.start(surface)
     await warm(d, h)
@@ -699,7 +699,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   test(`a struggling helper is asked about when Raising is not automatic: raised on yes, left alone on keep (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: { remember: true, choices: { down: 'auto' } } })
+    const h = engine(on, { model: 'claude-fable-5-2', effort: 'high', store: { remember: true, choices: { down: 'auto' } } })
     const d = drive($, h)
     await d.start(surface)
     // Raising set to ask: the default answer (auto) would raise without a question.
@@ -736,7 +736,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   test(`a struggling helper with nobody to answer goes on at its effort, and is not sent back (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: { remember: true, choices: { down: 'auto' } } })
+    const h = engine(on, { model: 'claude-fable-5-2', effort: 'high', store: { remember: true, choices: { down: 'auto' } } })
     const d = drive($, h)
     await d.start(surface)
     // Raising set to ask: the default answer (auto) would raise without a question.
@@ -758,7 +758,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   test(`a stuck helper whose Stuck dialog gets no answer (Band set to Never) goes on at its effort: the text says so, and it is not sent back (${surface})`, { timeoutMs: 30000, options: { band: 'off' } }, async ($, on) => {
-    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: { remember: true, choices: { down: 'auto' } } })
+    const h = engine(on, { model: 'claude-fable-5-2', effort: 'high', store: { remember: true, choices: { down: 'auto' } } })
     const d = drive($, h)
     await d.start(surface)
     // Raising set to ask: the default answer (auto) would raise without a question.

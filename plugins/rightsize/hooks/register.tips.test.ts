@@ -454,7 +454,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const cal = { ...tieCal(0.9), ...FREE_SWITCHES }
     const p = plan(tieRating, { ...fableHigh, cal }, 'low')
     expect(p.kind === 'delegate' && p.tie, 'the setup is a close call').toEqual({ by: 'guide', over: 'opus' })
-    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: { [CAL_STORE]: cal } })
+    const h = engine(on, { model: 'claude-fable-5-2', effort: 'high', store: { [CAL_STORE]: cal } })
     const d = drive($, h)
     await d.start(surface)
     await d.step('t0')
@@ -481,7 +481,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
   test(`a prompt with no close call logs no tie (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const cal = { ...tieCal(0.7), ...FREE_SWITCHES }
-    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: { [CAL_STORE]: cal } })
+    const h = engine(on, { model: 'claude-fable-5-2', effort: 'high', store: { [CAL_STORE]: cal } })
     const d = drive($, h)
     await d.start(surface)
     await d.step('t0')
@@ -505,7 +505,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const cal = opusAt(0.9, raw, subagentKeys('feature', 'opus', 'medium'))
     const size = sizeSubagent(tieRating, { ...sub, cal }, 'fable', 'low')
     expect(size?.tie, 'the setup is a close call').toEqual({ by: 'guide', over: 'opus' })
-    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: { [CAL_STORE]: cal } })
+    const h = engine(on, { model: 'claude-fable-5-2', effort: 'high', store: { [CAL_STORE]: cal } })
     const d = drive($, h)
     await d.start(surface)
     h.rating = NO_CHANGE
@@ -817,7 +817,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   }
 
   test(`👍 and 👎 in the ⋯ menu on a hand-off's result write a feedback line for that run, once (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', stored: NO_COLD })
+    const h = engine(on, { model: 'claude-fable-5-2', effort: 'high', stored: NO_COLD })
     const d = drive($, h)
     h.now = Date.now()
     await d.start(surface)

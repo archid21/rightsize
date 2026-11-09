@@ -328,7 +328,8 @@ test("Haiku's fit on writing is not acted on with no outcomes yet, and is once t
   expect(control, 'the same work as a search is handed down').toMatchObject({ kind: 'delegate', dir: 'down', tier: 'haiku' })
   expect(plan(bulkyWriting, { ...opus, misses: misses([]) }, 'low').kind, 'no outcomes: the prior holds it back').not.toBe('delegate')
   expect(plan(bulkyWriting, { ...opus, misses: misses(lines(2, false, 'writing')) }, 'low').kind, 'two good outcomes do not clear it').not.toBe('delegate')
-  expect(plan(bulkyWriting, { ...opus, misses: misses(lines(5, false, 'writing')) }, 'low')).toMatchObject({ kind: 'delegate', dir: 'down', tier: 'haiku' })
+  expect(plan(bulkyWriting, { ...opus, misses: misses(lines(5, false, 'writing')) }, 'low').kind, 'five good ones leave half the prior: 25%, still over the 20% line').not.toBe('delegate')
+  expect(plan(bulkyWriting, { ...opus, misses: misses(lines(7, false, 'writing')) }, 'low'), 'seven: 15%, under the line').toMatchObject({ kind: 'delegate', dir: 'down', tier: 'haiku' })
   expect(plan(bulkyWriting, { ...opus, misses: misses(lines(5, true, 'writing')) }, 'low').kind, 'five bad ones keep it held').not.toBe('delegate')
   expect(plan(bulkyWriting, { ...opus, misses: misses([]), missBlock: null }, 'low'), 'Pause after misses off: the prior pauses nothing').toMatchObject({ kind: 'delegate', dir: 'down' })
 })
@@ -679,23 +680,13 @@ test('both routes measured 20 or more runs: the cheapest wins, with no tie', asy
   expect(one.kind === 'delegate' && one.tie?.by).toBe('guide')
 })
 
-test('every fifth close call takes the route the guide did not pick', async () => {
+test('a close call always takes the guide\'s pick: close calls are never explored', async () => {
   const s = opusAt(0.9)
-  for (const ties of [0, 1, 2, 3]) {
-    const p = plan(tieRating, { ...s, ties }, 'low')
-    expect(p.kind === 'delegate' && p.tier, `tie ${ties + 1}: the guide's pick`).toBe('sonnet')
-  }
-  const p = plan(tieRating, { ...s, ties: 4 }, 'low')
-  expect(p.kind === 'delegate' && p.tier).toBe('opus')
-  expect(p.kind === 'delegate' && p.tie).toEqual({ by: 'explore', over: 'sonnet' })
-  const tierAt = (ties: number) => {
-    const q = plan(tieRating, { ...s, ties }, 'low')
-    return q.kind === 'delegate' ? q.tier : undefined
-  }
-  expect(tierAt(5), 'then the guide again').toBe('sonnet')
-  expect(tierAt(9), 'and the tenth call explores').toBe('opus')
-  // Outside the band there is no close call to explore.
-  const far = plan(tieRating, { ...opusAt(0.7), ties: 4 }, 'low')
+  const p = plan(tieRating, s, 'low')
+  expect(p.kind === 'delegate' && p.tier).toBe('sonnet')
+  expect(p.kind === 'delegate' && p.tie).toEqual({ by: 'guide', over: 'opus' })
+  // Outside the band there is no close call.
+  const far = plan(tieRating, opusAt(0.7), 'low')
   expect(far.kind === 'delegate' && far.tie).toBeUndefined()
 })
 
@@ -708,9 +699,6 @@ test('when the guide\'s model is not among the close routes, the stronger one wi
   const p = plan(r, s, 'low')
   expect(p.kind === 'delegate' && p.tier).toBe('opus')
   expect(p.kind === 'delegate' && p.tie).toEqual({ by: 'stronger', over: 'sonnet' })
-  const e = plan(r, { ...s, ties: 4 }, 'low')
-  expect(e.kind === 'delegate' && e.tier, 'exploring takes the other close route').toBe('sonnet')
-  expect(e.kind === 'delegate' && e.tie).toEqual({ by: 'explore', over: 'opus' })
 })
 
 test('a close route that misses the hand-off share is not a candidate, and the tie never overrides it', async () => {
@@ -753,9 +741,6 @@ test("sizing Claude's own subagent breaks a close call the same way", async () =
   const close = sizeSubagent(r, at(0.9), 'fable', 'low')
   expect(close?.tier, 'feature: Sonnet').toBe('sonnet')
   expect(close?.tie).toEqual({ by: 'guide', over: 'opus' })
-  const explore = sizeSubagent(r, at(0.9, { ties: 4 }), 'fable', 'low')
-  expect(explore?.tier).toBe('opus')
-  expect(explore?.tie).toEqual({ by: 'explore', over: 'sonnet' })
   const far = sizeSubagent(r, at(0.7), 'fable', 'low')
   expect(far?.tier, 'outside the band: the cheapest').toBe('opus')
   expect(far?.tie).toBeUndefined()
@@ -769,10 +754,10 @@ test("sizing Claude's own subagent breaks a close call the same way", async () =
 
 test('a model the rater is wrong about for this task type gets no hand-down, at MISS_BLOCK and over', async () => {
   const r = rating({ level: 'low', fit: { haiku: 'low', sonnet: 'low', fable: 'low' }, type: 'search', read: 150_000, write: 3000, steps: 30 })
-  expect(MISS_BLOCK).toBe(0.3)
+  expect(MISS_BLOCK).toBe(0.2)
   const open = plan(r, fable, 'low')
   expect(open.kind === 'delegate' && open.tier, 'the cheapest fit').toBe('haiku')
-  const under = plan(r, { ...fable, misses: { 'search:haiku': 0.29 } }, 'low')
+  const under = plan(r, { ...fable, misses: { 'search:haiku': 0.19 } }, 'low')
   expect(under.kind === 'delegate' && under.tier, 'under the bar: still Haiku').toBe('haiku')
   const paused = plan(r, { ...fable, misses: { 'search:haiku': MISS_BLOCK } }, 'low')
   expect(paused.kind === 'delegate' && paused.tier, 'Haiku skipped: the next cheapest fit').toBe('sonnet')
@@ -793,7 +778,7 @@ test('effort is not lowered on a model the rater is wrong about for this task ty
   const r = rating({ level: 'low', type: 'lookup', write: 1500 })
   const s = { ...opus, cal: freeSwitches }
   expect(effortPlan(r, s, 'low').kind, 'lowers without a record').toBe('effort')
-  expect(effortPlan(r, { ...s, misses: { 'lookup:opus': 0.29 } }, 'low').kind).toBe('effort')
+  expect(effortPlan(r, { ...s, misses: { 'lookup:opus': 0.19 } }, 'low').kind).toBe('effort')
   const p = effortPlan(r, { ...s, misses: { 'lookup:opus': MISS_BLOCK } }, 'low')
   expect(p.kind).toBe('none')
   if (p.kind === 'none') expect(p.why).toContain('paused')
@@ -801,8 +786,8 @@ test('effort is not lowered on a model the rater is wrong about for this task ty
   expect(effortPlan(rating({ level: 'xhigh', fit: { sonnet: 'xhigh' } }), { ...s, tier: 'sonnet', misses: { 'other:sonnet': 0.9 } }, 'low'), 'a raise is never paused').toEqual({ kind: 'effort', dir: 'raise', level: 'xhigh' })
 })
 
-// Settings that limit what rightsize does (Highest effort, Use Haiku and Use Fable, Pause after misses,
-// Explore close calls) ride on the Situation; each changes one decision and leaves the rest alone.
+// Settings that limit what rightsize does (Highest effort, Use Haiku and Use Fable) and the fixed miss pause
+// ride on the Situation; each changes one decision and leaves the rest alone.
 
 test('Highest effort stops a raise at the ceiling, and never lowers what you are on', async () => {
   // Raises are tried on a Sonnet session: Opus takes none at prompt time (ADR 0021).
@@ -986,15 +971,16 @@ test('Use Haiku and Use Fable off: no hand-off or resized subagent goes to that 
   expect(plan(r, { ...fable, without: [] }, 'low')).toEqual(plan(r, fable, 'low'))
 })
 
-test('Pause after misses: the share sets the line, and off never pauses', async () => {
+test('the miss pause: the line is 20%, missBlock moves it, and null never pauses', async () => {
   const r = rating({ level: 'low', fit: { haiku: 'low', sonnet: 'low', fable: 'low' }, type: 'search', read: 150_000, write: 3000, steps: 30 })
   const wrong = { 'search:haiku': 0.25 }
   const tier = (s: Situation) => {
     const p = plan(r, s, 'low')
     return p.kind === 'delegate' ? p.tier : p.kind
   }
-  expect(tier({ ...fable, misses: wrong }), 'the default line is 30%').toBe('haiku')
-  expect(tier({ ...fable, misses: wrong, missBlock: 0.2 }), 'a stricter line pauses it').toBe('sonnet')
+  expect(tier({ ...fable, misses: wrong }), 'the fixed line is 20%: paused').toBe('sonnet')
+  expect(tier({ ...fable, misses: { 'search:haiku': 0.15 } }), 'under it').toBe('haiku')
+  expect(tier({ ...fable, misses: wrong, missBlock: 0.3 }), 'a looser line lets it through').toBe('haiku')
   expect(tier({ ...fable, misses: wrong, missBlock: 0.25 }), 'at the line').toBe('sonnet')
   expect(tier({ ...fable, misses: { 'search:haiku': 0.9 }, missBlock: 0.5 })).toBe('sonnet')
   expect(tier({ ...fable, misses: { 'search:haiku': 0.9 }, missBlock: null }), 'off: even 90% wrong does not pause').toBe('haiku')
@@ -1007,48 +993,26 @@ test('Pause after misses: the share sets the line, and off never pauses', async 
   expect(effortPlan(lower, { ...s, missBlock: 0.2 }, 'low').kind, 'a stricter line').toBe('none')
 })
 
-test('Explore close calls off: a close call always takes the guide\'s pick', async () => {
-  const s = opusAt(0.9)
-  const exploring = plan(tieRating, { ...s, ties: 4 }, 'low')
-  expect(exploring.kind === 'delegate' && exploring.tie).toEqual({ by: 'explore', over: 'sonnet' })
-  for (const ties of [0, 4, 9]) {
-    const p = plan(tieRating, { ...s, ties, explore: false }, 'low')
-    expect(p.kind === 'delegate' && [p.tier, p.tie], `close call ${ties + 1}`).toEqual(['sonnet', { by: 'guide', over: 'opus' }])
-  }
-  expect(plan(tieRating, { ...s, ties: 4, explore: true }, 'low'), 'on is the same as absent').toEqual(exploring)
-  // Claude's own subagents follow the same switch.
+test('Claude\'s own subagents take the guide\'s pick on a close call too', async () => {
   const sub: Situation = { ...fable, tier: 'fable' }
   const raw = (t: 'sonnet' | 'opus') => subWork(tieRating, sub, t, 'medium')
   const cal = pinned({}, subagentKeys('feature', 'opus', 'medium'), raw('opus'), raw('sonnet') * 0.9, CAL_FULL)
-  expect(sizeSubagent(tieRating, { ...sub, cal, ties: 4 }, 'fable', 'low')?.tie?.by).toBe('explore')
-  expect(sizeSubagent(tieRating, { ...sub, cal, ties: 4, explore: false }, 'fable', 'low')?.tie?.by).toBe('guide')
+  expect(sizeSubagent(tieRating, { ...sub, cal }, 'fable', 'low')?.tie?.by).toBe('guide')
 })
 
 test('a cool pace leaves the rules and the note as they were', async () => {
   const cool = { mode: 'cool' as const, window: 'seven_day' as const, pace: 0.3 }
-  for (const rules of [DEFAULT_RULES, { handOff: 0.5, lower: 0.7 }, { handOff: 0.95, lower: 1 }]) {
-    for (const set of [{}, { handOff: true }, { lower: true }, { handOff: true, lower: true }]) {
-      expect(pacedRules(rules, cool, set)).toEqual(rules)
-    }
-  }
+  for (const rules of [DEFAULT_RULES, { handOff: 0.5, lower: 0.7 }, { handOff: 0.95, lower: 1 }]) expect(pacedRules(rules, cool)).toEqual(rules)
   expect(paceNote(cool)).toBe('')
   expect(paceNote(cool, false)).toBe('')
 })
 
-test('pacing moves only a threshold left at its default', async () => {
-  const at = (mode: 'hot' | 'cool' | 'max', set: { handOff?: boolean; lower?: boolean }) => {
-    const r = pacedRules(DEFAULT_RULES, { mode }, set)
+test('pacing moves the fixed bars: hot loosens both, max loosens them most, cool and normal move nothing', async () => {
+  const at = (mode: 'hot' | 'cool' | 'max' | 'normal') => {
+    const r = pacedRules(DEFAULT_RULES, { mode })
     return [Math.round(r.handOff * 100), Math.round(r.lower * 100)]
   }
-  // Each row: nothing set, the hand-off threshold set, the lowering threshold set, both set.
-  expect([at('hot', {}), at('hot', { handOff: true }), at('hot', { lower: true }), at('hot', { handOff: true, lower: true })]).toEqual([[85, 97], [70, 97], [85, 90], [70, 90]])
-  expect([at('cool', {}), at('cool', { handOff: true }), at('cool', { lower: true }), at('cool', { handOff: true, lower: true })]).toEqual([[70, 90], [70, 90], [70, 90], [70, 90]])
-  expect([at('max', {}), at('max', { handOff: true }), at('max', { lower: true }), at('max', { handOff: true, lower: true })]).toEqual([[95, 100], [70, 100], [95, 90], [70, 90]])
-  // A threshold you set below what the pace would move it to stays where you put it, at any pace.
-  const mine = { handOff: 0.5, lower: 0.7 }
-  for (const mode of ['normal', 'hot', 'cool', 'max'] as const) expect(pacedRules(mine, { mode }, { handOff: true, lower: true }), mode).toEqual(mine)
-  // No set given: as before.
-  expect(pacedRules(DEFAULT_RULES, { mode: 'hot' })).toEqual(pacedRules(DEFAULT_RULES, { mode: 'hot' }, {}))
+  expect([at('normal'), at('hot'), at('cool'), at('max')]).toEqual([[70, 90], [85, 97], [70, 90], [95, 100]])
 })
 
 test('the pace note says what pacing did: nothing to say when it moved nothing, except that a window is nearly used up', async () => {

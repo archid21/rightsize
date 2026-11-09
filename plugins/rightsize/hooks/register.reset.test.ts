@@ -62,7 +62,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
   const SETTINGS_GO = "Every rightsize setting in /config goes back to its default, and your saved answers to the four questions are forgotten. This can't be undone."
   const MEASURE_GO = "rightsize goes back to its starting estimates and relearns from your next prompts. This can't be undone."
-  const SOME_SET = { floor: 'medium', handOff: '50%', lowerRule: 'never lower', remember: 'every session', billing: 'api', band: 'always', pacing: 'off' }
+  const SOME_SET = { floor: 'medium', idleWarning: 'over $1', lowerRule: 'never lower', remember: 'every session', billing: 'api', band: 'always', pacing: 'off' }
 
   // A session with settings made, answers saved, and a cost measurement behind it.
   const measured = (h: ReturnType<typeof engine>) => {
@@ -147,7 +147,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
       // The defaults were written, through the config API (plugin origin), where the value was not already the default.
       for (const key of ROWS_RESET) expect(h.stored[key], `${key} stored as its default`).toBe(SETTINGS[key as SettingKey].default)
       // Raising was the saved answer, shown in its row at the start: the reset writes it back to not set.
-      expect(h.sets.slice(before).map(x => x.key.replace('rightsize.', '')).sort(), 'only the rows that were not default').toEqual(['band', 'floor', 'handOff', 'lowerRule', 'pacing', 'raiseRule', 'remember'])
+      expect(h.sets.slice(before).map(x => x.key.replace('rightsize.', '')).sort(), 'only the rows that were not default').toEqual(['band', 'floor', 'idleWarning', 'lowerRule', 'pacing', 'raiseRule', 'remember'])
       // billing was stored as api, which is the default: reset without a write.
       expect(h.stored.billing).toBe('api')
       expect(h.store.choices, 'saved answers cleared').toBeNull()
@@ -176,16 +176,16 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.config('floor', 'high')
     expect(await settingsText(d)).toContain('Lowest effort: high')
     expect(h.store.resetFields).not.toContain('floor')
-    expect(h.store.resetFields, 'the others stay on it').toContain('handOff')
+    expect(h.store.resetFields, 'the others stay on it').toContain('idleWarning')
     // Set to the default value itself: yours too.
-    await d.config('handOff', '70%', 'bridge')
-    expect(await settingsText(d)).toContain('Hand-off threshold: 70%')
-    expect(h.store.resetFields).not.toContain('handOff')
-    // A new session keeps all of that: floor and handOff are yours, the rest default.
+    await d.config('idleWarning', 'over $0.50', 'bridge')
+    expect(await settingsText(d)).toContain('Idle warning: over $0.50')
+    expect(h.store.resetFields).not.toContain('idleWarning')
+    // A new session keeps all of that: floor and idleWarning are yours, the rest default.
     await d.start(surface)
     const text = await settingsText(d)
     expect(text).toContain('Lowest effort: high')
-    expect(text).toContain('Hand-off threshold: 70%')
+    expect(text).toContain('Idle warning: over $0.50')
     expect(text).not.toContain('Band:')
     expect(changedCount(text)).toBe(2)
   })
@@ -197,12 +197,12 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.start(surface)
     const text = await settingsText(d)
     expect(text).toMatch(/Lowest effort: \w+\n/)
-    expect(text).not.toContain('Hand-off threshold:')
+    expect(text).not.toContain('Idle warning:')
     expect(h.store.resetFields, 'floor left the list').not.toContain('floor')
   })
 
   // One setting, by key or by title, in any case.
-  for (const name of ['handOff', 'HANDOFF', 'hand-off threshold', 'Hand-Off Threshold']) {
+  for (const name of ['idleWarning', 'IDLEWARNING', 'idle warning', 'Idle Warning']) {
     test(`/rightsize reset ${name} resets that one setting and confirms first (${surface})`, { timeoutMs: 30000, options: SOME_SET }, async ($, on) => {
       const h = engine(on, { ...OPUS, store: MEASURE_STORE, stored: SOME_SET })
       const d = drive($, h)
@@ -210,14 +210,14 @@ for (const surface of ['desktop', 'terminal'] as const) {
       h.answers = { Confirm: 'Yes' }
       const out = await d.command(`reset ${name}`)
       expect(h.asked.map(a => a.header), 'no menu: it names the setting').toEqual(['Confirm'])
-      expect(h.asked[0]?.question).toBe("Reset Hand-off threshold? It goes back to its default, 70%. This can't be undone.")
-      expect(out.text).toBe('Hand-off threshold is back to its default, 70%.')
+      expect(h.asked[0]?.question).toBe("Reset Idle warning? It goes back to its default, over $0.50. This can't be undone.")
+      expect(out.text).toBe('Idle warning is back to its default, over $0.50.')
       const text = await settingsText(d)
-      expect(text).not.toContain('Hand-off threshold:')
+      expect(text).not.toContain('Idle warning:')
       expect(text, 'the others are as they were').toContain('Lowest effort: medium')
       expect(text).toContain('Budget pacing: off')
-      expect(h.stored.handOff).toBe('70%')
-      expect(h.store.resetFields).toEqual(['handOff'])
+      expect(h.stored.idleWarning).toBe('over $0.50')
+      expect(h.store.resetFields).toEqual(['idleWarning'])
       expect(h.store.choices, 'the saved answers stay').toEqual({ raise: 'auto' })
       // The other six rows, and the saved answer for Raising: seven.
       expect(changedCount(text)).toBe(7)
@@ -226,17 +226,17 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
   test(`/rightsize reset when Claude Code refuses the write: says so, gives the terminal command, logs the reason (${surface})`, { timeoutMs: 30000, options: SOME_SET }, async ($, on) => {
     const h = engine(on, { ...OPUS, stored: SOME_SET })
-    h.refuse = ['handOff']
+    h.refuse = ['idleWarning']
     const d = drive($, h)
     await d.start(surface)
     h.answers = { Confirm: 'Yes' }
-    const out = (await d.command('reset handOff')).text ?? ''
-    expect(out).toBe(`Hand-off threshold could not be changed from here. To reset it, run this in a terminal, then restart Claude Code: claude plugin configure rightsize@archid21 --values-stdin <<< '{"handOff":"70%"}'`)
+    const out = (await d.command('reset idleWarning')).text ?? ''
+    expect(out).toBe(`Idle warning could not be changed from here. To reset it, run this in a terminal, then restart Claude Code: claude plugin configure rightsize@archid21 --values-stdin <<< '{"idleWarning":"over $0.50"}'`)
     expect(out).not.toContain('back to its default')
-    expect(h.stored.handOff, 'unchanged').toBe('50%')
-    expect(await settingsText(d)).toContain('Hand-off threshold: 50%')
-    expect(h.files[LOG_PATH] ?? '').toContain('reset handOff: Claude Code refused to write it: only its dialog changes it')
-    expect(h.store.resetFields, 'listed, so the default counts as a default once set from a terminal').toEqual(['handOff'])
+    expect(h.stored.idleWarning, 'unchanged').toBe('over $1')
+    expect(await settingsText(d)).toContain('Idle warning: over $1')
+    expect(h.files[LOG_PATH] ?? '').toContain('reset idleWarning: Claude Code refused to write it: only its dialog changes it')
+    expect(h.store.resetFields, 'listed, so the default counts as a default once set from a terminal').toEqual(['idleWarning'])
   })
 
   test(`/rightsize reset on one setting declined: nothing changes (${surface})`, { timeoutMs: 30000, options: SOME_SET }, async ($, on) => {
@@ -244,9 +244,9 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const d = drive($, h)
     await d.start(surface)
     h.answers = { Confirm: 'No' }
-    expect((await d.command('reset handOff')).text).toBe('Nothing was reset.')
-    expect(await settingsText(d)).toContain('Hand-off threshold: 50%')
-    expect(h.stored.handOff).toBe('50%')
+    expect((await d.command('reset idleWarning')).text).toBe('Nothing was reset.')
+    expect(await settingsText(d)).toContain('Idle warning: over $1')
+    expect(h.stored.idleWarning).toBe('over $1')
   })
 
   test(`/rightsize reset on a rule row forgets that answer, and the default decides that case again; the other answers stay (${surface})`, { timeoutMs: 30000, options: { lowerRule: 'never lower', raiseRule: 'never raise' } }, async ($, on) => {

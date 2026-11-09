@@ -1,5 +1,4 @@
 import type { RightsizeChoices as Choices, RightsizeLevel as Level } from '../types'
-import { DEFAULT_RULES, MISS_BLOCK, parseShare } from './cost'
 
 // The settings in /config, in one table: each row's title, its options and its
 // default. plugin.json declares the same rows (every one a string picker), and a
@@ -9,7 +8,7 @@ import { DEFAULT_RULES, MISS_BLOCK, parseShare } from './cost'
 // in, so it cannot tell them apart; it reads them off settings.json instead, and
 // follows the changes made in /config. Mode, the three feature switches (Routing, Hand-offs, Cache) and Ask before
 // changing are plain rows; the rest are Advanced, as their titles say, since /config has no groups. The values a
-// profile used to supply (ADR 0021 removed the Profile row) are fixed (FIXED), each with its Advanced row.
+// profile used to supply (ADR 0021 removed the Profile row) are fixed (FIXED); only Before the cache goes cold has a row.
 // Pure functions, no engine calls.
 
 type Spec = { title: string; options: readonly string[]; default: string }
@@ -42,19 +41,13 @@ export const SETTINGS = {
   upRule: { title: 'Advanced · Stronger model', options: ruleOptions('up'), default: NOT_SET },
   downRule: { title: 'Advanced · Cheaper model', options: ruleOptions('down'), default: NOT_SET },
   remember: { title: 'Advanced · Remember choices', options: ['ask', 'every session', 'this session'], default: 'ask' },
-  handOff: { title: 'Advanced · Hand-off threshold', options: ['50%', '60%', '70%', '80%', '90%'], default: '70%' },
-  lowering: { title: 'Advanced · Lowering threshold', options: ['70%', '80%', '90%', '95%'], default: '90%' },
   useHaiku: { title: 'Advanced · Use Haiku', options: ['on', 'off'], default: 'on' },
   useFable: { title: 'Advanced · Use Fable', options: ['on', 'off'], default: 'on' },
   subagents: { title: "Advanced · Claude's subagents", options: ['cheaper when it fits', 'off'], default: 'cheaper when it fits' },
   workflows: { title: 'Advanced · Workflows', options: ['ask', 'pause rightsize', 'follow my rules', 'right-size every agent'], default: 'ask' },
-  explore: { title: 'Advanced · Explore close calls', options: ['on', 'off'], default: 'off' },
-  missPause: { title: 'Advanced · Pause after misses', options: ['off', '20%', '30%', '40%', '50%'], default: '30%' },
   pacing: { title: 'Advanced · Budget pacing', options: ['on', 'off'], default: 'on' },
   escalation: { title: 'Advanced · Raise when stuck', options: ['on', 'off'], default: 'on' },
-  helperCap: { title: 'Advanced · Helper call cap', options: ['tight', 'normal', 'loose', 'off'], default: 'normal' },
   rater: { title: 'Advanced · Rater', options: ['sonnet', 'haiku'], default: 'sonnet' },
-  raterCheck: { title: 'Advanced · Rater check', options: ['every 25', 'every 50', 'every 100', 'off'], default: 'every 50' },
   startTips: { title: 'Advanced · Start suggestions', options: ['weekly', 'monthly', 'off'], default: 'weekly' },
   idleWarning: { title: 'Advanced · Idle warning', options: ['over $0.10', 'over $0.50', 'over $1', 'off'], default: 'over $0.50' },
   beforeCold: { title: 'Advanced · Before the cache goes cold', options: ['ask', 'keep warm 2 h', 'keep warm 8 h', 'keep warm until my usual start', 'save a handoff', 'compact', 'off'], default: 'ask' },
@@ -133,9 +126,8 @@ export function stillReset(configs: unknown, options: Readonly<Record<string, un
 }
 
 /**
- * The row `name` means: its key as spelled ("handOff"), else its title in any case ("hand-off threshold"), else its
- * key in any case ("handoff"). The first wins, since "Lowering" is the title of one row and the key of another:
- * `lowering` is the threshold, `Lowering` the rule.
+ * The row `name` means: its key as spelled ("upRule"), else its title in any case ("stronger model"), else its
+ * key in any case ("uprule").
  */
 export function settingNamed(name: string): SettingKey | undefined {
   const exact = KEYS.find(k => k === name.trim())
@@ -210,15 +202,6 @@ export function rulesOf(values: Readonly<Record<string, string>>): Choices {
 
 // ---- Values the rows stand for -------------------------------------------------
 
-/** "every 50" as 50; "off" as null. */
-export function raterEvery(v: string): number | null {
-  const m = /^every (\d+)$/.exec(v)
-  return m ? Number(m[1]) : null
-}
-
-/** "30%" as 0.3; "off" as null. */
-export const missPauseOf = (v: string): number | null => (v === 'off' ? null : parseShare(v, MISS_BLOCK))
-
 // ---- Fixed values and Ask before changing -----------------------------------------
 
 /**
@@ -233,9 +216,9 @@ export type Answers = { [K in keyof Choices]-?: NonNullable<Choices[K]> }
 
 export type FixedValues = {
   evidence: Evidence
-  /** A cheaper route must cost under this share of staying (Hand-off threshold). */
+  /** A cheaper route must cost under this share of staying. */
   handOff: number
-  /** Every this many Haiku ratings, Sonnet checks one (Rater check). */
+  /** Every this many Haiku ratings, Sonnet checks one. */
   raterEvery: number
   /** Chances a task has to retry: a helper raised a level, or the main chat reworking a hand-off. */
   chances: number
@@ -245,9 +228,8 @@ export type FixedValues = {
   reviewCeiling: Level
 }
 
-// One rule set (ADR 0021): the values the Balanced profile used to hold. Each has its Advanced row, and a row you
-// set wins. A value outside a row's options (a 20% pause, a spot-check every 20) is a fixed value: a row can only
-// hold its own options. Chances and the review cap have no row.
+// One rule set (ADR 0021): the values the Balanced profile used to hold. None has a row, except Before the cache
+// goes cold: a row you set wins over its fixed value. Stored values for removed rows are ignored.
 export const FIXED: FixedValues = {
   evidence: { minTasks: 0, maxMiss: 0.2 },
   handOff: 0.7,
@@ -270,22 +252,19 @@ export const answersOf = (askFirst: boolean): Answers => (askFirst ? { lower: 'a
 export const legacyAskFirst = (configs: unknown): boolean => storedOptions(configs)?.profile === 'Quality'
 
 /** What the fixed values govern, as they apply now. */
-export type InUse = { handOff: number; minTasks: number; maxMiss: number | null; raterEvery: number | null; chances: number; answers: Answers; beforeCold: string; reviewCeiling: Level }
+export type InUse = { handOff: number; minTasks: number; maxMiss: number; raterEvery: number; chances: number; answers: Answers; beforeCold: string; reviewCeiling: Level }
 
 /**
- * The fixed values, each replaced by its row where the row is yours: your setting wins. The evidence rule
- * is one value held by the Pause after misses row, so a row you set replaces all of it (Pause after misses
- * "off" has to mean off). Chances and the review cap have no row. The questions' first options follow
- * Ask before changing. Before the cache goes cold is one value: the row you set, else the fixed one.
+ * The values in use: the fixed values, except Before the cache goes cold, where the row you set wins.
+ * The questions' first options follow Ask before changing.
  */
 export function inUse(values: Readonly<Record<string, string>>, yours: ReadonlySet<SettingKey>, askFirst = askFirstOn(values.askFirst)): InUse {
   const p = FIXED
-  const miss = yours.has('missPause')
   return {
-    handOff: yours.has('handOff') ? parseShare(values.handOff ?? '', DEFAULT_RULES.handOff) : p.handOff,
-    minTasks: miss ? 0 : p.evidence.minTasks,
-    maxMiss: miss ? missPauseOf(values.missPause ?? '') : p.evidence.maxMiss,
-    raterEvery: yours.has('raterCheck') ? raterEvery(values.raterCheck ?? '') : p.raterEvery,
+    handOff: p.handOff,
+    minTasks: p.evidence.minTasks,
+    maxMiss: p.evidence.maxMiss,
+    raterEvery: p.raterEvery,
     chances: p.chances,
     answers: answersOf(askFirst),
     beforeCold: yours.has('beforeCold') ? (values.beforeCold ?? p.beforeCold) : p.beforeCold,

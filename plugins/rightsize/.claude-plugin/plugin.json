@@ -141,31 +141,6 @@
         "this session"
       ]
     },
-    "handOff": {
-      "type": "string",
-      "title": "Advanced · Hand-off threshold",
-      "description": "Send a big task to a cheaper subagent only when it is estimated to cost under this share of staying on your model, counting the brief, check and likely rework. Lower is stricter. Left alone, it is 70%.",
-      "default": "70%",
-      "options": [
-        "50%",
-        "60%",
-        "70%",
-        "80%",
-        "90%"
-      ]
-    },
-    "lowering": {
-      "type": "string",
-      "title": "Advanced · Lowering threshold",
-      "description": "Lower effort only when the lower level is estimated to cost under this share of staying, counting the cache it may rewrite. Lower is stricter.",
-      "default": "90%",
-      "options": [
-        "70%",
-        "80%",
-        "90%",
-        "95%"
-      ]
-    },
     "useHaiku": {
       "type": "string",
       "title": "Advanced · Use Haiku",
@@ -189,7 +164,7 @@
     "subagents": {
       "type": "string",
       "title": "Advanced · Claude's subagents",
-      "description": "cheaper when it fits: when Claude starts a general-purpose subagent without naming a model, rate its brief and run it on the cheapest weaker model that fits, at that model's level, under the hand-off threshold. off: leave Claude's own subagents on its model.",
+      "description": "cheaper when it fits: when Claude starts a general-purpose subagent without naming a model, rate its brief and run it on the cheapest weaker model that fits, at that model's level, under the 70% hand-off bar. off: leave Claude's own subagents on its model.",
       "default": "cheaper when it fits",
       "options": [
         "cheaper when it fits",
@@ -199,7 +174,7 @@
     "workflows": {
       "type": "string",
       "title": "Advanced · Workflows",
-      "description": "What rightsize does once Claude starts a workflow (ultracode, or asked for): many helper agents at once, often 10 or more, each picking its own model. ask: ask on the band when the first workflow starts (the default); until you answer, rightsize pauses for it. pause rightsize: hand nothing off for the rest of the session, and leave the workflow's agents alone. follow my rules: hand-offs follow your Stronger model and Cheaper model rules as usual; the workflow's agents are left alone. right-size every agent: as follow my rules, and each workflow agent that names no model is rated by the Rater (one rating call each) and runs on the cheapest model that fits, under Claude's subagents, Use Haiku, Use Fable and Pause after misses. Claude's subagents set to off keeps the agents alone in every case. Whichever you pick, measurement stays paused after a workflow: calibration learns nothing and no saving is claimed.",
+      "description": "What rightsize does once Claude starts a workflow (ultracode, or asked for): many helper agents at once, often 10 or more, each picking its own model. ask: ask on the band when the first workflow starts (the default); until you answer, rightsize pauses for it. pause rightsize: hand nothing off for the rest of the session, and leave the workflow's agents alone. follow my rules: hand-offs follow your Stronger model and Cheaper model rules as usual; the workflow's agents are left alone. right-size every agent: as follow my rules, and each workflow agent that names no model is rated by the Rater (one rating call each) and runs on the cheapest model that fits, under Claude's subagents, Use Haiku, Use Fable and the miss-rate pause (20%). Claude's subagents set to off keeps the agents alone in every case. Whichever you pick, measurement stays paused after a workflow: calibration learns nothing and no saving is claimed.",
       "default": "ask",
       "options": [
         "ask",
@@ -208,33 +183,10 @@
         "right-size every agent"
       ]
     },
-    "explore": {
-      "type": "string",
-      "title": "Advanced · Explore close calls",
-      "description": "on: when two models that fit cost about the same, rightsize picks by task type, and one close call in five takes the other model so both get measured. off (default): a close call always takes the task-type pick, so the other model may never be measured.",
-      "default": "off",
-      "options": [
-        "on",
-        "off"
-      ]
-    },
-    "missPause": {
-      "type": "string",
-      "title": "Advanced · Pause after misses",
-      "description": "The rating is scored against what happens: rework on hand-offs, lowered turns that stepped back up, mid-turn raises, a test run that failed at the turn's end, a next prompt that corrects the reply, your 👍 and 👎 (in the band's ⋯ menu), and Sonnet's checks. When the miss rate for a kind of work on a model reaches this share, rightsize stops handing that work down to that model and stops lowering effort on it, until the rate falls back under it. off: never pause. Left alone, it pauses at 20%. A value you set here replaces the whole rule.",
-      "default": "30%",
-      "options": [
-        "off",
-        "20%",
-        "30%",
-        "40%",
-        "50%"
-      ]
-    },
     "pacing": {
       "type": "string",
       "title": "Advanced · Budget pacing",
-      "description": "on: on a subscription, move the thresholds by how fast the 5-hour and 7-day windows are being used. Running out early: hand off and lower more readily, and the band says which bars moved. Much left near a reset: nothing changes. Over 90% used: save all it can, which skips raises and stronger models while Raising and Stronger model are not set. A threshold or rule you set stays as you set it: pacing moves only what is left at its default. off: always use the thresholds above.",
+      "description": "on: on a subscription, move the hand-off and lowering bars by how fast the 5-hour and 7-day windows are being used. Running out early: hand off and lower more readily, and the band says which bars moved. Much left near a reset: nothing changes. Over 90% used: save all it can, which skips raises and stronger models while Raising and Stronger model are not set. A rule you set stays as you set it. off: always use the fixed bars (70% for hand-offs, 90% for lowering).",
       "default": "on",
       "options": [
         "on",
@@ -251,18 +203,6 @@
         "off"
       ]
     },
-    "helperCap": {
-      "type": "string",
-      "title": "Advanced · Helper call cap",
-      "description": "The most tool calls a helper on a cheaper model may make for one task, however well they go. At the cap the helper stops and the main chat takes the task over, as for a helper that is struggling. normal: 25 for Haiku, 40 for Sonnet. tight: 15 and 25. loose: 40 and 60. off: no cap. Opus and Fable helpers have none.",
-      "default": "normal",
-      "options": [
-        "tight",
-        "normal",
-        "loose",
-        "off"
-      ]
-    },
     "rater": {
       "type": "string",
       "title": "Advanced · Rater",
@@ -271,18 +211,6 @@
       "options": [
         "sonnet",
         "haiku"
-      ]
-    },
-    "raterCheck": {
-      "type": "string",
-      "title": "Advanced · Rater check",
-      "description": "every 25, every 50 or every 100: on every that many prompts rated by Haiku (Rater set to haiku, or Sonnet failed), ask Sonnet in the background to rate the same prompt, and log where it says a model would struggle that Haiku said does the work. These checks and the other outcomes give a miss rate per task type and model (see Pause after misses). Each check costs one Sonnet call and never delays the prompt. off: no checks (the other outcomes still count). Left alone, it is every 20.",
-      "default": "every 50",
-      "options": [
-        "every 25",
-        "every 50",
-        "every 100",
-        "off"
       ]
     },
     "startTips": {

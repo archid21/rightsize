@@ -68,9 +68,9 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await selectOf(ui, 'ceiling')).toMatchObject({ label: 'Highest effort (default)' })
     await ui.unmount()
     // A change in /config shows too.
-    await d.config('handOff', '60%')
+    await d.config('idleWarning', 'over $1')
     const again = await mountPane($, surface)
-    expect(await selectOf(again, 'handOff')).toMatchObject({ label: 'Hand-off threshold (yours)', value: '60%' })
+    expect(await selectOf(again, 'idleWarning')).toMatchObject({ label: 'Idle warning (yours)', value: 'over $1' })
     await again.unmount()
   })
 
@@ -136,7 +136,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await ui.unmount()
   })
 
-  const BAND_PAGE = [...Array<string>(9).fill('More…'), 'Band: when it acts']
+  const BAND_PAGE = [...Array<string>(7).fill('More…'), 'Band: when it acts']
   test(`with no pane placed it asks instead: pick a row shown as Row: value (paged), pick its value, back to the rows, until Done (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const { h, d } = await start($, on)
     h.panePlaced = false

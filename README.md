@@ -165,11 +165,11 @@ Want to watch first? In `/config`, set **Mode** to watch only.
 
 ## Make it yours
 
-One rule set, two switches. **Hand-offs** turns helper subagents off (effort still changes). **Ask before changing** makes every move ask first. Everything else has an Advanced row you can set.
+One rule set, two switches. **Hand-offs** turns helper subagents off (effort still changes). **Ask before changing** makes every move ask first. The rest is fixed or has an Advanced row you can set.
 
 | | Default | Row |
 |---|---|---|
-| Moves to a cheaper model when | The rating says it fits and the helper costs under 70% of staying | **Hand-off threshold** |
+| Moves to a cheaper model when | The rating says it fits and the helper costs under 70% of staying | **Cheaper model** (the 70% bar is fixed) |
 | Lowers effort when | The rating says the lower level fits | **Lowering** |
 | Reviews on Opus | Yes, highest effort | **Stronger model** |
 | Keeps the cache warm while you're away | Until your usual start time | **Before the cache goes cold** |

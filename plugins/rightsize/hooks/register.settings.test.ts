@@ -198,8 +198,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
       set: { asked: [], saved: undefined, remembered: undefined },
       def: { asked: ['Remember'], saved: { raise: 'never' }, remembered: true },
     },
-    { key: 'handOff', value: '80%', start: { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES } }, see: async c => (await handOff(c, SEARCH, NEAR)).to, set: 'haiku', def: undefined },
-    { key: 'lowering', value: '70%', start: { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES } }, see: c => effortOf(c, LOOKUP, LOWER_300), set: 'medium', def: 'low' },
     { key: 'useHaiku', value: 'off', start: FABLE, warm: true, see: async c => (await handOff(c, SEARCH, FIT_LOW)).to, set: 'sonnet', def: 'haiku' },
     { key: 'useFable', value: 'off', start: OPUS, see: async c => (await handOff(c, DEBUG, NEEDS_FABLE)).to, set: undefined, def: 'fable' },
     {
@@ -237,25 +235,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
       set: { asked: [], to: 'fable' },
       def: { asked: ['Workflow'], to: undefined },
     },
-    {
-      key: 'explore',
-      value: 'on',
-      start: { ...FABLE, store: { [CAL_STORE]: { ...tieCal(0.9), ...FREE_SWITCHES }, ties: 4 } },
-      warm: true,
-      see: async c => (await handOff(c, SEARCH, TIE_RATING)).to,
-      set: 'opus',
-      def: 'sonnet',
-    },
-    {
-      key: 'missPause',
-      value: '40%',
-      start: { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES } },
-      // Wrong on 2 of 6 lookups on Opus: 33%.
-      setup: h => void (h.files[RUNS] = lookupLog(h, 2)),
-      see: c => effortOf(c, LOOKUP, LOWER),
-      set: 'low',
-      def: 'medium',
-    },
     { key: 'pacing', value: 'off', start: { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES } }, setup: h => void (h.rateLimits = hotWindows(h)), see: async c => (await handOff(c, SEARCH, NEAR)).to, set: undefined, def: 'haiku' },
     {
       key: 'escalation',
@@ -275,29 +254,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
       def: 'high',
     },
     {
-      key: 'helperCap',
-      value: 'tight',
-      start: { model: 'claude-fable-5-1', effort: 'high', store: { remember: true, choices: { raise: 'auto', down: 'auto' } } },
-      see: async c => {
-        c.h.subModel = 'claude-haiku-5-5'
-        await c.d.step('t0')
-        await c.d.complete('t0')
-        c.h.rating = '{"fit":{"haiku":"low","sonnet":"low","opus":"low","fable":"low"},"type":"search","read":150000,"write":3000,"steps":30,"continues":false}'
-        await c.d.submit('find every call site of the old logger across the whole repo and list them')
-        const t = c.turn()
-        await c.d.step(t, 0)
-        await c.d.agent('haiku')
-        await c.d.spawn('helper', 'haiku')
-        await c.d.step(t, 0, 'agent-helper')
-        let denied: string | undefined
-        // The 16th call of a Haiku helper: refused at the tight cap of 15, allowed at the default 25.
-        for (let i = 0; i < 16; i++) denied = ((await c.d.bash(`ls dir${i}`, 'agent-helper')) as { deny?: string }).deny
-        return denied !== undefined
-      },
-      set: true,
-      def: false,
-    },
-    {
       key: 'rater',
       value: 'haiku',
       start: OPUS,
@@ -308,21 +264,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
       },
       set: 'haiku',
       def: 'sonnet',
-    },
-    {
-      key: 'raterCheck',
-      value: 'every 25',
-      start: { ...OPUS, store: { spotChecks: 24 } },
-      see: async c => {
-        // Only Haiku's ratings are checked.
-        await c.d.config('rater', 'haiku')
-        c.h.rating = FIT_NO
-        await c.d.submit(LOOKUP)
-        await flush()
-        return c.h.completions.filter(m => m === 'sonnet').length
-      },
-      set: 1,
-      def: 0,
     },
     {
       key: 'startTips',
@@ -776,19 +717,21 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(disagree(h)).toBe(false)
   })
 
-  test(`a value that is not one of a row's options counts as unset: the default applies, and it is not yours (${surface})`, { timeoutMs: 30000, options: { ceiling: 'ultra', raterCheck: 'on', startTips: 'on', missPause: '35%' } }, async ($, on) => {
-    const h = engine(on, { ...OPUS, stored: { ceiling: 'ultra', raterCheck: 'on', startTips: 'on', missPause: '35%' } })
+  test(`a value that is not one of a row's options, or a stored value for a removed row, counts as unset: the default applies, and it is not yours (${surface})`, { timeoutMs: 30000, options: { ceiling: 'ultra', startTips: 'on' } }, async ($, on) => {
+    const h = engine(on, { ...OPUS, stored: { ceiling: 'ultra', startTips: 'on', handOff: '60%', raterCheck: 'off', missPause: '35%' } })
     const d = drive($, h)
     await d.start(surface)
     const text = await settingsText(d)
     expect(text).not.toContain('Highest effort:')
-    expect(text, 'a stored on, from before it became a list: the old on is the default').not.toContain('Rater check:')
-    expect(text).not.toContain('Start suggestions:')
+    expect(text, 'a stored on, from before it became a list: the old on is the default').not.toContain('Start suggestions:')
+    expect(text, 'removed rows are ignored').not.toContain('Hand-off threshold:')
+    expect(text).not.toContain('Rater check:')
     expect(text).not.toContain('Pause after misses:')
+    expect(disagree(h), 'and raise no warning').toBe(false)
     expect(text).toContain('are at their defaults')
   })
 
-  const SOME = { floor: 'medium', ceiling: 'xhigh', lowerRule: 'never lower', billing: 'api', explore: 'on', pacing: 'off' }
+  const SOME = { floor: 'medium', ceiling: 'xhigh', lowerRule: 'never lower', billing: 'api', escalation: 'off', pacing: 'off' }
   test(`/rightsize lists every setting, with (yours) for those you set and (default) for the rest (${surface})`, { timeoutMs: 30000, options: SOME }, async ($, on) => {
     const set = SOME
     const h = engine(on, { ...OPUS, stored: set })
@@ -877,11 +820,11 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const d = drive($, h)
     await d.start(surface)
     await d.config('floor', 'high')
-    await d.config('handOff', '50%')
+    await d.config('idleWarning', 'over $1')
     const text = await settingsText(d)
     expect(text).toContain('Lowest effort: high')
-    expect(text).toContain('Hand-off threshold: 50%')
-    expect(text).not.toContain('Lowering threshold:')
+    expect(text).toContain('Idle warning: over $1')
+    expect(text).not.toContain('Band:')
     expect(text).not.toContain('Highest effort:')
     expect(changedCount(text)).toBe(2)
   })

@@ -16,12 +16,10 @@ import {
   isKey,
   manifestGaps,
   mark,
-  missPauseOf,
   answersOf,
   askFirstOn,
   legacyAskFirst,
   plainTitle,
-  raterEvery,
   ruleLabel,
   ruleValue,
   resetKeys,
@@ -37,7 +35,7 @@ import {
 const set = (...keys: SettingKey[]) => new Set<SettingKey>(keys)
 
 test('every row is a picker: a title, two or more options, and a default among them', async () => {
-  expect(KEYS.length).toBe(32)
+  expect(KEYS.length).toBe(26)
   for (const k of KEYS) {
     const row = SETTINGS[k]
     expect(row.title.length, k).toBeGreaterThan(0)
@@ -56,12 +54,10 @@ test('a value outside the options counts as unset: the default applies', async (
   expect(valueOf('floor', undefined)).toBe('low')
   expect(valueOf('floor', 7)).toBe('low')
   // "on" was the value of two rows that became lists: it falls outside, and the default is the old "on".
-  expect(valueOf('raterCheck', 'on'), 'a stored on').toBe('every 50')
   expect(valueOf('startTips', 'on'), 'a stored on').toBe('weekly')
-  expect(inOptions('raterCheck', 'off')).toBe(true)
   expect(inOptions('startTips', 'off')).toBe(true)
-  expect(valuesOf({ floor: 'high', ceiling: 'max2', raterCheck: 'on' }).floor).toBe('high')
-  expect(valuesOf({ floor: 'high', ceiling: 'max2', raterCheck: 'on' }).ceiling).toBe('max')
+  expect(valuesOf({ floor: 'high', ceiling: 'max2', startTips: 'on' }).floor).toBe('high')
+  expect(valuesOf({ floor: 'high', ceiling: 'max2', startTips: 'on' }).ceiling).toBe('max')
   expect(valuesOf(undefined)).toEqual(defaults())
 })
 
@@ -94,14 +90,14 @@ test('reads the options stored under rightsize and under rightsize@<marketplace>
   expect(fieldsSet(others)).toEqual(set())
   expect(storedOptions(others)).toEqual({})
   // Stored under two keys (installed and inline): both count.
-  const two = { rightsize: { options: { floor: 'high' } }, 'rightsize@inline': { options: { handOff: '50%' } } }
-  expect(fieldsSet(two)).toEqual(set('floor', 'handOff'))
+  const two = { rightsize: { options: { floor: 'high' } }, 'rightsize@inline': { options: { band: 'always' } } }
+  expect(fieldsSet(two)).toEqual(set('floor', 'band'))
   expect(storedOptions({ rightsize: { options: { floor: 'high' } } })).toEqual({ floor: 'high' })
 })
 
 test('a stored value outside the options, or a key rightsize does not have, is not yours', async () => {
-  const configs = { 'rightsize@archid21': { options: { raterCheck: 'on', startTips: 'on', floor: 'ultra', nope: 'x', pacing: 'off', lowerRule: NOT_SET } } }
-  expect(fieldsSet(configs), 'only what fits a row').toEqual(set('pacing', 'lowerRule'))
+  const configs = { 'rightsize@archid21': { options: { handOff: '60%', startTips: 'on', floor: 'ultra', nope: 'x', pacing: 'off', lowerRule: NOT_SET } } }
+  expect(fieldsSet(configs), 'only what fits a row; a removed row (handOff) is ignored').toEqual(set('pacing', 'lowerRule'))
   // An entry with no options, or options that are not an object.
   expect(fieldsSet({ rightsize: {} })).toEqual(set())
   expect(fieldsSet({ rightsize: { options: ['floor'] } })).toEqual(set())
@@ -111,7 +107,7 @@ test('a stored value outside the options, or a key rightsize does not have, is n
 })
 
 test('when settings cannot be read, a value that differs from its default can only have been set', async () => {
-  const options = { floor: 'high', ceiling: 'max', billing: 'api', raterCheck: 'on', pacing: 'off' }
+  const options = { floor: 'high', ceiling: 'max', billing: 'api', startTips: 'on', pacing: 'off' }
   for (const unreadable of [undefined, null, 'x', 7, []]) expect(fieldsSet(unreadable, options), String(unreadable)).toEqual(set('floor', 'pacing'))
   expect(fieldsSet(undefined), 'nothing to go on').toEqual(set())
   // Readable but with no entry for rightsize: nothing was set, whatever the options say.
@@ -155,13 +151,6 @@ test('plugin.json is checked against the table: a missing or unlisted field, or 
   expect(manifestGaps(undefined, set()).length, 'nothing declared').toBe(KEYS.length)
 })
 
-test('the rows stand for plain values', async () => {
-  expect(['every 25', 'every 50', 'every 100'].map(raterEvery)).toEqual([25, 50, 100])
-  expect(raterEvery('off')).toBeNull()
-  expect(raterEvery('on'), 'the old on is not a row value').toBeNull()
-  expect(['20%', '30%', '40%', '50%'].map(missPauseOf)).toEqual([0.2, 0.3, 0.4, 0.5])
-  expect(missPauseOf('off')).toBeNull()
-})
 
 test('Workflows asks by default, and Price check is monthly or off', async () => {
   expect(SETTINGS.workflows.title).toBe('Advanced · Workflows')
@@ -174,16 +163,16 @@ test('Workflows asks by default, and Price check is monthly or off', async () =>
 })
 
 test('a setting is named by its key or its title, in any case', async () => {
-  expect(settingNamed('handOff')).toBe('handOff')
-  expect(settingNamed('HANDOFF'), 'a key, in any case').toBe('handOff')
-  expect(settingNamed('hand-off threshold')).toBe('handOff')
-  expect(settingNamed('  Hand-Off   Threshold ')).toBe('handOff')
+  expect(settingNamed('idleWarning')).toBe('idleWarning')
+  expect(settingNamed('IDLEWARNING'), 'a key, in any case').toBe('idleWarning')
+  expect(settingNamed('idle warning')).toBe('idleWarning')
+  expect(settingNamed('  Idle   Warning ')).toBe('idleWarning')
   expect(settingNamed("claude's subagents")).toBe('subagents')
-  expect(settingNamed('Pause after misses')).toBe('missPause')
-  expect(settingNamed('lowering'), 'the threshold row, by its key as spelled').toBe('lowering')
+  expect(settingNamed('Budget pacing')).toBe('pacing')
+  expect(settingNamed('handOff'), 'a removed row').toBeUndefined()
   expect(settingNamed('Lowering'), 'the rule row, by its title').toBe('lowerRule')
   expect(settingNamed('LOWERING'), 'the rule row, by its title').toBe('lowerRule')
-  expect(settingNamed('lowering threshold')).toBe('lowering')
+  expect(settingNamed('lowering threshold'), 'a removed row').toBeUndefined()
   expect(settingNamed('lowerRule')).toBe('lowerRule')
   expect(settingNamed('nope')).toBeUndefined()
   expect(settingNamed('')).toBeUndefined()
@@ -191,13 +180,13 @@ test('a setting is named by its key or its title, in any case', async () => {
   for (const k of KEYS) expect(settingNamed(k), `${k} by key`).toBe(k)
   for (const k of KEYS) expect(settingNamed(SETTINGS[k].title), `${k} by title`).toBe(k)
   for (const k of KEYS) expect(settingNamed(plainTitle(SETTINGS[k].title)), `${k} by its title without the prefix`).toBe(k)
-  expect(settingNamed('advanced · hand-off threshold'), 'the title as /config shows it, in any case').toBe('handOff')
+  expect(settingNamed('advanced · idle warning'), 'the title as /config shows it, in any case').toBe('idleWarning')
 })
 
 test('a reset field is not yours while its stored value is the default, and is again once it is anything else', async () => {
   const stored = (options: Record<string, string>) => ({ 'rightsize@archid21': { options } })
   // Reset: the default was written, and the field is on the list.
-  expect(fieldsSet(stored({ floor: 'low', handOff: '50%' }), undefined, ['floor'])).toEqual(set('handOff'))
+  expect(fieldsSet(stored({ floor: 'low', band: 'always' }), undefined, ['floor'])).toEqual(set('band'))
   expect(stillReset(stored({ floor: 'low' }), undefined, ['floor'])).toEqual(['floor'])
   // Set again, in /config or by hand: its value is not the default, so it is yours and leaves the list.
   expect(fieldsSet(stored({ floor: 'high' }), undefined, ['floor'])).toEqual(set('floor'))
@@ -208,7 +197,7 @@ test('a reset field is not yours while its stored value is the default, and is a
   // Not on the list: a stored default counts as set, as before.
   expect(fieldsSet(stored({ floor: 'low' }))).toEqual(set('floor'))
   // The list is read off the store's value, and nothing else in it counts.
-  expect(resetKeys(['floor', 'nope', 7, 'floor', 'handOff'])).toEqual(['floor', 'handOff'])
+  expect(resetKeys(['floor', 'nope', 7, 'floor', 'band', 'handOff'])).toEqual(['floor', 'band'])
   expect(resetKeys(undefined)).toEqual([])
   expect(resetKeys('floor')).toEqual([])
   // Settings unreadable: the options stand in, and a reset field at its default is not yours either way.
@@ -261,7 +250,7 @@ test('Routing, Hand-offs and Cache are rows 2, 3 and 5: on or off, on by default
     expect(settingNamed(k), `${k} by key`).toBe(k)
     expect(valueOf(k, 'maybe'), `${k}: not an option, on`).toBe('on')
   }
-  expect(settingNamed('hand-off threshold'), 'the threshold row keeps its own name').toBe('handOff')
+  expect(settingNamed('lowering'), 'the Lowering rule row, by its title').toBe('lowerRule')
 })
 
 test('every other row is titled Advanced, so /config lists the five plain rows first and the rest as advanced', async () => {
@@ -275,33 +264,15 @@ test('every other row is titled Advanced, so /config lists the five plain rows f
   expect(plainTitle('Mode'), 'no prefix to take off').toBe('Mode')
 })
 
-test('exploring close calls is off by default', async () => {
-  expect(SETTINGS.explore.default).toBe('off')
-  expect(defaults().explore).toBe('off')
-})
-
 test('the fixed values are what the Balanced profile held (ADR 0021)', async () => {
   expect(FIXED).toEqual({ evidence: { minTasks: 0, maxMiss: 0.2 }, handOff: 0.7, raterEvery: 20, chances: 2, beforeCold: 'keep warm until my usual start', reviewCeiling: 'max' })
 })
 
-test('a row you set wins over the fixed value; a row you did not set takes the fixed value', async () => {
-  const values = { ...defaults(), handOff: '60%', missPause: '40%', raterCheck: 'every 100' }
-  // Nothing set: the fixed values.
-  expect(inUse(values, set())).toMatchObject({ handOff: 0.7, minTasks: 0, maxMiss: 0.2, raterEvery: 20, chances: 2 })
-  // Each row set replaces only its own value.
-  expect(inUse(values, set('handOff'))).toMatchObject({ handOff: 0.6, maxMiss: 0.2, raterEvery: 20 })
-  expect(inUse(values, set('raterCheck'))).toMatchObject({ handOff: 0.7, raterEvery: 100 })
-  // The evidence rule is one value, held by Pause after misses: set, it is the whole rule.
-  expect(inUse(values, set('missPause'))).toMatchObject({ minTasks: 0, maxMiss: 0.4, handOff: 0.7 })
-  expect(inUse({ ...values, missPause: 'off' }, set('missPause')).maxMiss, 'off is never').toBeNull()
-  expect(inUse({ ...values, raterCheck: 'off' }, set('raterCheck')).raterEvery, 'off is never').toBeNull()
-  // Chances and the review cap have no row: always the fixed value.
-  expect(inUse(values, set('handOff', 'missPause', 'raterCheck')).chances).toBe(2)
-  expect(inUse(values, set('handOff')).reviewCeiling).toBe('max')
-  // The questions' first options follow Ask before changing: the row, or the value passed for an old Quality profile.
-  expect(inUse(values, set()).answers).toEqual(answersOf(false))
-  expect(inUse({ ...values, askFirst: 'on' }, set('askFirst')).answers).toEqual(answersOf(true))
-  expect(inUse(values, set(), true).answers, 'an old Quality profile').toEqual(answersOf(true))
+test('the fixed values are in use whatever is stored; Before the cache goes cold is the one row that replaces its fixed value', async () => {
+  const values = { ...defaults(), beforeCold: 'compact' }
+  expect(inUse(values, set())).toEqual({ handOff: 0.7, minTasks: 0, maxMiss: 0.2, raterEvery: 20, chances: 2, answers: answersOf(false), beforeCold: 'keep warm until my usual start', reviewCeiling: 'max' })
+  expect(inUse(values, set('beforeCold')).beforeCold).toBe('compact')
+  expect(inUse(values, set('beforeCold', 'floor', 'band'))).toMatchObject({ handOff: 0.7, maxMiss: 0.2, raterEvery: 20, chances: 2, reviewCeiling: 'max' })
 })
 
 test('Before the cache goes cold is a row: seven options, asking by default, and /config names it', async () => {

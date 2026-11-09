@@ -15,7 +15,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   // Close calls. A Fable session at high effort, a feature that Sonnet, Opus and Fable all do at medium.
   // Opus is measured (20 runs) at 0.9x Sonnet's estimate, Sonnet not at all: the 25% band is open, so the
   // two are close and the task-type guide (feature: Sonnet) decides. The stored count says which close call this is:
-  // the fourth (3 before it) goes to the guide, the fifth explores.
+  // close calls are never explored.
   const TIE_RATING = '{"fit":{"haiku":"no","sonnet":"medium","opus":"medium","fable":"medium"},"type":"feature","read":150000,"write":3000,"steps":30,"reason":"big feature"}'
   const tieRating: Rating = { level: 'medium', fit: { haiku: null, sonnet: 'medium', opus: 'medium', fable: 'medium' }, type: 'feature', read: 150_000, write: 3000, steps: 30, reason: '' }
   const fableHigh: Situation = { tier: 'fable', level: 'high', context: 20_000, prices: DEFAULT_PRICES, cal: {} }
@@ -263,12 +263,14 @@ for (const surface of ['desktop', 'terminal'] as const) {
       JSON.stringify({ at: new Date(h.now - (n - i) * 60_000).toISOString(), kind: 'run', type: 'search', tier: 'opus', route: 'delegate:haiku', change: 'delegate-down', agentCalls: i < missed ? 2 : 1 }),
     ).join('\n') + '\n'
   /** One prompt rated as NEAR (Haiku at about 78% of staying on Opus): where the hand-off went. */
-  const nearHandOff = async ($: unknown, h: ReturnType<typeof engine>, d: ReturnType<typeof drive>) => {
+  const nearHandOff = async ($: unknown, h: ReturnType<typeof engine>, d: ReturnType<typeof drive>, rating = NEAR) => {
     await d.start(surface)
-    h.rating = NEAR
+    h.rating = rating
     await d.submit(SEARCH)
     return handedTo(h)
   }
+  /** A repo-wide search that Haiku does at low: well under the fixed 70% of staying on Opus. */
+  const CHEAP = '{"fit":{"haiku":"low","sonnet":"low","opus":"low","fable":"low"},"size":"bulky","type":"search","read":150000,"write":3000,"steps":30,"reason":"repo-wide search"}'
 
   // ---- One setting, two toggles (ADR 0021): the fixed values, Ask before changing, and the rows that replace them ----
 
@@ -289,43 +291,37 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(text).not.toContain('Profile')
   })
 
-  test(`a row you set shows as yours, and what is in use follows it; the rest keep the fixed values (${surface})`, { timeoutMs: 30000, options: withRows({ handOff: '60%', raterCheck: 'every 100' }).options }, async ($, on) => {
-    const h = engine(on, { ...OPUS, stored: withRows({ handOff: '60%', raterCheck: 'every 100' }).stored })
+  test(`a row you set shows as yours; what is in use keeps the fixed values (${surface})`, { timeoutMs: 30000, options: withRows({ beforeCold: 'compact' }).options }, async ($, on) => {
+    const h = engine(on, { ...OPUS, stored: withRows({ beforeCold: 'compact' }).stored })
     const d = drive($, h)
     await d.start(surface)
     const text = await settingsText(d)
-    expect(text).toContain('Hand-off threshold: 60%')
-    expect(text).toContain('Rater check: every 100')
-    expect(text, 'Pause after misses is not yours: the fixed value').toContain('In use: hand-off threshold 60%, pause at 20% misses, rater check every 100, 2 chances per task')
+    expect(text).toContain('Before the cache goes cold: compact')
+    expect(text, 'the fixed values').toContain(IN_USE)
   })
 
-  // The hand-off threshold: a cheaper route must cost under this share of staying (NEAR is 78%).
-  test(`the hand-off threshold is 70% while the row is not yours: NEAR (78% of staying) goes to no one; the row set to 80% sends it to Haiku (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { ...OPUS, store: SEND })
+  // The hand-off threshold is fixed at 70%: a cheaper route must cost under that share of staying (NEAR is 78%).
+  test(`the hand-off threshold is 70%: NEAR (78% of staying) goes to no one, and a stored Hand-off threshold of 80% is ignored (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { ...OPUS, store: SEND, stored: { handOff: '80%' } })
     const d = drive($, h)
     expect(await nearHandOff($, h, d)).toBeUndefined()
-    await d.config('handOff', '80%')
-    h.rating = NEAR
+    expect(await settingsText(d)).not.toContain('Hand-off threshold')
+    h.rating = CHEAP
     await d.submit(SEARCH)
-    expect(handedTo(h)).toBe('haiku')
-  })
-
-  test(`a Hand-off threshold you set at load wins (${surface})`, { timeoutMs: 30000, options: withRows({ handOff: '80%' }).options }, async ($, on) => {
-    const h = engine(on, { ...OPUS, store: SEND, stored: withRows({ handOff: '80%' }).stored })
-    expect(await nearHandOff($, h, drive($, h))).toBe('haiku')
+    expect(handedTo(h), 'well under 70%: handed off').toBe('haiku')
   })
 
   // The evidence rule has no minimum of logged tasks: search on Haiku starts from its research prior.
-  test(`with nothing logged, search work goes to Haiku: no minimum of logged tasks (${surface})`, { timeoutMs: 30000, options: withRows({ handOff: '90%' }).options }, async ($, on) => {
-    const h = engine(on, { ...OPUS, store: SEND, stored: withRows({ handOff: '90%' }).stored })
-    expect(await nearHandOff($, h, drive($, h))).toBe('haiku')
+  test(`with nothing logged, search work goes to Haiku: no minimum of logged tasks (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { ...OPUS, store: SEND })
+    expect(await nearHandOff($, h, drive($, h), CHEAP)).toBe('haiku')
   })
 
   // The first automatic miss on a route is forgiven once, ever: 1 miss in 5 counts as 0 of 4, and the log says so.
-  test(`the first miss on search is forgiven: 1 miss in 5 still hands search to Haiku, and the log says so (${surface})`, { timeoutMs: 30000, options: withRows({ handOff: '90%' }).options }, async ($, on) => {
-    const h = engine(on, { ...OPUS, store: SEND, stored: withRows({ handOff: '90%' }).stored })
+  test(`the first miss on search is forgiven: 1 miss in 5 still hands search to Haiku, and the log says so (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { ...OPUS, store: SEND })
     h.files[RUNS] = haikuLog(h, 5, 1)
-    expect(await nearHandOff($, h, drive($, h))).toBe('haiku')
+    expect(await nearHandOff($, h, drive($, h), CHEAP)).toBe('haiku')
     expect(h.files[LOG_PATH] ?? '', 'the log says the first miss was forgiven').toContain('forgave the first miss on search')
   })
 
@@ -384,43 +380,38 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   // With 10 logged tasks the research prior is gone. The first miss is forgiven, so 2 misses in 10 is 1 in 9: 11%, under the line.
-  test(`2 misses in 10 still hands search to Haiku: the first is forgiven, 1 in 9 is under 20% (${surface})`, { timeoutMs: 30000, options: withRows({ handOff: '90%' }).options }, async ($, on) => {
-    const h = engine(on, { ...OPUS, store: SEND, stored: withRows({ handOff: '90%' }).stored })
+  test(`2 misses in 10 still hands search to Haiku: the first is forgiven, 1 in 9 is under 20% (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { ...OPUS, store: SEND })
     h.files[RUNS] = haikuLog(h, 10, 2)
-    expect(await nearHandOff($, h, drive($, h))).toBe('haiku')
+    expect(await nearHandOff($, h, drive($, h), CHEAP)).toBe('haiku')
   })
 
-  test(`a route that already used its forgiveness pauses at 2 misses in 10: 20% (${surface})`, { timeoutMs: 30000, options: withRows({ handOff: '90%' }).options }, async ($, on) => {
-    const h = engine(on, { ...OPUS, store: { ...SEND, forgivenRoutes: ['search:haiku'] }, stored: withRows({ handOff: '90%' }).stored })
+  test(`a route that already used its forgiveness pauses at 2 misses in 10: 20% (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { ...OPUS, store: { ...SEND, forgivenRoutes: ['search:haiku'] } })
     h.files[RUNS] = haikuLog(h, 10, 2)
-    expect(await nearHandOff($, h, drive($, h))).toBeUndefined()
+    expect(await nearHandOff($, h, drive($, h), CHEAP)).toBeUndefined()
     expect(h.files[LOG_PATH] ?? '', 'nothing is forgiven again').not.toContain('forgave the first miss')
   })
 
   // The miss pause: 20% with 10 logged tasks (the research prior is gone). The first miss is forgiven, so 3 misses in 10 is 2 in 9: 22%.
-  test(`3 misses in 10 pauses search at 20%; Pause after misses set to 50% replaces the rule and lets it through (${surface})`, { timeoutMs: 30000, options: withRows({ handOff: '90%' }).options }, async ($, on) => {
-    const h = engine(on, { ...OPUS, store: SEND, stored: withRows({ handOff: '90%' }).stored })
+  test(`3 misses in 10 pauses search at 20%, and a stored Pause after misses of 50% is ignored (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { ...OPUS, store: SEND, stored: { missPause: '50%' } })
     h.files[RUNS] = haikuLog(h, 10, 3)
     const d = drive($, h)
-    expect(await nearHandOff($, h, d)).toBeUndefined()
-    await d.config('missPause', '50%')
-    h.rating = NEAR
-    await d.submit(SEARCH)
-    expect(handedTo(h), 'the row says 50%').toBe('haiku')
-    expect(await settingsText(d)).toContain('In use: hand-off threshold 90%, pause at 50% misses, rater check every 20, 2 chances per task')
+    expect(await nearHandOff($, h, d, CHEAP)).toBeUndefined()
+    expect(await settingsText(d)).toContain(IN_USE)
   })
 
-  // The rater spot-check: every 20 Haiku ratings unless Rater check is yours.
+  // The rater spot-check: every 20 Haiku ratings, fixed; a stored Rater check is ignored.
   for (const [more, before, checked] of [
     [{}, 19, true],
     [{}, 18, false],
-    [{ raterCheck: 'every 25' }, 9, false],
-    [{ raterCheck: 'every 25' }, 24, true],
-    [{ raterCheck: 'off' }, 29, false],
+    [{ raterCheck: 'every 100' }, 19, true],
+    [{ raterCheck: 'off' }, 19, true],
   ] as const) {
-    const row = 'raterCheck' in more ? `Rater check ${more.raterCheck}` : 'the fixed rater check (every 20)'
-    test(`${row}: the prompt after ${before} Haiku ratings ${checked ? 'is' : 'is not'} checked by Sonnet (${surface})`, { timeoutMs: 30000, options: withRows({ rater: 'haiku', ...more }).options }, async ($, on) => {
-      const h = engine(on, { ...OPUS, store: { spotChecks: before }, stored: withRows({ rater: 'haiku', ...more }).stored })
+    const row = 'raterCheck' in more ? `a stored Rater check ${more.raterCheck} is ignored` : 'the fixed rater check (every 20)'
+    test(`${row}: the prompt after ${before} Haiku ratings ${checked ? 'is' : 'is not'} checked by Sonnet (${surface})`, { timeoutMs: 30000, options: withRows({ rater: 'haiku' }).options }, async ($, on) => {
+      const h = engine(on, { ...OPUS, store: { spotChecks: before }, stored: { ...withRows({ rater: 'haiku' }).stored, ...more } })
       const d = drive($, h)
       h.now = Date.now()
       await d.start(surface)
@@ -455,9 +446,9 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect((readRuns(h).find(l => l.kind === 'run') as { retries?: number }).retries).toBe(2)
   })
 
-  test(`the hand-off note allows 2 rework rounds, the task's chances (${surface})`, { timeoutMs: 30000, options: withRows({ handOff: '90%', missPause: '50%' }).options }, async ($, on) => {
-    const h = engine(on, { ...OPUS, store: SEND, stored: withRows({ handOff: '90%', missPause: '50%' }).stored })
-    expect(await nearHandOff($, h, drive($, h))).toBe('haiku')
+  test(`the hand-off note allows 2 rework rounds, the task's chances (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { ...OPUS, store: SEND })
+    expect(await nearHandOff($, h, drive($, h), CHEAP)).toBe('haiku')
     expect(noteOf(h)).toContain('At most 2 rework rounds.')
     expect(noteOf(h)).toContain('still fails after 2 rework')
   })
@@ -613,31 +604,16 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.complete('t1')
   })
 
-  test(`close calls are not explored by default (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`close calls are never explored: a stored Explore close calls on is ignored (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const cal = { ...tieCal(0.9), ...FREE_SWITCHES }
-    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: { ...SEND, [CAL_STORE]: cal, ties: 4 } })
+    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: { ...SEND, [CAL_STORE]: cal, ties: 4 }, stored: { explore: 'on' } })
     const d = drive($, h)
     await d.start(surface)
     h.rating = TIE_RATING
     await d.submit(SEARCH)
-    expect(handedTo(h), 'the fifth close call takes the guide\'s pick, not the other route').toBe('sonnet')
+    expect(handedTo(h), 'the guide\'s pick, not the other route').toBe('sonnet')
   })
 
-  test(`Explore close calls is off by default and a person who turns it on gets it (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    expect(SETTINGS.explore.default).toBe('off')
-    const cal = { ...tieCal(0.9), ...FREE_SWITCHES }
-    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: { [CAL_STORE]: cal, ties: 4 } })
-    const d = drive($, h)
-    await d.start(surface)
-    h.rating = TIE_RATING
-    h.answers = { Cheaper: 'Send it to a cheaper subagent (Recommended)', ...YES_REMEMBER }
-    await d.submit(SEARCH)
-    expect(handedTo(h), 'off: the guide').toBe('sonnet')
-    await d.config('explore', 'on')
-    h.store.ties = 4
-    await d.submit(SEARCH)
-    expect(handedTo(h), 'on: the other close route').toBe('opus')
-  })
 
   // Switching Ask before changing in /config takes effect at once, through applyOption, like any other row.
   test(`switching Ask before changing in /config applies at once: the questions' first options, and whether a lowering asks (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -681,13 +657,4 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect((await settingsText(d)).split('\n')[0]).toBe('Ask before changing: on')
   })
 
-  test(`a row reset to its default goes back to the fixed value (${surface})`, { timeoutMs: 30000, options: withRows({ handOff: '60%' }).options }, async ($, on) => {
-    const h = engine(on, { ...OPUS, store: SEND, stored: withRows({ handOff: '60%' }).stored })
-    const d = drive($, h)
-    await d.start(surface)
-    expect(await settingsText(d)).toContain('hand-off threshold 60%')
-    h.answers = { Confirm: 'Yes' }
-    await d.command('reset handOff')
-    expect(await settingsText(d), 'the fixed 70% again').toContain('hand-off threshold 70%')
-  })
 }

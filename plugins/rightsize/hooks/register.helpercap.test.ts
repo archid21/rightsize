@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import { RUNS_FILE, LOG_PATH, SEARCH, engine, drive, last } from './testkit'
 
-// The Helper call cap (key `helperCap`): a helper on a cheaper tier gets a fixed number of tool calls for a task. At the cap it is
+// The helper call cap (fixed: 25 for Haiku, 40 for Sonnet): a helper on a cheaper tier gets a fixed number of tool calls for a task. At the cap it is
 // struggling, and it goes back to the main chat the way a helper with no retry left does. Haiku 25 and Sonnet 40 by default.
 
 for (const surface of ['desktop', 'terminal'] as const) {
@@ -66,23 +66,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(((await calls(d, 1, 40))[0] as { deny?: string }).deny, 'the 41st is refused').toContain('40 tool calls')
     expect(log(h)).toContain('it reached the 40-call cap for sonnet')
   })
-
-  for (const [value, cap] of [['tight', 15], ['loose', 40], ['off', undefined]] as const) {
-    test(`Helper call cap ${value}: ${cap === undefined ? 'a Haiku helper has no cap' : `a Haiku helper is capped at ${cap}`} (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-      const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: HELPERS })
-      const d = drive($, h)
-      await d.start(surface)
-      await d.config('helperCap', value)
-      await warm(d, h, 'claude-haiku-5-5')
-      h.rating = HAND_OFF
-      await startHelper(d, 'haiku')
-      const n = cap ?? 60
-      expect((await calls(d, n)).filter(r => r.deny), `${n} calls go through`).toEqual([])
-      const after = ((await calls(d, 1, n))[0] as { deny?: string }).deny
-      if (cap === undefined) expect(after, 'no cap').toBeUndefined()
-      else expect(after, 'the next is refused').toContain(`${cap} tool calls`)
-    })
-  }
 
   test(`a refused call does not count: the denied approval steps of a helper leave its calls untouched (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: HELPERS })

@@ -14,7 +14,7 @@ This page explains the method. It gives no results: your own results depend on y
 
 ## How accuracy is measured
 
-- **Miss rate from your own log.** rightsize scores each rating against what happened, per task type and model: rework on a hand-off, a lowered turn that stepped back up or was raised mid-turn, a test run that failed at the end of a turn, a next prompt that corrects the reply, your 👍 and 👎, and Sonnet's checks of Haiku's ratings. These counts come from the run log on your machine. A route whose miss rate reaches the Pause after misses line is paused for that kind of work. Rules and values: [HOW-IT-DECIDES.md](HOW-IT-DECIDES.md).
+- **Miss rate from your own log.** rightsize scores each rating against what happened, per task type and model: rework on a hand-off, a lowered turn that stepped back up or was raised mid-turn, a test run that failed at the end of a turn, a next prompt that corrects the reply, your 👍 and 👎, and Sonnet's checks of Haiku's ratings. These counts come from the run log on your machine. A route whose miss rate reaches 20% is paused for that kind of work. Rules and values: [HOW-IT-DECIDES.md](HOW-IT-DECIDES.md).
 - **Estimates against reality.** After each turn, the real cost is compared with the estimate, and the estimates are corrected per task type and route. The report shows how far estimates were off, early against late, and compares each finished task's cost with the sum of its estimates.
 - **Starting values.** Before your own log says anything, some kinds of work start from miss rates set from rightsize's own research. Each task you run takes the place of one of those starting tasks.
 

@@ -169,13 +169,10 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
   const HAND_OFF_ROWS: { name: string; windows: (h: { now: number; rateLimits: unknown }) => void; stored: Record<string, string>; rating: string; to: string | undefined }[] = [
     { name: 'hot, default threshold: moved to 85%, and 78% is under it', windows: hot, stored: {}, rating: NEAR, to: 'haiku' },
-    { name: 'hot, set to 70% (its own default value): stays, and 78% is over it', windows: hot, stored: { handOff: '70%' }, rating: NEAR, to: undefined },
-    { name: 'hot, set to 80%: stays, and 78% is under it', windows: hot, stored: { handOff: '80%' }, rating: NEAR, to: 'haiku' },
+    { name: 'hot, a stored Hand-off threshold of 80% is ignored: moved to 85%, and 78% is under it', windows: hot, stored: { handOff: '80%' }, rating: NEAR, to: 'haiku' },
     { name: 'cool, default threshold: not moved, and 51% is under 70%', windows: cool, stored: {}, rating: BIG, to: 'haiku' },
-    { name: 'cool, set to 70%: stays, and 51% is under it', windows: cool, stored: { handOff: '70%' }, rating: BIG, to: 'haiku' },
-    { name: 'cool, set to 50%: stays, and 51% is over it', windows: cool, stored: { handOff: '50%' }, rating: BIG, to: undefined },
+    { name: 'cool, a stored Hand-off threshold of 50% is ignored: 51% is under 70%', windows: cool, stored: { handOff: '50%' }, rating: BIG, to: 'haiku' },
     { name: 'nearly used up, default threshold: moved to 95%', windows: nearlyUsed, stored: {}, rating: NEAR, to: 'haiku' },
-    { name: 'nearly used up, set to 50%: stays, and 78% is over it', windows: nearlyUsed, stored: { handOff: '50%' }, rating: NEAR, to: undefined },
   ]
   for (const row of HAND_OFF_ROWS) {
     test(`pacing and the hand-off threshold: ${row.name} (${surface})`, { timeoutMs: 30000, options: row.stored }, async ($, on) => {
@@ -187,8 +184,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
   const LOWERING_ROWS: { name: string; stored: Record<string, string>; effort: string }[] = [
     { name: 'default threshold: moved to 97%, and 94% is under it', stored: {}, effort: 'low' },
-    { name: 'set to 90% (its own default value): stays, and 94% is over it', stored: { lowering: '90%' }, effort: 'medium' },
-    { name: 'set to 95%: stays, and 94% is under it', stored: { lowering: '95%' }, effort: 'low' },
+    { name: 'a stored Lowering threshold of 80% is ignored: moved to 97%, and 94% is under it', stored: { lowering: '80%' }, effort: 'low' },
   ]
   for (const row of LOWERING_ROWS) {
     test(`pacing and the lowering threshold, hot: ${row.name} (${surface})`, { timeoutMs: 30000, options: row.stored }, async ($, on) => {
@@ -225,9 +221,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
   }
 
   const NOTE_ROWS: { name: string; stored: Record<string, string>; band: string | RegExp }[] = [
-    { name: 'both left at their defaults: moved', stored: {}, band: /so rightsize saves harder\. \(hand-off bar 70% → 85%, lowering bar 90% → 97%\)$/ },
-    { name: 'one of them yours: the other moved', stored: { handOff: '70%' }, band: /so rightsize saves harder\. \(lowering bar 90% → 97%\)$/ },
-    { name: 'both yours: nothing moved, nothing said', stored: { handOff: '70%', lowering: '90%' }, band: 'No change: medium on Opus fits this prompt.' },
+    { name: 'the fixed bars moved', stored: {}, band: /so rightsize saves harder\. \(hand-off bar 70% → 85%, lowering bar 90% → 97%\)$/ },
+    { name: 'stored threshold rows are ignored: the fixed bars moved', stored: { handOff: '70%', lowering: '90%' }, band: /so rightsize saves harder\. \(hand-off bar 70% → 85%, lowering bar 90% → 97%\)$/ },
   ]
   for (const row of NOTE_ROWS) {
     test(`the band mentions pacing only when it moved something: ${row.name} (${surface})`, { timeoutMs: 30000, options: { band: 'always', ...row.stored } }, async ($, on) => {
@@ -280,7 +275,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   // A window at 93% used: a raise or a stronger model is skipped unless you set its rule.
-  const BOTH_THRESHOLDS = { handOff: '70%', lowering: '90%' }
   type Raised = { effort: string | undefined; asked: string[]; band?: string }
   const RAISE_ROWS: { name: string; store?: Record<string, unknown>; stored: Record<string, string>; answers?: Record<string, string>; want: Raised | ((r: Raised) => void) }[] = [
     {
@@ -289,9 +283,9 @@ for (const surface of ['desktop', 'terminal'] as const) {
       want: { effort: 'medium', asked: [], band: 'Kept medium on Opus instead of raising to high. 93% of the 5-hour window is used, so rightsize saves all it can. (hand-off bar 70% → 95%, lowering bar 90% → 100%)' },
     },
     {
-      name: 'Raising set in /config to automatic: followed, and the band only says how full the window is',
-      stored: { raiseRule: 'raise automatically', ...BOTH_THRESHOLDS },
-      want: { effort: 'high', asked: [], band: 'Effort raised: medium → high for this prompt. Why: Unknown cause. 93% of the 5-hour window is used.' },
+      name: 'Raising set in /config to automatic: followed, and the band says how full the window is and the bars that moved',
+      stored: { raiseRule: 'raise automatically' },
+      want: { effort: 'high', asked: [], band: 'Effort raised: medium → high for this prompt. Why: Unknown cause. 93% of the 5-hour window is used, so rightsize saves all it can. (hand-off bar 70% → 95%, lowering bar 90% → 100%)' },
     },
     {
       name: 'Raising answered in an earlier session and saved: yours too, and the default thresholds that moved are said',
@@ -363,14 +357,13 @@ for (const surface of ['desktop', 'terminal'] as const) {
     })
   }
 
+  // The pause is fixed at 20% misses; the first miss on a route is forgiven.
   for (const row of [
-    { name: 'Pause after misses off: 50% wrong pauses nothing, and the report says no pause', pause: 'off', steppedUp: 3, effort: 'low', paused: false },
-    { name: 'at 50%: 4 of 6 wrong pauses (the first miss forgiven: 3 of 5, 60%), and the report says so', pause: '50%', steppedUp: 4, effort: 'medium', paused: true },
-    { name: 'at 50%: 33% wrong does not pause', pause: '50%', steppedUp: 2, effort: 'low', paused: false },
-    { name: 'at 20%: 33% wrong pauses', pause: '20%', steppedUp: 2, effort: 'medium', paused: true },
+    { name: 'the pause at 20%: 1 of 6 wrong (forgiven: 0 of 5) does not pause', steppedUp: 1, effort: 'low', paused: false },
+    { name: 'the pause at 20%: 2 of 6 wrong (the first forgiven: 1 of 5, 20%) pauses, and the report says so', steppedUp: 2, effort: 'medium', paused: true },
   ]) {
-    test(`${row.name} (${surface})`, { timeoutMs: 30000, options: { missPause: row.pause } }, async ($, on) => {
-      const h = engine(on, { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES }, stored: { missPause: row.pause } })
+    test(`${row.name} (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+      const h = engine(on, { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES } })
       h.now = Date.now()
       h.files[RUNS] = lookupLog(h, row.steppedUp)
       const d = drive($, h)

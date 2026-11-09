@@ -46,7 +46,6 @@ import {
   money,
   parseCalibration,
   parsePrices,
-  parseShare,
   paceNote,
   paceOf,
   pacedRules,
@@ -102,7 +101,7 @@ import {
 } from './settings'
 import { BRIEF_MAX, cutRequest, parseRating, ratingPrompt, ratingSystem } from './rate'
 import { isApprovalStep } from './approval'
-import { LIMITS, type CapSetting, type Signals, type Struggle, blockedError, callKey, isEditTool, isCapSetting, helperCap, isTestCommand, noSignals, noteCall, oneUp, refusedByPerson, struggle, testsOutcome } from './struggle'
+import { LIMITS, type Signals, type Struggle, blockedError, callKey, isEditTool, helperCap, isTestCommand, noSignals, noteCall, oneUp, refusedByPerson, struggle, testsOutcome } from './struggle'
 import { type Change, type HelperLine, type Lifetime, type RunLine, type SwitchLine, type Windows, SESSION_TOTAL, SESSION_TOTAL_FROM, bandShareText, buildReport, costTag, foldLifetime, parseLifetime, parseLines, ratedInSession, sessionTotal, shareMessage, shareOf, usedTag, windowCostText, windowRates } from './report'
 import { LIMIT_BUTTON, LIMIT_COMPACT, LIMIT_HIDE, LIMIT_MORE, LIMIT_WHY, LIMIT_WHY_ID, isLimitId, limitDue, limitText } from './limit'
 import { SIZE_BUTTON, SIZE_COMPACT, SIZE_HIDE, SIZE_MORE, SIZE_WHY, SIZE_WHY_ID, isSizeId, sizeStep, sizeText } from './size'
@@ -384,7 +383,6 @@ let billingAsked = false
 let detectedBilling: Billing | undefined
 let priceCheck: 'monthly' | 'off' = 'monthly'
 let bandMode: BandMode = 'when it acts'
-let rules: Rules = { ...DEFAULT_RULES, handOff: FIXED.handOff }
 let checking: Promise<string> | null = null
 let prices: Prices = DEFAULT_PRICES
 let cal: Calibration = {}
@@ -492,12 +490,8 @@ let compactedAway: { before: number; after?: number; handoff?: string; shown: bo
 let manualCompact = false
 /** The next main-chat request is the first since a turn ended: the idle gap and the context are checked on it. */
 let boundaryCheck = false
-/** One close call in five takes the route the guide did not pick. Off by default. */
-let explore = false
 /** What happens to the answers to the four questions: ask whether to keep them, keep them, or forget them at the end of the session. */
 let rememberMode: 'ask' | 'every session' | 'this session' = 'ask'
-/** The most tool calls a helper on a cheaper tier may make for one task. */
-let callCap: CapSetting = 'normal'
 /** The pace the prompt being rated was decided at. */
 let paceNow: Pace = NORMAL_PACE
 /** The pace note, for a subscription only: it quotes how full a usage window is, and a window share is never shown on the API. */
@@ -519,8 +513,6 @@ let escalation = true
 const raising = () => escalation && routing
 /** Days between suggestions of a different starting model and level; null: off. */
 let startEvery: number | null = START_CHECK_DAYS.weekly
-/** Ask Sonnet for a second opinion on every this many Haiku ratings, in the background; null: off. */
-let spotEvery: number | null = FIXED.raterEvery
 /** The model that rates first (Rater). The other one is the fallback. */
 let rater: Rater = 'sonnet'
 /** The run log's last 30 days, kept in memory to score the rater (misses.ts) without re-reading the file. */
@@ -1233,18 +1225,13 @@ function writeSetting($: EngineInterface, key: SettingKey, value: string): Promi
     case 'upRule': return $.config.set({ key: 'rightsize.upRule', value: value })
     case 'downRule': return $.config.set({ key: 'rightsize.downRule', value: value })
     case 'remember': return $.config.set({ key: 'rightsize.remember', value: value })
-    case 'handOff': return $.config.set({ key: 'rightsize.handOff', value: value })
-    case 'lowering': return $.config.set({ key: 'rightsize.lowering', value: value })
     case 'useHaiku': return $.config.set({ key: 'rightsize.useHaiku', value: value })
     case 'useFable': return $.config.set({ key: 'rightsize.useFable', value: value })
     case 'subagents': return $.config.set({ key: 'rightsize.subagents', value: value })
     case 'workflows': return $.config.set({ key: 'rightsize.workflows', value: value })
-    case 'explore': return $.config.set({ key: 'rightsize.explore', value: value })
-    case 'missPause': return $.config.set({ key: 'rightsize.missPause', value: value })
     case 'pacing': return $.config.set({ key: 'rightsize.pacing', value: value })
     case 'escalation': return $.config.set({ key: 'rightsize.escalation', value: value })
     case 'rater': return $.config.set({ key: 'rightsize.rater', value: value })
-    case 'raterCheck': return $.config.set({ key: 'rightsize.raterCheck', value: value })
     case 'startTips': return $.config.set({ key: 'rightsize.startTips', value: value })
     case 'idleWarning': return $.config.set({ key: 'rightsize.idleWarning', value: value })
     case 'beforeCold': return $.config.set({ key: 'rightsize.beforeCold', value: value })
@@ -1399,20 +1386,7 @@ async function situation($: EngineInterface): Promise<Situation> {
   const have = typeof kept === 'number' && kept > 0
   const reported = have ? undefined : (await usageNow($))?.context?.tokens
   const context = have ? kept : typeof reported === 'number' && reported > 0 ? reported : DEFAULT_CONTEXT
-  return { tier, level, context, prices, cal, rules, ties: await tiesSeen($), misses, missBlock, minTasks, counts, ceiling, reviewCeiling, without, explore, stepExp: actingExp(stepState) }
-}
-
-// Close calls seen so far, kept in the store so the one-in-five exploration holds across sessions.
-const TIES_STORE = 'ties'
-
-async function tiesSeen($: EngineInterface) {
-  const v = await $.store.get(TIES_STORE).catch(() => undefined)
-  return typeof v === 'number' && Number.isInteger(v) && v > 0 ? v : 0
-}
-
-// Counts one close call. It reads the stored count again, so another session's calls are not lost.
-async function countTie($: EngineInterface) {
-  await $.store.set(TIES_STORE, (await tiesSeen($)) + 1).catch(() => undefined)
+  return { tier, level, context, prices, cal, rules: DEFAULT_RULES, misses, missBlock, minTasks, counts, ceiling, reviewCeiling, without, stepExp: actingExp(stepState) }
 }
 
 // `unsure` says why the rater may have seen too little: the request was cut, or a task is in progress and its last reply could not be read.
@@ -1493,13 +1467,12 @@ async function rateWithFallback($: EngineInterface, tier: Tier, level: Level, pr
 
 const SPOT_STORE = 'spotChecks'
 
-/** Counts one rating; true when it is every Rater check'th one (50th, 100th and so on by default). Off: not counted. */
+/** Counts one rating; true when it is every Rater check'th one (every 20th Haiku rating: FIXED.raterEvery). */
 async function dueCheck($: EngineInterface) {
-  if (spotEvery === null) return false
   const v = await $.store.get(SPOT_STORE).catch(() => undefined)
   const n = (typeof v === 'number' && Number.isInteger(v) && v > 0 ? v : 0) + 1
   await $.store.set(SPOT_STORE, n).catch(() => undefined)
-  return n % spotEvery === 0
+  return n % FIXED.raterEvery === 0
 }
 
 async function spotCheck($: EngineInterface, session: string, task: string, tier: Tier, level: Level, prompt: string, first: Rating) {
@@ -1579,7 +1552,6 @@ async function sizeSpawn($: EngineInterface, e: AgentSpawnInput, run: Run | null
   if (run) run.overhead += overhead
   if (!r) return undefined
   const size = sizeSubagent(r, { ...s, tier: parent }, parent, floor)
-  if (size?.tie) await countTie($)
   const fit = TIERS.map(t => `${t[0]}:${r.fit[t] ?? (r.fit[t] === null ? 'no' : '?')}`).join(' ')
   await log($, `subagent "${e.description}" on ${parent}: rated ${fit}, ${size ? `sent to ${size.tier}/${size.level}${size.tie ? `, tie ${size.tie.by} over ${size.tie.over}` : ''}` : 'kept'}`)
   return size
@@ -3621,7 +3593,7 @@ async function summary($: EngineInterface) {
     ...changed,
     '',
     'Now',
-    `  In use: hand-off threshold ${Math.round(cur.handOff * 100)}%, pause at ${cur.maxMiss === null ? 'no' : `${Math.round(cur.maxMiss * 100)}%`} misses${cur.minTasks ? ` and ${cur.minTasks} logged tasks` : ''}, rater check ${cur.raterEvery === null ? 'off' : `every ${cur.raterEvery}`}, ${cur.chances} ${cur.chances === 1 ? 'chance' : 'chances'} per task`,
+    `  In use: hand-off threshold ${Math.round(cur.handOff * 100)}%, pause at ${Math.round(cur.maxMiss * 100)}% misses${cur.minTasks ? ` and ${cur.minTasks} logged tasks` : ''}, rater check every ${cur.raterEvery}, ${cur.chances} ${cur.chances === 1 ? 'chance' : 'chances'} per task`,
     `  Session switch: ${session ?? 'none'}`,
     ...(manualPause ? [`  Paused: ${pauseStatus(manualPause).replace(/^Rightsize paused /, '')}`] : []),
     ...(billingYours() ? [] : [`  Reports: ${billing} (${billingBy ?? 'default'})`]),
@@ -3826,7 +3798,7 @@ async function resetMeasurement($: EngineInterface) {
   unsaved = []
   stepState = NO_STEPS
   unsavedSteps = []
-  for (const key of [CAL_STORE, STEP_STORE, TIES_STORE, SPOT_STORE, 'startCheckedAt', 'startSnooze']) await $.store.set(key, null).catch(() => undefined)
+  for (const key of [CAL_STORE, STEP_STORE, 'ties', SPOT_STORE, 'startCheckedAt', 'startSnooze']) await $.store.set(key, null).catch(() => undefined)
   measureFrom = await $.clock.now()
   await $.store.set('measureFrom', new Date(measureFrom).toISOString()).catch(() => undefined)
   await refreshMisses($)
@@ -3862,7 +3834,7 @@ async function runReset($: EngineInterface, name: string): Promise<string> {
 const DAY_MS = 24 * 60 * 60_000
 
 async function startContext($: EngineInterface) {
-  return { prices, cal, rules, floor, choices: await choices($), ceiling, without, from: measureFrom }
+  return { prices, cal, rules: DEFAULT_RULES, floor, choices: await choices($), ceiling, without, from: measureFrom }
 }
 
 async function checkStart($: EngineInterface) {
@@ -3926,10 +3898,8 @@ async function stopStartTips($: EngineInterface) {
 function applyFixed() {
   askFirst = yours.has('askFirst') ? askFirstOn(cfg.askFirst) : askFirstOn(cfg.askFirst) || legacyQuality
   const u = inUse(cfg, yours, askFirst)
-  rules = { handOff: u.handOff, lower: parseShare(cfg.lowering, DEFAULT_RULES.lower) }
   missBlock = u.maxMiss
   minTasks = u.minTasks
-  spotEvery = u.raterEvery
   chances = u.chances
   answers = u.answers
   coldMode = u.beforeCold
@@ -3969,10 +3939,6 @@ function applyOption(key: SettingKey) {
       cacheOn = v !== 'off'
       return
     case 'askFirst':
-    case 'handOff':
-    case 'lowering':
-    case 'missPause':
-    case 'raterCheck':
     case 'beforeCold':
       applyFixed()
       return
@@ -3986,17 +3952,11 @@ function applyOption(key: SettingKey) {
     case 'workflows':
       workflows = v === 'pause rightsize' || v === 'follow my rules' || v === 'right-size every agent' ? v : 'ask'
       return
-    case 'explore':
-      explore = v !== 'off'
-      return
     case 'pacing':
       pacing = v !== 'off'
       return
     case 'escalation':
       escalation = v !== 'off'
-      return
-    case 'helperCap':
-      if (isCapSetting(v)) callCap = v
       return
     case 'rater':
       rater = v === 'haiku' ? 'haiku' : 'sonnet'
@@ -4512,9 +4472,7 @@ export const register: Register = (on, options) => {
       const usage = pacing ? await usageNow($) : undefined
       const clockNow = pacing ? await $.clock.now() : 0
       paceNow = pacing ? paceOf(usage?.rateLimits ?? [], clockNow) : NORMAL_PACE
-      // Pacing moves only a threshold left at its default: one you set stays as you set it.
-      const set = { handOff: yours.has('handOff'), lower: yours.has('lowering') }
-      const movedRules = pacedRules(base.rules ?? DEFAULT_RULES, paceNow, set)
+      const movedRules = pacedRules(base.rules ?? DEFAULT_RULES, paceNow)
       const s: Situation = { ...base, rules: movedRules }
       const { rating: rated, overhead, ratingMs, prompt, failed, by, task: kept, unsure } = await rate($, text, s)
       // A rating that continues the task is planned as the task's type; any other starts a task of its own type.
@@ -4585,11 +4543,8 @@ export const register: Register = (on, options) => {
         if (unsure) run.unsure = unsure
         run.rater = by
         run.ratingMs = ratingMs
-        // A close call the guide broke: kept on the run for the log, and counted so every fifth explores.
-        if (handOffs && planned.kind === 'delegate' && planned.tie) {
-          run.tie = planned.tie
-          await countTie($)
-        }
+        // A close call the guide broke: kept on the run for the log.
+        if (handOffs && planned.kind === 'delegate' && planned.tie) run.tie = planned.tie
         const was = base.rules ?? DEFAULT_RULES
         const moved = movedRules.handOff !== was.handOff || movedRules.lower !== was.lower
         const note = paceText(skipped || moved, moved ? { from: was, to: movedRules } : undefined)
@@ -4856,7 +4811,7 @@ export const register: Register = (on, options) => {
     // A helper on a cheaper tier gets a fixed number of tool calls, however well they go. At the cap it is struggling:
     // it goes back to the main chat, the way a helper with no retry left does.
     if (helper && e.agentId !== undefined && !off) {
-      const cap = helper.tier ? helperCap(callCap, helper.tier) : undefined
+      const cap = helper.tier ? helperCap(helper.tier) : undefined
       if (cap !== undefined && helper.calls >= cap) {
         helper.returned = true
         helper.stall = 'struggling'

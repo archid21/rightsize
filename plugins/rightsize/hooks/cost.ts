@@ -308,11 +308,9 @@ export type Situation = {
   cal: Calibration
   /** The hand-off and lowering shares; DEFAULT_RULES when absent. */
   rules?: Rules
-  /** Close calls seen so far, persisted: every fifth takes the route the guide did not pick. */
-  ties?: number
   /** How often the rater's judgement was wrong, by `${type}:${tier}` (see misses.ts): at the pause share or more, that model gets no hand-down and no lowering. */
   misses?: Record<string, number>
-  /** The share of misses at which that pause starts (Pause after misses); null: never pause. MISS_BLOCK when absent. */
+  /** The share of misses at which that pause starts; null: never pause. MISS_BLOCK when absent. */
   missBlock?: number | null
   /** Tasks logged per `${type}:${tier}` (misses.ts): what minTasks is counted against. */
   counts?: Record<string, number>
@@ -324,14 +322,12 @@ export type Situation = {
   reviewCeiling?: Level
   /** Models rightsize sends no work to: hand-offs and Claude's subagents never go to them (Use Haiku, Use Fable). */
   without?: readonly Tier[]
-  /** False: a close call always takes the guide's pick (Explore close calls). True when absent. */
-  explore?: boolean
   /** The learned step exponent (see steps.ts): the work is priced for `steps ** (1 + stepExp)` steps. 0 when absent, which prices the rater's guess as it is. */
   stepExp?: number
 }
 
-/** The share of wrong judgements at which rightsize stops trusting the rater for a task type and model: the default of Pause after misses. */
-export const MISS_BLOCK = 0.3
+/** The share of wrong judgements at which rightsize stops trusting the rater for a task type and model: the fixed Pause after misses share. */
+export const MISS_BLOCK = 0.2
 /** Fewer tasks logged than the evidence rule asks for. */
 const unproven = (s: Situation, type: TaskType, tier: Tier) => (s.minTasks ?? 0) > (s.counts?.[`${type}:${tier}`] ?? 0)
 const blocked = (s: Situation, type: TaskType, tier: Tier) => {
@@ -428,9 +424,6 @@ export const TIE_BAND = 0.25
 /** The band with `n` measured runs: it shrinks to nothing at CAL_FULL. */
 export const tieBand = (n: number) => TIE_BAND * (1 - Math.min(n, CAL_FULL) / CAL_FULL)
 
-/** One in this many close calls takes the route the guide did not pick, so both get measured. */
-const EXPLORE_EVERY = 5
-
 /** How a close call was decided: `over` is the route it beat, or the guide's pick when exploring. */
 export type Tie = { by: 'guide' | 'stronger' | 'explore'; over: Tier }
 
@@ -438,10 +431,9 @@ export type Tie = { by: 'guide' | 'stronger' | 'explore'; over: Tier }
  * Chooses among candidate routes that already passed every other rule, sorted by cost.
  * The cheapest wins unless another is close to it (see tieBand, over the smaller run count
  * of the pair): then the one on the task type's preferred model, else the stronger model.
- * Every fifth close call takes the best close route the guide did not pick, unless exploring is off.
  * It never widens the candidates: it only chooses among them.
  */
-function choose<T extends { tier: Tier; cost: number; n: number }>(type: TaskType, ties: number, sorted: readonly T[], explore = true): { pick: T; tie?: Tie } | undefined {
+function choose<T extends { tier: Tier; cost: number; n: number }>(type: TaskType, sorted: readonly T[]): { pick: T; tie?: Tie } | undefined {
   const [cheapest] = sorted
   if (!cheapest) return undefined
   // A closed band (both measured CAL_FULL runs) means no close calls, even at an equal cost.
@@ -453,10 +445,6 @@ function choose<T extends { tier: Tier; cost: number; n: number }>(type: TaskTyp
   const group = [cheapest, ...close]
   const preferred = group.find(c => c.tier === PREFERRED[type])
   const guide = preferred ?? group.reduce((a, b) => (tierRank(b.tier) > tierRank(a.tier) ? b : a))
-  if (explore && ties % EXPLORE_EVERY === EXPLORE_EVERY - 1) {
-    const other = group.find(c => c !== guide)
-    if (other) return { pick: other, tie: { by: 'explore', over: guide.tier } }
-  }
   const beaten = group.find(c => c !== guide)
   return { pick: guide, tie: { by: preferred ? 'guide' : 'stronger', over: (beaten ?? guide).tier } }
 }
@@ -581,12 +569,11 @@ export function paceOf(limits: readonly Limit[], now: number): Pace {
 /**
  * The thresholds at this pace: looser when running hot or nearly used up.
  * An underused window (cool) moves nothing: a lower bar would make rightsize spend more, and spare room in a window
- * is never a reason to spend. A threshold you set (`set`) stays as you set it: pacing moves only one left at its default.
+ * is never a reason to spend.
  */
-export function pacedRules(rules: Rules, p: Pace, set: { handOff?: boolean; lower?: boolean } = {}): Rules {
-  const moved = (to: Rules): Rules => ({ handOff: set.handOff ? rules.handOff : to.handOff, lower: set.lower ? rules.lower : to.lower })
-  if (p.mode === 'max') return moved({ handOff: Math.max(rules.handOff, 0.95), lower: 1 })
-  if (p.mode === 'hot') return moved({ handOff: Math.min(0.95, rules.handOff + 0.15), lower: Math.min(0.99, rules.lower + 0.07) })
+export function pacedRules(rules: Rules, p: Pace): Rules {
+  if (p.mode === 'max') return { handOff: Math.max(rules.handOff, 0.95), lower: 1 }
+  if (p.mode === 'hot') return { handOff: Math.min(0.95, rules.handOff + 0.15), lower: Math.min(0.99, rules.lower + 0.07) }
   return rules
 }
 
@@ -706,10 +693,9 @@ export function plan(r: Rating, s: Situation, floor: Level): Plan {
     const level = clampCeiling(clampFloor(r.type === 'review' && t === REVIEW_TIER ? atLeast(need, REVIEW_LEVEL) : need, floor), ceilingOf(s))
     return [{ tier: t, level, cost: delegateCost(r, s, t, level), n: runsOn(s.cal, delegateKeys(r.type, t, level)) }]
   }).sort((a, b) => a.cost - b.cost)
-  const ties = s.ties ?? 0
   const own = r.fit[s.tier]
   if (!own) {
-    const up = choose(r.type, ties, routes.filter(x => tierRank(x.tier) > tierRank(s.tier)), s.explore !== false)
+    const up = choose(r.type, routes.filter(x => tierRank(x.tier) > tierRank(s.tier)))
     if (up) return { kind: 'delegate', dir: 'up', tier: up.pick.tier, level: up.pick.level, delegateCost: up.pick.cost, mainCost: stay, ...(up.tie ? { tie: up.tie } : {}) }
     return effortPlan(r, s, floor)
   }
@@ -721,7 +707,7 @@ export function plan(r: Rating, s: Situation, floor: Level): Plan {
   // Hand-downs start only from Opus or Fable: from Sonnet the brief and the check cost more than the
   // cheaper model saves (ADR 0008).
   if (tierRank(s.tier) < tierRank(HAND_DOWN_FROM)) return effortPlan(r, s, floor)
-  const down = choose(r.type, ties, routes.filter(x => tierRank(x.tier) < tierRank(s.tier) && x.cost < bar), s.explore !== false)
+  const down = choose(r.type, routes.filter(x => tierRank(x.tier) < tierRank(s.tier) && x.cost < bar))
   if (down) {
     return {
       kind: 'delegate',
@@ -778,7 +764,7 @@ export function sizeSubagent(r: Rating, s: Situation, parent: Tier, floor: Level
   })
     .filter(x => x.cost < bar)
     .sort((a, b) => a.cost - b.cost)
-  const chosen = choose(r.type, s.ties ?? 0, weaker, s.explore !== false)
+  const chosen = choose(r.type, weaker)
   if (!chosen) return undefined
   const { n: _n, ...best } = chosen.pick
   return { ...best, ...(chosen.tie ? { tie: chosen.tie } : {}) }

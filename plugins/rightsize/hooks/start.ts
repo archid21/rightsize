@@ -96,8 +96,7 @@ export type Replay = {
 /** What rightsize would have spent on one prompt from `start`, and whether it goes to a stronger model, for the rating `fit`. */
 function once(l: Rated, fit: Fit, start: Start, context: number, c: StartContext) {
   const r = { level: needOn(fit, start.tier), fit, type: l.type, read: l.read, write: l.write, steps: l.steps, reason: '' }
-  // ties 1: no exploring, so the replay picks what the guide would.
-  const s = { tier: start.tier, level: start.level, context, prices: c.prices, cal: c.cal, rules: c.rules, ties: 1, ...(c.ceiling ? { ceiling: c.ceiling } : {}), ...(c.without ? { without: c.without } : {}) }
+  const s = { tier: start.tier, level: start.level, context, prices: c.prices, cal: c.cal, rules: c.rules, ...(c.ceiling ? { ceiling: c.ceiling } : {}), ...(c.without ? { without: c.without } : {}) }
   let p = plan(r, s, c.floor)
   if ((p.kind === 'delegate' && c.choices[p.dir] === 'stay') || (p.kind === 'switch' && c.choices.up === 'stay')) p = effortPlan(r, s, c.floor)
   // A review switched to Opus by rule isn't a sign the start is too weak: from any start below Opus it switches.

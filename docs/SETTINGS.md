@@ -1,24 +1,27 @@
 # Settings
 
-Every row is a picker in `/config` (rightsize section). In a terminal session a change applies at once. In the desktop app there is no `/config` menu: change values from a terminal (`claude plugin configure rightsize@archid21 --values-stdin <<< '{"handOff":"60%"}'`), then quit the app and reopen it. `/rightsize` opens the same list as a pane, and `/rightsize reset <key>` resets one row by its key.
+Every row is a picker in `/config` (rightsize section). In a terminal session a change applies at once. In the desktop app there is no `/config` menu: change values from a terminal (`claude plugin configure rightsize@archid21 --values-stdin <<< '{"floor":"medium"}'`), then quit the app and reopen it. `/rightsize` opens the same list as a pane, and `/rightsize reset <key>` resets one row by its key.
 
-**Mode** is the first row, **Routing**, **Hand-offs** and **Cache** turn one feature each on or off, and **Ask before changing** makes every automatic move ask first. Every other row is titled "Advanced · ..." in `/config`; the names below leave that off. **Your setting wins:** a row you set always beats rightsize's own value for it, and automatic behavior (pacing, the fixed values) acts only on rows you left alone. Rows marked "not set" mean Ask before changing decides: off acts, on asks.
+**Mode** is the first row, **Routing**, **Hand-offs** and **Cache** turn one feature each on or off, and **Ask before changing** makes every automatic move ask first. Every other row is titled "Advanced · ..." in `/config`; the names below leave that off. **Your setting wins:** a row you set always beats rightsize's own value for it. Budget pacing moves only the fixed bars, never a rule you set. Rows marked "not set" mean Ask before changing decides: off acts, on asks.
 
 ## One rule set
 
-rightsize has one rule set and no profiles (the Quality, Balanced and Economy profiles of releases before 0.9 are gone; a stored Quality reads as Ask before changing on). The values a profile used to hold are fixed, and each has an Advanced row that wins once you set it:
+rightsize has one rule set and no profiles (the Quality, Balanced and Economy profiles of releases before 0.9 are gone; a stored Quality reads as Ask before changing on). These values are fixed; a value stored for a row an earlier release had (Hand-off threshold, Lowering threshold, Explore close calls, Pause after misses, Helper call cap, Rater check) is ignored:
 
 | | Fixed value | Row |
 |---|---|---|
-| Evidence for a cheaper route (hand-down, a Claude subagent moved down, lowering effort) | The rating says it fits; the kind of work pauses at 20% misses, with no minimum of logged tasks | Pause after misses |
-| Hand-off threshold: a helper must cost under this share of staying | 70% | Hand-off threshold |
-| Rater check: Sonnet checks every Nth Haiku rating | every 20 | Rater check |
+| Evidence for a cheaper route (hand-down, a Claude subagent moved down, lowering effort) | The rating says it fits; the kind of work pauses at 20% misses, with no minimum of logged tasks | none |
+| Hand-off threshold: a helper must cost under this share of staying | 70% (85% while a usage window runs hot, 95% when nearly used up: Budget pacing) | none |
+| Lowering threshold: a lower level must cost under this share of staying, counting the cache it may rewrite | 90% (97% hot, 100% nearly used up) | none |
+| Close calls between two models that fit | The task-type guide decides; never explored | none |
+| Helper call cap: the most tool calls a helper on a cheaper model may make for one task | 25 for Haiku, 40 for Sonnet; none for Opus and Fable | none |
+| Rater check: Sonnet checks every Nth Haiku rating | every 20 | none |
 | Chances per task for a struggling helper | 2 | none |
 | Before the cache goes cold, while the row is not set | Keep warm until your usual start (at most 8 hours; 9:00 until 5 days of data) | Before the cache goes cold |
 | A review switched to Opus runs at most at | Highest effort | Highest effort |
 | Lowering, Raising, Stronger model, Cheaper model, while not set | act without asking; with Ask before changing on, ask first | the four rule rows |
 
-An "ask" answer opens its own timed dialog (see **Question wait**); every other answer acts without asking, and the band says what decided the first time each case comes up in a session. Pause after misses replaces the whole evidence rule. The chances have no row. Every rating starts from rightsize's research priors (see [HOW-IT-DECIDES.md](HOW-IT-DECIDES.md)).
+An "ask" answer opens its own timed dialog (see **Question wait**); every other answer acts without asking, and the band says what decided the first time each case comes up in a session. Every rating starts from rightsize's research priors (see [HOW-IT-DECIDES.md](HOW-IT-DECIDES.md)).
 
 ## Rows
 
@@ -106,20 +109,6 @@ An "ask" answer opens its own timed dialog (see **Question wait**); every other 
 - Default: ask
 - What happens to rules you set from the band's ⋯ menu or /rightsize settings. ask: after your first such rule, ask on the band whether to keep your rules in every session (the default). every session: keep every rule for later sessions, without asking. this session: never keep a rule and never ask; rules last until the session ends. A rule set in its row above is always kept.
 
-### Hand-off threshold
-
-- Key: `handOff`
-- Options: 50% · 60% · 70% · 80% · 90%
-- Default: 70%.
-- Send a big task to a cheaper subagent only when it is estimated to cost under this share of staying on your model, counting the brief, check and likely rework. Lower is stricter. Left alone, it is 70%.
-
-### Lowering threshold
-
-- Key: `lowering`
-- Options: 70% · 80% · 90% · 95%
-- Default: 90%
-- Lower effort only when the lower level is estimated to cost under this share of staying, counting the cache it may rewrite. Lower is stricter.
-
 ### Use Haiku
 
 - Key: `useHaiku`
@@ -146,28 +135,14 @@ An "ask" answer opens its own timed dialog (see **Question wait**); every other 
 - Key: `workflows`
 - Options: ask · pause rightsize · follow my rules · right-size every agent
 - Default: ask
-- What rightsize does once Claude starts a workflow (ultracode, or asked for): many helper agents at once, often 10 or more, each picking its own model. ask: ask on the band when the first workflow starts (the default); until you answer, rightsize pauses for it. pause rightsize: hand nothing off for the rest of the session, and leave the workflow's agents alone. follow my rules: hand-offs follow your Stronger model and Cheaper model rules as usual; the workflow's agents are left alone. right-size every agent: as follow my rules, and each workflow agent that names no model is rated by the Rater (one rating call each) and runs on the cheapest model that fits, under Claude's subagents, Use Haiku, Use Fable and Pause after misses. Claude's subagents set to off keeps the agents alone in every case. Whichever you pick, measurement stays paused after a workflow: calibration learns nothing and no saving is claimed.
-
-### Explore close calls
-
-- Key: `explore`
-- Options: on · off
-- Default: off
-- on: when two models that fit cost about the same, rightsize picks by task type, and one close call in five takes the other model so both get measured. off (default): a close call always takes the task-type pick, so the other model may never be measured.
-
-### Pause after misses
-
-- Key: `missPause`
-- Options: off · 20% · 30% · 40% · 50%
-- Default: 30%. The row shows 30% until you set it; left alone, rightsize pauses at 20%.
-- The rating is scored against what happens: rework on hand-offs, lowered turns that stepped back up, mid-turn raises, a test run that failed at the turn's end, a next prompt that corrects the reply, your 👍 and 👎 (in the band's ⋯ menu), and Sonnet's checks. When the miss rate for a kind of work on a model reaches this share, rightsize stops handing that work down to that model and stops lowering effort on it, until the rate falls back under it. off: never pause. Left alone, it pauses at 20%. A value you set here replaces the whole rule.
+- What rightsize does once Claude starts a workflow (ultracode, or asked for): many helper agents at once, often 10 or more, each picking its own model. ask: ask on the band when the first workflow starts (the default); until you answer, rightsize pauses for it. pause rightsize: hand nothing off for the rest of the session, and leave the workflow's agents alone. follow my rules: hand-offs follow your Stronger model and Cheaper model rules as usual; the workflow's agents are left alone. right-size every agent: as follow my rules, and each workflow agent that names no model is rated by the Rater (one rating call each) and runs on the cheapest model that fits, under Claude's subagents, Use Haiku, Use Fable and the miss-rate pause (20%). Claude's subagents set to off keeps the agents alone in every case. Whichever you pick, measurement stays paused after a workflow: calibration learns nothing and no saving is claimed.
 
 ### Budget pacing
 
 - Key: `pacing`
 - Options: on · off
 - Default: on
-- on: on a subscription, move the thresholds by how fast the 5-hour and 7-day windows are being used. Running out early: hand off and lower more readily, and the band says which bars moved. Much left near a reset: nothing changes. Over 90% used: save all it can, which skips raises and stronger models while Raising and Stronger model are not set. A threshold or rule you set stays as you set it: pacing moves only what is left at its default. off: always use the thresholds above.
+- on: on a subscription, move the hand-off and lowering bars by how fast the 5-hour and 7-day windows are being used. Running out early: hand off and lower more readily, and the band says which bars moved. Much left near a reset: nothing changes. Over 90% used: save all it can, which skips raises and stronger models while Raising and Stronger model are not set. A rule you set stays as you set it. off: always use the fixed bars (70% for hand-offs, 90% for lowering).
 
 ### Raise when stuck
 
@@ -176,26 +151,12 @@ An "ask" answer opens its own timed dialog (see **Question wait**); every other 
 - Default: on
 - on: when a turn shows Claude is stuck (the same tool call failing twice, 3 tool calls failing, the same call running 3 times, a turn passing 3x the rated steps (at least 15) with no progress, or 2 fixes in a row leaving the tests red), raise effort one level for the rest of the turn, at most twice, never above Highest effort and never to max. It follows your Raising rule: automatic raises without asking, otherwise it asks on the band while the turn goes on. off: never raise mid-turn.
 
-### Helper call cap
-
-- Key: `helperCap`
-- Options: tight · normal · loose · off
-- Default: normal
-- The most tool calls a helper on a cheaper model may make for one task, however well they go. normal: 25 for Haiku, 40 for Sonnet. tight: 15 and 25. loose: 40 and 60. off: no cap. At the cap the helper's next call is refused and it reports back; the main chat finishes the task, as for a helper that is struggling. Opus and Fable helpers have no cap.
-
 ### Rater
 
 - Key: `rater`
 - Options: sonnet · haiku
 - Default: sonnet
 - sonnet or haiku: the model that rates each prompt (and each subagent brief), at low effort. sonnet (default) reads prompts more reliably; haiku costs less per rating. With sonnet, a rating that times out, is refused or comes back unreadable is tried once more on Haiku; with haiku, a timeout or an unreadable answer is tried once more on Haiku.
-
-### Rater check
-
-- Key: `raterCheck`
-- Options: every 25 · every 50 · every 100 · off
-- Default: every 50. The row shows every 50 until you set it; left alone, rightsize checks every 20.
-- every 25, every 50 or every 100: on every that many prompts rated by Haiku (Rater set to haiku, or Sonnet failed), ask Sonnet in the background to rate the same prompt, and log where it says a model would struggle that Haiku said does the work. These checks and the other outcomes give a miss rate per task type and model (see Pause after misses). Each check costs one Sonnet call and never delays the prompt. off: no checks (the other outcomes still count). Left alone, it is every 20.
 
 ### Start suggestions
 

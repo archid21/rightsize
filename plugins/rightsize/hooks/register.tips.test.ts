@@ -210,15 +210,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.store.calibration, 'the old key is left as it was').toEqual({ 'lookup:main': { n: 40, ratio: 9 } })
   })
 
-  test(`uses the hand-off and lowering thresholds set in /config (${surface})`, { timeoutMs: 30000, options: { handOff: '50%', lowering: '80%' } }, async ($, on) => {
-    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', stored: { handOff: '50%', lowering: '80%' } })
-    const d = drive($, h)
-    await d.start(surface)
-    expect((await d.command('status')).text ?? '').toContain('Hand-off threshold: 50%\n  Lowering threshold: 80%')
-  })
-
-  test(`says the thresholds are the defaults when none are set (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+  test(`a stored Hand-off threshold is ignored: not listed as yours (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', stored: { handOff: '50%' } })
     const d = drive($, h)
     await d.start(surface)
     expect((await d.command('status')).text ?? '').not.toContain('Hand-off threshold:')
@@ -445,8 +438,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
   // Close calls. A Fable session at high effort, a feature that Sonnet, Opus and Fable all do at medium.
   // Opus is measured (20 runs) at 0.9x Sonnet's estimate, Sonnet not at all: the 25% band is open, so the
-  // two are close and the task-type guide (feature: Sonnet) decides. The stored count says which close call this is:
-  // the fourth (3 before it) goes to the guide, the fifth explores.
+  // two are close and the task-type guide (feature: Sonnet) decides.
+  // Close calls are never explored.
   const TIE_RATING = '{"fit":{"haiku":"no","sonnet":"medium","opus":"medium","fable":"medium"},"type":"feature","read":150000,"write":3000,"steps":30,"reason":"big feature"}'
   const tieRating: Rating = { level: 'medium', fit: { haiku: null, sonnet: 'medium', opus: 'medium', fable: 'medium' }, type: 'feature', read: 150_000, write: 3000, steps: 30, reason: '' }
   const fableHigh: Situation = { tier: 'fable', level: 'high', context: 20_000, prices: DEFAULT_PRICES, cal: {} }
@@ -456,12 +449,11 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
   const tieCal = (x: number) => opusAt(x, t => delegateCost(tieRating, fableHigh, t, 'medium'), delegateKeys('feature', 'opus', 'medium'))
 
-  test(`a close call decided by the guide is counted in the store and logged on the run (${surface})`, { timeoutMs: 30000, options: { explore: 'on' } }, async ($, on) => {
+  test(`a close call decided by the guide is logged on the run (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const cal = { ...tieCal(0.9), ...FREE_SWITCHES }
-    const p = plan(tieRating, { ...fableHigh, cal, ties: 3 }, 'low')
+    const p = plan(tieRating, { ...fableHigh, cal }, 'low')
     expect(p.kind === 'delegate' && p.tie, 'the setup is a close call').toEqual({ by: 'guide', over: 'opus' })
-    // Exploring is off in every profile: this one turned it on.
-    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: { [CAL_STORE]: cal, ties: 3 }, stored: { explore: 'on' } })
+    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: { [CAL_STORE]: cal } })
     const d = drive($, h)
     await d.start(surface)
     await d.step('t0')
@@ -469,7 +461,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
     h.rating = TIE_RATING
     await d.submit(SEARCH)
-    expect(h.store.ties, 'the close call is counted').toBe(4)
     expect(last(h.submitted)?.context?.join('\n') ?? '', 'the guide\'s pick, not the cheaper Opus').toContain('model "sonnet"')
     h.subModel = 'claude-sonnet-5-5'
     await d.step('t1', 0)
@@ -482,21 +473,14 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(last(runs)?.tie).toEqual({ by: 'guide', over: 'opus' })
     expect((h.files[LOG_PATH] ?? '').includes('tie guide over opus'), 'the log says so').toBe(true)
 
-    // The next close call is the fifth (4 before it): it explores, and is counted too.
+    // The next close call takes the guide's pick again: close calls are never explored.
     await d.submit(SEARCH)
-    expect(h.store.ties, 'counted again').toBe(5)
-    expect(last(h.submitted)?.context?.join('\n') ?? '', 'the fifth takes the other close route').toContain('model "opus"')
-    await d.step('t3', 0)
-    await d.agent('opus')
-    await d.step('t3', 1)
-    await d.complete('t3')
-    const again = (h.files[RUNS_FILE] ?? '').trim().split('\n').map(l => JSON.parse(l) as Record<string, unknown>)
-    expect(last(again)?.tie).toEqual({ by: 'explore', over: 'sonnet' })
+    expect(last(h.submitted)?.context?.join('\n') ?? '', 'the guide again').toContain('model "sonnet"')
   })
 
-  test(`a prompt with no close call leaves the count alone and logs no tie (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`a prompt with no close call logs no tie (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const cal = { ...tieCal(0.7), ...FREE_SWITCHES }
-    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: { [CAL_STORE]: cal, ties: 2 } })
+    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high', store: { [CAL_STORE]: cal } })
     const d = drive($, h)
     await d.start(surface)
     await d.step('t0')
@@ -504,7 +488,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.rating = TIE_RATING
     await d.submit(SEARCH)
     expect(last(h.submitted)?.context?.join('\n') ?? '', 'the cheapest').toContain('model "opus"')
-    expect(h.store.ties, 'no close call: not counted').toBe(2)
     h.subModel = 'claude-opus-5-5'
     await d.step('t1', 0)
     await d.agent('opus')
@@ -514,7 +497,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect('tie' in (last(runs) ?? {})).toBe(false)
   })
 
-  test(`a close call in sizing Claude's subagent is counted and logged on its resize (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`a close call in sizing Claude's subagent is logged on its resize (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const sub: Situation = { ...fableHigh, tier: 'fable' }
     // Both models carry the same rework factor under a Fable parent, so the raw estimates compare as the calibrated ones do.
     const raw = (t: 'sonnet' | 'opus') => subWork(tieRating, sub, t, 'medium')
@@ -530,14 +513,13 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.rating = TIE_RATING
     await d.spawn('lister')
     expect(h.spawned.map(x => x.model), 'sent to the guide\'s model').toEqual(['sonnet'])
-    expect(h.store.ties, 'counted').toBe(1)
     await d.step('t1', 1)
     await d.complete('t1')
     const runs = (h.files[RUNS_FILE] ?? '').trim().split('\n').map(l => JSON.parse(l) as { resized?: { tier: string; tie?: unknown }[] })
     expect(last(runs)?.resized?.map(r => [r.tier, r.tie])).toEqual([['sonnet', { by: 'guide', over: 'opus' }]])
   })
 
-  // Rater check: Sonnet's second opinion on every 50th rating, in the background.
+  // Rater check: Sonnet's second opinion on every 20th Haiku rating, in the background.
   const FIT_NO = '{"fit":{"haiku":"no","sonnet":"no","opus":"medium","fable":"medium"},"type":"feature","read":2000,"write":300,"steps":1,"reason":"plain change"}'
   const CHECK_NO = '{"fit":{"haiku":"no","sonnet":"no","opus":"no","fable":"high"},"type":"feature","read":2000,"write":300,"steps":1}'
   const runLines = (h: ReturnType<typeof engine>) =>
@@ -610,34 +592,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const lines = runLines(h)
     expect((lines.find(l => l.kind === 'check') as { overhead: number }).overhead, '1M Sonnet input tokens').toBe(2)
     expect((lines.find(l => l.kind === 'run') as { actual: number }).actual, "the turn's own cost: one step").toBe(0.01)
-  })
-
-  test(`Rater check off in /config: no second opinion, and the count does not move (${surface})`, { timeoutMs: 30000, options: { raterCheck: 'off', rater: 'haiku' } }, async ($, on) => {
-    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { spotChecks: 49 }, stored: { raterCheck: 'off', rater: 'haiku' } })
-    const d = drive($, h)
-    await d.start(surface)
-    h.rating = FIT_NO
-    await d.submit(LOOKUP)
-    await d.submit(LOOKUP)
-    expect(h.completions.filter(m => m === 'sonnet')).toEqual([])
-    expect(h.store.spotChecks).toBe(49)
-    expect((await d.command('status')).text ?? '').toContain('Rater check: off')
-    // Turned on again in /config: the next rating is the 50th.
-    await d.config('raterCheck', 'every 50')
-    await d.submit(LOOKUP)
-    await flush()
-    expect(h.completions.filter(m => m === 'sonnet')).toEqual(['sonnet'])
-    expect((await d.command('status')).text ?? '').toContain('Rater check: every 50')
-  })
-
-  test(`Rater check turned off in /config stops the second opinions (${surface})`, { timeoutMs: 30000, options: { rater: 'haiku' } }, async ($, on) => {
-    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { spotChecks: 49 }, stored: { rater: 'haiku' } })
-    const d = drive($, h)
-    await d.start(surface)
-    h.rating = FIT_NO
-    await d.config('raterCheck', 'off')
-    await d.submit(LOOKUP)
-    expect(h.completions.filter(m => m === 'sonnet')).toEqual([])
   })
 
   test(`a check that fails or cannot be read adds no check line, only its cost (${surface})`, { timeoutMs: 30000, options: { rater: 'haiku' } }, async ($, on) => {

@@ -978,6 +978,32 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(stepped, 'a tool error stepped it up: a miss').toMatchObject([{ steppedUpBy: 'error' }])
   })
 
+  test(`a headless denial, a write the settings deny and a lookup that misses a file do not step an auto-lowered turn back up (ADR 0034, 0035) (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES } })
+    const d = drive($, h)
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+    h.rating = LOWER
+
+    await d.submit(LOOKUP)
+    await d.step('t1', 0)
+    expect(last(h.sent)?.effort, 'lowered').toBe('low')
+    await d.bash('env:Permission for this tool use was denied. It requires approval, and this session has no approval surface')
+    await d.step('t1', 1)
+    expect(last(h.sent)?.effort, 'a headless denial: the setup said no').toBe('low')
+    await d.bash('env:<tool_use_error>File is in a directory that is denied by your permission settings.</tool_use_error>')
+    await d.step('t1', 2)
+    expect(last(h.sent)?.effort, 'a write the settings deny: the setup said no').toBe('low')
+    await d.bash('cd repo 2>/dev/null; grep -n x src/a.py | head -50; head -30 CHANGES.rst # missing')
+    await d.step('t1', 3)
+    expect(last(h.sent)?.effort, 'a lookup that guessed a path: no harder').toBe('low')
+    await d.bash('python run.py; head -30 CHANGES.rst # missing')
+    await d.step('t1', 4)
+    expect(last(h.sent)?.effort, 'not only lookups: back to medium').toBe('medium')
+    await d.complete('t1')
+  })
+
   test(`Escalation off in /config: no mid-turn raise (${surface})`, { timeoutMs: 30000, options: { escalation: 'off' } }, async ($, on) => {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: AUTO_RAISE })
     const d = drive($, h)

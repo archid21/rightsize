@@ -207,7 +207,7 @@ test('noMatchExit: grep and friends exiting 1 found nothing, which is not a fail
   expect(nope('grep -rn "TODO" src', 'Exit code 1\nsome stderr'), 'with text after it').toBe(true)
   for (const c of ['rg foo', 'egrep -E "a|b" f', 'fgrep x f', 'ag foo', 'ack foo', 'git grep -n foo', 'git -C sub --no-pager grep foo', 'diff a b', 'cmp a b', 'comm -12 a b', 'test -f x', '[ -f x ]', '/usr/bin/grep foo f'])
     expect(nope(c), c).toBe(true)
-  expect(nope('grep foo f', 'Exit code 2\ngrep: f: No such file or directory'), 'grep, exit 2').toBe(false)
+  expect(nope('grep -E "(" f', 'Exit code 2\ngrep: Unmatched ( or \\('), 'grep, exit 2, a bad pattern').toBe(false)
   expect(nope('grep foo f', 'Exit code 10'), 'exit 10 is not exit 1').toBe(false)
   expect(nope('grep foo f', 'boom'), 'no exit code in the text').toBe(false)
   expect(nope('cat missing.txt'), 'cat, exit 1').toBe(false)
@@ -231,6 +231,36 @@ test('noMatchExit: grep and friends exiting 1 found nothing, which is not a fail
   expect(nope('timeout -s KILL 5s grep foo f'), 'timeout with a signal').toBe(true)
   expect(nope('cd x && make'), 'cd, then a program that is not on the list').toBe(false)
   expect(nope('cd x'), 'only a cd').toBe(false)
+  // A `;` list returns its last command's status.
+  expect(nope('grep foo f; head -5 g'), 'grep, then head: the status is head\'s').toBe(false)
+  expect(nope('head -5 g; grep foo f'), 'head, then grep').toBe(true)
+  expect(nope('cd x; grep foo f'), 'cd ; grep').toBe(true)
+})
+
+test('noMatchExit: a line of read-only lookups that failed only on a missing file (ADR 0035)', async () => {
+  const missing = (n: number, f = 'CHANGES.rst') => `Exit code ${n}\nhead: ${f}: No such file or directory`
+  const miss = (command: string, text = missing(1)) => noMatchExit('Bash', { command }, text)
+  // The benchmark's lines.
+  expect(miss('cd repo 2>/dev/null; grep -n "filename" src/a.py src/b.py | head -50; head -30 CHANGES.rst'), 'T12').toBe(true)
+  expect(miss('grep -rn foo src; head -20 README.md; grep -rn foo docs', 'Exit code 2\ngrep: docs: No such file or directory'), 'L03').toBe(true)
+  for (const c of ['cat a.txt', 'ls -la nope', 'head x && tail y', 'wc -l a b', 'sed -n 1,20p f', 'find nope -name "*.ts"', 'git show HEAD:nope.ts', 'echo ---; cat x', 'jq . f.json | head'])
+    expect(miss(c), c).toBe(true)
+  // Not a missing file: an ordinary failure.
+  expect(miss('cat a.txt', 'Exit code 1\ncat: a.txt: Is a directory'), 'another error').toBe(false)
+  expect(miss('cat a.txt', 'No such file or directory'), 'no exit code').toBe(false)
+  // Not only lookups.
+  for (const c of ['python run.py', 'cat x; npm test', 'cat x | python -c "import sys"', 'sed -i s/a/b/ f', 'sed -i.bak s/a/b/ f', 'find . -name x -delete', 'find . -exec rm {} ;', 'cat a > b', 'cat a >b', 'cat a >> b', 'cat a 2> err.log', 'make', 'cd nope'])
+    expect(miss(c), c).toBe(false)
+  expect(miss('cat a 2>/dev/null', missing(1)), 'stderr to /dev/null is not a write').toBe(true)
+  expect(miss('cat a 2>&1 | head', missing(1)), 'stderr to stdout is not a write').toBe(true)
+  expect(noMatchExit('Read', { command: 'cat x' }, missing(1)), 'not a Bash call').toBe(false)
+  // Errors sent to /dev/null: the text cannot say why, so exit 1 or 2 counts.
+  const l03 = 'grep -n "links" -A 25 lib/response.js | head -50; head -20 History.md; grep -rn "res.links" README.md docs 2>/dev/null'
+  expect(miss(l03, 'Exit code 2\n77: * Set Link header'), 'L03, errors hidden').toBe(true)
+  expect(miss('cat x &>/dev/null', 'Exit code 1'), '&> /dev/null').toBe(true)
+  expect(miss(l03, 'Exit code 3'), 'exit 3 is not a missing file').toBe(false)
+  expect(miss('grep foo f; head g', 'Exit code 2'), 'errors not hidden, no reason given').toBe(false)
+  expect(miss('python run.py 2>/dev/null', 'Exit code 1'), 'hidden, but not a lookup').toBe(false)
 })
 
 test('isTestCommand: a Bash call that starts a test runner', async () => {
@@ -332,7 +362,9 @@ test('refusedByPerson: a call the person said no to at the permission prompt, in
   expect(refusedByPerson('User rejected tool use')).toBe(true)
   // A session with nobody to ask (headless) denies the call itself: the same steering, by the setup (ADR 0034).
   expect(refusedByPerson('Permission for this tool use was denied. It requires approval, and this session has no approval surface — nobody can answer a permission prompt here — so it was denied automatically. The action was NOT performed; do not claim it succeeded, and do not retry it.')).toBe(true)
-  for (const text of ['boom', 'rm: cannot remove build: Permission denied', 'bash: ./run.sh: Permission denied', 'Error: Permission for this tool use was denied', 'error: the user rejected the merge request in review', '']) expect(refusedByPerson(text), text).toBe(false)
+  expect(refusedByPerson('<tool_use_error>File is in a directory that is denied by your permission settings.</tool_use_error>'), 'a write the settings deny').toBe(true)
+  expect(refusedByPerson('File is in a directory that is denied by your permission settings.'), 'without the tags').toBe(true)
+  for (const text of ['boom', 'rm: cannot remove build: Permission denied', '<tool_use_error>String to replace not found in file.</tool_use_error>', 'bash: ./run.sh: Permission denied', 'Error: Permission for this tool use was denied', 'error: the user rejected the merge request in review', '']) expect(refusedByPerson(text), text).toBe(false)
 })
 
 test('the last test run in a turn is its objective outcome', async () => {

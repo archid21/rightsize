@@ -490,6 +490,11 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
     // "env:<text>" fails with that text, as the environment does (no network, a missing program); the text is part of the call.
     // A command ending " # exit1" ends with exit code 1, as core reports it: an error result that starts "Exit code 1".
     if (command.endsWith(' # exit1')) return { result: 'Exit code 1', text: 'Exit code 1', isError: true }
+    // A command ending " # missing" ends with exit code 1 on a file that is not there.
+    if (command.endsWith(' # missing')) {
+      const text = 'Exit code 1\nhead: CHANGES.rst: No such file or directory'
+      return { result: text, text, isError: true }
+    }
     if (command.startsWith('env:')) return { result: command.slice(4), text: command.slice(4), isError: true }
     return command.startsWith('fail') || command.endsWith(' --red') ? { result: { stdout: '', stderr: 'boom' }, text: 'boom', isError: true } : { result: { stdout: 'ok', stderr: '' }, text: 'ok' }
   })

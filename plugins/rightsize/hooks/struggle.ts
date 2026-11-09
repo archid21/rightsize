@@ -107,7 +107,7 @@ export const blockedError = (text: string): boolean => {
  * The same holds for the denial core makes itself when a call needs approval and nobody can be asked
  * (a headless run, `claude -p`, CI): the setup said no, and more effort would not change it (ADR 0034).
  */
-const REFUSED = /^(?:The user doesn't want to proceed with this tool use\b|User rejected tool use\b|Permission for this tool use was denied\b)/
+const REFUSED = /^(?:<tool_use_error>\s*)?(?:The user doesn't want to proceed with this tool use\b|User rejected tool use\b|Permission for this tool use was denied\b|File is in a directory that is denied by your permission settings\b)/
 
 export const refusedByPerson = (text: string): boolean => REFUSED.test(text.trimStart())
 
@@ -200,31 +200,99 @@ function programOf(words: string[]): string | undefined {
  * "nothing found", "the files differ" or "false", and core hands that back as an error result whose text starts
  * `Exit code 1`. A model that searches is not failing when the search finds nothing, so such a call counts as a
  * success for every sign: it adds nothing to `errors`, is not a repeat failure, and does not step a lowered turn
- * back up. Exit code 2 or more (a bad pattern, a missing file) is still an error. The program is the first command
- * after any `cd … &&`, or the last stage of a pipeline, whose status is its last command's.
+ * back up. Exit code 2 or more (a bad pattern) is still an error. The program is the first command after any
+ * `cd … &&` in the last `;` group, and the last stage of its pipeline, whose status is its last command's.
+ * A line of read-only lookups that failed only on a missing file counts the same way (`lookupMiss`, ADR 0035).
  */
 export function noMatchExit(tool: string, input: Record<string, unknown>, text: string): boolean {
-  if (tool !== 'Bash' || typeof input.command !== 'string' || !EXIT_ONE.test(text)) return false
-  const tokens = shellTokens(input.command)
-  // Pipelines, split on the separators; a leading `cd dir &&` is not the command.
-  const lines: string[][] = [[]]
-  const seps: string[] = []
-  for (const t of tokens) {
-    if (t === '&&' || t === '||' || t === ';') {
-      seps.push(t)
-      lines.push([])
-    } else (lines[lines.length - 1] as string[]).push(t)
+  if (tool !== 'Bash' || typeof input.command !== 'string') return false
+  return foundNothing(input.command, text) || lookupMiss(input.command, text)
+}
+
+/** Commands split on `&&`, `||` and `;` (a newline is a `;`), each kept with the separator before it. */
+function commandsOf(line: string): { sep: string; words: string[] }[] {
+  const out: { sep: string; words: string[] }[] = [{ sep: '', words: [] }]
+  for (const t of shellTokens(line)) {
+    if (t === '&&' || t === '||' || t === ';') out.push({ sep: t, words: [] })
+    else (out[out.length - 1] as { words: string[] }).words.push(t)
   }
-  let first = 0
-  while (first < lines.length - 1 && (lines[first]?.[0] === 'cd' || lines[first]?.[0] === 'pushd')) first++
-  const words = lines[first] ?? []
-  // The last stage of that pipeline.
-  let from = 0
-  words.forEach((w, i) => {
-    if (w === '|') from = i + 1
+  return out.filter(c => c.words.length > 0)
+}
+
+const isCd = (words: string[]) => words[0] === 'cd' || words[0] === 'pushd'
+
+/** A pipeline's stages, split on `|`. */
+function stagesOf(words: string[]): string[][] {
+  const out: string[][] = [[]]
+  for (const w of words) {
+    if (w === '|') out.push([])
+    else (out[out.length - 1] as string[]).push(w)
+  }
+  return out
+}
+
+/** Exit code 1 from a grep-like program: the command the shell's status comes from is the first one after any leading `cd`s
+ * in the last `;` group (a `;` list returns its last command's status), and its pipeline's last stage. */
+function foundNothing(command: string, text: string): boolean {
+  if (!EXIT_ONE.test(text)) return false
+  const commands = commandsOf(command)
+  let start = 0
+  commands.forEach((c, i) => {
+    if (c.sep === ';') start = i
   })
-  const program = programOf(words.slice(from))
+  const group = commands.slice(start)
+  let first = 0
+  while (first < group.length - 1 && isCd((group[first] as { words: string[] }).words)) first++
+  const stages = stagesOf(group[first]?.words ?? [])
+  const program = programOf(stages[stages.length - 1] ?? [])
   return program !== undefined && NO_MATCH_PROGRAMS.has(program)
+}
+
+/** Programs that only read. `sed` and `find` count only without the flags that write or run other programs. */
+const LOOKUP_PROGRAMS: ReadonlySet<string> = new Set([
+  ...NO_MATCH_PROGRAMS,
+  'cat', 'head', 'tail', 'less', 'ls', 'tree', 'wc', 'file', 'stat', 'du', 'nl', 'cut', 'sort', 'uniq', 'tr', 'jq',
+  'sed', 'find', 'echo', 'printf', 'true', 'pwd', 'basename', 'dirname', 'realpath', 'readlink',
+  'git show', 'git log', 'git diff', 'git status', 'git ls-files', 'git blame', 'git rev-parse', 'git cat-file',
+])
+const EXIT_NONZERO = /^\s*Exit code [1-9]\d*\b/
+const MISSING_FILE = /No such file or directory/
+const EXIT_ONE_OR_TWO = /^\s*Exit code [12](?!\d)/
+const HIDES_ERRORS = /(?:\b2|&)>\s*\/dev\/null\b/
+/** Whether a stage redirects output to anything but /dev/null or another descriptor (`> b`, `>b`, `2>> log`). */
+function writesFile(stage: string[]): boolean {
+  return stage.some((w, i) => {
+    const m = /^\d*>>?(.*)$/.exec(w)
+    if (!m) return false
+    const target = m[1] || (stage[i + 1] ?? '')
+    return target !== '/dev/null' && !/^&\d$/.test(target)
+  })
+}
+
+/**
+ * A line of read-only lookups that ended non-zero because a file it named is not there: `grep x f; head CHANGES.rst` in a
+ * repo that has CHANGES.md. The model is looking around, and one guessed path that does not exist is not the work
+ * getting harder (ADR 0035). Every program on the line, in every command and pipeline stage, must be a lookup, nothing
+ * may be written, and the output must say "No such file or directory". When the line sends errors to /dev/null
+ * (`grep -rn x README.md docs 2>/dev/null`), the model said ahead that a path may be missing and the text cannot say so:
+ * exit code 1 or 2 counts then. Any other non-zero exit is still an error.
+ */
+function lookupMiss(command: string, text: string): boolean {
+  const said = EXIT_NONZERO.test(text) && MISSING_FILE.test(text)
+  const hidden = EXIT_ONE_OR_TWO.test(text) && HIDES_ERRORS.test(command)
+  if (!said && !hidden) return false
+  const commands = commandsOf(command).filter(c => !isCd(c.words))
+  if (commands.length === 0) return false
+  for (const c of commands) {
+    for (const stage of stagesOf(c.words)) {
+      if (writesFile(stage)) return false
+      const program = programOf(stage)
+      if (program === undefined || !LOOKUP_PROGRAMS.has(program)) return false
+      if (program === 'sed' && stage.some(w => /^-[^-]*i|^--in-place/.test(w))) return false
+      if (program === 'find' && stage.some(w => /^-(?:delete|exec|execdir|ok|okdir|fprint\w*|fls)$/.test(w))) return false
+    }
+  }
+  return true
 }
 
 export const noSignals = (): Signals => ({ errors: 0, calls: {}, fired: [] })

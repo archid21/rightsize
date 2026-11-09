@@ -1729,7 +1729,8 @@ export function delegateNote(d: NonNullable<Run['delegate']>, rounds = FIXED.cha
   const why = d.dir === 'up' ? 'it needs a stronger model' : 'a cheaper model can do it for less'
   return [
     `[rightsize] The person has chosen to hand this request to a ${name} subagent, because ${why}. Do it this way:`,
-    `1. Start one subagent with the Agent tool, model "${d.tier}", effort "${d.level}". Give it a complete brief: the goal, the files, facts and decisions it needs from this conversation, and a "Done means" list of 3 to 6 items that can be checked.`,
+    `1. Start one subagent with the Agent tool, model "${d.tier}", effort "${d.level}". Give it a complete brief: the goal, the files, facts and decisions it needs from this conversation, what is out of scope, and a "Done means" list of 3 to 6 items that can be checked. Point to code as file:line ranges or short excerpts. Never paste whole files into the brief.`,
+    '   Tell the subagent: if it meets a choice the brief does not settle, or something that contradicts the brief, it stops and reports the question with its options. It does not guess. You decide, then continue it.',
     '   If the request includes steps only the person can approve (pushing, publishing, releasing, deploying, sending messages, acting in their accounts), the subagent prepares everything (edits, tests, notes) and stops before those steps. It cannot see the person\'s approval, so it would refuse them. You do those steps yourself after step 2.',
     '2. When it reports back, check its result against every Done-means item yourself. Use real proof where you can (run the tests, read the changed files), not its summary.',
     `3. If an item fails, send that subagent a specific fix-up note (continue it with SendMessage where you can; otherwise start it again with the note and its last result). At most ${rounds === 1 ? '1 rework round' : `${rounds} rework rounds`}.`,

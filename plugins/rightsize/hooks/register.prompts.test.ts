@@ -118,6 +118,11 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(note).toContain('[rightsize]')
     expect(note).toContain('model "fable", effort "high"')
     expect(note).toContain('Done means')
+    expect(note, 'the brief names what is out of scope').toContain('what is out of scope')
+    expect(note, 'the brief points to code by file:line, not whole files').toContain('file:line ranges')
+    expect(note).toContain('Never paste whole files')
+    expect(note, 'the helper stops and reports an open choice').toContain('it stops and reports the question with its options')
+    expect(note).toContain('It does not guess.')
     expect(note).toContain('At most 2 rework rounds')
     expect(last(h.submitted)?.text, 'the prompt itself is unchanged').toBe(DEBUG)
 

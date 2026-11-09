@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.10.0 (2026-11-08)
 
 - **The per-start rules of the effort policy are now code.** On Opus or Fable every task but a review runs at low effort, whatever the rating says (a start at high or xhigh lowers to low, not to the rated level). On Sonnet a rated raise is taken only for a task rated high or more with 20 steps or more, and never for debugging. A Haiku helper takes mechanical work only (lookups, searches, bulk edits, extraction, summaries); a helper on any other model needs a task of 20 rated steps or more. On a Haiku session, debugging, features, refactors and writing switch the main chat to Sonnet for the turn under the Stronger model rule, as a review switches to Opus. Claude's own subagents are not held to the type or size rules.
 - **Six Advanced rows removed.** Hand-off threshold (70%), Lowering threshold (90%), Explore close calls (off), Pause after misses (20%), Helper call cap (25 Haiku / 40 Sonnet calls) and Rater check (every 20th Haiku rating) are now fixed values; a stored value for any of them is ignored. Budget pacing still moves the two bars when a usage window runs hot.

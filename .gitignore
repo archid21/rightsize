@@ -9,3 +9,7 @@ plugins/*/.claude-plugin/types/
 # whatsnext: decisions and handoff stay private (research-stays-private rule)
 docs/decisions/
 docs/project/HANDOFF.md
+
+# whatsnext state and session handoff notes stay private
+.whatsnext/
+docs/project/handoffs/

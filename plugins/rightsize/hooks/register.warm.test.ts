@@ -57,7 +57,12 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.commands = over.commands ?? []
     if (over.commands?.length) installWhatsnext(h)
     if ('fork' in over) h.forkUsage = over.fork
-    if (over.prices) h.pricesFile = over.prices
+    if (over.prices) {
+      // The file names its own cache life: drop the kit's 1-hour pin, which would beat it.
+      h.pricesFile = over.prices
+      delete h.env.CLAUDE_CODE_PROMPT_CACHE_TTL
+      delete h.env.CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL
+    }
     const d = drive($, h)
     await d.start(surface)
     return { h, d }

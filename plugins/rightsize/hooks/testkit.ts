@@ -110,8 +110,12 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
     posts: [] as { url: string; body: string }[],
     /** The address of every GET: only the pricing page. */
     urls: [] as string[],
-    env: {} as Record<string, string>,
+    // A session told to write the 1-hour cache everywhere, as Claude Code's own variables say it: the fixtures' prices and
+    // times were set under one life. register.ttl.test.ts clears these to test how the life is read.
+    env: { CLAUDE_CODE_PROMPT_CACHE_TTL: '1h', CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL: '1h' } as Record<string, string>,
     hold: null as Promise<void> | null,
+    /** A Bash command that starts "slow" waits for this. */
+    toolGate: null as Promise<void> | null,
     fetchFails: false,
     pricesFile: '',
     backup: '',
@@ -479,6 +483,8 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
   // one starting "rejected" is refused by the person at the permission prompt, which core reports as an error result; one starting "env:" fails with the text after it.
   reg('tool.call', { tool: 'Bash' }, async ($, e) => {
     const command = String((e as unknown as { command: string }).command)
+    // "slow …" runs until the test lets it go (h.toolGate): a long foreground call.
+    if (command.startsWith('slow')) await h.toolGate
     if (command.startsWith('denied')) return { deny: 'permission denied' }
     if (command.startsWith('rejected')) return { result: REJECTED, text: REJECTED, isError: true }
     // "env:<text>" fails with that text, as the environment does (no network, a missing program); the text is part of the call.
@@ -619,7 +625,7 @@ export const untilAsked = async (h: { asked: unknown[] }, before: number, questi
 }
 export const DAY = 24 * 60 * 60 * 1000
 export const PAGE = [
-  '| Claude Fable 5.1 | $10 / MTok | $12.50 / MTok | $20 / MTok | $0.25 / MTok | $50 / MTok |',
+  '| Claude Fable 5.2 | $8 / MTok | $10 / MTok | $16 / MTok | $0.20 / MTok | $40 / MTok |',
   '| Claude Opus 5.5 | $4 / MTok | $5 / MTok | $8 / MTok | $0.20 / MTok | $20 / MTok |',
   '| Claude Sonnet 5.5 | $2 / MTok | $2.50 / MTok | $4 / MTok | $0.10 / MTok | $10 / MTok |',
   '| Claude Haiku 5.5 (for prompts up to 100,000 tokens) | $0.10 / MTok | $0.125 / MTok | $0.20 / MTok | $0.01 / MTok | $0.50 / MTok |',
@@ -630,7 +636,7 @@ export const OLD_PRICES = JSON.stringify({
     haiku: { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite5m: 0.125, cacheWrite1h: 0.2 },
     sonnet: { input: 2, output: 10, cacheRead: 0.2, cacheWrite5m: 2.5, cacheWrite1h: 4 },
     opus: { input: 4, output: 20, cacheRead: 0.2, cacheWrite5m: 5, cacheWrite1h: 8 },
-    fable: { input: 10, output: 50, cacheRead: 0.25, cacheWrite5m: 12.5, cacheWrite1h: 20 },
+    fable: { input: 8, output: 40, cacheRead: 0.2, cacheWrite5m: 10, cacheWrite1h: 16 },
   },
 })
 

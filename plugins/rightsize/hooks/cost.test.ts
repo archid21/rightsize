@@ -28,7 +28,9 @@ import {
   parseShare,
   plan,
   share,
-  cacheTtlMs,
+  fileTtl,
+  resolveHelperTtl,
+  resolveTtl,
   idleCost,
   COMPACT_SUMMARY_TOKENS,
   coldCost,
@@ -127,6 +129,25 @@ test('reads prices.json, keeping defaults for what it lacks', async () => {
   expect(parsePrices('not json'), 'unreadable file: defaults').toEqual(DEFAULT_PRICES)
   expect(parsePrices('{}').opus.cacheWrite, 'no TTL named: the 1-hour write').toBe(8)
   expect(parsePrices(JSON.stringify({ cacheTtl: '5m' })).opus.cacheWrite, '5m with no price: 1.25x input').toBe(5)
+  expect(parsePrices(JSON.stringify({ cacheTtl: '1h' }), '5m').opus.cacheWrite, 'the resolved life beats the file').toBe(5)
+  expect(parsePrices('not json', '5m').haiku.over100k?.cacheWrite, 'unreadable file at 5m: 1.25x the default input').toBe(0.625)
+})
+
+test('the cache life follows Claude Code’s precedence, then the billing', async () => {
+  expect(resolveTtl({}).ttl, 'billing not seen yet: 1 hour as before').toBe('1h')
+  expect(resolveTtl({ billing: 'api' })).toEqual({ ttl: '5m', by: 'API billing' })
+  expect(resolveTtl({ billing: 'subscription' }).ttl, 'a subscription within its plan').toBe('1h')
+  expect(resolveTtl({ billing: 'subscription', onCredits: true }).ttl, 'a subscription on usage credits').toBe('5m')
+  expect(resolveTtl({ billing: 'api', file: '1h' }).by, 'prices.json beats the billing').toBe('prices.json')
+  expect(resolveTtl({ billing: 'api', enable1h: '1' }).ttl, 'ENABLE_PROMPT_CACHING_1H beats prices.json and billing').toBe('1h')
+  expect(resolveTtl({ enable1h: '1', setting: '5m' }).ttl, 'the setting beats ENABLE').toBe('5m')
+  expect(resolveTtl({ setting: '5m', env: '1h' }).ttl, 'the variable beats the setting').toBe('1h')
+  expect(resolveTtl({ env: '1h', force5m: '1' }).ttl, 'FORCE beats everything').toBe('5m')
+  expect(resolveTtl({ env: '2h', setting: 'yes', billing: 'api' }).ttl, 'values that are not 5m or 1h are ignored').toBe('5m')
+  expect(resolveHelperTtl({}).ttl, 'helpers: 5 minutes by default, on any billing').toBe('5m')
+  expect(resolveHelperTtl({ enable1h: '1' }).ttl).toBe('1h')
+  expect(resolveHelperTtl({ setting: '1h' }).ttl).toBe('1h')
+  expect(resolveHelperTtl({ setting: '1h', force5m: '1' }).ttl).toBe('5m')
 })
 
 test('does not lower effort when measured switches say the cache rewrite costs more than it saves', async () => {
@@ -598,9 +619,10 @@ test('idle resume: the rewrite over a warm read, the cache life, and the warning
   const c = idleCost(DEFAULT_PRICES.opus, 100_000)
   expect(near(c.resend, 0.78)).toBe(true)
   expect(near(c.compact, 0.4)).toBe(true)
-  expect(cacheTtlMs('{"cacheTtl":"5m"}')).toBe(300_000)
-  expect(cacheTtlMs('{}')).toBe(3_600_000)
-  expect(cacheTtlMs('not json')).toBe(3_600_000)
+  expect(fileTtl('{"cacheTtl":"5m"}')).toBe('5m')
+  expect(fileTtl('{}')).toBeUndefined()
+  expect(fileTtl('{"cacheTtl":"2h"}')).toBeUndefined()
+  expect(fileTtl('not json')).toBeUndefined()
   expect([parseIdleWarning('over $0.50'), parseIdleWarning('over $1'), parseIdleWarning('off'), parseIdleWarning(undefined)]).toEqual([0.5, 1, null, 0.1])
 })
 

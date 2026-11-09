@@ -48,17 +48,28 @@ export type LongPrice = { input: number; output: number; cacheRead: number; cach
 export type Price = { input: number; output: number; cacheRead: number; cacheWrite: number; over100k?: LongPrice }
 export type Prices = Record<Tier, Price>
 
-// Anthropic first-party prices from the pricing page, checked 2026-10-23;
+// Anthropic first-party prices from the pricing page, checked 2026-11-09;
 // prices.json beside the mod overrides them. cacheWrite is the 1-hour TTL (2x input),
 // the one Claude Code sessions usually write.
 export const DEFAULT_PRICES: Prices = {
   haiku: { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.2, over100k: { input: 0.5, output: 2.5, cacheRead: 0.05, cacheWrite: 1 } },
   sonnet: { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 4 },
   opus: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 8 },
-  fable: { input: 10, output: 50, cacheRead: 0.25, cacheWrite: 20 },
+  fable: { input: 8, output: 40, cacheRead: 0.2, cacheWrite: 16 },
 }
 
 const num = (v: unknown, fallback: number) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : fallback)
+
+/** The default prices with every cache write at `ttl`'s multiple of input (1.25x for 5m, 2x for 1h). */
+const withTtl = (p: Prices, ttl: Ttl): Prices => {
+  const k = ttl === '5m' ? 1.25 : 2
+  const out = { ...p }
+  for (const t of TIERS) {
+    const d = p[t]
+    out[t] = { ...d, cacheWrite: d.input * k, ...(d.over100k ? { over100k: { ...d.over100k, cacheWrite: d.over100k.input * k } } : {}) }
+  }
+  return out
+}
 
 /** A request whose prompt is over this many tokens pays a model's `over100k` prices, where it has them. */
 export const LONG_PROMPT = 100_000
@@ -77,15 +88,16 @@ function longPrice(m: Record<string, unknown>, d: LongPrice, writeKey: string): 
   }
 }
 
-// Reads prices.json. Any field that is missing or not a number keeps the default.
-export function parsePrices(raw: string): Prices {
+// Reads prices.json for a cache life: `ttl` (the resolved one), else the file's cacheTtl, else 1 hour. Any field that is
+// missing or not a number keeps the default.
+export function parsePrices(raw: string, ttl?: Ttl): Prices {
   let json: { cacheTtl?: unknown; models?: Record<string, Record<string, unknown> | undefined> } = {}
   try {
     json = JSON.parse(raw) as typeof json
   } catch {
-    return DEFAULT_PRICES
+    return ttl === '5m' ? withTtl(DEFAULT_PRICES, '5m') : DEFAULT_PRICES
   }
-  const writeKey = json.cacheTtl === '5m' ? 'cacheWrite5m' : 'cacheWrite1h'
+  const writeKey = (ttl ?? (json.cacheTtl === '5m' ? '5m' : '1h')) === '5m' ? 'cacheWrite5m' : 'cacheWrite1h'
   const out = { ...DEFAULT_PRICES }
   for (const t of TIERS) {
     const m = json.models?.[t] ?? {}
@@ -103,14 +115,69 @@ export function parsePrices(raw: string): Prices {
   return out
 }
 
-/** How long a cache write lives: prices.json's cacheTtl, 1 hour unless it says 5m. */
-export function cacheTtlMs(raw: string) {
+// ---- Cache life ---------------------------------------------------------------
+// Claude Code decides the prompt cache's life (its TTL) per request, in two buckets: the main conversation, and everything
+// else (subagents, forks, compaction). Its precedence (docs, "How Claude Code uses prompt caching", v2.1.242+):
+// FORCE_PROMPT_CACHING_5M=1; the bucket's environment variable; the bucket's setting; ENABLE_PROMPT_CACHING_1H=1; the
+// bucket's default. The main conversation's default is 1 hour on a Claude subscription within its plan, 5 minutes on an API
+// key, a cloud provider, or a subscription drawing on usage credits. Everything else defaults to 5 minutes. A cacheTtl in
+// prices.json is the person's own word, kept for a gateway rightsize cannot read; it ranks just above the default.
+
+export type Ttl = '5m' | '1h'
+export const TTL_MS: Record<Ttl, number> = { '5m': 5 * 60_000, '1h': 60 * 60_000 }
+export const isTtl = (v: unknown): v is Ttl => v === '5m' || v === '1h'
+const on = (v: unknown) => v === '1' || v === 'true'
+
+/** prices.json's cacheTtl, when the person set one; undefined when absent, unreadable or not 5m/1h. */
+export function fileTtl(raw: string): Ttl | undefined {
   try {
-    return (JSON.parse(raw) as { cacheTtl?: unknown }).cacheTtl === '5m' ? 5 * 60_000 : 60 * 60_000
+    const v = (JSON.parse(raw) as { cacheTtl?: unknown }).cacheTtl
+    return isTtl(v) ? v : undefined
   } catch {
-    return 60 * 60_000
+    return undefined
   }
 }
+
+export type TtlInputs = {
+  /** FORCE_PROMPT_CACHING_5M */
+  force5m?: string
+  /** CLAUDE_CODE_PROMPT_CACHE_TTL, or CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL for helpers */
+  env?: string
+  /** The promptCacheTtl setting, or subagentPromptCacheTtl for helpers */
+  setting?: unknown
+  /** ENABLE_PROMPT_CACHING_1H */
+  enable1h?: string
+  /** prices.json's cacheTtl (main conversation only) */
+  file?: Ttl
+  /** What the rate limits showed; undefined before the first response */
+  billing?: 'api' | 'subscription'
+  /** True when a subscription window reads 100% or more: the session is on usage credits, billed per token */
+  onCredits?: boolean
+}
+
+/** The main conversation's cache life and what decided it. Before the first response (`billing` unknown) it is 1 hour, as before. */
+export function resolveTtl(i: TtlInputs): { ttl: Ttl; by: string } {
+  if (on(i.force5m)) return { ttl: '5m', by: 'FORCE_PROMPT_CACHING_5M' }
+  if (isTtl(i.env)) return { ttl: i.env, by: 'CLAUDE_CODE_PROMPT_CACHE_TTL' }
+  if (isTtl(i.setting)) return { ttl: i.setting, by: 'the promptCacheTtl setting' }
+  if (on(i.enable1h)) return { ttl: '1h', by: 'ENABLE_PROMPT_CACHING_1H' }
+  if (i.file) return { ttl: i.file, by: 'prices.json' }
+  if (i.billing === 'api') return { ttl: '5m', by: 'API billing' }
+  if (i.billing === 'subscription') return i.onCredits ? { ttl: '5m', by: 'a subscription on usage credits' } : { ttl: '1h', by: 'a subscription within its plan' }
+  return { ttl: '1h', by: 'default, billing not seen yet' }
+}
+
+/** The cache life of helpers, Claude's subagents and forks, and what decided it: 5 minutes unless Claude Code is told otherwise. */
+export function resolveHelperTtl(i: Pick<TtlInputs, 'force5m' | 'env' | 'setting' | 'enable1h'>): { ttl: Ttl; by: string } {
+  if (on(i.force5m)) return { ttl: '5m', by: 'FORCE_PROMPT_CACHING_5M' }
+  if (isTtl(i.env)) return { ttl: i.env, by: 'CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL' }
+  if (isTtl(i.setting)) return { ttl: i.setting, by: 'the subagentPromptCacheTtl setting' }
+  if (on(i.enable1h)) return { ttl: '1h', by: 'ENABLE_PROMPT_CACHING_1H' }
+  return { ttl: '5m', by: 'default' }
+}
+
+/** "1 hour" or "5 minutes". */
+export const ttlText = (ms: number) => (ms >= TTL_MS['1h'] ? '1 hour' : '5 minutes')
 
 export type Tokens = { input?: number; output?: number; cacheRead?: number; cacheWrite?: number }
 export const dollars = (p: Price, t: Tokens) =>
@@ -310,6 +377,8 @@ export type Situation = {
   /** Tokens in the main conversation. */
   context: number
   prices: Prices
+  /** Prices at the helpers' cache life (5 minutes unless Claude Code is told otherwise); `prices` when absent. */
+  helperPrices?: Prices
   cal: Calibration
   /** The hand-off and lowering shares; DEFAULT_RULES when absent. */
   rules?: Rules
@@ -382,7 +451,8 @@ export function subWork(r: Rating, s: Situation, sub: Tier, subLevel: Level) {
     output: r.write * w.out + REPORT,
   }
   // Its prompt grows from the base and brief to the whole of what it read. The requests past 100,000 tokens pay the model's over-100K prices (Haiku).
-  const p = s.prices[sub]
+  // A subagent writes the 5-minute cache (its own bucket), whatever the main conversation writes.
+  const p = (s.helperPrices ?? s.prices)[sub]
   const start = SUB_BASE + BRIEF
   const peak = start + r.read
   const over = p.over100k && peak > LONG_PROMPT ? Math.min(1, (peak - Math.max(LONG_PROMPT, start)) / (peak - start)) : 0

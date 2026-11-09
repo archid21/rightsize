@@ -104,7 +104,7 @@ A routine edit stays on Sonnet; a review switches to Opus for one turn; the band
 
 **Big routine jobs, done cheaper.** Working on Opus? A large, mechanical job such as the same edit across many files can go to a Haiku helper. Your main chat writes the brief, checks the result against it, and sends it back if anything is off. On our benchmark these hand-offs passed as often as Opus at a bit under half the cost. rightsize hands off only when the brief and the check still leave a saving, so from a Sonnet session it never does.
 
-**Come back to a warm session.** A long session is cheap only while its prompt cache (the stored copy of your conversation) is warm. Step away past the cache's hour and your next prompt pays to rebuild it. rightsize keeps a big session warm while you are away, until your usual start time, and never past the point where coming back cold would be cheaper. When keeping warm over your usual idle time would cost at least 3 times a compact, rightsize compacts instead.
+**Come back to a warm session.** A long session is cheap only while its prompt cache (the stored copy of your conversation) is warm. Step away past the cache's life (an hour on a subscription, 5 minutes on an API key) and your next prompt pays to rebuild it. rightsize keeps a big session warm while you are away, until your usual start time, and never past the point where coming back cold would be cheaper. When keeping warm over your usual idle time would cost at least 3 times a compact, rightsize compacts instead.
 
 | Coming back to a 150k-token Opus session | Cost at API prices |
 |---|---|

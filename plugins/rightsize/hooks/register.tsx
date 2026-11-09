@@ -26,7 +26,11 @@ import {
   type Situation,
   type Tie,
   atPrompt,
-  cacheTtlMs,
+  TTL_MS,
+  fileTtl,
+  resolveHelperTtl,
+  resolveTtl,
+  ttlText,
   coldCost,
   limitSaving,
   contextOf,
@@ -107,7 +111,7 @@ import { type Change, type HelperLine, type Lifetime, type RunLine, type SwitchL
 import { LIMIT_BUTTON, LIMIT_COMPACT, LIMIT_HIDE, LIMIT_MORE, LIMIT_WHY, LIMIT_WHY_ID, isLimitId, limitDue, limitText } from './limit'
 import { SIZE_BUTTON, SIZE_COMPACT, SIZE_HIDE, SIZE_MORE, SIZE_WHY, SIZE_WHY_ID, isSizeId, sizeStep, sizeText } from './size'
 import { COMPACT_BASE, NO_FRESH_HANDOFF, WRAP_HEADROOM, WRAP_TURNS, isWhatsnext } from './whatsnext'
-import { COMPACT_GAP_MIN, PING_PROMPT, ROW_OF, WRAP_UP, addGap, alwaysText, compactBoundary, compactWorth, compactedText, idleCompactState, idleEstimate, breakEvenMs, cacheHeld, clockText, coldPlan, ignoredLately, keepWarmChoices, leadMs, learnedChoice, COLD_MIN, netSaving, nextStart, offerAt, offerText, pingCost, pingEvery, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText } from './warm'
+import { COMPACT_GAP_MIN, PING_PROMPT, ROW_OF, WRAP_UP, addGap, alwaysText, compactBoundary, compactWorth, compactedText, idleCompactState, idleEstimate, breakEvenMs, cacheHeld, clockText, coldPlan, ignoredLately, keepWarmChoices, leadMs, learnedChoice, COLD_MIN, breakEvenPings, netSaving, nextStart, offerAt, offerText, pingCost, pingEvery, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText } from './warm'
 
 // Before a prompt is sent, a quick Haiku call rates the effort, the model and
 // the work needs on each model, and the cost model prices each route that fits. The first time
@@ -386,6 +390,10 @@ let priceCheck: 'monthly' | 'off' = 'monthly'
 let bandMode: BandMode = 'when it acts'
 let checking: Promise<string> | null = null
 let prices: Prices = DEFAULT_PRICES
+/** The same prices at the helpers' cache life (their cache writes are 1.25x input, not 2x). */
+let helperPrices: Prices = DEFAULT_PRICES
+/** prices.json as last read or written, re-priced when the cache life changes. */
+let priceFile = ''
 let cal: Calibration = {}
 /** The learned step exponent (steps.ts), and the runs it has not been saved with yet. */
 let stepState: StepState = NO_STEPS
@@ -525,7 +533,12 @@ const ratedRuns = new Set<string>()
 let runSeq = 0
 /** Warn before sending into an expired cache when that costs over this many dollars; null: off. */
 let idleWarning: number | null = 0.1
+/** The main conversation's cache life in ms, and what decided it (see refreshTtl). */
 let cacheTtl = 60 * 60_000
+let ttlBy = 'default'
+/** The cache life of helpers, Claude's subagents and forks: their own bucket, 5 minutes unless Claude Code is told otherwise. */
+let helperTtl = 5 * 60_000
+let helperTtlBy = 'default'
 /** What a big session does before its cache goes cold (Before the cache goes cold, or the fixed value while that row is not yours). */
 let coldMode: string = FIXED.beforeCold
 /** What whatsnext last said about this folder (`project` in compact-instructions --json), and when. */
@@ -799,7 +812,8 @@ async function checkPrices($: EngineInterface, why: 'monthly' | 'manual', claime
   if (old) await $.fs.write(`${path}.bak`, old)
   const next = applyPrices(old, page, new Date(now).toISOString().slice(0, 10))
   await $.fs.write(path, next)
-  prices = parsePrices(next)
+  priceFile = next
+  await refreshTtl($)
   const msg = `Prices updated from Anthropic's pricing page (old file kept as prices.json.bak): ${changes.join('; ')}.`
   await log($, `${why} ${msg}`)
   $.ui.log(`rightsize: ${msg}`)
@@ -973,6 +987,36 @@ async function saveBilling($: EngineInterface, v: Billing, by: 'detected' | 'ans
   billing = v
   billingBy = by
   await $.store.set('billing', { value: v, by }).catch(() => undefined)
+  await refreshTtl($)
+}
+
+/** True when a subscription window reads 100% or more: the session is drawing on usage credits, and Claude Code drops the main conversation to the 5-minute cache. */
+const onCredits = (limits: readonly { kind: string; percentUsed: number }[] | undefined) => (limits ?? []).some(l => (l.kind === 'five_hour' || l.kind === 'seven_day') && l.percentUsed >= 100)
+
+// Works out the cache life of the main conversation and of helpers from what Claude Code reads (its environment variables
+// and settings), the billing the rate limits showed, and prices.json, then prices both at their life. Runs at start, when
+// the billing is learned or answered, after each main turn (a usage window can pass 100% mid-session) and after a price
+// check. A change is logged once.
+async function refreshTtl($: EngineInterface) {
+  const force5m = await $.env.get('FORCE_PROMPT_CACHING_5M').catch(() => undefined)
+  const enable1h = await $.env.get('ENABLE_PROMPT_CACHING_1H').catch(() => undefined)
+  const mainEnv = await $.env.get('CLAUDE_CODE_PROMPT_CACHE_TTL').catch(() => undefined)
+  const subEnv = await $.env.get('CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL').catch(() => undefined)
+  const mainSetting = await $.settings.read({ key: 'promptCacheTtl' }).catch(() => undefined)
+  const subSetting = await $.settings.read({ key: 'subagentPromptCacheTtl' }).catch(() => undefined)
+  const u = await usageNow($)
+  // The rate limits are the fact; the person's own Reports answer stands in for them until they show.
+  const seen = detectedBilling ?? (billingYours() ? billing : undefined)
+  const main = resolveTtl({ force5m, env: mainEnv, setting: mainSetting, enable1h, file: fileTtl(priceFile), billing: seen, onCredits: onCredits(u?.rateLimits) })
+  const helper = resolveHelperTtl({ force5m, env: subEnv, setting: subSetting, enable1h })
+  const changed = TTL_MS[main.ttl] !== cacheTtl || TTL_MS[helper.ttl] !== helperTtl || main.by !== ttlBy || helper.by !== helperTtlBy
+  cacheTtl = TTL_MS[main.ttl]
+  ttlBy = main.by
+  helperTtl = TTL_MS[helper.ttl]
+  helperTtlBy = helper.by
+  prices = parsePrices(priceFile, main.ttl)
+  helperPrices = parsePrices(priceFile, helper.ttl)
+  if (changed) await log($, `cache life: ${ttlText(cacheTtl)} (${main.by}); helpers and forks ${ttlText(helperTtl)} (${helper.by})`)
 }
 
 /** Reports is yours: set in /config, or answered. Rate limits never change it. */
@@ -1387,7 +1431,7 @@ async function situation($: EngineInterface): Promise<Situation> {
   const have = typeof kept === 'number' && kept > 0
   const reported = have ? undefined : (await usageNow($))?.context?.tokens
   const context = have ? kept : typeof reported === 'number' && reported > 0 ? reported : DEFAULT_CONTEXT
-  return { tier, level, context, prices, cal, rules: DEFAULT_RULES, misses, missBlock, minTasks, counts, ceiling, reviewCeiling, without, stepExp: actingExp(stepState) }
+  return { tier, level, context, prices, helperPrices, cal, rules: DEFAULT_RULES, misses, missBlock, minTasks, counts, ceiling, reviewCeiling, without, stepExp: actingExp(stepState) }
 }
 
 // `unsure` says why the rater may have seen too little: the request was cut, or a task is in progress and its last reply could not be read.
@@ -3303,6 +3347,98 @@ async function sendPing($: EngineInterface, gen: number, c: ColdTurn, w: Warming
   }
 }
 
+// ---- In-turn keep warm (ADR 0029) ----------------------------------------------
+//
+// A main-chat tool call that runs longer than the cache lives (a test run, CI, a subagent's work, a question left open)
+// lets the conversation go cold inside the turn: the request after it writes the whole conversation again. On a cache
+// under 1 hour, rightsize sends its keep-warm request while the call runs, counted from the main chat's last request.
+// Only when that request's last user message is a tool result: after the person's own text the engine changes that
+// block for a fork, the fork misses the cache and may try to run the waiting tool.
+
+/** A wait in progress: its requests, what they cost, and the turn-like record the run log and the saving line use. */
+type ToolWait = { c: ColdTurn; pings: number; spent: number; most: number }
+let toolWait: ToolWait | null = null
+let waitGen = 0
+let waitTimer: Timer | null = null
+/** Main-chat tool calls running now. */
+let toolsOpen = 0
+/** Main-chat requests in this turn so far: the first one's last user message is the person's text. */
+let turnRequests = 0
+/** The person typed a prompt into this turn: its text may sit last in a request from here on, so no in-turn request for the rest of the turn. */
+let midPrompt = false
+/** When the main chat's last request, or the last answered in-turn request, came back: the cache lives from then. */
+let lastRequestAt = 0
+
+/** Ends the wait: the timer, a request on its way (`waitGen`), and the record. With requests sent, the next main request shows whether the cache held. */
+async function stopWait($: EngineInterface, why: string) {
+  waitGen += 1
+  waitTimer?.cancel()
+  waitTimer = null
+  const w = toolWait
+  toolWait = null
+  if (!w?.pings) return
+  await log($, `in-turn keep warm ended (${why}): ${pingsText(w.pings)}, ${money(w.spent)}`)
+  // A call that ended inside the cache's first life would have come back warm anyway: nothing was saved.
+  if (why === 'the tool call ended' && (await $.clock.now()) - w.c.endedAt >= cacheTtl) warmReturn = w.c
+}
+
+/** The first main-chat tool call of a wait started: plan the requests, when the conversation is worth it and a fork is safe. */
+async function startWait($: EngineInterface) {
+  const gen = ++waitGen
+  if (off || !cacheOn || coldMode === 'off' || cacheTtl >= 60 * 60_000 || turnRequests < 2 || midPrompt || !lastRequestAt) return
+  const context = lastContext
+  if (!context) return
+  const tier = (await situation($)).tier
+  const cold = idleCost(prices[tier], context).resend
+  if (cold < (idleWarning ?? COLD_MIN)) return
+  const most = breakEvenPings(cold, pingCost(prices[tier], context))
+  if (most < 1) return
+  const task = (await currentTask($))?.id
+  if (gen !== waitGen || !toolsOpen) return
+  const w: ToolWait = { c: { endedAt: lastRequestAt, context, tier, cold, whatsnext: false, ...(task ? { task } : {}), ends: {} }, pings: 0, spent: 0, most }
+  toolWait = w
+  await armWait($, gen, w)
+}
+
+/** Arms the next in-turn request: one cache life less the lead after the last request. A cache already past its life is left cold. */
+async function armWait($: EngineInterface, gen: number, w: ToolWait) {
+  const now = await $.clock.now()
+  if (gen !== waitGen) return
+  if (now - lastRequestAt >= cacheTtl) {
+    await log($, 'in-turn keep warm not started: the cache had already gone cold')
+    toolWait = null
+    return
+  }
+  waitTimer = $.clock.after(Math.max(0, lastRequestAt + pingEvery(cacheTtl) - now), () => {
+    waitTimer = null
+    if (gen !== waitGen || off) return
+    void pingWait($, gen, w).catch(err => log($, `in-turn keep warm failed: ${err instanceof Error ? err.message : String(err)}`))
+  })
+}
+
+// One in-turn request. It stops at a failed request, and where the requests have cost as much as the cold request they avoid.
+async function pingWait($: EngineInterface, gen: number, w: ToolWait) {
+  const r = await $.model.fork({ prompt: PING_PROMPT }).catch((err: unknown) => ({ isAnswered: false as const, reason: `error: ${err instanceof Error ? err.message : String(err)}`, usage: undefined }))
+  const usage = 'usage' in r ? r.usage : undefined
+  const cost = r.isAnswered || usage ? pingCost(prices[w.c.tier], w.c.context, usage) : 0
+  w.pings += r.isAnswered ? 1 : 0
+  w.spent += cost
+  if (r.isAnswered || cost > 0) await logWarm($, w.c, cost)
+  if (r.isAnswered) lastRequestAt = await $.clock.now()
+  if (gen !== waitGen) return
+  if (!r.isAnswered) {
+    const why = 'status' in r ? `${r.reason}${r.status === null ? '' : ` ${r.status}`}, ${r.error}` : r.reason
+    await log($, `in-turn keep warm stopped: the request failed (${why})`)
+    return
+  }
+  if (w.pings === 1) await log($, `in-turn keep warm: a tool call has run ${Math.round(pingEvery(cacheTtl) / 60_000)} min; keeping ${Math.round(w.c.context / 1000)}K tokens warm, at most ${pingsText(w.most)} (${money(w.c.cold)} cold)`)
+  if (w.pings >= w.most || w.spent >= w.c.cold) {
+    await log($, `in-turn keep warm stopped: ${money(w.spent)} spent, as much as the cold request it avoids`)
+    return
+  }
+  await armWait($, gen, w)
+}
+
 // Before expiry: the handoff or the compaction, once. Not while a turn runs.
 async function atCold($: EngineInterface, c: ColdTurn, action: 'handoff' | 'compact') {
   try {
@@ -3608,6 +3744,7 @@ async function summary($: EngineInterface) {
     ...(manualPause ? [`  Paused: ${pauseStatus(manualPause).replace(/^Rightsize paused /, '')}`] : []),
     ...(billingYours() ? [] : [`  Reports: ${billing} (${billingBy ?? 'default'})`]),
     ...(billingYours() && detectedBilling && detectedBilling !== billing ? [`  Rate limits look like ${sees}; Reports is set to ${billing} by you.`] : []),
+    `  Cache life: ${ttlText(cacheTtl)} (${ttlBy}) · helpers and forks ${ttlText(helperTtl)} (${helperTtlBy})`,
     ...(pacing && paceText(true) ? [`  ${paceText(true)}`] : []),
     `  Measured runs: ${runs}`,
     ...(sw ? [`  Effort switches that missed the cache: ${Math.round(sw.ratio * 100)}% of ${sw.n} (each one in ~/.claude/mods-logs/rightsize/<session>/switches.jsonl)`] : []),
@@ -4272,6 +4409,9 @@ export const register: Register = (on, options) => {
     lastTurnAt = 0
     idleWarnedFor = 0
     cancelCold($, 'a session started')
+    toolsOpen = 0
+    lastRequestAt = 0
+    await stopWait($, 'a session started')
     offerOpen = false
     coldTurn = null
     coldDone = false
@@ -4301,21 +4441,6 @@ export const register: Register = (on, options) => {
     if (gaps.length) await log($, `settings: plugin.json and the settings table disagree: ${gaps.join('; ')}`)
     await setBandMode($, bandMode)
     await setBand($, null)
-    const priceFile = await readText($, `${pluginRoot}/prices.json`)
-    prices = parsePrices(priceFile)
-    cacheTtl = cacheTtlMs(priceFile)
-    if (priceCheck === 'monthly') {
-      const lastChecked = await $.store.get('pricesCheckedAt').catch(() => undefined)
-      const now = await $.clock.now()
-      if (isDue(lastChecked, now)) {
-        // Claim the check before fetching: a second session starting at the same
-        // moment then finds it done. A failed check gives the claim back.
-        await $.store.set('pricesCheckedAt', now).catch(() => undefined)
-        void runCheck($, 'monthly', lastChecked)
-      }
-    }
-    cal = parseCalibration(await $.store.get(CAL_STORE).catch(() => undefined))
-    stepState = parseStepState(await $.store.get(STEP_STORE).catch(() => undefined))
     // Until this session's first response shows its rate limits, an earlier session's reading stands.
     const saved = (await $.store.get('billing').catch(() => undefined)) as { value?: unknown; by?: unknown } | undefined
     billingAsked = false
@@ -4331,6 +4456,20 @@ export const register: Register = (on, options) => {
       billing = cfg.billing === 'subscription' ? 'subscription' : 'api'
       billingBy = 'answered'
     }
+    priceFile = await readText($, `${pluginRoot}/prices.json`)
+    await refreshTtl($)
+    if (priceCheck === 'monthly') {
+      const lastChecked = await $.store.get('pricesCheckedAt').catch(() => undefined)
+      const now = await $.clock.now()
+      if (isDue(lastChecked, now)) {
+        // Claim the check before fetching: a second session starting at the same
+        // moment then finds it done. A failed check gives the claim back.
+        await $.store.set('pricesCheckedAt', now).catch(() => undefined)
+        void runCheck($, 'monthly', lastChecked)
+      }
+    }
+    cal = parseCalibration(await $.store.get(CAL_STORE).catch(() => undefined))
+    stepState = parseStepState(await $.store.get(STEP_STORE).catch(() => undefined))
     // The rules: answers saved by an earlier session, then this session's, then any rule set in /config.
     const kept = (await remembers($)) ? await $.store.get('choices').catch(() => undefined) : undefined
     const given = await choices($)
@@ -4418,6 +4557,10 @@ export const register: Register = (on, options) => {
     if (!off && fromPerson(e) && !e.command && !e.isMeta) {
       coldDone = false
       wrapThenCompact = null
+      if (mainBusy) {
+        midPrompt = true
+        await stopWait($, 'a prompt was typed into the turn')
+      }
       await recordGap($)
       await closeOffer($, 'ignored')
       await noteReturn($)
@@ -4636,6 +4779,8 @@ export const register: Register = (on, options) => {
   on('turn.start', async ($, e, next) => {
     if (e.agentId !== undefined) return next(e)
     mainBusy = true
+    turnRequests = 0
+    midPrompt = false
     const text = e.text.trim()
     // A plugin beneath may have rewritten the text. The engine starts a prompt's turn before its submit answers,
     // so a turn starting while exactly one prompt from an idle session is still entering is that prompt's.
@@ -4781,6 +4926,8 @@ export const register: Register = (on, options) => {
         if (!gone.shown) await setBand($, { text: compactedText({ before: gone.before, after: gone.after ?? contextOf(u), ...(gone.handoff ? { handoff: gone.handoff } : {}) }), acted: true })
       }
       lastContext = contextOf(u)
+      turnRequests += 1
+      lastRequestAt = await $.clock.now()
       await $.state.set({ plugin: 'rightsize', key: 'context' }, lastContext)
       // The session's own model stays the one the next prompt is planned on.
       if (!sw) await $.state.set({ plugin: 'rightsize', key: 'seenModel' }, u.model)
@@ -4844,7 +4991,18 @@ export const register: Register = (on, options) => {
         await log($, `rework round: used one of the task's ${chances} retries`)
       }
     }
-    const result = await next(e)
+    // A main-chat call may outlast the cache: the in-turn keep warm runs while any is open.
+    const main = e.agentId === undefined
+    if (main && ++toolsOpen === 1) await startWait($).catch(() => undefined)
+    let result: Awaited<ReturnType<typeof next>>
+    try {
+      result = await next(e)
+    } finally {
+      if (main && --toolsOpen <= 0) {
+        toolsOpen = 0
+        await stopWait($, 'the tool call ended').catch(() => undefined)
+      }
+    }
     if (helper && e.agentId !== undefined) await noteHelperCall($, e.agentId, helper, e as Record<string, unknown>, result)
     if (String(e.tool) === 'Workflow') {
       workflowSeen = true
@@ -5066,10 +5224,13 @@ export const register: Register = (on, options) => {
     if (sized) await finishSubagent($, sized, e.isAborted, watched)
     if (e.agentId === undefined) {
       mainBusy = false
+      toolsOpen = 0
+      await stopWait($, 'the turn ended')
       boundaryCheck = true
       manualCompact = false
       completed.add(e.turnId)
       await knowBilling($, false)
+      await refreshTtl($)
       await rememberTurn($)
     }
     if (e.agentId === undefined && active && active.turnId === e.turnId) {

@@ -18,7 +18,12 @@ for (const surface of ['desktop', 'terminal'] as const) {
   type Over = { tokens?: number; env?: Record<string, string>; settings?: Record<string, unknown>; whatsnext?: boolean; prices?: string; stored?: Record<string, string> }
   const session = async ($: unknown, on: Parameters<TestBody>[1], over: Over = {}) => {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', stored: over.stored ?? KEEP_WARM.stored })
-    if (over.prices) h.pricesFile = over.prices
+    if (over.prices) {
+      // The file names its own cache life: drop the kit's 1-hour pin, which would beat it.
+      h.pricesFile = over.prices
+      delete h.env.CLAUDE_CODE_PROMPT_CACHE_TTL
+      delete h.env.CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL
+    }
     h.now = EVENING
     h.virtual = true
     h.stepUsage = turnOf(over.tokens ?? 200_000)

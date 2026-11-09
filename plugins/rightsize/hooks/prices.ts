@@ -17,7 +17,7 @@ const ROW_NAME: Record<Tier, string> = {
   haiku: 'Claude Haiku 5.5',
   sonnet: 'Claude Sonnet 5.5',
   opus: 'Claude Opus 5.5',
-  fable: 'Claude Fable 5.1',
+  fable: 'Claude Fable 5.2',
 }
 const FIELDS = ['input', 'cacheWrite5m', 'cacheWrite1h', 'cacheRead', 'output'] as const
 
@@ -58,7 +58,7 @@ const LABEL: Record<(typeof FIELDS)[number], string> = {
   cacheRead: 'cache read',
   output: 'output',
 }
-const NAME: Record<Tier, string> = { haiku: 'Haiku 5.5', sonnet: 'Sonnet 5.5', opus: 'Opus 5.5', fable: 'Fable 5.1' }
+const NAME: Record<Tier, string> = { haiku: 'Haiku 5.5', sonnet: 'Sonnet 5.5', opus: 'Opus 5.5', fable: 'Fable 5.2' }
 const fmt = (v: unknown) => (typeof v === 'number' ? `$${v}` : 'unset')
 
 /** "Sonnet 5.5 cache read: $0.2 → $0.1", one line per price that differs. */
@@ -102,7 +102,7 @@ export function applyPrices(fileText: string, page: PageRows, date: string): str
     ...json,
     source: `Anthropic Claude API first-party prices, checked against ${PRICING_URL.replace(/^https:\/\//, '').replace(/\.md$/, '')} on ${date}. rightsize checks them every ${CHECK_DAYS} days; run /rightsize prices to check sooner.`,
     unit: json.unit ?? 'US dollars per 1 million tokens',
-    cacheTtl: json.cacheTtl ?? '1h',
+    ...(json.cacheTtl === undefined ? {} : { cacheTtl: json.cacheTtl }),
     models,
   }
   return `${JSON.stringify(next, null, 2)}\n`

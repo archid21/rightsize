@@ -1,16 +1,15 @@
 {
-  "source": "Anthropic Claude API first-party prices, checked against platform.claude.com/docs/en/about-claude/pricing on 2026-10-23. Check the current prices at https://www.anthropic.com/pricing and edit this file when they change.",
+  "source": "Anthropic Claude API first-party prices, checked against platform.claude.com/docs/en/about-claude/pricing on 2026-11-09. Check the current prices at https://www.anthropic.com/pricing and edit this file when they change.",
   "unit": "US dollars per 1 million tokens",
-  "cacheTtl": "1h",
   "models": {
     "haiku": { "input": 0.10, "output": 0.50, "cacheRead": 0.01, "cacheWrite5m": 0.125, "cacheWrite1h": 0.20, "over100k": { "input": 0.50, "output": 2.50, "cacheRead": 0.05, "cacheWrite5m": 0.625, "cacheWrite1h": 1.00 } },
     "sonnet": { "input": 2.00, "output": 10.00, "cacheRead": 0.10, "cacheWrite5m": 2.50, "cacheWrite1h": 4.00 },
     "opus": { "input": 4.00, "output": 20.00, "cacheRead": 0.20, "cacheWrite5m": 5.00, "cacheWrite1h": 8.00 },
-    "fable": { "input": 10.00, "output": 50.00, "cacheRead": 0.25, "cacheWrite5m": 12.50, "cacheWrite1h": 20.00 }
+    "fable": { "input": 8.00, "output": 40.00, "cacheRead": 0.20, "cacheWrite5m": 10.00, "cacheWrite1h": 16.00 }
   },
   "notes": [
-    "haiku = Claude Haiku 5.5, sonnet = Claude Sonnet 5.5, opus = Claude Opus 5.5, fable = Claude Fable 5.1.",
-    "Cache writes are 1.25x input for the 5-minute TTL and 2x for the 1-hour TTL. Claude Code sessions usually write the 1-hour cache, so cacheTtl is 1h; set it to 5m if yours write the 5-minute cache.",
+    "haiku = Claude Haiku 5.5, sonnet = Claude Sonnet 5.5, opus = Claude Opus 5.5, fable = Claude Fable 5.2.",
+    "Cache writes are 1.25x input for the 5-minute cache and 2x for the 1-hour cache. rightsize reads which one a session writes from Claude Code's settings and environment and from the billing (1 hour on a subscription within its plan, 5 minutes otherwise; helpers always 5 minutes). Behind a gateway it cannot read, add \"cacheTtl\": \"5m\" or \"1h\" here to say so.",
     "Haiku 5.5 is priced by prompt length. A request whose prompt (input, cache reads and cache writes together) is over 100K tokens pays the over100k prices: 0.50 input, 0.625 / 1.00 cache write (5m / 1h), 0.05 cache read, 2.50 output. Each request is priced on its own."
   ]
 }

@@ -2,7 +2,7 @@
 
 **Make every Claude token count.**
 
-rightsize picks the model and effort for each prompt, and keeps your cache and context from costing more than they should.
+rightsize sends each prompt to the cheapest model and effort that does the job, raises effort only when Claude is actually stuck, and keeps your cache and context from costing more than they should. No profiles, no tuning: one rule set, two switches.
 
 ```bash
 claude plugin marketplace add archid21/rightsize
@@ -15,15 +15,15 @@ MIT license · works with a Claude subscription (Pro, Max, Ultra) or an API key 
 
 ## Why use it
 
-**Same outcome, lower cost (starting on Opus).** rightsize routes routine work to cheaper models and lower effort, and keeps Opus for the work that needs it. On our coding benchmark it matched Opus at up to 30% lower cost (API-equivalent).
+**Same outcome, lower cost from an Opus start.** Routine work goes to Haiku or Sonnet helpers and lower effort; Opus keeps the work that needs it. On our coding benchmark it matched Opus at up to 30% lower cost (API-equivalent).
 
-**Higher quality (starting on Sonnet).** rightsize steps up to Opus as needed, for reviews and other work that needs it. If your default is Sonnet, you may spend more: on our coding benchmark, about 1.4x to 2x what Sonnet alone costs, almost all of it from reviews that run on Opus. In return you get stronger reviews without switching models yourself. Your cost depends on how many reviews you run.
+**Effort follows evidence, not guesses.** A rating never raises effort on Opus or Fable at prompt time. Effort goes up mid-turn only when the turn shows trouble: repeated failures, a loop, or two fixes in a row that leave the tests red. You stop paying for high effort that buys nothing.
 
-If your default is Opus, moving to Sonnet with rightsize cut cost by about 30% and matched Opus on our coding benchmark.
+**Stronger reviews from a Sonnet start.** Reviews switch to Opus for that one turn and come back. You get Opus-grade review without switching models yourself. If your default is Sonnet you may spend more: on our coding benchmark, about 1.4x to 2x what Sonnet alone costs, almost all of it from reviews. Your cost depends on how many reviews you run.
 
-**Less manual switching.** rightsize chooses the model and effort for each prompt, so you only switch to Opus or Fable yourself when you know a task is truly complex.
+**It learns which routes to trust.** Every hand-off, lowering, test run and thumbs rating scores the rater per kind of work and model. A model that misses on reviews stops getting reviews until your own outcomes say otherwise.
 
-**Cut cache and compact costs.** Stop paying to rewrite a cold cache or re-read a long conversation. rightsize keeps the cache warm when that is cheaper, warns as your context fills, and compacts only when the saving outweighs the cost.
+**Cut cache and compact costs.** Keeps the cache warm when that is cheaper than coming back cold, warns as your context fills, steps aside for Claude's idle compact, and compacts only when the saving beats the cost.
 
 **rightsize works better with whatsnext.** rightsize decides when a compact pays. [whatsnext](https://github.com/archid21/whatsnext) decides what to keep: it saves a handoff note first, so a compact retains the details that matter. rightsize asks it for that handoff before the cache goes cold and uses its compact text for **Compact now**. rightsize works on its own too, and uses Claude's own compact when whatsnext isn't installed.
 
@@ -41,7 +41,7 @@ Switching by hand with `/model` works until you forget, which is most of the tim
 | Feature | What it delivers | How to use it |
 |---|---|---|
 | Smart routing | Routine work on cheaper models, Opus where it counts | Automatic. **Ask before changing** in `/config` makes it ask first. |
-| Effort control | Lower effort for easy prompts, higher for hard ones | Automatic. The **Lowering** and **Raising** rows set ask, automatic or never. |
+| Effort control | Lower effort for routine prompts; raised mid-turn only when Claude is stuck | Automatic. The **Lowering** and **Raising** rows set ask, automatic or never. |
 | Cheaper helpers | Big routine edits handled at lower cost | Automatic from Opus or Fable sessions. Press **Run on your model** on the band to undo one. |
 | Opus reviews | Stronger reviews without switching models | Automatic. The **Stronger model** row sets ask first or always send. |
 | Watch only | See what rightsize would save before it changes anything | Set **Mode** to watch only, then run `/rightsize report` after a week. |

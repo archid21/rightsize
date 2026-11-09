@@ -6,7 +6,7 @@
     {
       "name": "rightsize",
       "source": "./plugins/rightsize",
-      "description": "Make every Claude token count. rightsize picks the model and effort for each Claude Code prompt, and keeps your cache and context from costing more than they should: routine work stays on Sonnet, reviews switch to Opus for one turn, and big routine jobs from an Opus session can go to a cheaper helper. A band shows what it did and what it cost, and watch-only mode lets you see its calls before it changes anything.",
+      "description": "Make every Claude token count. rightsize sends each Claude Code prompt to the cheapest model and effort that does the job, raises effort only when Claude is actually stuck, and keeps your cache and context from costing more than they should: routine work stays on Sonnet or goes to a Haiku helper, reviews switch to Opus for one turn, and it learns from your own outcomes which routes to trust. No profiles, no tuning. A band shows what it did and what it cost, and watch-only mode lets you see its calls before it changes anything.",
       "version": "0.9.0",
       "author": { "name": "Archi Dubey", "url": "https://github.com/archid21" },
       "license": "MIT"

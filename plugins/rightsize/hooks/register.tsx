@@ -1858,8 +1858,9 @@ function setBand($: EngineInterface, from: Band | null, rating = false) {
   let coldText = band.coldText?.replace(SESSION_TOTAL, '')
   if (bandNote && !text.includes(bandNote)) text = `${text} ${bandNote}`
   // The pause row stays on the band of the prompt it began on, with its Resume button, when a later band of the turn is set.
-  const held = pauseRow !== null && manualPause !== null
-  if (held && !text.includes(pauseRow)) text = `${pauseRow} ${text}`.trim()
+  const row = pauseRow
+  const held = row !== null && manualPause !== null
+  if (held && !text.includes(row)) text = `${row} ${text}`.trim()
   // Not before the session's 3rd rated prompt (SESSION_TOTAL_FROM); the report counts from the first.
   const total = ratedInSession(runLog, sessionId) + (rating ? 1 : 0) >= SESSION_TOTAL_FROM ? sessionTotal(runLog, sessionId, billing === 'subscription') : undefined
   // The total goes after the route's text; a band with only the cache line carries it there.
@@ -3580,6 +3581,11 @@ const HELPER_RETURN =
   'rightsize: stop now. You are stuck, and this task\'s retry budget is used up, so more effort or more tries will not help. Do not make more tool calls: report what you tried, what failed, and where you are stuck. The main chat takes it from here.'
 const capReturn = (cap: number) =>
   `rightsize: stop now. You have used the ${cap} tool calls this task allows a helper. Do not make more tool calls: report what you did, what is left and where you are. The main chat takes it from here.`
+// A helper's cache cannot be kept warm from outside, so a foreground wait longer than it lives is refused (ADR 0030).
+// 270 s is 30 s under the 5-minute life. Claude Code's Bash default of 120 s is allowed.
+const HELPER_WAIT_CAP_MS = 270_000
+const WAIT_DENY =
+  'rightsize: a foreground wait over 4.5 minutes lets this helper\'s 5-minute prompt cache expire, and the next request pays to rewrite it. Run the command with run_in_background and check on it, or use a timeout of 270000 ms or less.'
 const REWORK_DENY =
   'rightsize: this task\'s retry budget is used up, so the helper gets no more rework rounds. Finish the task yourself in the main chat, from what the helper did.'
 
@@ -4965,6 +4971,11 @@ export const register: Register = (on, options) => {
     // A helper that was sent back stays stopped, so that it reports instead of trying again.
     const helper = e.agentId === undefined ? undefined : await helperWatch($, e.agentId)
     if (helper?.returned) return { deny: helper.capped ? capReturn(helper.capped) : HELPER_RETURN }
+    // A helper's foreground Bash wait over HELPER_WAIT_CAP_MS outlasts its 5-minute cache. A refused call is not counted in helper.calls.
+    const timeout = (e as unknown as { timeout?: unknown }).timeout
+    const background = (e as unknown as { run_in_background?: unknown }).run_in_background
+    const longWait =
+      !off && e.agentId !== undefined && String(e.tool) === 'Bash' && background !== true && typeof timeout === 'number' && timeout > HELPER_WAIT_CAP_MS && helperTtl < 60 * 60_000
     // A helper on a cheaper tier gets a fixed number of tool calls, however well they go. At the cap it is struggling:
     // it goes back to the main chat, the way a helper with no retry left does.
     if (helper && e.agentId !== undefined && !off) {
@@ -4977,7 +4988,11 @@ export const register: Register = (on, options) => {
         await log($, `returned helper ${e.agentId} to the main chat at step ${helper.steps}: it reached the ${cap}-call cap for ${helper.tier}`)
         return { deny: capReturn(cap) }
       }
-      helper.calls += 1
+      if (!longWait) helper.calls += 1
+    }
+    if (longWait && typeof timeout === 'number') {
+      await log($, `capped a helper's wait: Bash timeout ${Math.round(timeout / 1000)} s is over ${HELPER_WAIT_CAP_MS / 1000} s on a 5-min cache`)
+      return { deny: WAIT_DENY }
     }
     // The main chat reworking a hand-off (a message to the subagent, or a second one started on its model) uses a chance of the task's budget.
     if (active?.delegate && e.agentId === undefined) {

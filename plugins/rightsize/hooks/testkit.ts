@@ -596,7 +596,8 @@ export const drive = (api: unknown, h: ReturnType<typeof engine>) => {
     agent: (model: string) => e.tool.call({ tool: 'Agent', description: 'x', prompt: 'brief', model }),
     send: () => e.tool.call({ tool: 'SendMessage', to: 'agent-helper', message: 'fix the failing test' }),
     workflow: (id?: string) => e.tool.call({ tool: 'Workflow', script: 'export const meta = {}', ...(id ? { tool_use_id: id } : {}) }),
-    bash: (command: string, agentId?: string) => e.tool.call({ tool: 'Bash', command, description: `try ${command} ${h.sent.length}`, ...(agentId ? { agentId } : {}) }),
+    /** `extra`: more of the Bash input, such as `timeout` (ms) and `run_in_background`. */
+    bash: (command: string, agentId?: string, extra: Record<string, unknown> = {}) => e.tool.call({ tool: 'Bash', command, description: `try ${command} ${h.sent.length}`, ...(agentId ? { agentId } : {}), ...extra }),
     // The engine starting a subagent from the main chat's Agent call; its steps carry `agent-<description>`.
     spawn: (description: string, model?: string, over: Record<string, unknown> = {}) =>
       e.agent.spawn({ prompt: 'brief', description, subagentType: 'general-purpose', provider: { kind: 'core' }, parentModel: h.model, background: false, fork: false, ...(model ? { model } : {}), ...over }),

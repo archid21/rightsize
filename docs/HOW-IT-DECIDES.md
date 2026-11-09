@@ -41,6 +41,8 @@ With **Mode** set to `watch only`, every prompt is rated and planned and nothing
 
 ## Effort changes
 
+**Where you start decides the moves.** On Opus or Fable, every task but a review runs at low effort, whatever the rating says: on our benchmark low passed as often as medium, so a rating never raises effort there at prompt time; the stuck signs do the raising mid-turn. On Sonnet, effort holds at the session's level; a rated raise is taken only for a task rated hard (high or more) with 20 steps or more, and never for debugging. On Haiku, mechanical work (lookups, searches, bulk edits, extraction, summaries) stays; debugging, features, refactors and writing switch the main chat to Sonnet for that one turn, under the **Stronger model** rule, the way a review switches to Opus.
+
 Anthropic's docs say effort changes keep the prompt cache on the current models. rightsize does not rely on that alone: every effort switch is logged with whether the cache survived. Until it has measured switches of your own, it assumes a small share miss. Once 20 or more measured switches have missed at most 5% of the time, a switch is priced as free, so lowering can happen on big conversations too. Before that, lowering happens only when the saving beats the expected cost of a rewrite. An auto-lowered turn stays at the lower level for its whole length; a tool error brings your normal level back. A step-up after a tool error counts as a miss.
 
 ## Hand-offs
@@ -58,7 +60,7 @@ When the work goes to a cheaper model and still fails once the chances are used,
 
 **Handing work down needs a clear saving.**
 
-- Hand-downs start only from an Opus or Fable session. From Sonnet, the brief and the check cost more than Haiku saves, so a Sonnet session keeps the work and may change effort instead. A hand-up (a model stronger than yours) and Claude's own subagents are not affected.
+- Hand-downs start only from an Opus or Fable session. From Sonnet, the brief and the check cost more than Haiku saves, so a Sonnet session keeps the work and may change effort instead. A Haiku helper takes mechanical work only (lookups, searches, bulk edits, extraction, summaries); a helper on any other model is used only for a task the rating puts at 20 steps or more, since on a shorter one the brief and the check cost more than the helper saves. A hand-up (a model stronger than yours) and Claude's own subagents are not affected by either rule.
 - A helper is used only when its estimate is under the hand-off threshold (70%, fixed; 85% while a usage window runs hot and 95% when it is nearly used up, under **Budget pacing**) of the cost of staying at the level the work needs on your model, counting the brief, report, check and likely rework. A raise counts with the cache it may rewrite.
 - The main chat's part is priced from measured hand-offs: it reads your conversation several times (brief, report, check, answer), so a short task never clears the bar and a long, mechanical one can. Of the cheaper models that fit, the cheapest route wins unless two are close in cost.
 - Because Sonnet costs half of Opus, an Opus-to-Sonnet hand-off rarely clears 70%. Hand-offs to Haiku, and hand-offs from Fable, clear it more often.

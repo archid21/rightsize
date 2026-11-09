@@ -123,7 +123,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   test(`the Band setting: when it acts, always, off, and the ⋯ and × buttons (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES } })
+    // Opus at low: a lookup needs nothing there (at medium it would be lowered, ADR 0021).
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'low', store: { [CAL_STORE]: FREE_SWITCHES } })
     const d = drive($, h)
     await d.start(surface)
     await d.step('t0')
@@ -136,7 +137,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
     // "always": the same prompt shows that nothing changed.
     await setBand($, 'always')
-    expect(await bandText($, surface)).toBe('No change: medium on Opus fits this prompt.')
+    expect(await bandText($, surface)).toBe('No change: low on Opus fits this prompt.')
 
     // × closes it until the next prompt.
     let ui = await mount($, surface)
@@ -181,7 +182,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     let cal = h.store[CAL_STORE] as Record<string, { n: number }>
     expect(cal['debug:main']?.n, "the other session's runs are kept").toBe(3)
     expect(cal['lookup:main']?.n, "this session's run is added").toBe(1)
-    expect(cal['cache:effort-switch']?.n, 'the switch record is kept').toBe(20)
+    expect(cal['cache:effort-switch']?.n, 'the switch record is kept, plus this lowered turn\'s switch').toBe(21)
 
     // An auto-lowered turn that steps back up (a tool error brings the session's level back) teaches nothing.
     h.rating = LOWER
@@ -399,7 +400,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t0')
     await d.complete('t0')
 
-    // Unchanged: still logged.
+    // A lookup on Opus: lowered, and logged.
     h.rating = NO_CHANGE
     await d.submit(LOOKUP)
     await d.step('t1')
@@ -407,7 +408,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const first = last(runs())
     expect(first?.kind).toBe('run')
     expect(first?.session).toBe('sess-1')
-    expect(first?.change).toBe('none')
+    expect(first?.change, 'on Opus at medium a lookup is lowered to low (ADR 0021)').toBe('lower')
     expect(first?.overhead, '1000 in and 100 out on Sonnet, the rater').toBe(0.003)
     expect((first as { normal?: string; context?: number })?.normal, 'the session level, for the starting-point check').toBe('medium')
     expect(typeof (first as { context?: number })?.context).toBe('number')
@@ -430,7 +431,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
     const report = (await d.command('report')).text ?? ''
     expect(cellsOf(report, 'Prompts rated')).toEqual(['2', '2', '2'])
-    expect(cellsOf(report, 'Kept / lowered / raised')).toEqual(['1/1/0', '1/1/0', '1/1/0'])
+    expect(cellsOf(report, 'Kept / lowered / raised')).toEqual(['0/2/0', '0/2/0', '0/2/0'])
     expect(report).toContain('Total saved is after the cost of rating prompts')
     expect(report.includes('```'), 'fenced only in the desktop app').toBe(surface === 'desktop')
     expect(report).toContain('NOT COUNTED AS SAVINGS')
@@ -907,7 +908,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
   // The band says why, and for a move to a cheaper model how confident rightsize is; a hand-off or a switch-run
   // also offers "Run on <current model>", which runs this prompt once as it would have run without rightsize.
-  const SMALL_FEATURE = '{"fit":{"haiku":"high","sonnet":"high","opus":"high","fable":"medium"},"size":"small","type":"feature","read":20000,"write":2000,"steps":6,"reason":"small helper with tests"}'
+  const SMALL_FEATURE = '{"fit":{"haiku":"high","sonnet":"high","opus":"high","fable":"medium"},"size":"small","type":"search","read":20000,"write":2000,"steps":6,"reason":"small helper with tests"}'
 
   test(`a hand-off down says why and its confidence, and Run on Opus runs the prompt once as normal (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })

@@ -221,8 +221,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
   }
 
   const NOTE_ROWS: { name: string; stored: Record<string, string>; band: string | RegExp }[] = [
-    { name: 'the fixed bars moved', stored: {}, band: /so rightsize saves harder\. \(hand-off bar 70% → 85%, lowering bar 90% → 97%\)$/ },
-    { name: 'stored threshold rows are ignored: the fixed bars moved', stored: { handOff: '70%', lowering: '90%' }, band: /so rightsize saves harder\. \(hand-off bar 70% → 85%, lowering bar 90% → 97%\)$/ },
+    { name: 'the fixed bars moved', stored: {}, band: /^Effort lowered: medium → low .*so rightsize saves harder\. \(hand-off bar 70% → 85%, lowering bar 90% → 97%\)/ },
+    { name: 'stored threshold rows are ignored: the fixed bars moved', stored: { handOff: '70%', lowering: '90%' }, band: /^Effort lowered: medium → low .*so rightsize saves harder\. \(hand-off bar 70% → 85%, lowering bar 90% → 97%\)/ },
   ]
   for (const row of NOTE_ROWS) {
     test(`the band mentions pacing only when it moved something: ${row.name} (${surface})`, { timeoutMs: 30000, options: { band: 'always', ...row.stored } }, async ($, on) => {
@@ -528,7 +528,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(report).toMatch(/Watch only: 1 prompt rated, 1 would have been changed, which would have saved ~\$[\d.]+ against staying \(estimates; nothing was applied\)\. Mode in \/config turns rightsize on\./)
   })
 
-  test(`watch only: a lowering is said and not applied, a prompt that needs nothing says so, and nothing asks even when a rule says ask (${surface})`, { timeoutMs: 30000, options: { ...WATCH.options, band: 'always', lowerRule: 'ask me' } }, async ($, on) => {
+  test(`watch only: a lowering is said and not applied, and nothing asks even when a rule says ask (${surface})`, { timeoutMs: 30000, options: { ...WATCH.options, band: 'always', lowerRule: 'ask me' } }, async ($, on) => {
     const h = engine(on, { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES }, stored: { ...WATCH.stored, band: 'always', lowerRule: 'ask me' } })
     const d = drive($, h)
     await d.start(surface)
@@ -540,11 +540,12 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(last(h.sent)?.effort, 'not lowered').toBe('medium')
     expect(await buttons($), 'no Retry: nothing was changed').toEqual(['mode', 'close'])
     await d.complete('t1')
+    // A lookup rated medium on Opus at medium is lowered to low too (ADR 0021): watched, not applied.
     h.rating = NO_CHANGE
     await d.submit(LOOKUP)
-    expect(await bandText($, surface)).toBe('Watching: medium on Opus fits this prompt; nothing to change. Mode in /config turns it on.')
+    expect(await bandText($, surface)).toMatch(/^Watching: would lower effort to low on Opus\./)
     const runs = readRuns(h).filter(l => l.kind === 'run') as { would?: string }[]
-    expect(runs.map(r => r.would), 'one would have lowered, one needed nothing').toEqual(['lower'])
+    expect(runs.map(r => r.would), 'the first would have lowered; the second is logged when its turn completes').toEqual(['lower'])
   })
 
   test(`watch only: Mode set to act in /config applies from the next prompt, with no restart (${surface})`, { timeoutMs: 30000, options: WATCH.options }, async ($, on) => {

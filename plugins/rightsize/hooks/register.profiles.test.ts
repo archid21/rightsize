@@ -149,15 +149,20 @@ for (const surface of ['desktop', 'terminal'] as const) {
     // Correcting again does not count the same run twice.
     h.rating = CORRECTS
     await d.submit('still wrong')
-    expect(correctedLines(h).length, 'once for the run').toBe(1)
+    // The correcting prompt before it was itself lowered (Opus at medium lowers every lookup), so this one counts that run, not the first again.
+    expect(correctedLines(h).map(l => (l as { ref?: string }).ref), 'once per run').toEqual([first?.id, runsOf(h)[1]?.id])
     expect(h.asked, 'nothing is asked').toEqual([])
   })
 
   test(`a correcting prompt writes no corrected line when the task has no lowered or handed-down run, or no task (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES } })
+    // Opus at low: nothing is lowered, so a run changes nothing.
+    const h = engine(on, { ...OPUS, effort: 'low', store: { [CAL_STORE]: FREE_SWITCHES } })
     h.now = Date.now()
     const d = drive($, h)
     await d.start(surface)
+    // One step first, so the session's level (low) is known.
+    await d.step('t0')
+    await d.complete('t0')
     // No task in progress: nothing to correct.
     h.rating = CORRECTS
     await d.submit('no, that is wrong')
@@ -276,7 +281,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
   const SONNET = { model: 'claude-sonnet-5-5', effort: 'medium' }
   /** A raise on a Sonnet session: a rated raise is never taken at prompt time on Opus or Fable, and not for debugging on Sonnet. */
-  const RAISE_FEATURE = '{"level":"high","model":"same","type":"feature","read":20000,"write":3000,"steps":8,"reason":"unknown cause"}'
+  const RAISE_FEATURE = '{"level":"high","model":"same","type":"feature","read":20000,"write":3000,"steps":20,"reason":"unknown cause"}'
   const IN_USE = 'In use: hand-off threshold 70%, pause at 20% misses, rater check every 20, 2 chances per task'
 
   test(`there is no Profile row: Ask before changing is a row of /config, off by default, and /rightsize shows it on its first line with what is in use (${surface})`, { timeoutMs: 30000 }, async ($, on) => {

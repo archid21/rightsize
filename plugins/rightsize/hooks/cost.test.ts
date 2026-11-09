@@ -8,6 +8,8 @@ import {
   SWITCH_KEY,
   SWITCH_MISS_PRIOR,
   TASK_TYPES,
+  HAIKU_TYPES,
+  HAIKU_SWITCH_TYPES,
   MISS_BLOCK,
   TIE_BAND,
   TIERS,
@@ -166,7 +168,7 @@ test('a one-prompt lower on a long conversation is not blocked by the switch pri
 test('never lowers below the floor, and raises when the work needs it', async () => {
   const floored = effortPlan(rating({ level: 'low', write: 1500 }), { ...opus, cal: freeSwitches }, 'medium')
   expect(floored.kind, 'low clamped to the medium floor = the level in use').toBe('none')
-  const up = effortPlan(rating({ level: 'xhigh', fit: { sonnet: 'xhigh', opus: 'xhigh' } }), sonnetSession, 'low')
+  const up = effortPlan(rating({ level: 'xhigh', fit: { sonnet: 'xhigh', opus: 'xhigh' }, steps: 20 }), sonnetSession, 'low')
   expect(up).toEqual({ kind: 'effort', dir: 'raise', level: 'xhigh' })
 })
 
@@ -282,7 +284,7 @@ test('a review on Fable is never handed below Opus, and Opus runs it at high or 
 })
 
 test('other work on Sonnet still stays on Sonnet when the rating says it fits', async () => {
-  const p = plan(rating({ type: 'feature', level: 'high', fit: { haiku: null, sonnet: 'high', opus: 'medium' }, read: 30_000, write: 2000, steps: 10 }), sonnetSession, 'low')
+  const p = plan(rating({ type: 'feature', level: 'high', fit: { haiku: null, sonnet: 'high', opus: 'medium' }, read: 30_000, write: 2000, steps: 20 }), sonnetSession, 'low')
   expect(p).toMatchObject({ kind: 'effort', dir: 'raise', level: 'high' })
 })
 
@@ -295,25 +297,87 @@ test('on a Sonnet session a rated raise for debugging is not taken: the level st
   expect(effortPlan(easy, { ...sonnetSession, level: 'high', cal: freeSwitches }, 'low')).toMatchObject({ kind: 'effort', dir: 'lower', level: 'low' })
   // Sonnet would struggle: the hand-up is not held back.
   expect(plan(rating({ type: 'debug', level: 'high', fit: { haiku: null, sonnet: null, opus: 'high' }, read: 30_000, write: 2000, steps: 10 }), sonnetSession, 'low').kind).toBe('delegate')
-  // Another task type on Sonnet raises as the rating says.
-  expect(plan(rating({ type: 'feature', level: 'high', fit: { sonnet: 'high', opus: 'high' }, read: 30_000, write: 2000, steps: 10 }), sonnetSession, 'low')).toMatchObject({ kind: 'effort', dir: 'raise', level: 'high' })
+  // Another task type on Sonnet raises as the rating says, when the task is hard and 20 steps or more.
+  expect(plan(rating({ type: 'feature', level: 'high', fit: { sonnet: 'high', opus: 'high' }, read: 30_000, write: 2000, steps: 20 }), sonnetSession, 'low')).toMatchObject({ kind: 'effort', dir: 'raise', level: 'high' })
 })
 
 test('on Opus and Fable a rated raise is never taken at prompt time, for any task type but review (ADR 0021)', async () => {
   for (const type of ['debug', 'feature', 'refactor', 'design', 'writing', 'other'] as const) {
     const r = rating({ type, level: 'high', fit: { sonnet: 'xhigh', opus: 'high', fable: 'high' }, read: 30_000, write: 2000, steps: 10 })
-    expect(plan(r, opus, 'low'), `${type} on Opus`).toMatchObject({ kind: 'none' })
-    expect(effortPlan(r, opus, 'low'), `${type} on Opus, effort-only`).toMatchObject({ kind: 'none' })
+    const p = plan(r, opus, 'low')
+    expect(p.kind === 'effort' && p.dir, `${type} on Opus: never a raise`).not.toBe('raise')
+    expect(effortPlan(r, { ...opus, cal: freeSwitches }, 'low'), `${type} on Opus, effort-only: lowered instead`).toMatchObject({ kind: 'effort', dir: 'lower', level: 'low' })
     const onFable = rating({ type, level: 'high', fit: { fable: 'high' }, read: 30_000, write: 2000, steps: 10 })
-    expect(plan(onFable, { ...fable, level: 'medium' }, 'low'), `${type} on Fable`).toMatchObject({ kind: 'none' })
+    expect(plan(onFable, { ...fable, level: 'medium', cal: freeSwitches }, 'low'), `${type} on Fable`).toMatchObject({ kind: 'effort', dir: 'lower', level: 'low' })
   }
-  // A fixture whose level is above the level in use while its fit is not: held the same way.
+  // A fixture whose level is above the level in use while its fit is not: held the same way (and the tiny task is under the lowering bar).
   expect(effortPlan(rating({ level: 'xhigh' }), opus, 'low')).toMatchObject({ kind: 'none' })
   // A review still raises Opus to high or more (reviewPlan).
   expect(plan(review({ opus: 'xhigh' }, 'xhigh'), opus, 'low')).toMatchObject({ kind: 'effort', dir: 'raise', level: 'xhigh', rule: 'review' })
   // A lowering still goes through, and a model that would struggle still hands up.
   expect(effortPlan(rating({ level: 'low', fit: { opus: 'low' }, write: 1500 }), { ...opus, cal: freeSwitches }, 'low')).toMatchObject({ kind: 'effort', dir: 'lower', level: 'low' })
   expect(plan(rating({ type: 'design', level: 'high', fit: { opus: null, fable: 'high' }, read: 30_000, write: 2000, steps: 10 }), opus, 'low').kind).toBe('delegate')
+})
+
+// ---- ADR 0021: the per-start rules ----
+
+test('on Opus and Fable every task but a review lowers to low, whatever the rating says', async () => {
+  const s = { ...opus, cal: freeSwitches }
+  for (const type of ['lookup', 'feature', 'debug', 'design', 'writing', 'other'] as const) {
+    const r = rating({ type, level: 'medium', fit: { opus: 'medium', fable: 'medium' }, read: 30_000, write: 2000, steps: 10 })
+    expect(effortPlan(r, s, 'low'), `${type} rated medium on Opus at medium`).toMatchObject({ kind: 'effort', dir: 'lower', level: 'low' })
+    expect(effortPlan(r, { ...fable, cal: freeSwitches }, 'low'), `${type} on Fable at high`).toMatchObject({ kind: 'effort', dir: 'lower', level: 'low' })
+  }
+  // A start at high or xhigh lowers to low, not to the rated medium.
+  expect(effortPlan(rating({ level: 'medium', fit: { opus: 'medium' } }), { ...s, level: 'xhigh' }, 'low')).toMatchObject({ kind: 'effort', dir: 'lower', level: 'low' })
+  // Lowest effort still floors it, and a review is not lowered.
+  expect(effortPlan(rating({ level: 'medium', fit: { opus: 'medium' } }), { ...s, level: 'high' }, 'medium')).toMatchObject({ kind: 'effort', dir: 'lower', level: 'medium' })
+  expect(plan(review({ opus: 'high' }, 'high'), s, 'low'), 'a review raises to high instead').toMatchObject({ kind: 'effort', dir: 'raise', level: 'high', rule: 'review' })
+  // The lowering bar still applies: with switches priced at the prior, a tiny task saves less than the cache it costs.
+  expect(effortPlan(rating({ level: 'medium', fit: { opus: 'medium' } }), opus, 'low')).toMatchObject({ kind: 'none' })
+})
+
+test('on Sonnet a rated raise is taken only for a hard-rated task of 20 steps or more', async () => {
+  const feature = (level: 'medium' | 'high', steps: number) => rating({ type: 'feature', level, fit: { sonnet: level, opus: level }, read: 30_000, write: 2000, steps })
+  expect(plan(feature('high', 20), sonnetSession, 'low'), 'hard and big').toMatchObject({ kind: 'effort', dir: 'raise', level: 'high' })
+  expect(plan(feature('high', 10), sonnetSession, 'low'), 'hard but small: held').toMatchObject({ kind: 'none' })
+  expect(plan(feature('medium', 30), { ...sonnetSession, level: 'low' }, 'low'), 'big but not hard: held').toMatchObject({ kind: 'none' })
+  expect(plan(rating({ type: 'debug', level: 'high', fit: { sonnet: 'high', opus: 'high' }, read: 30_000, write: 2000, steps: 30 }), sonnetSession, 'low'), 'debugging: never').toMatchObject({ kind: 'none' })
+})
+
+test('a hand-down to Sonnet needs 20 rated steps; Haiku takes mechanical work only', async () => {
+  const big = (type: TaskType, steps: number) => rating({ type, level: 'low', fit: { haiku: 'low', sonnet: 'low', opus: 'low', fable: 'low' }, read: 150_000, write: 3000, steps })
+  const s = { ...fable, cal: freeSwitches }
+  const to = (r: Rating) => {
+    const p = plan(r, s, 'low')
+    return p.kind === 'delegate' ? p.tier : p.kind
+  }
+  expect(to(big('search', 30)), 'mechanical: Haiku').toBe('haiku')
+  expect(to(big('search', 5)), 'mechanical and short: Haiku has no step floor').toBe('haiku')
+  expect(to(big('feature', 30)), 'a feature: not Haiku, so the next cheapest fit').toBe('sonnet')
+  expect(to(big('feature', 19)), 'a feature under 20 steps: no helper').toBe('effort')
+  // The Haiku type rule and the step floor cover every type.
+  for (const type of TASK_TYPES.filter(t => t !== 'review')) {
+    const p = plan(big(type, 30), s, 'low')
+    const haiku = p.kind === 'delegate' && p.tier === 'haiku'
+    expect(haiku, type).toBe(HAIKU_TYPES.includes(type))
+  }
+  // Claude's own subagents are not held to the step floor: Claude wrote the brief itself.
+  expect(sizeSubagent(big('feature', 5), s, 'fable', 'low')?.tier).toBeDefined()
+})
+
+test('a Haiku session switches the main chat to Sonnet for debugging, features, refactors and writing', async () => {
+  const haiku: Situation = { tier: 'haiku', level: 'medium', context: 20_000, prices: DEFAULT_PRICES, cal: {} }
+  const r = (type: TaskType) => rating({ type, level: 'medium', fit: { haiku: 'medium', sonnet: 'medium', opus: 'medium' }, read: 30_000, write: 2000, steps: 10 })
+  for (const type of HAIKU_SWITCH_TYPES) expect(plan(r(type), haiku, 'low'), type).toMatchObject({ kind: 'switch', tier: 'sonnet', level: 'medium', rule: 'haiku' })
+  for (const type of HAIKU_TYPES) expect(plan(r(type), haiku, 'low').kind, `${type} stays on Haiku`).not.toBe('switch')
+  // Sonnet would struggle too: the usual route (a hand-up to the cheapest model that fits).
+  expect(plan(rating({ type: 'debug', level: 'high', fit: { haiku: null, sonnet: null, opus: 'high' }, read: 30_000, write: 2000, steps: 10 }), haiku, 'low')).toMatchObject({ kind: 'delegate', dir: 'up', tier: 'opus' })
+  // The switch is priced: Sonnet's work at its level plus writing the conversation to its cache once.
+  const p = plan(r('feature'), haiku, 'low')
+  expect(p.kind === 'switch' && p.cost > p.mainCost, 'costs more than staying').toBe(true)
+  // Not on Sonnet itself.
+  expect(plan(r('feature'), sonnetSession, 'low').kind).not.toBe('switch')
 })
 
 // ---- research priors: where the evidence rule starts ----
@@ -324,14 +388,16 @@ const misses = (ls: RunLine[]) => missMap(missRates(ls))
 const bulkyWriting = rating({ type: 'writing', level: 'low', fit: { haiku: 'low', sonnet: 'low', opus: 'low' }, read: 150_000, write: 3000, steps: 30 })
 
 test("Haiku's fit on writing is not acted on with no outcomes yet, and is once the person's own outcomes are good", async () => {
-  const control = plan({ ...bulkyWriting, type: 'search' }, { ...opus, misses: misses([]) }, 'low')
-  expect(control, 'the same work as a search is handed down').toMatchObject({ kind: 'delegate', dir: 'down', tier: 'haiku' })
-  expect(plan(bulkyWriting, { ...opus, misses: misses([]) }, 'low').kind, 'no outcomes: the prior holds it back').not.toBe('delegate')
-  expect(plan(bulkyWriting, { ...opus, misses: misses(lines(2, false, 'writing')) }, 'low').kind, 'two good outcomes do not clear it').not.toBe('delegate')
-  expect(plan(bulkyWriting, { ...opus, misses: misses(lines(5, false, 'writing')) }, 'low').kind, 'five good ones leave half the prior: 25%, still over the 20% line').not.toBe('delegate')
-  expect(plan(bulkyWriting, { ...opus, misses: misses(lines(7, false, 'writing')) }, 'low'), 'seven: 15%, under the line').toMatchObject({ kind: 'delegate', dir: 'down', tier: 'haiku' })
-  expect(plan(bulkyWriting, { ...opus, misses: misses(lines(5, true, 'writing')) }, 'low').kind, 'five bad ones keep it held').not.toBe('delegate')
-  expect(plan(bulkyWriting, { ...opus, misses: misses([]), missBlock: null }, 'low'), 'Pause after misses off: the prior pauses nothing').toMatchObject({ kind: 'delegate', dir: 'down' })
+  // A hand-off never sends writing to Haiku (the type rule); Claude's own subagents can, under the evidence rule.
+  expect(plan(bulkyWriting, { ...opus, misses: misses(lines(10, false, 'writing')) }, 'low').kind, 'a hand-off: never Haiku for writing').not.toBe('delegate')
+  const sub = (ls: RunLine[], more: Partial<Situation> = {}) => sizeSubagent(bulkyWriting, { ...opus, misses: misses(ls), ...more }, 'opus', 'low')?.tier
+  expect(sizeSubagent({ ...bulkyWriting, type: 'search' }, { ...opus, misses: misses([]) }, 'opus', 'low')?.tier, 'the same work as a search goes to Haiku').toBe('haiku')
+  expect(sub([]), 'no outcomes: the prior holds it back').not.toBe('haiku')
+  expect(sub(lines(2, false, 'writing')), 'two good outcomes do not clear it').not.toBe('haiku')
+  expect(sub(lines(5, false, 'writing')), 'five good ones leave half the prior: 25%, still over the 20% line').not.toBe('haiku')
+  expect(sub(lines(7, false, 'writing')), 'seven: 15%, under the line').toBe('haiku')
+  expect(sub(lines(5, true, 'writing')), 'five bad ones keep it held').not.toBe('haiku')
+  expect(sub([], { missBlock: null }), 'no pause line: the prior pauses nothing').toBe('haiku')
 })
 
 test("Haiku's fit on a review is not acted on as a subagent with no outcomes yet, and is once the outcomes are good", async () => {
@@ -363,7 +429,7 @@ const helper = { type: 'feature' as const, read: 20_000, write: 2000, steps: 6 }
 const bulky = { type: 'feature' as const, read: 150_000, write: 3000, steps: 30 }
 
 test('on Opus at medium, sends work Haiku can do at high to Haiku at high, not Opus to high', async () => {
-  const r = rating({ ...helper, level: 'high', fit: { haiku: 'high', sonnet: 'high', opus: 'high', fable: 'medium' } })
+  const r = rating({ ...helper, type: 'search', level: 'high', fit: { haiku: 'high', sonnet: 'high', opus: 'high', fable: 'medium' } })
   const p = plan(r, opus, 'low')
   expect(p.kind).toBe('delegate')
   if (p.kind !== 'delegate') return
@@ -382,19 +448,20 @@ test('picks Sonnet when Haiku would struggle, at the level Sonnet needs', async 
 })
 
 test('on Opus, Sonnet must still clear the hand-off share of raising Opus', async () => {
-  // Sonnet costs half of Opus per token; the brief, check and likely rework eat most of that.
-  const r = rating({ ...helper, level: 'high', fit: { haiku: null, sonnet: 'xhigh', opus: 'high', fable: 'high' } })
+  // Sonnet costs half of Opus per token; the brief, check and likely rework eat most of that. 20 steps: over the hand-down floor.
+  const r = rating({ ...helper, steps: 20, level: 'high', fit: { haiku: null, sonnet: 'xhigh', opus: 'high', fable: 'high' } })
   const ratio = delegateCost(r, opus, 'sonnet', 'xhigh') / mainCost(r, opus, 'high', 2)
   expect(ratio).toBeGreaterThan(DEFAULT_RULES.handOff)
-  // Opus is not raised at prompt time (ADR 0021): the bar is staying at the level in use.
-  expect(plan(r, opus, 'low')).toMatchObject({ kind: 'none' })
+  // Opus is not raised at prompt time (ADR 0021): the bar is staying at the level in use, and the work is lowered instead.
+  expect(plan(r, opus, 'low').kind).not.toBe('delegate')
+  expect(plan(rating({ ...helper, level: 'high', fit: { haiku: null, sonnet: 'xhigh', opus: 'high', fable: 'high' } }), { ...opus, rules: { ...DEFAULT_RULES, handOff: 0.99 } }, 'low').kind, 'under 20 steps: no helper at any bar').not.toBe('delegate')
   const stayRatio = delegateCost(r, opus, 'sonnet', 'xhigh') / mainCost(r, opus, 'medium', 0)
   const loose = plan(r, { ...opus, rules: { ...DEFAULT_RULES, handOff: stayRatio * 1.1 } }, 'low')
   expect(loose.kind === 'delegate' && loose.tier, 'a looser hand-off share sends it').toBe('sonnet')
 })
 
 test('of two models that fit, picks the cheaper route, and calibration per model and level can change it', async () => {
-  const r = rating({ ...bulky, level: 'medium', fit: { haiku: 'xhigh', sonnet: 'medium', opus: 'medium', fable: 'medium' } })
+  const r = rating({ ...bulky, type: 'search', level: 'medium', fit: { haiku: 'xhigh', sonnet: 'medium', opus: 'medium', fable: 'medium' } })
   const s = { ...fable, level: 'medium' as const }
   const haiku = delegateCost(r, s, 'haiku', 'xhigh')
   const sonnet = delegateCost(r, s, 'sonnet', 'medium')
@@ -403,7 +470,7 @@ test('of two models that fit, picks the cheaper route, and calibration per model
   expect(p.kind === 'delegate' && p.tier).toBe('haiku')
   // Haiku at xhigh measured at 10x its estimate: Sonnet at medium wins.
   let cal = {}
-  for (let i = 0; i < CAL_FULL; i++) for (const k of delegateKeys('feature', 'haiku', 'xhigh').slice(1)) cal = learn(cal, k, 10)
+  for (let i = 0; i < CAL_FULL; i++) for (const k of delegateKeys('search', 'haiku', 'xhigh').slice(1)) cal = learn(cal, k, 10)
   const q = plan(r, { ...s, cal }, 'low')
   expect(q.kind === 'delegate' && q.tier).toBe('sonnet')
   expect(delegateCost(r, { ...s, cal }, 'sonnet', 'medium'), 'other models keep their estimates').toBe(sonnet)
@@ -417,12 +484,12 @@ test('a model and level with few runs leans on the task type as a whole', async 
 })
 
 test('raises effort on the main model when the switch is free and the work is too small to brief', async () => {
-  const r = rating({ level: 'high', fit: { haiku: 'high', sonnet: 'high', opus: 'high' }, read: 1000, write: 200, steps: 1 })
+  const r = rating({ level: 'high', fit: { haiku: 'high', sonnet: 'high', opus: 'high' }, read: 1000, write: 200, steps: 20 })
   expect(plan(r, { ...sonnetSession, cal: freeSwitches }, 'low')).toEqual({ kind: 'effort', dir: 'raise', level: 'high' })
 })
 
 test('the floor applies to the subagent\'s level too', async () => {
-  const r = rating({ ...helper, level: 'medium', fit: { haiku: 'low', opus: 'medium' }, read: 150_000, steps: 30 })
+  const r = rating({ ...helper, type: 'search', level: 'medium', fit: { haiku: 'low', opus: 'medium' }, read: 150_000, steps: 30 })
   const p = plan(r, opus, 'medium')
   expect(p.kind === 'delegate' && p.level).toBe('medium')
 })
@@ -783,7 +850,7 @@ test('effort is not lowered on a model the rater is wrong about for this task ty
   expect(p.kind).toBe('none')
   if (p.kind === 'none') expect(p.why).toContain('paused')
   expect(effortPlan(r, { ...s, misses: { 'lookup:haiku': 0.9 } }, 'low').kind, 'another model: not affected').toBe('effort')
-  expect(effortPlan(rating({ level: 'xhigh', fit: { sonnet: 'xhigh' } }), { ...s, tier: 'sonnet', misses: { 'other:sonnet': 0.9 } }, 'low'), 'a raise is never paused').toEqual({ kind: 'effort', dir: 'raise', level: 'xhigh' })
+  expect(effortPlan(rating({ level: 'xhigh', fit: { sonnet: 'xhigh' }, steps: 20 }), { ...s, tier: 'sonnet', misses: { 'other:sonnet': 0.9 } }, 'low'), 'a raise is never paused').toEqual({ kind: 'effort', dir: 'raise', level: 'xhigh' })
 })
 
 // Settings that limit what rightsize does (Highest effort, Use Haiku and Use Fable) and the fixed miss pause
@@ -791,7 +858,7 @@ test('effort is not lowered on a model the rater is wrong about for this task ty
 
 test('Highest effort stops a raise at the ceiling, and never lowers what you are on', async () => {
   // Raises are tried on a Sonnet session: Opus takes none at prompt time (ADR 0021).
-  const need = rating({ level: 'xhigh', fit: { sonnet: 'xhigh', opus: 'xhigh' } })
+  const need = rating({ level: 'xhigh', fit: { sonnet: 'xhigh', opus: 'xhigh' }, steps: 20 })
   expect(effortPlan(need, sonnetSession, 'low'), 'no ceiling: raises to what the work needs').toEqual({ kind: 'effort', dir: 'raise', level: 'xhigh' })
   expect(effortPlan(need, { ...sonnetSession, ceiling: 'max' }, 'low')).toEqual({ kind: 'effort', dir: 'raise', level: 'xhigh' })
   expect(effortPlan(need, { ...sonnetSession, ceiling: 'high' }, 'low'), 'capped at high').toEqual({ kind: 'effort', dir: 'raise', level: 'high' })
@@ -800,7 +867,7 @@ test('Highest effort stops a raise at the ceiling, and never lowers what you are
   expect(effortPlan(need, { ...sonnetSession, level: 'high', ceiling: 'high' }, 'low').kind).toBe('none')
   // A level in use above the ceiling is left alone: the ceiling stops raises, it does not lower.
   const onMax = { ...opus, level: 'max' as const, ceiling: 'high' as const }
-  expect(effortPlan(rating({ level: 'max' }), onMax, 'low').kind, 'needs max, on max: stays').toBe('none')
+  expect(effortPlan(rating({ level: 'max' }), { ...onMax, cal: freeSwitches }, 'low'), 'needs max, on max: lowered to low all the same (ADR 0021)').toMatchObject({ kind: 'effort', dir: 'lower', level: 'low' })
   // Lowering is not a raise: the ceiling does not touch it, whatever level is in use.
   const lowering = effortPlan(rating({ level: 'low', write: 1500 }), { ...opus, cal: freeSwitches, ceiling: 'high' }, 'low')
   expect(lowering).toMatchObject({ kind: 'effort', dir: 'lower', level: 'low' })
@@ -900,7 +967,7 @@ test('a strict rule needs the same evidence for lowering and for a subagent of C
   expect(effortPlan(lower, { ...s, counts: { 'lookup:opus': 10 } }, 'low').kind, '10 tasks, no misses').toBe('effort')
   expect(effortPlan(lower, { ...s, counts: { 'lookup:opus': 10 }, misses: { 'lookup:opus': 0.1 } }, 'low').kind, '10% misses').toBe('none')
   // A raise needs no evidence.
-  expect(effortPlan(rating({ level: 'xhigh', fit: { sonnet: 'xhigh' } }), { ...s, tier: 'sonnet' }, 'low'), 'a raise is not a cheaper route').toEqual({ kind: 'effort', dir: 'raise', level: 'xhigh' })
+  expect(effortPlan(rating({ level: 'xhigh', fit: { sonnet: 'xhigh' }, steps: 20 }), { ...s, tier: 'sonnet' }, 'low'), 'a raise is not a cheaper route').toEqual({ kind: 'effort', dir: 'raise', level: 'xhigh' })
   const listing = rating({ type: 'search', fit: { haiku: 'low', sonnet: 'low', opus: 'low', fable: 'low' }, read: 8000, write: 500, steps: 5 })
   const o = { ...evidence('strict', {}), tier: 'opus' as const, level: 'medium' as const }
   expect(sizeSubagent(listing, o, 'opus', 'low'), 'nothing logged: Claude\'s subagent stays').toBeUndefined()

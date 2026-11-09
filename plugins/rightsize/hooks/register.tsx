@@ -301,7 +301,7 @@ type Run = {
   /** The main chat runs this turn on another model, then goes back: a review on Opus. */
   switchTo?: { tier: Tier; level: Level }
   /** A fixed rule chose the route rather than the rating: reviews run on Opus at high or more. */
-  rule?: 'review'
+  rule?: 'review' | 'haiku'
   /** Learning mode: the plan the learned step exponent would have made, beside the real one (learning.ts). */
   learning?: LearningNote
   /** The learned step exponent when the learning plan was made (steps.ts scoreRun). */
@@ -1580,7 +1580,7 @@ const effortOnly = (r: Rating, s: Situation): Plan => (routing ? effortPlan(r, s
  */
 function gate(p: Plan, r: Rating, s: Situation): { plan: Plan; dropped?: string } {
   if (p.kind === 'delegate' && !handOffs) return { plan: effortOnly(r, s), dropped: 'hand-off skipped: Hand-offs is off' }
-  if (!routing && p.kind === 'switch') return { plan: { kind: 'none', why: 'Routing is off' }, dropped: 'review switch skipped: Routing is off' }
+  if (!routing && p.kind === 'switch') return { plan: { kind: 'none', why: 'Routing is off' }, dropped: `${p.rule === 'review' ? 'review' : 'Sonnet'} switch skipped: Routing is off` }
   if (!routing && p.kind === 'effort') return { plan: { kind: 'none', why: 'Routing is off' }, dropped: 'effort change skipped: Routing is off' }
   return { plan: p }
 }
@@ -1621,7 +1621,8 @@ async function resolve($: EngineInterface, p: Plan, r: Rating, s: Situation): Pr
     if (c === 'auto') return send
     if (c === 'stay') return stay()
     if (c !== 'ask' && c !== 'each') return {}
-    const question = `This is a review: reviews run on ${to} at ${REVIEW_LEVEL} effort or more. Run this prompt on ${to} at ${p.level}, then go back to ${cur}? ${costLine(p.cost, p.mainCost, cur)}`
+    const why = p.rule === 'review' ? `This is a review: reviews run on ${to} at ${REVIEW_LEVEL} effort or more.` : `This is ${r.type} work, which ${cur} is not suited to.`
+    const question = `${why} Run this prompt on ${to} at ${p.level}, then go back to ${cur}? ${costLine(p.cost, p.mainCost, cur)}`
     const a = await askWithin($, withWait({ header: 'Stronger', question, options: [[`Run it on ${to}`, 'send'], [`Stay on ${cur}`, 'stay']] }, 'it stays as it is'))
     if (a === TIMED_OUT) await logTimeout($, 'Stronger', `stayed on ${cur}`)
     return a === 'send' ? send : a === 'stay' ? stay() : {}
@@ -1688,7 +1689,7 @@ export function watchBand(run: Pick<Run, 'tier' | 'normal' | 'stay' | 'rating'>,
   const off = 'Mode in /config turns it on.'
   if (p.kind === 'none') return { text: `Watching: ${run.normal} on ${cur} fits this prompt; nothing to change. ${off}`, acted: false }
   if (p.kind === 'delegate') return { text: `Watching: would send this to a ${TIER_NAME[p.tier]} subagent at ${p.level} effort. ${bandCost(p.delegateCost, p.mainCost, cur)} ${off}`, acted: true }
-  if (p.kind === 'switch') return { text: `Watching: would run this review on ${TIER_NAME[p.tier]} at ${p.level} effort, then go back to ${cur}. ${bandCost(p.cost, p.mainCost, cur)} ${off}`, acted: true }
+  if (p.kind === 'switch') return { text: `Watching: would run this ${p.rule === 'review' ? 'review' : run.rating.type} on ${TIER_NAME[p.tier]} at ${p.level} effort, then go back to ${cur}. ${bandCost(p.cost, p.mainCost, cur)} ${off}`, acted: true }
   const what = p.dir === 'lower' ? `lower effort to ${p.level}` : `raise effort to ${p.level}`
   const cost = p.dir === 'lower' ? ` ${bandCost(mainCost(run.rating, s, p.level, 2), run.stay, cur)}` : ''
   return { text: `Watching: would ${what} on ${cur}.${cost} ${off}`, acted: true }

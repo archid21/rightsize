@@ -470,7 +470,7 @@ export type Plan =
       tie?: Tie
     }
   /** The main chat runs this one turn on another model, then goes back: reviews on Opus. */
-  | { kind: 'switch'; tier: Tier; level: Level; cost: number; mainCost: number; rule: 'review' }
+  | { kind: 'switch'; tier: Tier; level: Level; cost: number; mainCost: number; rule: 'review' | 'haiku' }
 
 /** Hand work down only when the subagent route costs under this share of staying. */
 export const SAVING_RULE = 0.7
@@ -611,12 +611,21 @@ const capRaise = (target: Level, s: Situation) => {
 // (struggle.ts), which sees the turn go wrong. A review is never held: reviewPlan raises Opus to high on purpose.
 export const NO_PROMPT_RAISE: readonly Tier[] = ['opus', 'fable']
 const DEBUG_HOLD_TIER: Tier = 'sonnet'
+/** On Sonnet a rated raise is taken only for a task rated at least this hard and at least SONNET_RAISE_STEPS big (ADR 0021). */
+export const SONNET_RAISE_LEVEL: Level = 'high'
+export const SONNET_RAISE_STEPS = 20
+/** On Opus and Fable every task but a review runs at low (ADR 0021: on 145 runs low passed as often as medium). */
+export const LOWER_TO: Level = 'low'
 function heldRating(r: Rating, s: Situation): Rating {
   const own = r.fit[s.tier]
   // A model the rater says would struggle at any level is not held: the raise is the fallback when no stronger route exists.
   if (!own) return r
+  // Opus and Fable: lower to low on every task type but review, whatever the rating says, and never raise at prompt time.
+  if (NO_PROMPT_RAISE.includes(s.tier) && r.type !== 'review') return { ...r, level: LOWER_TO, fit: { ...r.fit, [s.tier]: LOWER_TO } }
   if (levelRank(own) <= levelRank(s.level) && levelRank(r.level) <= levelRank(s.level)) return r
-  const held = NO_PROMPT_RAISE.includes(s.tier) ? r.type !== 'review' : r.type === 'debug' && s.tier === DEBUG_HOLD_TIER
+  // Sonnet: a debugging raise is never taken (it bought no passes); any other raise only for a hard-rated task of 20 steps or more.
+  const hardAndBig = levelRank(r.level) >= levelRank(SONNET_RAISE_LEVEL) && r.steps >= SONNET_RAISE_STEPS
+  const held = NO_PROMPT_RAISE.includes(s.tier) ? r.type !== 'review' : s.tier === DEBUG_HOLD_TIER && (r.type === 'debug' || !hardAndBig)
   if (!held) return r
   return { ...r, level: levelRank(r.level) > levelRank(s.level) ? s.level : r.level, fit: { ...r.fit, [s.tier]: levelRank(own) > levelRank(s.level) ? s.level : own } }
 }
@@ -645,6 +654,24 @@ export function effortPlan(r0: Rating, s: Situation, floor: Level): Plan {
 export const REVIEW_TIER: Tier = 'opus'
 /** The weakest session model a hand-down to a helper starts from. */
 export const HAND_DOWN_FROM: Tier = 'opus'
+/** A hand-down to a helper other than Haiku pays only for a task of this many rated steps or more (ADR 0021). */
+export const HAND_DOWN_STEPS = 20
+/** The task types a Haiku helper takes (ADR 0021): mechanical work. The rest stays on a stronger model. */
+export const HAIKU_TYPES: readonly TaskType[] = ['lookup', 'search', 'bulk-edit', 'extract', 'summarize']
+/** On a Haiku session these task types switch the main chat to Sonnet for the turn, as a review switches to Opus (ADR 0021). */
+export const HAIKU_SWITCH_TYPES: readonly TaskType[] = ['debug', 'feature', 'refactor', 'writing']
+export const HAIKU_SWITCH_TIER: Tier = 'sonnet'
+
+// A Haiku session on work Haiku is not suited to: the main chat runs this turn on Sonnet, then goes back, under the
+// Stronger model rule. Nothing when the rater says Sonnet would struggle too, or Sonnet is over the ceiling: plan() then routes as usual.
+function haikuSwitchPlan(r: Rating, s: Situation, floor: Level): Plan | undefined {
+  if (s.tier !== 'haiku' || !HAIKU_SWITCH_TYPES.includes(r.type)) return undefined
+  const need = r.fit[HAIKU_SWITCH_TIER]
+  if (!need || s.without?.includes(HAIKU_SWITCH_TIER) || overCeiling(need, s)) return undefined
+  const level = clampCeiling(clampFloor(need, floor), ceilingOf(s))
+  const cost = mainCost(r, { ...s, tier: HAIKU_SWITCH_TIER }, level, 0) + (s.context * atPrompt(s.prices[HAIKU_SWITCH_TIER], s.context).cacheWrite) / 1e6
+  return { kind: 'switch', tier: HAIKU_SWITCH_TIER, level, cost, mainCost: mainCost(r, s, s.level, 0), rule: 'haiku' }
+}
 export const REVIEW_LEVEL: Level = 'high'
 const atLeast = (l: Level, min: Level) => (levelRank(l) < levelRank(min) ? min : l)
 
@@ -680,6 +707,8 @@ export function plan(r: Rating, s: Situation, floor: Level): Plan {
     const p = reviewPlan(r, s, floor)
     if (p) return p
   }
+  const haiku = haikuSwitchPlan(r, s, floor)
+  if (haiku) return haiku
   const stay = mainCost(r, s, s.level, 0)
   const routes = TIERS.flatMap(t => {
     const need = r.fit[t]
@@ -688,8 +717,13 @@ export function plan(r: Rating, s: Situation, floor: Level): Plan {
     // A model that needs more than Highest effort allows does not fit: no route, up or down. The review
     // minimum is not counted here: a review on Opus is capped at the ceiling on purpose (see reviewPlan).
     if (overCeiling(need, s)) return []
-    // A hand-down to a model the rater has been wrong about for this kind of work waits until its record mends.
-    if (tierRank(t) < tierRank(s.tier) && blocked(s, r.type, t)) return []
+    if (tierRank(t) < tierRank(s.tier)) {
+      // A hand-down to a model the rater has been wrong about for this kind of work waits until its record mends.
+      if (blocked(s, r.type, t)) return []
+      // Haiku takes mechanical work only; any other helper pays only on a task of 20 steps or more (the brief and the check
+      // cost more than it saves on a short one).
+      if (t === 'haiku' ? !HAIKU_TYPES.includes(r.type) : r.steps < HAND_DOWN_STEPS) return []
+    }
     const level = clampCeiling(clampFloor(r.type === 'review' && t === REVIEW_TIER ? atLeast(need, REVIEW_LEVEL) : need, floor), ceilingOf(s))
     return [{ tier: t, level, cost: delegateCost(r, s, t, level), n: runsOn(s.cal, delegateKeys(r.type, t, level)) }]
   }).sort((a, b) => a.cost - b.cost)

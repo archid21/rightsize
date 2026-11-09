@@ -133,7 +133,7 @@ test('the replay follows Use Haiku, Use Fable and Highest effort: the limits rig
   expect(replay(lines, start, { ...C, without: [] }).cost, 'an empty list changes nothing').toBe(open.cost)
   // The work needs xhigh on Sonnet at medium: raised, or capped by the ceiling. (On Opus a rated raise is never taken, ADR 0021.)
   const deep: Fit = { haiku: null, sonnet: 'xhigh', opus: 'xhigh', fable: 'xhigh' }
-  const rich = many(20, deep, { type: 'feature', read: 8000, write: 2000, steps: 8 })
+  const rich = many(20, deep, { type: 'feature', read: 8000, write: 2000, steps: 20 })
   const free = { ...C, cal: { 'cache:effort-switch': { n: 20, ratio: 0 } } }
   const sonnetStart = { tier: 'sonnet' as const, level: 'medium' as const }
   const raised = replay(rich, sonnetStart, free)

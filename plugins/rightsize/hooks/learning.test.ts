@@ -2,7 +2,7 @@ import { expect, test } from 'claude-code/testing'
 import { DEFAULT_PRICES, plan, type Plan, type Rating, type Situation } from './cost'
 import { learningNote, planLabel } from './learning'
 
-const rating = (over: Partial<Rating>): Rating => ({ level: 'medium', fit: {}, type: 'feature', read: 10_000, write: 1000, steps: 40, reason: '', ...over })
+const rating = (over: Partial<Rating>): Rating => ({ level: 'medium', fit: {}, type: 'search', read: 10_000, write: 1000, steps: 40, reason: '', ...over })
 // A hand-off that sits under the 70% line on Opus: about 0.63 of staying. Learning at g -0.2 shrinks the steps and takes it over the line.
 const r = rating({ fit: { haiku: 'medium', sonnet: 'medium', opus: 'medium' } })
 const s: Situation = { tier: 'opus', level: 'medium', context: 20_000, prices: DEFAULT_PRICES, cal: {} }
@@ -17,13 +17,13 @@ test('the same plan on both sides is not a difference', async () => {
   expect(learningNote(none, none, -0.2, false)).toEqual({ g: -0.2, plan: 'none', differs: false, applied: false })
 })
 
-test('a hand-down that the learned exponent drops differs, and is labelled none', async () => {
+test('a hand-down that the learned exponent drops differs, and is labelled by the plan it became', async () => {
   const acting = plan(r, s, 'low')
   expect(acting, 'with no stepExp, the work is handed down to Haiku').toMatchObject({ kind: 'delegate', dir: 'down', tier: 'haiku' })
   const learning = plan(r, { ...s, stepExp: -0.2 }, 'low')
-  expect(learning.kind, 'shrunk steps keep the work on Opus').toBe('none')
+  expect(learning, 'shrunk steps keep the work on Opus, lowered').toMatchObject({ kind: 'effort', dir: 'lower' })
   const note = learningNote(acting, learning, -0.2, false)
-  expect(note.plan).toBe('none')
+  expect(note.plan).toBe('effort-lower')
   expect(note.differs).toBe(true)
   expect(note.g).toBe(-0.2)
   expect(note.delegateCost, 'no hand-off costs when the learning plan has none').toBeUndefined()

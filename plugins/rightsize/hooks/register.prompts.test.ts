@@ -357,7 +357,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t0')
     await d.complete('t0')
 
-    h.rating = '{"fit":{"haiku":"high","sonnet":"high","opus":"high","fable":"medium"},"type":"feature","read":20000,"write":2000,"steps":6,"reason":"small helper with tests"}'
+    h.rating = '{"fit":{"haiku":"high","sonnet":"high","opus":"high","fable":"medium"},"type":"search","read":20000,"write":2000,"steps":6,"reason":"small helper with tests"}'
     await d.submit(DEBUG)
     h.subModel = 'claude-haiku-5-5'
     await d.step('t1', 0)
@@ -396,7 +396,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t0')
     await d.complete('t0')
 
-    h.rating = '{"fit":{"haiku":"high","sonnet":"high","opus":"high","fable":"medium"},"size":"small","type":"feature","read":20000,"write":2000,"steps":6,"reason":"small helper with tests"}'
+    h.rating = '{"fit":{"haiku":"high","sonnet":"high","opus":"high","fable":"medium"},"size":"small","type":"search","read":20000,"write":2000,"steps":6,"reason":"small helper with tests"}'
     await d.submit(DEBUG)
     h.subModel = 'claude-haiku-5-5'
     await d.step('t1', 0)
@@ -416,7 +416,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.start(surface)
     await d.step('t0')
     await d.complete('t0')
-    h.rating = '{"fit":{"haiku":"high","sonnet":"high","opus":"high","fable":"medium"},"type":"feature","read":20000,"write":2000,"steps":6,"reason":"small helper with tests"}'
+    h.rating = '{"fit":{"haiku":"high","sonnet":"high","opus":"high","fable":"medium"},"type":"search","read":20000,"write":2000,"steps":6,"reason":"small helper with tests"}'
     await d.submit(DEBUG)
     await d.step('t1', 0)
     await d.agent('haiku')
@@ -444,7 +444,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t0')
     await d.complete('t0')
 
-    h.rating = '{"fit":{"haiku":"high","sonnet":"high","opus":"high","fable":"medium"},"size":"small","type":"feature","read":20000,"write":2000,"steps":6,"reason":"small helper with tests"}'
+    h.rating = '{"fit":{"haiku":"high","sonnet":"high","opus":"high","fable":"medium"},"size":"small","type":"search","read":20000,"write":2000,"steps":6,"reason":"small helper with tests"}'
     await d.submit(DEBUG)
     expect(h.asked, 'no question: Cheaper model is the profile\'s, and it is the one that decided, not Raising').toEqual([])
     expect(h.files[LOG_PATH] ?? '', 'Q4, not Q2: a cheaper model, not more effort').toContain('Cheaper model: no rule set, the default decides')
@@ -470,7 +470,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
     // It learns for the task type, for Haiku, and for Haiku at high.
     const cal = h.store[CAL_STORE] as Record<string, { n: number }>
-    expect(['feature:delegate', 'feature:delegate:haiku', 'feature:delegate:haiku:high'].map(k => cal[k]?.n)).toEqual([1, 1, 1])
+    expect(['search:delegate', 'search:delegate:haiku', 'search:delegate:haiku:high'].map(k => cal[k]?.n)).toEqual([1, 1, 1])
     const runs = (h.files[RUNS_FILE] ?? '').trim().split('\n')
     const line = JSON.parse(last(runs) ?? '{}') as { route?: string; subLevel?: string; fit?: unknown; read?: number; write?: number; steps?: number }
     expect(line.route).toBe('delegate:haiku')
@@ -689,7 +689,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.rating = '{"fit":{"haiku":"no","sonnet":"no","opus":"high","fable":"medium"},"size":"small","type":"debug","read":8000,"write":800,"steps":6,"reason":"race"}'
     await d.submit(DEBUG)
     await d.step('t1')
-    expect(last(h.sent)?.effort, 'the decision still follows the window').toBe('medium')
+    expect(last(h.sent)?.effort, 'on Opus a rated raise is never taken and the turn is lowered (ADR 0021)').toBe('low')
     expect(await bandText($, surface)).not.toMatch(/window|%/)
   })
 

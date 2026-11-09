@@ -153,7 +153,6 @@ rightsize has one rule set and no profiles. The values a profile used to hold ar
   - **Pause after misses** (off, 20%, 30%, 40% or 50%): the miss rate at which a kind of work stops going down to a model; 20% until you set it. A value you set replaces the whole evidence rule.
   - **Budget pacing** (on or off, default on): on a subscription, moves the bars by how fast the 5-hour and 7-day windows are used.
   - **Raise when stuck** (on or off, default on): raises effort one level for the rest of a turn when Claude looks stuck.
-  - **Stuck sensitivity** (relaxed, normal or sensitive, default normal): how soon Claude counts as stuck.
   - **Helper call cap** (tight, normal, loose or off, default normal): the most tool calls a helper on a cheaper model may make for a task. Normal is 25 for Haiku and 40 for Sonnet.
   - **Rater** (sonnet or haiku, default sonnet): the model that rates each prompt, at low effort. Sonnet reads more reliably; Haiku costs less.
   - **Rater check** (every 25, every 50, every 100 or off): how often Sonnet re-rates a prompt Haiku rated; every 20 until you set it.

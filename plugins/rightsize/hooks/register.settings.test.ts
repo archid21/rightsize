@@ -275,23 +275,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
       def: 'high',
     },
     {
-      key: 'stuck',
-      value: 'sensitive',
-      start: { ...OPUS, store: AUTO_RAISE },
-      see: async c => {
-        c.h.rating = NO_CHANGE
-        await c.d.submit(LOOKUP)
-        const t = c.turn()
-        await c.d.step(t, 0)
-        await c.d.bash('fail make')
-        await c.d.bash('fail lint')
-        await c.d.step(t, 1)
-        return last(c.h.sent)?.effort
-      },
-      set: 'high',
-      def: 'medium',
-    },
-    {
       key: 'helperCap',
       value: 'tight',
       start: { model: 'claude-fable-5-1', effort: 'high', store: { remember: true, choices: { raise: 'auto', down: 'auto' } } },

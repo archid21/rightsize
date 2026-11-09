@@ -52,7 +52,6 @@ export const SETTINGS = {
   missPause: { title: 'Advanced · Pause after misses', options: ['off', '20%', '30%', '40%', '50%'], default: '30%' },
   pacing: { title: 'Advanced · Budget pacing', options: ['on', 'off'], default: 'on' },
   escalation: { title: 'Advanced · Raise when stuck', options: ['on', 'off'], default: 'on' },
-  stuck: { title: 'Advanced · Stuck sensitivity', options: ['relaxed', 'normal', 'sensitive'], default: 'normal' },
   helperCap: { title: 'Advanced · Helper call cap', options: ['tight', 'normal', 'loose', 'off'], default: 'normal' },
   rater: { title: 'Advanced · Rater', options: ['sonnet', 'haiku'], default: 'sonnet' },
   raterCheck: { title: 'Advanced · Rater check', options: ['every 25', 'every 50', 'every 100', 'off'], default: 'every 50' },

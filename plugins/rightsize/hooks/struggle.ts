@@ -10,7 +10,7 @@ import { LEVELS, levelRank } from './cost'
 // (blockedError) is not a sign either, and a failing test run is often an expected
 // red (isTestCommand), so it counts less: what counts is a fix attempt (an edit
 // after a red run) that leaves the next run red too. Each kind can raise effort once a turn. How soon each sign counts is
-// the Stuck sensitivity setting (LIMITS). Pure functions, no engine calls.
+// set by LIMITS. Pure functions, no engine calls.
 
 /** What the turn's tool calls have shown so far. */
 export type Signals = {
@@ -55,16 +55,10 @@ export const FAILED_TRIES = 2
 
 /** How soon each sign counts. */
 export type Limits = { repeat: number; errors: number; loop: number; longX: number; longMin: number; window: number; novel: number; failedTries: number }
-/** Stuck sensitivity: normal is the values above; relaxed waits for more, sensitive for less. */
-export const LIMITS = {
-  relaxed: { repeat: 3, errors: 4, loop: 4, longX: 4, longMin: 20, window: 12, novel: 0.4, failedTries: 3 },
-  normal: { repeat: REPEAT, errors: ERRORS, loop: LOOP, longX: LONG_X, longMin: LONG_MIN, window: WINDOW, novel: NOVEL, failedTries: FAILED_TRIES },
-  sensitive: { repeat: 2, errors: 2, loop: 2, longX: 2, longMin: 10, window: 8, novel: 0.6, failedTries: 1 },
-} as const satisfies Record<string, Limits>
-/** How many recent calls the signals keep: enough for the widest window. */
-export const RECENT_MAX = Math.max(...Object.values(LIMITS).map(l => l.window))
-export type Sensitivity = keyof typeof LIMITS
-export const isSensitivity = (v: unknown): v is Sensitivity => typeof v === 'string' && Object.hasOwn(LIMITS, v)
+/** The limits the stuck signs use. */
+export const LIMITS: Limits = { repeat: REPEAT, errors: ERRORS, loop: LOOP, longX: LONG_X, longMin: LONG_MIN, window: WINDOW, novel: NOVEL, failedTries: FAILED_TRIES }
+/** How many recent calls the signals keep: the window. */
+export const RECENT_MAX = LIMITS.window
 /** Raises in one turn, and the highest level a raise goes to: max stays a person's choice. */
 export const MAX_RAISES = 2
 export const CEILING: Level = 'xhigh'
@@ -170,7 +164,7 @@ export function noteCall(s: Signals, key: string, isError: boolean, test = false
  * The first sign that has not raised effort yet, at the step about to go out; undefined when none.
  * `maxRaises` is the turn's cap on raises: a helper's cap is the task's retry budget, not this one.
  */
-export function struggle(s: Signals, step: number, ratedSteps: number, limits: Limits = LIMITS.normal, maxRaises = MAX_RAISES): Struggle | undefined {
+export function struggle(s: Signals, step: number, ratedSteps: number, limits: Limits = LIMITS, maxRaises = MAX_RAISES): Struggle | undefined {
   if (s.fired.length >= maxRaises) return undefined
   const calls = Object.values(s.calls)
   const found: Struggle[] = []

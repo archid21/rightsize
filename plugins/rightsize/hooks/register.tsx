@@ -102,7 +102,7 @@ import {
 } from './settings'
 import { BRIEF_MAX, cutRequest, parseRating, ratingPrompt, ratingSystem } from './rate'
 import { isApprovalStep } from './approval'
-import { LIMITS, type CapSetting, type Limits, type Signals, type Struggle, blockedError, callKey, isEditTool, isSensitivity, isCapSetting, helperCap, isTestCommand, noSignals, noteCall, oneUp, refusedByPerson, struggle, testsOutcome } from './struggle'
+import { LIMITS, type CapSetting, type Signals, type Struggle, blockedError, callKey, isEditTool, isCapSetting, helperCap, isTestCommand, noSignals, noteCall, oneUp, refusedByPerson, struggle, testsOutcome } from './struggle'
 import { type Change, type HelperLine, type Lifetime, type RunLine, type SwitchLine, type Windows, SESSION_TOTAL, SESSION_TOTAL_FROM, bandShareText, buildReport, costTag, foldLifetime, parseLifetime, parseLines, ratedInSession, sessionTotal, shareMessage, shareOf, usedTag, windowCostText, windowRates } from './report'
 import { LIMIT_BUTTON, LIMIT_COMPACT, LIMIT_HIDE, LIMIT_MORE, LIMIT_WHY, LIMIT_WHY_ID, isLimitId, limitDue, limitText } from './limit'
 import { SIZE_BUTTON, SIZE_COMPACT, SIZE_HIDE, SIZE_MORE, SIZE_WHY, SIZE_WHY_ID, isSizeId, sizeStep, sizeText } from './size'
@@ -496,8 +496,6 @@ let boundaryCheck = false
 let explore = false
 /** What happens to the answers to the four questions: ask whether to keep them, keep them, or forget them at the end of the session. */
 let rememberMode: 'ask' | 'every session' | 'this session' = 'ask'
-/** How soon Claude counts as stuck. */
-let limits: Limits = LIMITS.normal
 /** The most tool calls a helper on a cheaper tier may make for one task. */
 let callCap: CapSetting = 'normal'
 /** The pace the prompt being rated was decided at. */
@@ -1245,7 +1243,6 @@ function writeSetting($: EngineInterface, key: SettingKey, value: string): Promi
     case 'missPause': return $.config.set({ key: 'rightsize.missPause', value: value })
     case 'pacing': return $.config.set({ key: 'rightsize.pacing', value: value })
     case 'escalation': return $.config.set({ key: 'rightsize.escalation', value: value })
-    case 'stuck': return $.config.set({ key: 'rightsize.stuck', value: value })
     case 'rater': return $.config.set({ key: 'rightsize.rater', value: value })
     case 'raterCheck': return $.config.set({ key: 'rightsize.raterCheck', value: value })
     case 'startTips': return $.config.set({ key: 'rightsize.startTips', value: value })
@@ -3998,9 +3995,6 @@ function applyOption(key: SettingKey) {
     case 'escalation':
       escalation = v !== 'off'
       return
-    case 'stuck':
-      if (isSensitivity(v)) limits = LIMITS[v]
-      return
     case 'helperCap':
       if (isCapSetting(v)) callCap = v
       return
@@ -4706,7 +4700,7 @@ export const register: Register = (on, options) => {
       if (watch) {
         watch.steps += 1
         if (raising() && !off && !manualPause && !watch.returned) {
-          const sign = struggle(watch.signals, watch.steps, watch.rated, limits, Infinity)
+          const sign = struggle(watch.signals, watch.steps, watch.rated, LIMITS, Infinity)
           if (sign) await escalateHelper($, e.agentId, watch, sign)
         }
       }
@@ -4764,7 +4758,7 @@ export const register: Register = (on, options) => {
     }
     // A hand-off's main chat only briefs and checks: its struggle is the subagent's.
     if (run && !run.delegate && raising() && !off) {
-      const sign = struggle(run.signals, e.index, run.rating.steps, limits)
+      const sign = struggle(run.signals, e.index, run.rating.steps, LIMITS)
       if (sign) await escalate($, run, sign, level ?? own, e.index)
     }
     if (run?.raisedTo && (!level || levelRank(run.raisedTo) > levelRank(level))) level = run.raisedTo

@@ -9,8 +9,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
   const PANE_ID = 'rightsize-menu'
   const MIN = 60_000
   const HOUR = 60 * MIN
-  const start = async ($: unknown, on: Parameters<TestBody>[1], over: { stored?: Record<string, string> } = {}) => {
-    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', ...(over.stored ? { stored: over.stored } : {}) })
+  const start = async ($: unknown, on: Parameters<TestBody>[1], over: { stored?: Record<string, string>; effort?: string } = {}) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: over.effort ?? 'medium', ...(over.stored ? { stored: over.stored } : {}) })
     const d = drive($, h)
     await d.start(surface)
     return { h, d }
@@ -75,13 +75,13 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   test(`picking a value writes the /config row as yours, follows it, and draws the pane again: Band off hides the band (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const { h, d } = await start($, on)
+    const { h, d } = await start($, on, { effort: 'low' })
     await d.step('t0')
     await d.complete('t0')
     h.rating = NO_CHANGE
     await setBand($, 'always')
     await d.submit(LOOKUP)
-    expect(await bandText($, surface)).toBe('No change: medium on Opus fits this prompt.')
+    expect(await bandText($, surface)).toBe('No change: low on Opus fits this prompt.')
     await d.command('')
     const ui = await mountPane($, surface)
     const before = h.sets.length

@@ -2,11 +2,12 @@ import type { RightsizeLevel as Level } from '../types'
 import { LEVELS, levelRank } from './cost'
 
 // Signs, inside one turn, that the main chat is struggling at the effort it runs
-// at: tool calls failing, the same call failing again, the same call going round,
-// a turn running far past the rating's step guess with nothing to show for the
-// last calls, or fixes that keep leaving the tests red. A long turn that keeps
-// editing files, passes its tests or reads new things is just working through a
-// big plan, so it is not one. An error that comes from the environment
+// at: tool calls failing with nothing to show for the last calls, the same call failing
+// again, the same call going round, a turn running far past the rating's step guess
+// with nothing to show for the last calls, or fixes that keep leaving the tests red. A
+// turn that keeps editing files, passes its tests or reads new things is just working
+// through a big plan, and a failing command early in a debug turn is the work (a repro
+// script is meant to fail), so neither is one (ADR 0025). An error that comes from the environment
 // (blockedError) is not a sign either, and a failing test run is often an expected
 // red (isTestCommand), so it counts less: what counts is a fix attempt (an edit
 // after a red run) that leaves the next run red too. Each kind can raise effort once a turn. How soon each sign counts is
@@ -27,9 +28,10 @@ export type Signals = {
   editedSinceRed?: boolean
   /**
    * The last few calls, oldest first, bounded at RECENT_MAX. `novel`: the call had not run earlier in the
-   * turn. `progress`: a file edit or write that worked, or a test run that passed. Absent in an old shape.
+   * turn. `progress`: a file edit or write that worked, or a test run that passed. `error`: the call failed
+   * and was not a test run. Absent in an old shape (`error` absent reads as false).
    */
-  recent?: { novel: boolean; progress: boolean }[]
+  recent?: { novel: boolean; progress: boolean; error?: boolean }[]
 }
 
 /** What the turn's test runs say about the work: how the last one ended, or nothing when none ran. */
@@ -40,7 +42,7 @@ export type Struggle = { kind: Kind; why: string }
 
 /** Failures of one identical call before it counts as struggling. */
 export const REPEAT = 2
-/** Tool errors in a turn before it counts as struggling. */
+/** Tool errors in the last WINDOW calls, with no progress among them, before it counts as struggling (ADR 0025). */
 export const ERRORS = 3
 /** Runs of one identical call before it counts as going round. */
 export const LOOP = 3
@@ -143,7 +145,7 @@ export const isEditTool = (tool: string): boolean => EDIT_TOOLS.has(tool)
 export function noteCall(s: Signals, key: string, isError: boolean, test = false, edit = false): Signals {
   const c = s.calls[key] ?? { n: 0, errors: 0 }
   const isTest = test || c.test === true
-  const step = { novel: s.calls[key] === undefined, progress: !isError && (edit || test) }
+  const step = { novel: s.calls[key] === undefined, progress: !isError && (edit || test), ...(isError && !test ? { error: true } : {}) }
   return {
     ...s,
     recent: [...(s.recent ?? []), step].slice(-RECENT_MAX),
@@ -175,7 +177,12 @@ export function struggle(s: Signals, step: number, ratedSteps: number, limits: L
     const n = again(repeated)
     found.push({ kind: 'repeat-fail', why: `the same ${repeated.test ? 'test run' : 'tool call'} failed ${n === 2 ? 'twice' : `${n} times`}` })
   }
-  if (s.errors >= limits.errors) found.push({ kind: 'errors', why: `${s.errors} tool calls failed` })
+  // Failed calls count only when the last `window` calls hold enough of them and no progress: a repro script that fails,
+  // a probe that errors, then an edit that works is debugging, not struggling. A short record is not enough to say.
+  const recent = (s.recent ?? []).slice(-limits.window)
+  const failed = recent.filter(r => r.error).length
+  if (recent.length >= limits.window && failed >= limits.errors && !recent.some(r => r.progress))
+    found.push({ kind: 'errors', why: `${failed} of the last ${limits.window} tool calls failed and none made progress` })
   // Running the tests again after each change is the normal way to work, not going round.
   if (calls.some(c => !c.test && c.n >= limits.loop)) found.push({ kind: 'loop', why: `the same tool call ran ${limits.loop} times` })
   const long = Math.max(limits.longMin, limits.longX * Math.max(1, ratedSteps))

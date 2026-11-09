@@ -79,12 +79,12 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.store.choices).toBeUndefined()
     expect(h.asked, 'no Remember question: no rule of the person\'s').toEqual([])
 
-    // A lookup with the prior "switches miss the cache": not worth lowering, so nothing changes.
+    // A lookup: effort switches are free (no miss assumed), so it lowers with no question.
     h.rating = '{"level":"low","model":"same","type":"lookup","read":2000,"write":300,"steps":1}'
     await d.submit(LOOKUP)
-    expect(h.asked.length, 'no question when nothing would change').toBe(0)
+    expect(h.asked.length, 'no question: the default decides').toBe(0)
     await d.step('t2')
-    expect(last(h.sent)?.effort).toBe('medium')
+    expect(last(h.sent)?.effort).toBe('low')
     await d.complete('t2')
 
     // A new session decides the same way, and says so again: nothing was kept from this one.
@@ -481,7 +481,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   test(`runs a subagent Claude starts on its own on the cheapest model that fits, at that model's level (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'low' })
     const d = drive($, h)
     await d.start(surface)
     await d.step('t0')
@@ -514,7 +514,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.complete('t1')
     const sent = h.sent.filter(s => s.turnId === 't1')
     expect(sent.filter(s => s.agentId === 'agent-lister').map(s => s.effort), 'the moved subagent runs at Haiku\'s level').toEqual(['low', 'low'])
-    expect(sent.find(s => s.agentId === 'agent-named')?.effort, 'a subagent left alone keeps its level').toBe('medium')
+    expect(sent.find(s => s.agentId === 'agent-named')?.effort, 'a subagent left alone keeps its level').toBe('low')
     expect(await bandText($, surface)).toBe("Ran Claude's subagent on Haiku (low) instead of Opus.")
     const runs = (h.files[RUNS_FILE] ?? '').trim().split('\n')
     const line = JSON.parse(last(runs) ?? '{}') as { route?: string; resized?: unknown }
@@ -717,6 +717,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: AUTO_RAISE })
     const d = drive($, h)
     await d.start(surface)
+    await d.config('lowerRule', 'never lower')
     h.rating = NO_CHANGE
     await d.submit(LOOKUP)
     await d.step('t1', 0)
@@ -730,6 +731,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t1', 3)
     expect(last(h.sent)?.effort, 'for the rest of the turn').toBe('high')
     await d.bash('fail lint')
+    // The errors sign looks at the last 10 calls: seven more reads, none making progress, fill the window.
+    for (let i = 1; i <= 7; i++) await d.bash(`cat f${i}`)
     await d.step('t1', 4)
     expect(last(h.sent)?.effort, 'three failures: a second sign').toBe('xhigh')
     for (let i = 0; i < 3; i++) await d.bash('ls')
@@ -745,7 +748,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.now = Date.now()
     const stuck = (await d.command('report')).text ?? ''
     expect(stuck).toMatch(/1 turn +raised mid-turn because Claude looked stuck/)
-    expect(stuck).toContain('the same tool call failed twice (1), several tool calls failed (1)')
+    expect(stuck).toContain('the same tool call failed twice (1), several of the last 10 tool calls failed and none made progress (1)')
 
     // The next turn starts at the person's level again.
     await d.submit(LOOKUP)
@@ -774,6 +777,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
     const d = drive($, h)
     await d.start(surface)
+    await d.config('lowerRule', 'never lower')
     // Raising set to ask: the profile's own answer (auto) would raise without a question.
     await d.config('raiseRule', 'ask me')
     h.rating = NO_CHANGE
@@ -789,6 +793,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(last(h.sent)?.effort).toBe('medium')
     expect(h.asked.length, 'the same sign is not asked again').toBe(1)
     await d.bash('fail make test')
+    for (let i = 1; i <= 7; i++) await d.bash(`cat f${i}`)
     h.answers = { Stuck: 'Raise to high for this turn' }
     await d.step('t1', 3)
     await settle()
@@ -812,6 +817,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: AUTO_RAISE })
     const d = drive($, h)
     await d.start(surface)
+    await d.config('lowerRule', 'never lower')
     h.rating = NO_CHANGE
     await d.submit(LOOKUP)
     await d.step('t1', 0)
@@ -828,6 +834,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: AUTO_RAISE })
     const d = drive($, h)
     await d.start(surface)
+    await d.config('lowerRule', 'never lower')
     h.rating = NO_CHANGE
     await d.submit(LOOKUP)
     await d.step('t1', 0)
@@ -1041,12 +1048,12 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   test(`a workflow pauses hand-offs and learning for the session, and the report lists it (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { model: 'claude-fable-5-1', effort: 'high' })
+    const h = engine(on, { model: 'claude-fable-5-1', effort: 'low' })
     const d = drive($, h)
     await d.start(surface)
     await d.step('t0')
     await d.complete('t0')
-    const keys = ['lookup:main', 'lookup:main:fable', 'lookup:main:fable:high']
+    const keys = ['lookup:main', 'lookup:main:fable', 'lookup:main:fable:low']
     const learned = () => keys.map(k => (h.store[CAL_STORE] as Record<string, { n: number }> | undefined)?.[k]?.n)
 
     // An ordinary turn teaches the type, the model, and the model at its level.

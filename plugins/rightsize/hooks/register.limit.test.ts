@@ -20,9 +20,9 @@ const SMALL = { input_tokens: 200, output_tokens: 400, cache_read_input_tokens: 
 const API = { billing: 'api' }
 
 for (const surface of ['desktop', 'terminal'] as const) {
-  type Over = { stored?: Record<string, string>; percent?: number; waitMs?: number; usage?: typeof BIG; commands?: typeof WHATSNEXT }
+  type Over = { effort?: string; stored?: Record<string, string>; percent?: number; waitMs?: number; usage?: typeof BIG; commands?: typeof WHATSNEXT }
   const setup = (on: Parameters<TestBody>[1], over: Over = {}) => {
-    const h = engine(on, { ...OPUS, stored: { ...NO_COLD, ...API, ...over.stored } })
+    const h = engine(on, { ...OPUS, ...(over.effort ? { effort: over.effort } : {}), stored: { ...NO_COLD, ...API, ...over.stored } })
     h.rating = NO_CHANGE
     h.stepUsage = over.usage ?? BIG
     h.commands = over.commands ?? []
@@ -182,9 +182,15 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   test(`⋯ has Why? and Don't show again; Why? explains and leaves the row (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
-    const h = setup(on)
+    const h = setup(on, { effort: 'low' })
     const d = drive($, h)
     await d.start(surface)
+    // Warm-up at a low-use moment: the advice is shown once per window, so it must not be spent here.
+    const rl = h.rateLimits
+    h.rateLimits = []
+    await d.step('t0')
+    await d.complete('t0')
+    h.rateLimits = rl
     await turn(d, 't1')
     const asked = await menu($, h, 'Why?')
     expect(asked[0]?.options).toEqual(['Why?', "Don't show again", 'When the band shows…'])
@@ -194,9 +200,15 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   test(`Don't show again hides this row for good, in later windows and sessions too (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
-    const h = setup(on)
+    const h = setup(on, { effort: 'low' })
     const d = drive($, h)
     await d.start(surface)
+    // Warm-up at a low-use moment: the advice is shown once per window, so it must not be spent here.
+    const rl = h.rateLimits
+    h.rateLimits = []
+    await d.step('t0')
+    await d.complete('t0')
+    h.rateLimits = rl
     await turn(d, 't1')
     await menu($, h, "Don't show again")
     expect((await advice($)).text, 'gone now').toBe('')

@@ -404,7 +404,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.forks.length).toBe(1)
     h.rating = NO_CHANGE
     await d.submit('continue')
-    expect(await bandText($, surface), 'the prompt closes the band').toBe('')
+    // Opus at medium lowers every prompt, so the band now shows that row; the keep-warm row is what must be gone.
+    expect(await bandText($, surface), 'the prompt closes the keep-warm row').not.toContain('Warm until')
     await h.advance(4 * HOUR)
     expect(h.forks.length, 'no more').toBe(1)
     expect(coldLog(h)).toContain('keep warm stopped (a prompt was submitted): 1 ping')

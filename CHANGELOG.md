@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- **Effort changes are priced as free on the current models.** Anthropic's docs say an effort change keeps the prompt cache on Opus 5.5, Sonnet 5.5, Haiku 5.5 and Fable 5.1 with the Claude API or a Claude subscription (Claude Code 2.1.260 or later). rightsize assumed a small share of switches miss until 20 of your own had been measured, and that assumed cost blocked the lower-to-low rule on every small task: a lookup rated low on every model ran at medium. A switch is now free from the first prompt, so on Opus or Fable every task but a review runs at low from the start. Measured misses still price it again where a change does rebuild the conversation (a gateway, Amazon Bedrock, Google Cloud's Agent Platform, an older model). Under the Opus and Fable rule a lowering also pays for one switch at most, since the next prompt lowers too.
+- **The "tool calls failed" stuck sign waits for a full window with no progress.** It fired on 3 failed tool calls anywhere in a turn, which is what the first steps of a debug turn look like (a repro script that fails is the work), and raised effort for nothing. It now fires only when the last 10 tool calls hold 3 or more failed calls and none of the 10 was a file edit that worked or a test run that passed. Test runs do not count as failed calls, as before.
+
 ## 0.10.0 (2026-11-08)
 
 - **The per-start rules of the effort policy are now code.** On Opus or Fable every task but a review runs at low effort, whatever the rating says (a start at high or xhigh lowers to low, not to the rated level). On Sonnet a rated raise is taken only for a task rated high or more with 20 steps or more, and never for debugging. A Haiku helper takes mechanical work only (lookups, searches, bulk edits, extraction, summaries); a helper on any other model needs a task of 20 rated steps or more. On a Haiku session, debugging, features, refactors and writing switch the main chat to Sonnet for the turn under the Stronger model rule, as a review switches to Opus. Claude's own subagents are not held to the type or size rules.

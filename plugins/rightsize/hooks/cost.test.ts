@@ -41,6 +41,7 @@ import {
   sizeSubagent,
   subagentKeys,
   subWork,
+  lowerSwitches,
   switchCost,
   switchMissShare,
   rawMainCost,
@@ -128,10 +129,14 @@ test('reads prices.json, keeping defaults for what it lacks', async () => {
   expect(parsePrices(JSON.stringify({ cacheTtl: '5m' })).opus.cacheWrite, '5m with no price: 1.25x input').toBe(5)
 })
 
-test('does not lower effort when the cache rewrite costs more than it saves', async () => {
-  const p = effortPlan(rating({ level: 'low', type: 'lookup' }), opus, 'low')
+test('does not lower effort when measured switches say the cache rewrite costs more than it saves', async () => {
+  // Switches measured to miss (a gateway, Bedrock): a tiny lookup saves less than one rewrite.
+  const missing = { ...opus, cal: { [SWITCH_KEY]: { n: CAL_FULL, ratio: 1 } } }
+  const p = effortPlan(rating({ level: 'low', type: 'lookup' }), missing, 'low')
   expect(p.kind).toBe('none')
   if (p.kind === 'none') expect(p.why).toContain('cache')
+  // Nothing measured: the docs say the cache is kept on the current models, so the switch is free and the lookup lowers (ADR 0024).
+  expect(effortPlan(rating({ level: 'low', type: 'lookup' }), opus, 'low')).toMatchObject({ kind: 'effort', dir: 'lower', level: 'low' })
 })
 
 test('lowers effort once switches are measured to keep the cache', async () => {
@@ -146,8 +151,10 @@ test('lowers effort once switches are measured to keep the cache', async () => {
 test('an effort switch not yet measured is charged the prior share of a cache rewrite, and a measurement replaces it', async () => {
   const big = { ...opus, context: 100_000 }
   const rewrite = switchCost({ ...big, cal: { [SWITCH_KEY]: { n: CAL_FULL, ratio: 1 } } }, 1)
-  expect(SWITCH_MISS_PRIOR, 'most measured switches kept the cache: the prior is well under every switch missing').toBeLessThan(0.25)
-  expect(near(switchCost(big, 2), 2 * SWITCH_MISS_PRIOR * rewrite), 'nothing measured: the prior').toBe(true)
+  expect(SWITCH_MISS_PRIOR, 'the docs say the current models keep the cache on an effort change: no miss assumed (ADR 0024)').toBe(0)
+  expect(near(switchCost(big, 2), 0), 'nothing measured: free').toBe(true)
+  // Measured misses price it again from the first one: 5 switches that all missed are a quarter of the blend.
+  expect(near(switchCost({ ...big, cal: { [SWITCH_KEY]: { n: 5, ratio: 1 } } }, 1), (5 / CAL_FULL) * rewrite), 'five misses: a quarter of a rewrite').toBe(true)
   expect(near(switchCost({ ...big, cal: freeSwitches }, 2), 0), 'measured to keep the cache: free').toBe(true)
   expect(near(switchCost({ ...big, cal: { [SWITCH_KEY]: { n: CAL_FULL, ratio: 1 } } }, 2), 2 * rewrite), 'measured to miss: the whole rewrite').toBe(true)
 })
@@ -219,13 +226,14 @@ test('a long, mechanical task Haiku can do, on Opus, is handed down to Haiku', a
 
 test('a short lookup on Opus stays, even when Haiku fits: the main chat still briefs, checks and answers', async () => {
   const r = rating({ level: 'low', fit: { haiku: 'low', sonnet: 'low', opus: 'low', fable: 'low' }, type: 'lookup', read: 4000, write: 200, steps: 4 })
-  expect(plan(r, opus, 'low').kind).toBe('none')
-  expect(plan(r, { ...opus, cal: freeSwitches }, 'low').kind, 'free switches may lower effort, but never hand a short task off').not.toBe('delegate')
+  expect(plan(r, opus, 'low').kind, 'a free switch lowers effort, but never hands a short task off').not.toBe('delegate')
+  expect(plan(r, { ...opus, level: 'low' }, 'low').kind, 'already at low: nothing to do').toBe('none')
 })
 
 test('keeps a small task on the main model even when a cheaper one could do it', async () => {
   const p = plan(rating({ level: 'high', fit: { haiku: 'high', fable: 'high' } }), fable, 'low')
-  expect(p.kind, 'small: the brief and check outweigh the saving').toBe('none')
+  expect(p.kind, 'small: the brief and check outweigh the saving').not.toBe('delegate')
+  expect(plan(rating({ level: 'high', fit: { haiku: 'high', fable: 'high' } }), { ...fable, level: 'low' }, 'low').kind, 'at low already: nothing').toBe('none')
 })
 
 test('never hands off a request that is mainly an approval step', async () => {
@@ -310,8 +318,8 @@ test('on Opus and Fable a rated raise is never taken at prompt time, for any tas
     const onFable = rating({ type, level: 'high', fit: { fable: 'high' }, read: 30_000, write: 2000, steps: 10 })
     expect(plan(onFable, { ...fable, level: 'medium', cal: freeSwitches }, 'low'), `${type} on Fable`).toMatchObject({ kind: 'effort', dir: 'lower', level: 'low' })
   }
-  // A fixture whose level is above the level in use while its fit is not: held the same way (and the tiny task is under the lowering bar).
-  expect(effortPlan(rating({ level: 'xhigh' }), opus, 'low')).toMatchObject({ kind: 'none' })
+  // A fixture whose level is above the level in use while its fit is not: held the same way, and lowered like the rest.
+  expect(effortPlan(rating({ level: 'xhigh' }), opus, 'low')).toMatchObject({ kind: 'effort', dir: 'lower', level: 'low' })
   // A review still raises Opus to high or more (reviewPlan).
   expect(plan(review({ opus: 'xhigh' }, 'xhigh'), opus, 'low')).toMatchObject({ kind: 'effort', dir: 'raise', level: 'xhigh', rule: 'review' })
   // A lowering still goes through, and a model that would struggle still hands up.
@@ -333,8 +341,12 @@ test('on Opus and Fable every task but a review lowers to low, whatever the rati
   // Lowest effort still floors it, and a review is not lowered.
   expect(effortPlan(rating({ level: 'medium', fit: { opus: 'medium' } }), { ...s, level: 'high' }, 'medium')).toMatchObject({ kind: 'effort', dir: 'lower', level: 'medium' })
   expect(plan(review({ opus: 'high' }, 'high'), s, 'low'), 'a review raises to high instead').toMatchObject({ kind: 'effort', dir: 'raise', level: 'high', rule: 'review' })
-  // The lowering bar still applies: with switches priced at the prior, a tiny task saves less than the cache it costs.
-  expect(effortPlan(rating({ level: 'medium', fit: { opus: 'medium' } }), opus, 'low')).toMatchObject({ kind: 'none' })
+  // The lowering bar still applies where switches are measured to miss: a tiny task saves less than the cache it costs.
+  expect(effortPlan(rating({ level: 'medium', fit: { opus: 'medium' } }), { ...opus, cal: { [SWITCH_KEY]: { n: CAL_FULL, ratio: 1 } } }, 'low')).toMatchObject({ kind: 'none' })
+  // Under the rule a lowering pays for one switch at most: the next prompt lowers too (lowerSwitches); a review still pays two.
+  expect(lowerSwitches(rating({ type: 'feature' }), opus)).toBe(1)
+  expect(lowerSwitches(rating({ type: 'review' }), opus)).toBe(2)
+  expect(lowerSwitches(rating({ type: 'feature' }), sonnetSession)).toBe(2)
 })
 
 test('on Sonnet a rated raise is taken only for a hard-rated task of 20 steps or more', async () => {
@@ -1097,8 +1109,8 @@ test('the pace note says what pacing did: nothing to say when it moved nothing, 
 test('an effort switch is priced as free once enough measured switches have kept the cache', async () => {
   const kept = (n: number, ratio: number) => ({ [SWITCH_KEY]: { n, ratio } })
   expect(switchMissShare(kept(20, 0.05)), '20 switches, 5% missed: free').toBe(0)
-  expect(switchMissShare(kept(19, 0)), 'one short of 20: still the learned share, blended with the prior').toBeGreaterThan(0)
-  expect(switchMissShare(kept(19, 0.02)), 'one short of 20: the learned share, blended').toBeGreaterThan(0)
+  expect(switchMissShare(kept(19, 0)), 'one short of 20, none missed: free by the blend too').toBe(0)
+  expect(switchMissShare(kept(19, 0.02)), 'one short of 20: the learned share, blended with a zero prior').toBeGreaterThan(0)
   expect(Math.round(switchMissShare(kept(40, 0.1)) * 1000), 'too many misses: the learned share').toBe(100)
   expect(switchMissShare({}), 'nothing measured: the prior').toBe(SWITCH_MISS_PRIOR)
 })

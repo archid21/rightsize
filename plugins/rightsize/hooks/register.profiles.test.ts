@@ -440,6 +440,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t1', 1, 'agent-helper')
     expect(last(h.sent)?.effort, 'first chance').toBe('medium')
     await d.bash('fail b', 'agent-helper')
+    // The errors sign looks at the last 10 calls: seven reads that make no progress fill the window.
+    for (let i = 1; i <= 7; i++) await d.bash(`cat f${i}`, 'agent-helper')
     await d.step('t1', 2, 'agent-helper')
     expect(last(h.sent)?.effort, 'second chance').toBe('high')
     for (let i = 0; i < 3; i++) await d.bash('ls', 'agent-helper')

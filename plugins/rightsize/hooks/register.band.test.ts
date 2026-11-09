@@ -68,9 +68,11 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
   /** A turn where Claude looks stuck and Raising is not automatic: the band asks Stuck, and nobody answers yet. */
   const stuckAsked = async ($: unknown, on: Parameters<TestBody>[1]) => {
-    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'low' })
     const d = drive($, h)
     await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
     await d.config('raiseRule', 'ask me')
     h.rating = NO_CHANGE
     h.answers = { Stuck: NO_ONE, Workflow: NO_ONE }
@@ -88,13 +90,13 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const options = (await ui.findAll({ type: 'Button' })).filter(b => String(b.props?.key).startsWith('q-'))
     expect(options.map(b => b.props?.key)).toEqual(['q-0', 'q-1', 'q-close'])
     expect(options.map(b => (b.props as { hotkey?: string } | undefined)?.hotkey)).toEqual(['1', '2', undefined])
-    expect(options.map(b => b.props?.label)).toEqual(['Raise to high for this turn', 'Keep medium', '×'])
+    expect(options.map(b => b.props?.label)).toEqual(['Raise to medium for this turn', 'Keep low', '×'])
     expect(await rowText(ui, 'Stuck'), 'the label, then the question').toContain('Claude looks stuck: the same tool call failed twice.')
-    expect((await ui.find({ type: 'Text', text: /^No answer:/ }))?.text, 'what happens with no answer, on a line of its own').toBe('No answer: the turn goes on at medium.')
+    expect((await ui.find({ type: 'Text', text: /^No answer:/ }))?.text, 'what happens with no answer, on a line of its own').toBe('No answer: the turn goes on at low.')
     await ui.press({ key: 'q-0' })
     await ui.unmount()
     await d.step('t1', 2)
-    expect(last(h.sent)?.effort, 'the answer applies').toBe('high')
+    expect(last(h.sent)?.effort, 'the answer applies').toBe('medium')
     expect(h.question, 'the row is gone').toBeNull()
     await d.complete('t1')
   })
@@ -105,7 +107,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await ui.press({ key: 'q-close' })
     await ui.unmount()
     await d.step('t1', 2)
-    expect(last(h.sent)?.effort).toBe('medium')
+    expect(last(h.sent)?.effort).toBe('low')
     expect(h.question).toBeNull()
     await d.complete('t1')
     expect(helperLog(h)).not.toContain('no answer on the band')

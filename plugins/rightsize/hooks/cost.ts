@@ -178,12 +178,17 @@ export type Calibration = Record<string, { n: number; ratio: number }>
 export const CAL_FULL = 20
 /** Key for the share of effort switches that cost a cache miss, learned from each measured switch. */
 export const SWITCH_KEY = 'cache:effort-switch'
-/** The share assumed to miss before any switch is measured. Measured switches almost all kept the cache, so the prior is low, rounded up to stay cautious. */
-export const SWITCH_MISS_PRIOR = 0.1
 /**
- * Anthropic's docs say an effort change keeps the cache on the current models. Once this many measured switches
- * have missed at most SWITCH_KEPT_MAX of the time, a switch is priced as free: the rare miss is noise, and pricing it
- * would stop every small lowering on a big conversation.
+ * The share assumed to miss before any switch is measured: none (ADR 0024). Anthropic's docs say an effort change
+ * keeps the prompt cache on Opus 5.5, Sonnet 5.5, Haiku 5.5 and Fable 5.1 with the Claude API or a subscription
+ * (Claude Code 2.1.260 or later), and every measured switch in the private bench kept it. A gateway, Bedrock, Google
+ * Cloud's Agent Platform or an older model still rebuilds the conversation: there the person's own measured switches
+ * raise the share (factor blends them in from the first one), so a switch is priced again after a few misses.
+ */
+export const SWITCH_MISS_PRIOR = 0
+/**
+ * Once this many measured switches have missed at most SWITCH_KEPT_MAX of the time, a switch is priced as free
+ * whatever the blend says: the rare miss is noise, and pricing it would stop every small lowering on a big conversation.
  */
 export const SWITCH_KEPT_N = 20
 export const SWITCH_KEPT_MAX = 0.05
@@ -631,6 +636,15 @@ function heldRating(r: Rating, s: Situation): Rating {
 }
 
 // The effort-only plan: lower or raise on the main model, or nothing.
+/**
+ * How many effort switches a lowering pays for. A per-prompt lower switches twice: down for this turn, back for the
+ * next. Under the lower-to-low rule (NO_PROMPT_RAISE tiers, every task but a review) the next prompt lowers too, so
+ * only the first switch is ever paid (ADR 0024).
+ */
+export function lowerSwitches(r: Rating, s: Situation): number {
+  return NO_PROMPT_RAISE.includes(s.tier) && r.type !== 'review' ? 1 : 2
+}
+
 export function effortPlan(r0: Rating, s: Situation, floor: Level): Plan {
   const r = heldRating(r0, s)
   const target = capRaise(clampFloor(r.level, floor), s)
@@ -640,9 +654,8 @@ export function effortPlan(r0: Rating, s: Situation, floor: Level): Plan {
     const why = unproven(s, r.type, s.tier) ? `only ${s.counts?.[`${r.type}:${s.tier}`] ?? 0} of the ${s.minTasks} tasks it needs are logged` : 'the rating was wrong too often'
     return { kind: 'none', why: `lowering ${r.type} work on ${TIER_NAME[s.tier]} is paused: ${why}` }
   }
-  // A per-prompt lower switches twice: down for this turn, back for the next.
   const now = mainCost(r, s, s.level, 0)
-  const lowered = mainCost(r, s, target, 2)
+  const lowered = mainCost(r, s, target, lowerSwitches(r, s))
   if (lowered >= now * (s.rules ?? DEFAULT_RULES).lower) return { kind: 'none', why: `lowering to ${target} saves less than the cache it costs` }
   return { kind: 'effort', dir: 'lower', level: target, saving: now - lowered }
 }

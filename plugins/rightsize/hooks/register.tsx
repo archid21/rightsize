@@ -64,6 +64,7 @@ import {
   CAL_STORE,
   routeFactor,
   rebaseCal,
+  lowerSwitches,
 } from './cost'
 import { type FreshRun, type HandedOff, NO_STEPS, type StepState, actingExp, mergeSteps, medians, parseStepState, STEP_PROVE, typicalShrink } from './steps'
 import { type LearningNote, learningNote } from './learning'
@@ -1679,7 +1680,7 @@ const planChange = (p: Plan): Change => (p.kind === 'none' ? 'none' : p.kind ===
 function wouldCost(p: Plan, r: Rating, s: Situation) {
   if (p.kind === 'delegate') return p.delegateCost
   if (p.kind === 'switch') return p.cost
-  if (p.kind === 'effort') return mainCost(r, s, p.level, 2)
+  if (p.kind === 'effort') return mainCost(r, s, p.level, p.dir === 'lower' ? lowerSwitches(r, s) : 2)
   return mainCost(r, s, s.level, 0)
 }
 
@@ -1691,7 +1692,7 @@ export function watchBand(run: Pick<Run, 'tier' | 'normal' | 'stay' | 'rating'>,
   if (p.kind === 'delegate') return { text: `Watching: would send this to a ${TIER_NAME[p.tier]} subagent at ${p.level} effort. ${bandCost(p.delegateCost, p.mainCost, cur)} ${off}`, acted: true }
   if (p.kind === 'switch') return { text: `Watching: would run this ${p.rule === 'review' ? 'review' : run.rating.type} on ${TIER_NAME[p.tier]} at ${p.level} effort, then go back to ${cur}. ${bandCost(p.cost, p.mainCost, cur)} ${off}`, acted: true }
   const what = p.dir === 'lower' ? `lower effort to ${p.level}` : `raise effort to ${p.level}`
-  const cost = p.dir === 'lower' ? ` ${bandCost(mainCost(run.rating, s, p.level, 2), run.stay, cur)}` : ''
+  const cost = p.dir === 'lower' ? ` ${bandCost(mainCost(run.rating, s, p.level, lowerSwitches(run.rating, s)), run.stay, cur)}` : ''
   return { text: `Watching: would ${what} on ${cur}.${cost} ${off}`, acted: true }
 }
 
@@ -1720,7 +1721,7 @@ function startRun(r: Rating, s: Situation, d: Decision, p: Plan, base: Level, ov
   const swOn: Situation | undefined = sw ? { ...s, tier: sw.tier } : undefined
   const swCost = sw && swOn ? mainCost(r, swOn, sw.level, 0) + (s.context * atPrompt(s.prices[sw.tier], s.context).cacheWrite) / 1e6 : 0
   // A per-prompt switch goes and comes back; a session switch goes once.
-  const switches = d.level && d.level !== s.level ? 2 : d.session ? 1 : 0
+  const switches = d.level && d.level !== s.level ? (levelRank(d.level) < levelRank(s.level) ? lowerSwitches(r, s) : 2) : d.session ? 1 : 0
   const id = `${sessionId}:${Date.now()}-${++runSeq}`
   return {
     id,

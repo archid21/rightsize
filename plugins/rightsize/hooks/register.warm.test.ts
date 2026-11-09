@@ -38,6 +38,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     usage?: typeof BIG_TURN
     fork?: Record<string, number> | undefined
     model?: string
+    /** The session's starting effort: medium unless a test needs Opus to leave it alone (it lowers every prompt from medium). */
+    effort?: string
     store?: Record<string, unknown>
     rateLimits?: { kind: string; percentUsed: number }[]
     /** True: the 3-second band timer fires on the virtual clock. */
@@ -46,7 +48,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   // Opus: 80,500 tokens in the conversation, $0.63 to come back cold.
   const coldSession = async ($: unknown, on: Parameters<TestBody>[1], over: ColdOver = {}) => {
     const stored = over.unset ? over.stored : { beforeCold: 'ask', ...over.stored }
-    const h = engine(on, { model: over.model ?? 'claude-opus-5-5', effort: 'medium', ...(stored ? { stored } : {}), ...(over.store ? { store: over.store } : {}) })
+    const h = engine(on, { model: over.model ?? 'claude-opus-5-5', effort: over.effort ?? 'medium', ...(stored ? { stored } : {}), ...(over.store ? { store: over.store } : {}) })
     if (over.rateLimits) h.rateLimits = over.rateLimits
     h.now = EVENING
     h.virtual = true
@@ -120,8 +122,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
   }
 
   const SHOWN = inProfile('Balanced', { beforeCold: 'keep warm 8 h', band: 'always' })
-  test(`keep warm saving: a return during the run, after the cache would have gone cold, whose first request read the cache, is a warmSaved line with what a cold return would have cost (${surface})`, { timeoutMs: 30000, options: SHOWN.options }, async ($, on) => {
-    const { h, d } = await coldSession($, on, { stored: SHOWN.stored })
+  test(`keep warm saving: a return during the run, after the cache would have gone cold, whose first request read the cache, is a warmSaved line with what a cold return would have cost (${surface})`, { timeoutMs: 30000, options: { ...SHOWN.options, lowerRule: 'never lower' } }, async ($, on) => {
+    const { h, d } = await coldSession($, on, { stored: { ...SHOWN.stored, lowerRule: 'never lower' } })
     h.rating = NO_CHANGE
     await d.submit(LOOKUP)
     await coldTurn(d, 't1')
@@ -292,7 +294,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   test(`Cache off: the idle warning adds no note (${surface})`, { timeoutMs: 30000, options: { cache: 'off' } }, async ($, on) => {
-    const h = engine(on, { ...OPUS, stored: { cache: 'off' } })
+    const h = engine(on, { ...OPUS, effort: 'low', stored: { cache: 'off' } })
     const d = drive($, h)
     await d.start(surface)
     h.stepUsage = BIG_TURN
@@ -756,7 +758,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     (h.files[RUNS_FILE] ?? '').split('\n').filter(Boolean).map(l => JSON.parse(l) as { kind?: string; choice?: string; session?: string }).filter(l => l.kind === 'cold').map(l => l.choice)
 
   test(`each answer to an offer is one cold line in the run log: the button or menu choice pressed (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const { h, d } = await coldSession($, on, { commands: WHATSNEXT })
+    const { h, d } = await coldSession($, on, { commands: WHATSNEXT, effort: 'low' })
     await coldOffer(h, d, 't1')
     await pressBand($, 'cold-2h')
     expect(coldChoices(h)).toEqual(['2h'])
@@ -775,7 +777,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   test(`an offer nobody answers is logged ignored: when a prompt is sent, when a turn ends, or when the cache goes cold; once each (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const { h, d } = await coldSession($, on)
+    const { h, d } = await coldSession($, on, { effort: 'low' })
     await coldOffer(h, d, 't1')
     h.rating = NO_CHANGE
     await d.submit('continue')

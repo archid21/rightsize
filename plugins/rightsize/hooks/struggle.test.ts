@@ -12,12 +12,20 @@ test('the same call failing twice is the first sign', async () => {
   expect(struggle(s, 3, 5)?.kind, 'the call id does not make it a different call').toBe('repeat-fail')
 })
 
-test('three failures of different calls count; each kind raises once, two raises a turn at most', async () => {
+test('three failures of different calls count once the window is full with no progress; each kind raises once, two raises a turn at most', async () => {
   let s = noSignals()
   for (const c of ['a', 'b', 'c']) s = noteCall(s, bash(c), true)
-  expect(struggle(s, 4, 5)).toEqual({ kind: 'errors', why: '3 tool calls failed' })
+  expect(struggle(s, 4, 5), 'three failures in four calls: a repro script that fails is the work, not a sign (ADR 0025)').toBeUndefined()
+  for (let i = 0; i < 7; i++) s = noteCall(s, bash(`cat f${i}`), false)
+  expect(struggle(s, 11, 5)).toEqual({ kind: 'errors', why: '3 of the last 10 tool calls failed and none made progress' })
+  // An edit that works inside the window is progress: the failures were debugging.
+  expect(struggle(edit(noteCall(s, bash('cat g'), false)), 13, 5), 'progress in the window').toBeUndefined()
+  // Failures that slid out of the window no longer count.
+  let old = s
+  for (let i = 0; i < 10; i++) old = noteCall(old, bash(`cat h${i}`), false)
+  expect(struggle(old, 21, 5), 'the failures are older than the window').toBeUndefined()
   s = { ...s, fired: ['errors'] }
-  expect(struggle(s, 4, 5), 'fired already').toBeUndefined()
+  expect(struggle(s, 11, 5), 'fired already').toBeUndefined()
   for (let i = 0; i < 3; i++) s = noteCall(s, bash('ls'), false)
   expect(struggle(s, 6, 5)?.kind, 'the same call going round, failing or not').toBe('loop')
   s = { ...s, fired: ['errors', 'loop'] }
@@ -117,9 +125,15 @@ test('the stuck limits: one set of values, and the signs fire at them', async ()
   expect(struggle(twice, 3, 5)?.why).toBe('the same tool call failed twice')
   expect(struggle(noteCall(noSignals(), bash('npm test'), true), 3, 5), 'once is ordinary').toBeUndefined()
 
-  // Failures of different calls.
-  expect(struggle(failing(2, 'x'), 3, 5), 'two is ordinary').toBeUndefined()
-  expect(struggle(failing(3, 'x'), 3, 5)).toEqual({ kind: 'errors', why: '3 tool calls failed' })
+  // Failures of different calls: three in the last ten calls with no progress among them.
+  const padded = (n: number) => {
+    let s = failing(n, 'x')
+    for (let i = 0; i < 10 - n; i++) s = noteCall(s, bash(`cat p${i}`), false)
+    return s
+  }
+  expect(struggle(padded(2), 11, 5), 'two is ordinary').toBeUndefined()
+  expect(struggle(failing(3, 'x'), 4, 5), 'three, but the window is not full').toBeUndefined()
+  expect(struggle(padded(3), 11, 5)).toEqual({ kind: 'errors', why: '3 of the last 10 tool calls failed and none made progress' })
 
   // The same call going round.
   const ran = (n: number) => {

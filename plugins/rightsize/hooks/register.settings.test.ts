@@ -328,13 +328,15 @@ for (const surface of ['desktop', 'terminal'] as const) {
     {
       key: 'band',
       value: 'always',
-      start: OPUS,
+      start: { ...OPUS, effort: 'low' },
       see: async c => {
+        await c.d.step('t0')
+        await c.d.complete('t0')
         c.h.rating = NO_CHANGE
         await c.d.submit(LOOKUP)
         return bandText(c.$, c.surface)
       },
-      set: 'No change: medium on Opus fits this prompt.',
+      set: 'No change: low on Opus fits this prompt.',
       def: '',
     },
     {

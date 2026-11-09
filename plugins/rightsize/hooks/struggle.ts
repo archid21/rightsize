@@ -109,6 +109,122 @@ const REFUSED = /^(?:The user doesn't want to proceed with this tool use\b|User 
 
 export const refusedByPerson = (text: string): boolean => REFUSED.test(text.trimStart())
 
+/** Programs whose exit code 1 means "nothing found" or "the two differ" (or, for test and `[`, "false"), not "the call failed". */
+const NO_MATCH_PROGRAMS: ReadonlySet<string> = new Set(['grep', 'egrep', 'fgrep', 'rg', 'ag', 'ack', 'git grep', 'diff', 'cmp', 'comm', 'test', '['])
+/** Core's text for a Bash call that ended with exactly exit code 1 (not 10, not 2). */
+const EXIT_ONE = /^\s*Exit code 1(?!\d)/
+
+/**
+ * Splits a shell line into words, honoring quotes and backslashes; `|` and the separators `&&`, `||`, `;` and a
+ * newline outside quotes end a word and are kept as their own tokens. Not a shell parser: just enough to find
+ * which program a command ends in.
+ */
+function shellTokens(line: string): string[] {
+  const out: string[] = []
+  let cur = ''
+  let has = false
+  let quote = ''
+  const push = () => {
+    if (has) out.push(cur)
+    cur = ''
+    has = false
+  }
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i] as string
+    if (quote) {
+      if (ch === quote) quote = ''
+      else if (ch === '\\' && quote === '"' && i + 1 < line.length) cur += line[++i]
+      else cur += ch
+    } else if (ch === '"' || ch === "'") {
+      quote = ch
+      has = true
+    } else if (ch === '\\' && i + 1 < line.length) {
+      cur += line[++i]
+      has = true
+    } else if (/\s/.test(ch) && ch !== '\n') push()
+    else if (ch === '\n' || ch === ';') {
+      push()
+      out.push(';')
+    } else if (ch === '&' && line[i + 1] === '&') {
+      push()
+      out.push('&&')
+      i++
+    } else if (ch === '|') {
+      push()
+      if (line[i + 1] === '|') {
+        out.push('||')
+        i++
+      } else out.push('|')
+    } else {
+      cur += ch
+      has = true
+    }
+  }
+  push()
+  return out
+}
+
+/** The program a simple command runs, after `VAR=value`, `time` and `timeout N` prefixes; `git grep` for that one; undefined when none. */
+function programOf(words: string[]): string | undefined {
+  let i = 0
+  const skipPrefixes = () => {
+    for (;;) {
+      const w = words[i]
+      if (w === undefined) return
+      if (/^[A-Za-z_]\w*=/.test(w) || w === 'time' || w === 'command') i++
+      else if (w === 'timeout') {
+        i++
+        while (words[i]?.startsWith('-')) i += /^-(?:s|k)$/.test(words[i] as string) ? 2 : 1
+        if (words[i] !== undefined && /^[\d.]+[smhd]?$/.test(words[i] as string)) i++
+      } else return
+    }
+  }
+  skipPrefixes()
+  const first = words[i]
+  if (first === undefined) return undefined
+  const name = first === '[' ? first : (first.split('/').pop() ?? first)
+  if (name !== 'git') return name
+  // git's own options (-C dir, -c key=value, --no-pager) come before the subcommand.
+  for (i++; i < words.length; i++) {
+    const w = words[i] as string
+    if (w === '-C' || w === '-c') i++
+    else if (!w.startsWith('-')) return w === 'grep' ? 'git grep' : `git ${w}`
+  }
+  return 'git'
+}
+
+/**
+ * Whether a Bash call's result is "no match", not a failure. `grep`, `rg`, `diff`, `test` and the like exit 1 to say
+ * "nothing found", "the files differ" or "false", and core hands that back as an error result whose text starts
+ * `Exit code 1`. A model that searches is not failing when the search finds nothing, so such a call counts as a
+ * success for every sign: it adds nothing to `errors`, is not a repeat failure, and does not step a lowered turn
+ * back up. Exit code 2 or more (a bad pattern, a missing file) is still an error. The program is the first command
+ * after any `cd … &&`, or the last stage of a pipeline, whose status is its last command's.
+ */
+export function noMatchExit(tool: string, input: Record<string, unknown>, text: string): boolean {
+  if (tool !== 'Bash' || typeof input.command !== 'string' || !EXIT_ONE.test(text)) return false
+  const tokens = shellTokens(input.command)
+  // Pipelines, split on the separators; a leading `cd dir &&` is not the command.
+  const lines: string[][] = [[]]
+  const seps: string[] = []
+  for (const t of tokens) {
+    if (t === '&&' || t === '||' || t === ';') {
+      seps.push(t)
+      lines.push([])
+    } else (lines[lines.length - 1] as string[]).push(t)
+  }
+  let first = 0
+  while (first < lines.length - 1 && (lines[first]?.[0] === 'cd' || lines[first]?.[0] === 'pushd')) first++
+  const words = lines[first] ?? []
+  // The last stage of that pipeline.
+  let from = 0
+  words.forEach((w, i) => {
+    if (w === '|') from = i + 1
+  })
+  const program = programOf(words.slice(from))
+  return program !== undefined && NO_MATCH_PROGRAMS.has(program)
+}
+
 export const noSignals = (): Signals => ({ errors: 0, calls: {}, fired: [] })
 
 /** Keys that label a call rather than make it: Claude writes a fresh `description` for the same Bash command. */

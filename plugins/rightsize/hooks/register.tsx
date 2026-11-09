@@ -102,7 +102,7 @@ import {
 } from './settings'
 import { BRIEF_MAX, cutRequest, parseRating, ratingPrompt, ratingSystem } from './rate'
 import { isApprovalStep } from './approval'
-import { LIMITS, type Signals, type Struggle, blockedError, callKey, isEditTool, helperCap, isTestCommand, noSignals, noteCall, oneUp, refusedByPerson, struggle, testsOutcome } from './struggle'
+import { LIMITS, type Signals, type Struggle, blockedError, callKey, isEditTool, helperCap, isTestCommand, noMatchExit, noSignals, noteCall, oneUp, refusedByPerson, struggle, testsOutcome } from './struggle'
 import { type Change, type HelperLine, type Lifetime, type RunLine, type SwitchLine, type Windows, SESSION_TOTAL, SESSION_TOTAL_FROM, bandShareText, buildReport, costTag, foldLifetime, parseLifetime, parseLines, ratedInSession, sessionTotal, shareMessage, shareOf, usedTag, windowCostText, windowRates } from './report'
 import { LIMIT_BUTTON, LIMIT_COMPACT, LIMIT_HIDE, LIMIT_MORE, LIMIT_WHY, LIMIT_WHY_ID, isLimitId, limitDue, limitText } from './limit'
 import { SIZE_BUTTON, SIZE_COMPACT, SIZE_HIDE, SIZE_MORE, SIZE_WHY, SIZE_WHY_ID, isSizeId, sizeStep, sizeText } from './size'
@@ -1616,13 +1616,18 @@ async function resolve($: EngineInterface, p: Plan, r: Rating, s: Situation): Pr
   const cur = TIER_NAME[s.tier]
   const to = TIER_NAME[p.tier]
   if (p.kind === 'switch') {
-    const c = await choice($, 'up', qUp(cur, to))
+    const rule = await choice($, 'up', qUp(cur, to))
+    // The Haiku-start switch always asks (ADR 0027): Haiku alone usually manages this work, so "always send" is read as "ask" for it.
+    // Stay and the other answers keep their meaning; a review's switch is unchanged.
+    const asks = rule === 'auto' && p.rule === 'haiku'
+    if (asks) await log($, `Stronger model: always send, but the Haiku-start switch to ${to} always asks`)
+    const c = asks ? 'ask' : rule
     const send: Decision = { model: { tier: p.tier, level: p.level } }
     const stay = () => resolveEffort($, effortOnly(r, s), r, s)
     if (c === 'auto') return send
     if (c === 'stay') return stay()
     if (c !== 'ask' && c !== 'each') return {}
-    const why = p.rule === 'review' ? `This is a review: reviews run on ${to} at ${REVIEW_LEVEL} effort or more.` : `This is ${r.type} work, which ${cur} is not suited to.`
+    const why = p.rule === 'review' ? `This is a review: reviews run on ${to} at ${REVIEW_LEVEL} effort or more.` : `This is ${r.type} work. ${cur} alone usually manages it; the switch is for when it does not.`
     const question = `${why} Run this prompt on ${to} at ${p.level}, then go back to ${cur}? ${costLine(p.cost, p.mainCost, cur)}`
     const a = await askWithin($, withWait({ header: 'Stronger', question, options: [[`Run it on ${to}`, 'send'], [`Stay on ${cur}`, 'stay']] }, 'it stays as it is'))
     if (a === TIMED_OUT) await logTimeout($, 'Stronger', `stayed on ${cur}`)
@@ -3518,10 +3523,11 @@ const helperLine = (w: Watch, now: number): HelperLine => ({
 
 // A helper's tool call, after it ran. An error from the environment is a Blocked stall: more effort
 // would not fix it, so it is counted apart and is not a sign. A refused call says nothing about the work.
+// A grep or diff that found nothing (exit code 1) is a success: the model searched, and that is the answer.
 async function noteHelperCall($: EngineInterface, id: string, w: Watch, e: Record<string, unknown>, result: unknown) {
   const r = result as { deny?: string; isError?: boolean }
   if (r.deny) return
-  const isError = r.isError === true
+  let isError = r.isError === true
   if (isError && refusedByPerson(errorText(result))) return
   if (isError && blockedError(errorText(result))) {
     w.blocked += 1
@@ -3530,7 +3536,9 @@ async function noteHelperCall($: EngineInterface, id: string, w: Watch, e: Recor
     return
   }
   const tool = String(e.tool)
-  w.signals = noteCall(w.signals, callKey(tool, e), isError, isTestCommand(tool, e), isEditTool(tool))
+  const noMatch = isError && noMatchExit(tool, e, errorText(result))
+  if (noMatch) isError = false
+  w.signals = noteCall(w.signals, callKey(tool, e), isError, !noMatch && isTestCommand(tool, e), isEditTool(tool))
 }
 
 // A moved subagent's answer: what its own requests cost teaches the estimate for its
@@ -4852,11 +4860,13 @@ export const register: Register = (on, options) => {
       // An error from the environment (no network, a denied sandbox, a missing program) is a Blocked
       // stall: more effort would not fix it, so it is neither an error nor a sign of struggling.
       const blocked = isError && blockedError(errorText(result))
+      // A grep, diff or test that exits 1 found nothing: that is its answer, not a failure (ADR 0026).
+      const noMatch = isError && !blocked && noMatchExit(String(e.tool), e as Record<string, unknown>, errorText(result))
       if (blocked) active.blocked += 1
-      else if (isError) active.errors += 1
+      else if (isError && !noMatch) active.errors += 1
       if (!(result as { deny?: string }).deny && !refused && isApprovalStep(String(e.tool), e as Record<string, unknown>)) active.approvalSteps += 1
       // A refused call (a hook's deny, or the person's no) says nothing about the work.
-      if (!(result as { deny?: string }).deny && !refused && !blocked) active.signals = noteCall(active.signals, callKey(String(e.tool), e as Record<string, unknown>), isError, isTestCommand(String(e.tool), e as Record<string, unknown>), isEditTool(String(e.tool)))
+      if (!(result as { deny?: string }).deny && !refused && !blocked) active.signals = noteCall(active.signals, callKey(String(e.tool), e as Record<string, unknown>), isError && !noMatch, !noMatch && isTestCommand(String(e.tool), e as Record<string, unknown>), isEditTool(String(e.tool)))
     }
     return result
   }).catch((_, e, next) => next(e))

@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { type Signals, FAILED_TRIES, ERRORS, helperCap, LIMITS, LONG_MIN, LONG_X, LOOP, NOVEL, RECENT_MAX, REPEAT, WINDOW, blockedError, callKey, isEditTool, isTestCommand, noSignals, noteCall, oneUp, refusedByPerson, struggle, testsOutcome } from './struggle'
+import { type Signals, FAILED_TRIES, ERRORS, helperCap, LIMITS, LONG_MIN, LONG_X, LOOP, NOVEL, RECENT_MAX, REPEAT, WINDOW, blockedError, callKey, isEditTool, isTestCommand, noMatchExit, noSignals, noteCall, oneUp, refusedByPerson, struggle, testsOutcome } from './struggle'
 
 // Claude labels each Bash call afresh, so the description differs between runs of one command.
 const bash = (command: string) => callKey('Bash', { tool: 'Bash', tool_use_id: Math.random().toString(), command, description: `run ${command} (${Math.random()})` })
@@ -198,6 +198,39 @@ test('blockedError: the work failing, or a file the model got wrong, is not bloc
     '',
   ]
   for (const text of ordinary) expect(blockedError(text), JSON.stringify(text)).toBe(false)
+})
+
+test('noMatchExit: grep and friends exiting 1 found nothing, which is not a failed call', async () => {
+  const one = 'Exit code 1'
+  const nope = (command: string, text = one) => noMatchExit('Bash', { command }, text)
+  expect(nope('grep -rn "TODO" src'), 'grep, exit 1').toBe(true)
+  expect(nope('grep -rn "TODO" src', 'Exit code 1\nsome stderr'), 'with text after it').toBe(true)
+  for (const c of ['rg foo', 'egrep -E "a|b" f', 'fgrep x f', 'ag foo', 'ack foo', 'git grep -n foo', 'git -C sub --no-pager grep foo', 'diff a b', 'cmp a b', 'comm -12 a b', 'test -f x', '[ -f x ]', '/usr/bin/grep foo f'])
+    expect(nope(c), c).toBe(true)
+  expect(nope('grep foo f', 'Exit code 2\ngrep: f: No such file or directory'), 'grep, exit 2').toBe(false)
+  expect(nope('grep foo f', 'Exit code 10'), 'exit 10 is not exit 1').toBe(false)
+  expect(nope('grep foo f', 'boom'), 'no exit code in the text').toBe(false)
+  expect(nope('cat missing.txt'), 'cat, exit 1').toBe(false)
+  expect(nope('npm test'), 'a test runner, exit 1').toBe(false)
+  expect(nope('git diff --exit-code'), 'git diff is not diff').toBe(false)
+  expect(noMatchExit('Read', { command: 'grep foo' }, one), 'not a Bash call').toBe(false)
+  expect(noMatchExit('Bash', {}, one), 'no command').toBe(false)
+  // A pipeline's status is its last command's.
+  expect(nope('cat log.txt | grep ERROR'), 'a pipeline ending in grep').toBe(true)
+  expect(nope('ps aux | grep -v grep | grep node'), 'a longer pipeline').toBe(true)
+  expect(nope('grep foo f | wc -l'), 'a pipeline ending in wc').toBe(false)
+  expect(nope('grep "a|b" f | cat'), 'a pipe inside quotes is not a stage').toBe(false)
+  expect(nope('echo "x | y" | grep z'), 'quotes around a pipe, then grep').toBe(true)
+  // Prefixes before the program.
+  expect(nope('cd x && rg -n foo src'), 'cd, then rg').toBe(true)
+  expect(nope('cd "my dir" && cd sub && grep foo f'), 'two cds').toBe(true)
+  expect(nope('LC_ALL=C grep foo f'), 'a variable prefix').toBe(true)
+  expect(nope('FOO="a b" BAR=1 rg foo'), 'two variables, one quoted').toBe(true)
+  expect(nope('time grep -r foo .'), 'time').toBe(true)
+  expect(nope('timeout 20 rg foo'), 'timeout N').toBe(true)
+  expect(nope('timeout -s KILL 5s grep foo f'), 'timeout with a signal').toBe(true)
+  expect(nope('cd x && make'), 'cd, then a program that is not on the list').toBe(false)
+  expect(nope('cd x'), 'only a cd').toBe(false)
 })
 
 test('isTestCommand: a Bash call that starts a test runner', async () => {

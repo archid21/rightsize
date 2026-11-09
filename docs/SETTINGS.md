@@ -93,7 +93,7 @@ An "ask" answer opens its own timed dialog (see **Question wait**); every other 
 - Key: `upRule`
 - Options: ask first · always send · stay, raise effort only · ask each time · not set
 - Default: not set. Left at not set, Ask before changing decides.
-- When a stronger model than yours would do better, or a review runs on Opus for one turn. ask first: ask before it. always send: do it without asking. stay, raise effort only: stay on your model and raise effort. ask each time: ask what to do each time. not set (the default): Ask before changing decides (off: done without asking; on: asked first), and the band says so the first time the case comes up in a session, with the other rules in its ⋯ menu. A rule set here is used as it is. The band's ⋯ menu and /rightsize settings set it too; set it back to not set to let Ask before changing decide again.
+- When a stronger model than yours would do better, or a review runs on Opus for one turn. ask first: ask before it. always send: do it without asking (the one exception is the switch from a Haiku session to Sonnet for debugging, features, refactors and writing, which always asks). stay, raise effort only: stay on your model and raise effort. ask each time: ask what to do each time. not set (the default): Ask before changing decides (off: done without asking; on: asked first), and the band says so the first time the case comes up in a session, with the other rules in its ⋯ menu. A rule set here is used as it is. The band's ⋯ menu and /rightsize settings set it too; set it back to not set to let Ask before changing decide again.
 
 ### Cheaper model
 
@@ -149,7 +149,7 @@ An "ask" answer opens its own timed dialog (see **Question wait**); every other 
 - Key: `escalation`
 - Options: on · off
 - Default: on
-- on: when a turn shows Claude is stuck (the same tool call failing twice, 3 of the last 10 tool calls failing with none of the 10 making progress, the same call running 3 times, a turn passing 3x the rated steps (at least 15) with no progress, or 2 fixes in a row leaving the tests red), raise effort one level for the rest of the turn, at most twice, never above Highest effort and never to max. It follows your Raising rule: automatic raises without asking, otherwise it asks on the band while the turn goes on. off: never raise mid-turn.
+- on: when a turn shows Claude is stuck (the same tool call failing twice, 3 of the last 10 tool calls failing with none of the 10 making progress (a `grep`, `rg`, `diff` or `test` that exits 1 found nothing: that is not a failed call), the same call running 3 times, a turn passing 3x the rated steps (at least 15) with no progress, or 2 fixes in a row leaving the tests red), raise effort one level for the rest of the turn, at most twice, never above Highest effort and never to max. It follows your Raising rule: automatic raises without asking, otherwise it asks on the band while the turn goes on. off: never raise mid-turn.
 
 ### Rater
 

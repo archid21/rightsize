@@ -1,6 +1,6 @@
 import { type TestBody, expect, test } from 'claude-code/testing'
 import { CAL_STORE } from './cost'
-import { RUNS_FILE, SWITCHES_FILE, LOG_PATH, LEGACY_RUNS, LOOKUP, DEBUG, SEARCH, REVIEW, NO_CHANGE, FREE_SWITCHES, NO_COLD, BIG_TURN, cellsOf, engine, drive, flush, settle, untilAsked, last, mount, bandText, LOWER } from './testkit'
+import { RUNS_FILE, SWITCHES_FILE, LOG_PATH, LEGACY_RUNS, LOOKUP, DEBUG, SEARCH, REVIEW, NO_CHANGE, FREE_SWITCHES, NO_COLD, BIG_TURN, cellsOf, engine, drive, flush, settle, untilAsked, last, mount, bandText, LOWER, NO_ONE } from './testkit'
 
 for (const surface of ['desktop', 'terminal'] as const) {
   test(`Q1 by default: it lowers on its own with no question, says so on the band once, stays low for the whole turn, and retries at the original effort (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -177,6 +177,44 @@ for (const surface of ['desktop', 'terminal'] as const) {
   const rated = (type: string, continues: boolean) => `{"fit":{"haiku":"no","sonnet":"medium","opus":"medium","fable":"medium"},"type":"${type}","read":8000,"write":1200,"steps":5,"continues":${continues},"reason":"rated"}`
   const readRuns = (h: ReturnType<typeof engine>) => (h.files[RUNS_FILE] ?? '').trim().split('\n').map(l => JSON.parse(l) as Record<string, unknown>)
   const FOLLOW_UP = 'yes that looks right so go ahead and put it in parentheses'
+
+  test(`a Haiku session's switch to Sonnet always asks, even under "always send": nothing switches until the person answers Run it on Sonnet (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-haiku-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES } })
+    const d = drive($, h)
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+
+    // No rule set: Stronger model is "always send". For a review that switches on its own; for the Haiku start it asks.
+    h.rating = rated('debug', false)
+    h.answers = { Stronger: NO_ONE }
+    h.sleepEnds = true
+    await d.submit(DEBUG)
+    expect(h.asked.map(a => a.header), 'the band asks').toEqual(['Stronger'])
+    expect(h.asked[0]?.question ?? '').toContain('Haiku alone usually manages it; the switch is for when it does not. Run this prompt on Sonnet at medium, then go back to Haiku? About $')
+    expect(h.asked[0]?.options).toEqual(['Run it on Sonnet', 'Stay on Haiku'])
+    await d.step('t1')
+    expect(last(h.sent)?.model, 'nobody answered: nothing is switched').toBe('claude-haiku-5-5')
+    await d.complete('t1')
+
+    // "Stay" keeps Haiku; "Run it on Sonnet" switches the turn and only that turn.
+    h.sleepEnds = false
+    h.answers = { Stronger: 'Stay on Haiku' }
+    await d.submit(DEBUG)
+    await d.step('t2')
+    expect(last(h.sent)?.model, 'stay').toBe('claude-haiku-5-5')
+    await d.complete('t2')
+    h.answers = { Stronger: 'Run it on Sonnet' }
+    await d.submit(DEBUG)
+    expect(h.asked.map(a => a.header), 'asked each time').toEqual(['Stronger', 'Stronger', 'Stronger'])
+    await d.step('t3')
+    expect(last(h.sent)).toMatchObject({ model: 'sonnet', effort: 'medium' })
+    await d.complete('t3')
+    h.rating = NO_CHANGE
+    await d.submit(LOOKUP)
+    await d.step('t4')
+    expect(last(h.sent)?.model, 'the next prompt is back on Haiku').toBe('claude-haiku-5-5')
+  })
 
   test(`a follow-up keeps its task's type: a continuing prompt typed review in a feature task plans as feature, a new goal typed review switches (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { model: 'claude-sonnet-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES } })
@@ -863,6 +901,56 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.complete('t2')
     const next = JSON.parse(last((h.files[RUNS_FILE] ?? '').trim().split('\n')) ?? '{}') as Record<string, unknown>
     expect('blocked' in next).toBe(false)
+  })
+
+  test(`a grep that finds nothing (exit code 1) is not a failed call: no raise, however often it repeats (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: AUTO_RAISE })
+    const d = drive($, h)
+    await d.start(surface)
+    await d.config('lowerRule', 'never lower')
+    h.rating = NO_CHANGE
+    await d.submit(LOOKUP)
+    await d.step('t1', 0)
+    // The same miss twice (a repeat failure for any other error), then three more in the window.
+    await d.bash('grep -rn "needle" src # exit1')
+    await d.bash('grep -rn "needle" src # exit1')
+    await d.bash('cd src && rg "other" | head -0 | grep -c x # exit1')
+    await d.bash('rg "third" # exit1')
+    await d.bash('test -f src/missing.ts # exit1')
+    await d.step('t1', 1)
+    expect(last(h.sent)?.effort, 'searches that found nothing').toBe('medium')
+    expect(h.asked.length).toBe(0)
+    await d.complete('t1')
+    const line = JSON.parse(last((h.files[RUNS_FILE] ?? '').trim().split('\n')) ?? '{}') as { errors?: number; blocked?: number; escalations?: unknown[] }
+    expect([line.errors ?? 0, line.blocked ?? 0, line.escalations], 'no errors, none blocked, no raise on the run line').toEqual([0, 0, undefined])
+
+    // A program that is not a search still fails with exit code 1, and the same failure twice raises.
+    await d.submit(LOOKUP)
+    await d.step('t2', 0)
+    await d.bash('cat missing.txt # exit1')
+    await d.bash('cat missing.txt # exit1')
+    await d.step('t2', 1)
+    expect(last(h.sent)?.effort, 'cat exit 1 is a failure').toBe('high')
+  })
+
+  test(`a grep that finds nothing does not step an auto-lowered turn back up (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES } })
+    const d = drive($, h)
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+    h.rating = LOWER
+
+    await d.submit(LOOKUP)
+    await d.step('t1', 0)
+    expect(last(h.sent)?.effort, 'lowered').toBe('low')
+    for (const c of ['grep -rn "a" src # exit1', 'git grep b # exit1', 'diff x y # exit1']) await d.bash(c)
+    await d.step('t1', 1)
+    expect(last(h.sent)?.effort, 'three misses: the turn stays lowered').toBe('low')
+    await d.bash('fail npm test')
+    await d.step('t1', 2)
+    expect(last(h.sent)?.effort, 'a failure of the work: back to medium').toBe('medium')
+    await d.complete('t1')
   })
 
   test(`a blocked error or a refused call does not step an auto-lowered turn back up; an ordinary failure does (${surface})`, { timeoutMs: 30000 }, async ($, on) => {

@@ -1,9 +1,13 @@
 # Changelog
 
-## Unreleased
+## 0.10.1 (2026-11-09)
+
+Measured on our benchmark of everyday tasks from an Opus start (lookups, searches, a bulk edit, debugging, a refactor, features, a review, writing): the same model at low effort passes as often as at medium and costs about a fifth less, with no mid-turn raise needed. Long prompts that state a limiting instruction late, after text that contradicts it, are the one case still under test.
 
 - **Effort changes are priced as free on the current models.** Anthropic's docs say an effort change keeps the prompt cache on Opus 5.5, Sonnet 5.5, Haiku 5.5 and Fable 5.1 with the Claude API or a Claude subscription (Claude Code 2.1.260 or later). rightsize assumed a small share of switches miss until 20 of your own had been measured, and that assumed cost blocked the lower-to-low rule on every small task: a lookup rated low on every model ran at medium. A switch is now free from the first prompt, so on Opus or Fable every task but a review runs at low from the start. Measured misses still price it again where a change does rebuild the conversation (a gateway, Amazon Bedrock, Google Cloud's Agent Platform, an older model). Under the Opus and Fable rule a lowering also pays for one switch at most, since the next prompt lowers too.
 - **The "tool calls failed" stuck sign waits for a full window with no progress.** It fired on 3 failed tool calls anywhere in a turn, which is what the first steps of a debug turn look like (a repro script that fails is the work), and raised effort for nothing. It now fires only when the last 10 tool calls hold 3 or more failed calls and none of the 10 was a file edit that worked or a test run that passed. Test runs do not count as failed calls, as before.
+- **A search that finds nothing is not a failed tool call.** `grep`, `rg`, `git grep`, `diff`, `test` and the like exit 1 when they find nothing or the files differ, and Claude Code hands that back as an error. rightsize counted it: three misses fed the "tool calls failed" sign, the same search missing twice looked like the same call failing twice, and one miss stepped an auto-lowered turn back up. A Bash result that reports exit code 1 from one of those programs (the command's first program after any `cd … &&`, or the last stage of a pipeline) now counts as a success for every stuck sign and never steps a turn back up. Exit code 2 or more, and any other program, still count as errors.
+- **The Haiku-start switch always asks.** On a Haiku session, debugging, features, refactors and writing switch the main chat to Sonnet for the turn, and under the Stronger model rule "always send" that happened without a question. On our benchmark Haiku alone usually managed this work and switching every turn cost several times more, so this one move now asks on the band with both costs, and nothing switches until you answer. Review switches follow your rule as before.
 
 ## 0.10.0 (2026-11-08)
 

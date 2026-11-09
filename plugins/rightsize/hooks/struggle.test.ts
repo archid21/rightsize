@@ -330,7 +330,9 @@ test('refusedByPerson: a call the person said no to at the permission prompt, in
   expect(refusedByPerson("The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.")).toBe(true)
   expect(refusedByPerson("The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). To tell you how to proceed, the user said:\nuse the other branch")).toBe(true)
   expect(refusedByPerson('User rejected tool use')).toBe(true)
-  for (const text of ['boom', 'rm: cannot remove build: Permission denied', 'error: the user rejected the merge request in review', '']) expect(refusedByPerson(text), text).toBe(false)
+  // A session with nobody to ask (headless) denies the call itself: the same steering, by the setup (ADR 0034).
+  expect(refusedByPerson('Permission for this tool use was denied. It requires approval, and this session has no approval surface — nobody can answer a permission prompt here — so it was denied automatically. The action was NOT performed; do not claim it succeeded, and do not retry it.')).toBe(true)
+  for (const text of ['boom', 'rm: cannot remove build: Permission denied', 'bash: ./run.sh: Permission denied', 'Error: Permission for this tool use was denied', 'error: the user rejected the merge request in review', '']) expect(refusedByPerson(text), text).toBe(false)
 })
 
 test('the last test run in a turn is its objective outcome', async () => {

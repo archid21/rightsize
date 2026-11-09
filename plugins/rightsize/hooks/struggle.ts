@@ -104,8 +104,10 @@ export const blockedError = (text: string): boolean => {
  * Whether a failed tool call's text is the person saying no at the permission prompt. Core reports that
  * as an error result, not a deny, so it would otherwise count as the work failing. Saying no is the
  * person steering, not Claude struggling: it neither raises effort nor steps a lowered turn back up.
+ * The same holds for the denial core makes itself when a call needs approval and nobody can be asked
+ * (a headless run, `claude -p`, CI): the setup said no, and more effort would not change it (ADR 0034).
  */
-const REFUSED = /^(?:The user doesn't want to proceed with this tool use\b|User rejected tool use\b)/
+const REFUSED = /^(?:The user doesn't want to proceed with this tool use\b|User rejected tool use\b|Permission for this tool use was denied\b)/
 
 export const refusedByPerson = (text: string): boolean => REFUSED.test(text.trimStart())
 

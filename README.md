@@ -182,7 +182,7 @@ When keeping warm over your usual idle time would cost at least 3 times a compac
 - **Just effort, no model changes:** set **Stronger model** to stay and **Cheaper model** to stay.
 - **Ask before anything changes:** set **Ask before changing** to on, or set any of the four rules to ask me.
 
-**Routing**, **Hand-offs** and **Cache** each turn one feature off. Every setting, with its options and default: [docs/SETTINGS.md](docs/SETTINGS.md). Every rule and number: [docs/HOW-IT-DECIDES.md](docs/HOW-IT-DECIDES.md).
+**Routing**, **Hand-offs** and **Cache** each turn one feature off. Every setting, with its options and default: [docs/SETTINGS.md](docs/SETTINGS.md). Every rule and number: [docs/HOW-IT-DECIDES.md](docs/HOW-IT-DECIDES.md). Every feature, how it works, its value and the release that added it: [docs/FEATURES.md](docs/FEATURES.md).
 
 ## Commands
 

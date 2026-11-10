@@ -11,9 +11,10 @@ claude plugin validate plugins/rightsize
 claude plugin test plugins/rightsize
 node scripts/check-settings.mjs
 node scripts/check-plain-dollar.mjs
+node scripts/check-features.mjs
 ```
 
-All four must pass. `check-plain-dollar.mjs` lists any use of `$` (the hook's first parameter) that the Claude plugin directory's check would not read as plain, and any local name that hides a top-level function that takes `$`. It needs the `typescript` package, version 6 or older (`npm install --no-save typescript@5` in the repository root, or set `TYPESCRIPT_DIR` to a typescript folder). Add `--strict` to also list uses we only suspect. Add a test for any behaviour you change: `hooks/*.test.ts`, using `claude-code/testing`.
+All five must pass. `check-plain-dollar.mjs` lists any use of `$` (the hook's first parameter) that the Claude plugin directory's check would not read as plain, and any local name that hides a top-level function that takes `$`. It needs the `typescript` package, version 6 or older (`npm install --no-save typescript@5` in the repository root, or set `TYPESCRIPT_DIR` to a typescript folder). Add `--strict` to also list uses we only suspect. Add a test for any behaviour you change: `hooks/*.test.ts`, using `claude-code/testing`.
 
 ## Try it in a session
 
@@ -43,4 +44,4 @@ When a new model replaces one of the four, update both. Check against these page
 - https://platform.claude.com/docs/en/build-with-claude/effort
 - https://platform.claude.com/docs/en/build-with-claude/prompt-caching
 
-Add a line to `CHANGELOG.md` and raise the version in both `plugins/rightsize/.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json`.
+Add a line to `CHANGELOG.md` and raise the version in both `plugins/rightsize/.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json`. Add or change the feature's row in `docs/FEATURES.md` with **Since** set to `Unreleased`; at release, follow the steps at the top of that file.

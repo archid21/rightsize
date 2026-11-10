@@ -6,6 +6,7 @@ Scope: In: model and effort choice, hand-offs to subagents, the cost report, and
 One line per record. Follow the link; do not add content here.
 
 - Vocabulary: `CONTEXT.md`
+- Features (update at each release): `docs/FEATURES.md`
 - Decisions: `docs/decisions/README.md`
 - Ground rules: `docs/project/GROUND-RULES.md`
 - How we work: `docs/project/HOW-WE-WORK.md`

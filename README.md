@@ -9,7 +9,7 @@ claude plugin marketplace add archid21/rightsize
 claude plugin install rightsize@archid21 --scope user
 ```
 
-**Status: 0.10.2.** Priced for Fable 5.2 and each older model version, and fewer false "stuck" raises. See [New in 0.10.2](#new-in-0102).
+**Status: 0.11.0.** A shorter report that says what the numbers mean, a welcome table, and tips on the band. See [New in 0.11.0](#new-in-0110).
 
 MIT license · works with a Claude subscription (Pro, Max, Ultra) or an API key · [Open an issue](https://github.com/archid21/rightsize/issues)
 
@@ -132,12 +132,14 @@ On a subscription, a keep-warm request draws a small share of your usage window,
 
 *Benchmark: real tasks from open-source repositories, each graded by hidden tests the model never sees. Your results depend on your work and settings. Method: [docs/METHOD.md](docs/METHOD.md).*
 
-## New in 0.10.2
+## New in 0.11.0
 
-- **Fable 5.2 and older models priced correctly.** Each older version, such as Opus 4.8, is priced by its own row. A model with no price row pauses rightsize until you switch.
-- **Keep warm fits your cache.** rightsize reads the cache's life (5 minutes or 1 hour) from the session and keeps a 5-minute cache warm inside long turns. The keep-warm or compact cost is priced over the time keep warm would run.
-- **Fewer false raises.** Permission denials and lookups that miss a file no longer count as failed tool calls.
-- **Tighter hand-offs.** The brief says what is out of scope, and the helper stops to ask when the brief leaves a choice open. A helper's long foreground wait is refused.
+- **A shorter report that says what the numbers mean.** `/rightsize report` shows what you gained, what rightsize did and what to change. On a subscription it counts hours of Claude's work and 5-hour windows; on the API, dollars. One savings table covers today, 7 days, 30 days and lifetime.
+- **`/rightsize report details`.** The sections behind the numbers: starting point, fixed context, accuracy, time and whole tasks.
+- **Report tables line up in the desktop app.** Today, 7 days, 30 days and lifetime keep their columns there too.
+- **A welcome table after install.** The first session shows what rightsize does and the five features to learn first. Where the pane does not fit, `/rightsize welcome` shows the same table in the transcript.
+- **Tips on the band.** At a turn end with nothing else to say, one tip shows. **Stop tips** turns them off; `/rightsize tips` brings them back.
+- **One GitHub star ask.** rightsize asks once, after it has saved you something, if your own `gh` says the repo is not starred. **No thanks** ends it.
 
 Every change: [CHANGELOG.md](CHANGELOG.md). Every feature: [docs/FEATURES.md](docs/FEATURES.md).
 

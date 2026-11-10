@@ -1,6 +1,6 @@
 # Changelog
 
-## Next (unreleased)
+## 0.11.0 (2026-11-10)
 
 - **A welcome table after install.** The first session after install opens a pane with what rightsize does: the short version in three steps, then a table of what you get and how it works, with the five features to learn first. Esc closes it. Claude Code places a pane nobody asked for only in a terminal of 144 columns or more; narrower, and in the mobile app, one line says rightsize is on and names `/rightsize welcome`, which shows the same table in the transcript, drawn as a Markdown table in the terminal and the desktop app.
 - **Tips on the band.** At the end of a turn, when the band has nothing else to say, one tip shows on its own Tip row: `/rightsize report` once rightsize has saved you something, **Retry at original effort** once a turn was lowered, then marking a call 👍 or 👎 and trying watch only. **Next tip** shows the next one, **Stop tips** turns them off, × hides one, and `/rightsize tips` brings them back. No tip shows while a turn runs, next to a question or a cache offer, or with **Band** set to Never.

@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.10.2 (unreleased)
+## 0.10.2 (2026-11-09)
 
 - **Fable 5.2 prices.** Fable is now priced as Fable 5.2: $8 input, $40 output, $0.20 cache read, $10 and $16 for 5-minute and 1-hour cache writes (USD per million tokens). The automatic price check reads the Fable 5.2 row.
 - **Older models get their own prices.** rightsize priced each family at its newest model, and older versions cost more, so its costs and keep-warm and compact choices were wrong there. `prices.json` now has a `versions` list with a row for each older version the pricing page lists (for example `claude-opus-4-8` at $5 input and $25 output), and the price check keeps it current. A request is priced by its version's row wherever the version sits in the model ID, so Bedrock and Vertex IDs match too. On an older model an effort change writes the whole conversation again, so rightsize prices each switch that way. A main chat on an older version with no row pauses rightsize, as if you turned it off: the band says so once, the status line says why, and `/rightsize prices` fetches the current list. Switching to a priced or current model turns it back on. Helpers are not checked.

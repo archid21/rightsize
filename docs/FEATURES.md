@@ -2,7 +2,7 @@
 
 Every rightsize feature: how it works and what it gives you.
 
-Current release: 0.10.1
+Current release: 0.10.2
 
 **Since** is the release that added the feature. `Unreleased` means it is on `main` but not in a release yet. Every setting, with its options: [SETTINGS.md](SETTINGS.md). Every rule and number: [HOW-IT-DECIDES.md](HOW-IT-DECIDES.md).
 
@@ -41,15 +41,15 @@ Current release: 0.10.1
 
 | Feature | How it works | Value | Since |
 |---|---|---|---|
-| Keep warm | Before the prompt cache expires, one tiny request keeps it warm until your usual start time (at most 8 hours). It stops when you type, press Stop, a request fails, or keeping warm would cost more than coming back cold. On a 5-minute cache it also runs inside a long turn. | Coming back to a big session does not pay to rebuild the cache. | 0.8 (inside a turn: Unreleased) |
+| Keep warm | Before the prompt cache expires, one tiny request keeps it warm until your usual start time (at most 8 hours). It stops when you type, press Stop, a request fails, or keeping warm would cost more than coming back cold. On a 5-minute cache it also runs inside a long turn. | Coming back to a big session does not pay to rebuild the cache. | 0.8 (inside a turn: 0.10.2) |
 | Before the cache goes cold | **Before the cache goes cold** picks keep warm, save a whatsnext handoff, compact, ask or off. When keeping warm over your usual idle time would cost at least 3 times a compact, it compacts instead. | The cheaper of keeping warm and compacting is chosen for you. | 0.8 |
-| Cache life read, not assumed | The cache's life (5 minutes or 1 hour) is read from the session, not taken from `prices.json` alone. | Keep-warm timing and cold-return costs are right on API keys and subscriptions. | Unreleased |
+| Cache life read, not assumed | The cache's life (5 minutes or 1 hour) is read from the session, not taken from `prices.json` alone. | Keep-warm timing and cold-return costs are right on API keys and subscriptions. | 0.10.2 |
 | Idle warning | When a session sat idle past the cache's life, the band notes what the next prompt costs to rebuild the cache and what `/compact` first would have cost. The prompt is never held. | You see the cost of a cold return before it surprises you. | 0.5 |
 | Context-size warning | When the conversation first reaches 40, 50, 60, 70, 80 or 90% of the window, the band says so with a **Compact now** button. It shows while keep warm runs too. | You compact before a long conversation gets expensive. | 0.9 |
 | Compact before your 5-hour limit | Near the 5-hour limit, the band advises a compact while the cache is warm and says what it saves after the reset. | Less usage spent rebuilding the cache after a window reset. | 0.9 |
 | Steps aside for idle compact | When Claude Code will compact an idle session on its own, rightsize does not keep that session warm. | No paying to keep warm a cache that is about to be thrown away. | 0.10 |
 | Handoff before a compact | With whatsnext installed, rightsize asks it to `wrap up` before a compact and uses its compact text. It compacts only once no wrap-up is missing. | A compact keeps the details that matter. | 0.9 |
-| Model version prices | `prices.json` has a row for each older model version, kept current by the price check. A main chat on an older version is priced by its row; a version with no row pauses rightsize. | Costs and keep-warm choices stay right on Opus 4.8 and other older models. | Unreleased |
+| Model version prices | `prices.json` has a row for each older model version, kept current by the price check. A main chat on an older version is priced by its row; a version with no row pauses rightsize. | Costs and keep-warm choices stay right on Opus 4.8 and other older models. | 0.10.2 |
 | Price check | Monthly, rightsize compares `prices.json` with Anthropic's pricing page and updates it. `/rightsize prices` checks now. | Costs stay current without a new release. | 0.4 |
 
 ## Seeing and controlling it

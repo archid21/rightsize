@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import { DEFAULT_PRICES, idleCost } from './cost'
-import { COMPACT_GAP_MIN, IDLE_COMPACT_DEFAULT, IDLE_COMPACT_FLOOR, compactBoundary, compactedText, idleCompactState, idleCompactThreshold, COMPACT_VALUE, IDLE_CAP, addGap, compactWorth, idleEstimate, ALWAYS_AFTER, BACK_OFF_AFTER, LEARN_OVER, OFFER_AFTER_MS, DEFAULT_START, ROW_OF, breakEvenMs, coldIn, coldTickMs, COLD_BAR_CELLS, breakEvenPings, clockText, coldPlan, planLength, alwaysText, ignoredLately, keepWarmChoices, leadMs, learnedChoice, netSaving, nextStart, offerAt, offerText, pingCost, pingEvery, pingsFor, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText, WARM_PROOF, cacheHeld } from './warm'
+import { COMPACT_GAP_MIN, IDLE_COMPACT_DEFAULT, IDLE_COMPACT_FLOOR, compactBoundary, compactedText, idleCompactState, idleCompactThreshold, COMPACT_VALUE, IDLE_CAP, addGap, compactWorth, idleEstimate, ALWAYS_AFTER, BACK_OFF_AFTER, LEARN_OVER, OFFER_AFTER_MS, DEFAULT_START, ROW_OF, breakEvenMs, coldBar, offerCountdown, COLD_BAR_CELLS, breakEvenPings, clockText, coldPlan, planLength, alwaysText, ignoredLately, keepWarmChoices, leadMs, learnedChoice, netSaving, nextStart, offerAt, offerText, pingCost, pingEvery, pingsFor, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText, WARM_PROOF, cacheHeld } from './warm'
 
 const MIN = 60_000
 const HOUR = 60 * MIN
@@ -134,15 +134,15 @@ test('the offer on a 5-minute cache: only 30 min and 1 h, and only when they cos
 test('the offer text counts the minutes left and names the clock time the cache goes cold, with the cold cost; a 5-minute cache adds the time keeping warm stops paying', async () => {
   const ended = local(15, 13, 55)
   const one = { ttl: HOUR, endedAt: ended, cost: 'about $0.63', breakEven: 39 * 57 * MIN }
-  expect(offerText({ ...one, now: local(15, 14, 13) }), '42 min left at 14:13').toBe('Goes cold in 42 min (14:55) · coming back after costs about $0.63')
-  expect(offerText({ ...one, now: local(15, 14, 54) + 30_000 }), 'under a minute left: 1 min, rounded up').toBe('Goes cold in 1 min (14:55) · coming back after costs about $0.63')
-  expect(offerText({ ...one, now: local(15, 14, 55) }), 'never 0 min while the cache is warm').toBe('Goes cold in 1 min (14:55) · coming back after costs about $0.63')
-  expect(offerText({ ...one, now: local(15, 14, 13), cost: '~2% ($1.10)' })).toBe('Goes cold in 42 min (14:55) · coming back after costs ~2% ($1.10)')
+  expect(offerText({ ...one, now: local(15, 14, 13) }), '42 min left at 14:13').toBe('Goes cold in 42 min ▰▰▰▰▰▰▰▱▱▱ (14:55) · coming back after costs about $0.63')
+  expect(offerText({ ...one, now: local(15, 14, 54) + 30_000 }), 'under a minute left: 1 min, rounded up').toBe('Goes cold in 1 min ▰▱▱▱▱▱▱▱▱▱ (14:55) · coming back after costs about $0.63')
+  expect(offerText({ ...one, now: local(15, 14, 55) }), 'never 0 min while the cache is warm').toBe('Goes cold in 1 min ▰▱▱▱▱▱▱▱▱▱ (14:55) · coming back after costs about $0.63')
+  expect(offerText({ ...one, now: local(15, 14, 13), cost: '~2% ($1.10)' })).toBe('Goes cold in 42 min ▰▰▰▰▰▰▰▱▱▱ (14:55) · coming back after costs ~2% ($1.10)')
   expect(offerText({ ...one, ttl: 5 * MIN, endedAt: local(15, 13), breakEven: 96 * MIN, now: local(15, 13) })).toBe(
-    'Goes cold in 5 min (13:05) · coming back after costs about $0.63. Keeping warm past 14:36 costs more.',
+    'Goes cold in 5 min ▰▰▰▰▰▰▰▰▰▰ (13:05) · coming back after costs about $0.63. Keeping warm past 14:36 costs more.',
   )
   expect(offerText({ ...one, ttl: 5 * MIN, endedAt: local(15, 13), breakEven: 96 * MIN, now: local(15, 13) + 30_000 }), 'the short-cache tail stays; 4 min 30 s left is 5 min').toBe(
-    'Goes cold in 5 min (13:05) · coming back after costs about $0.63. Keeping warm past 14:36 costs more.',
+    'Goes cold in 5 min ▰▰▰▰▰▰▰▰▰▱ (13:05) · coming back after costs about $0.63. Keeping warm past 14:36 costs more.',
   )
 })
 
@@ -168,56 +168,45 @@ test('the offer shows 5 minutes after the turn on a cache of 1 hour or more, and
 
 test('the keep-warm line says until when and what it used so far, with no ping count', async () => {
   const until = local(15, 22, 5)
-  expect(warmingText({ until, used: '$0.00' })).toBe('Warm until 22:05 · $0.00 so far')
-  expect(warmingText({ until, used: '~0% used' })).toBe('Warm until 22:05 · ~0% used so far')
-  expect(warmingText({ until, used: '~0.1% used' })).toBe('Warm until 22:05 · ~0.1% used so far')
-  expect(warmingText({ until, used: '~$0.04' })).toBe('Warm until 22:05 · ~$0.04 so far')
-  expect(warmingText({ until, used: '$0.04' })).toBe('Warm until 22:05 · $0.04 so far')
+  expect(warmingText({ until, used: '$0.00' })).toBe('Warm until 22:05 · $0.00')
+  expect(warmingText({ until, used: '~0% used' })).toBe('Warm until 22:05 · ~0% used')
+  expect(warmingText({ until, used: '~0.1% used' })).toBe('Warm until 22:05 · ~0.1% used')
+  expect(warmingText({ until, used: '~$0.04' })).toBe('Warm until 22:05 · ~$0.04')
+  expect(warmingText({ until, used: '$0.04' })).toBe('Warm until 22:05 · $0.04')
   expect(warmEndText('Stopped keeping warm', '~0.1% used')).toBe('Stopped keeping warm · ~0.1% used.')
   expect(warmEndText('Kept the cache warm until 22:05', '$0.04')).toBe('Kept the cache warm until 22:05 · $0.04.')
   expect(warmEndText('Stopped keeping warm', undefined)).toBe('Stopped keeping warm · nothing used.')
 })
 
-// P-5: the keep-warm row's countdown, read from the cache life the session reports (ADR 0028).
-test('the countdown matches the cache life: a 1-hour cache, from full to cold, in three colors', async () => {
-  const bar = (n: number) => '▰'.repeat(n) + '▱'.repeat(COLD_BAR_CELLS - n)
-  const warmAt = local(15, 21, 0)
-  const coldAt = warmAt + HOUR
-  expect(coldIn(coldAt, warmAt, HOUR), 'just written: the whole life, full and green').toEqual({ text: `cold in 60 min ${bar(10)}`, tone: 'success' })
-  expect(coldIn(coldAt, warmAt + 18 * MIN, HOUR)).toEqual({ text: `cold in 42 min ${bar(7)}`, tone: 'success' })
-  expect(coldIn(coldAt, warmAt + 30 * MIN, HOUR), 'half the life left is yellow').toEqual({ text: `cold in 30 min ${bar(5)}`, tone: 'warning' })
-  expect(coldIn(coldAt, warmAt + 40 * MIN, HOUR)).toEqual({ text: `cold in 20 min ${bar(3)}`, tone: 'warning' })
-  expect(coldIn(coldAt, warmAt + 48 * MIN, HOUR), 'a fifth left is still yellow').toEqual({ text: `cold in 12 min ${bar(2)}`, tone: 'warning' })
-  expect(coldIn(coldAt, warmAt + 51 * MIN, HOUR), 'under a fifth is red').toEqual({ text: `cold in 9 min ${bar(2)}`, tone: 'error' })
-  expect(coldIn(coldAt, warmAt + 59 * MIN + 20_000, HOUR), 'the last minute counts seconds and keeps one cell').toEqual({ text: `cold in 40 s ${bar(1)}`, tone: 'error' })
-  expect(coldIn(coldAt, coldAt, HOUR)).toEqual({ text: `cold now ${bar(0)}`, tone: 'error' })
-  expect(coldIn(coldAt, coldAt + MIN, HOUR), 'past its life it stays cold').toEqual({ text: `cold now ${bar(0)}`, tone: 'error' })
-  expect(coldIn(coldAt, warmAt + 17 * MIN + 30_000, HOUR).text, 'minutes round up').toBe(`cold in 43 min ${bar(7)}`)
+// P-5: the offer's countdown bar, from the cache life the session reports (ADR 0028). Keep warm shows none.
+const bar = (n: number) => '▰'.repeat(n) + '▱'.repeat(COLD_BAR_CELLS - n)
+
+test('the countdown bar matches the cache life: a 1-hour cache, from full to cold, in three colors', async () => {
+  const ended = local(15, 21, 0)
+  const at = (m: number, s = 0) => offerCountdown({ ttl: HOUR, endedAt: ended, now: ended + m * MIN + s * 1000 })
+  expect(at(0), 'just written: the whole life, full and green').toEqual({ text: `60 min ${bar(10)}`, color: 'success' })
+  expect(at(5), 'when the offer shows').toEqual({ text: `55 min ${bar(9)}`, color: 'success' })
+  expect(at(18)).toEqual({ text: `42 min ${bar(7)}`, color: 'success' })
+  expect(at(30), 'half the life left is yellow').toEqual({ text: `30 min ${bar(5)}`, color: 'warning' })
+  expect(at(48), 'a fifth left is still yellow').toEqual({ text: `12 min ${bar(2)}`, color: 'warning' })
+  expect(at(51), 'under a fifth is red').toEqual({ text: `9 min ${bar(2)}`, color: 'error' })
+  expect(at(59, 20), 'the last minute keeps 1 min and one cell').toEqual({ text: `1 min ${bar(1)}`, color: 'error' })
+  expect(coldBar(ended + HOUR, ended + HOUR, HOUR), 'cold: an empty bar').toEqual({ bar: bar(0), tone: 'error' })
 })
 
-test('the countdown matches the cache life: a 5-minute cache', async () => {
-  const bar = (n: number) => '▰'.repeat(n) + '▱'.repeat(COLD_BAR_CELLS - n)
-  const warmAt = local(15, 21, 0)
-  const coldAt = warmAt + 5 * MIN
-  expect(coldIn(coldAt, warmAt, 5 * MIN)).toEqual({ text: `cold in 5 min ${bar(10)}`, tone: 'success' })
-  expect(coldIn(coldAt, warmAt + 2 * MIN, 5 * MIN), '3 of 5 minutes left is green').toEqual({ text: `cold in 3 min ${bar(6)}`, tone: 'success' })
-  expect(coldIn(coldAt, warmAt + 3 * MIN, 5 * MIN)).toEqual({ text: `cold in 2 min ${bar(4)}`, tone: 'warning' })
-  expect(coldIn(coldAt, warmAt + 4 * MIN, 5 * MIN), 'a fifth left (1 minute) is yellow').toEqual({ text: `cold in 1 min ${bar(2)}`, tone: 'warning' })
-  expect(coldIn(coldAt, warmAt + 4 * MIN + 30_000, 5 * MIN)).toEqual({ text: `cold in 30 s ${bar(1)}`, tone: 'error' })
-  expect(coldIn(coldAt, coldAt, 5 * MIN).text).toBe(`cold now ${bar(0)}`)
+test('the countdown bar matches the cache life: a 5-minute cache', async () => {
+  const ended = local(15, 21, 0)
+  const at = (m: number, s = 0) => offerCountdown({ ttl: 5 * MIN, endedAt: ended, now: ended + m * MIN + s * 1000 })
+  expect(at(0)).toEqual({ text: `5 min ${bar(10)}`, color: 'success' })
+  expect(at(2), '3 of 5 minutes left is green').toEqual({ text: `3 min ${bar(6)}`, color: 'success' })
+  expect(at(3)).toEqual({ text: `2 min ${bar(4)}`, color: 'warning' })
+  expect(at(4), 'a fifth left is yellow').toEqual({ text: `1 min ${bar(2)}`, color: 'warning' })
+  expect(at(4, 30)).toEqual({ text: `1 min ${bar(1)}`, color: 'error' })
 })
 
-test('the countdown redraws each minute, and every 10 seconds in its last 2 minutes', async () => {
-  expect(coldTickMs(42 * MIN)).toBe(MIN)
-  expect(coldTickMs(2 * MIN + 1)).toBe(MIN)
-  expect(coldTickMs(2 * MIN)).toBe(10_000)
-  expect(coldTickMs(30_000)).toBe(10_000)
-})
-
-test('the keep-warm line puts the countdown between the end time and the cost', async () => {
-  const until = local(15, 22, 5)
-  expect(warmingText({ until, used: '~0.1% used', cold: 'cold in 42 min ▰▰▰▰▰▰▰▱▱▱' })).toBe('Warm until 22:05 · cold in 42 min ▰▰▰▰▰▰▰▱▱▱ · ~0.1% used so far')
-  expect(warmingText({ until, used: '$0.00' }), 'no countdown: the line as before').toBe('Warm until 22:05 · $0.00 so far')
+test('the offer line carries the bar after its minutes', async () => {
+  const ended = local(15, 14, 0)
+  expect(offerText({ ttl: HOUR, endedAt: ended, cost: 'about $0.63', breakEven: 3 * HOUR, now: ended + 18 * MIN })).toBe(`Goes cold in 42 min ${bar(7)} (15:00) · coming back after costs about $0.63`)
 })
 
 test('each row value is a plan: a handoff without whatsnext is a compaction, and an unknown value asks', async () => {

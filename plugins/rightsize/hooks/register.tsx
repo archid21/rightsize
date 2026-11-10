@@ -119,7 +119,7 @@ import { COMPACT_BASE, NO_FRESH_HANDOFF, WRAP_HEADROOM, WRAP_TURNS, isWhatsnext 
 import { ME, REPOS, SHARED_PATH, askText, blockedByClaim, parseShared, readStarCheck, reposToAsk, type Shared } from './star'
 import { STORE_KEY as TIPS_KEY, type Tip, type TipsState, nextTip, parseState, tipById, withSeen } from './tips'
 import { WELCOMED_KEY, welcomeMarkdown, welcomeText } from './welcome'
-import { COMPACT_GAP_MIN, PING_PROMPT, ROW_OF, WRAP_UP, addGap, planLength, alwaysText, compactBoundary, compactWorth, compactedText, idleCompactState, idleEstimate, breakEvenMs, cacheHeld, clockText, coldPlan, ignoredLately, keepWarmChoices, leadMs, learnedChoice, COLD_MIN, breakEvenPings, coldIn, coldTickMs, netSaving, offerAt, offerText, pingCost, pingEvery, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText } from './warm'
+import { COMPACT_GAP_MIN, PING_PROMPT, ROW_OF, WRAP_UP, addGap, planLength, alwaysText, compactBoundary, compactWorth, compactedText, idleCompactState, idleEstimate, breakEvenMs, cacheHeld, clockText, coldPlan, ignoredLately, keepWarmChoices, leadMs, learnedChoice, COLD_MIN, breakEvenPings, netSaving, offerAt, offerCountdown, offerText, pingCost, pingEvery, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText } from './warm'
 
 // Before a prompt is sent, a quick Haiku call rates the effort, the model and
 // the work needs on each model, and the cost model prices each route that fits. The first time
@@ -2986,13 +2986,10 @@ type ColdAsk = { kind: 'always'; choice: string } | { kind: 'stop' }
 let coldTurn: ColdTurn | null = null
 /** An offer is on the band and nobody has answered it: its outcome goes in the run log when it is. */
 let offerOpen = false
-/** `warmAt`: when the cache was last written (the turn's end, then each answered request); it goes cold one cache life later. */
-type Warming = { until: number; pings: number; spent: number; rates: Awaited<ReturnType<typeof windowPerDollar>>; warmAt: number; note?: CacheNote }
+type Warming = { until: number; pings: number; spent: number; rates: Awaited<ReturnType<typeof windowPerDollar>>; note?: CacheNote }
 /** Advice said on the keep-warm row while it runs (the usage-limit advice or the context warning): its text goes first, its button beside Stop. */
 type CacheNote = { text: string; button: { id: string; label: string }; more: readonly { id: string; label: string }[] }
 let warming: Warming | null = null
-/** Redraws the keep-warm row's countdown while the run lasts (UI only: no request). */
-let warmTick: Timer | null = null
 /** A handoff or a compaction ran since the person's last prompt: the turn it caused does not start another round. */
 let coldDone = false
 /** The prompt rightsize itself is submitting: its own prompt.submit hook lets it through unrated. */
@@ -3012,17 +3009,10 @@ function stopColdTimer() {
   coldTimer = null
 }
 
-/** Cancels the keep-warm row's countdown redraw. */
-function stopWarmTick() {
-  warmTick?.cancel()
-  warmTick = null
-}
-
 /** Cancels what waits or pings: the pending timer, and a callback already on its way (`coldGen`). */
 function cancelCold($: EngineInterface, why: string) {
   coldGen += 1
   stopColdTimer()
-  stopWarmTick()
   const w = warming
   warming = null
   if (w) void log($, `keep warm stopped (${why}): ${pingsText(w.pings)}, ${money(w.spent)}`)
@@ -3226,7 +3216,7 @@ async function showOffer($: EngineInterface, turn: ColdTurn) {
   const yesNo: ColdButton[] = [{ id: 'ask-yes', label: 'Yes' }, { id: 'ask-no', label: 'No' }]
   if (turn.ask?.kind === 'always') await showCold($, alwaysText(turn.ask.choice), [...yesNo, o.first], true, o.more)
   else if (turn.ask?.kind === 'stop') await showCold($, 'Stop offering to keep the cache warm?', yesNo, true, [o.first, ...o.more])
-  else await showCold($, o.text, [o.first], true, o.more)
+  else await showCold($, o.text, [o.first], true, o.more, undefined, offerCountdown({ ...o.args, now: await $.clock.now() }))
 }
 
 /** The offers a question was already asked about, in the store: a choice's id, or `stop`. Each is asked once, whatever the answer. */
@@ -3255,23 +3245,12 @@ async function closeOffer($: EngineInterface, picked: string) {
 const usedText = (w: Warming) => (w.pings === 0 && w.spent === 0 ? undefined : usedTag(w.spent, billing === 'subscription', w.rates))
 
 /** The keep-warm status row: one Stop button; "Don't keep warm again" (the row set to off) waits in the ⋯ menu. Before the first request it shows the zero text in the band's unit. */
-async function showWarming($: EngineInterface, w: Warming) {
-  const now = await $.clock.now()
-  const left = w.warmAt + cacheTtl - now
-  const cold = coldIn(w.warmAt + cacheTtl, now, cacheTtl)
-  const text = warmingText({ until: w.until, used: usedText(w) ?? (billing === 'subscription' ? '~0% used' : '$0.00'), cold: cold.text })
-  const tone = { text: cold.text, color: cold.tone }
+function showWarming($: EngineInterface, w: Warming) {
+  const text = warmingText({ until: w.until, used: usedText(w) ?? (billing === 'subscription' ? '~0% used' : '$0.00') })
   const stop = { id: 'stop', label: 'Stop keeping warm' }
   const off = { id: 'off', label: "Don't keep warm again" }
   const n = w.note
-  await (n ? showCold($, `${n.text} ${text}`, [n.button, stop], true, [...n.more, off], undefined, tone) : showCold($, text, [stop], true, [off], undefined, tone))
-  // The countdown moves on its own: redraw it while this run lasts and the cache is still warm (P-5).
-  stopWarmTick()
-  if (warming === w && left > 0)
-    warmTick = $.clock.after(coldTickMs(left), () => {
-      warmTick = null
-      if (warming === w) void showWarming($, w).catch(err => log($, `keep-warm countdown failed: ${err instanceof Error ? err.message : String(err)}`))
-    })
+  return n ? showCold($, `${n.text} ${text}`, [n.button, stop], true, [...n.more, off]) : showCold($, text, [stop], true, [off])
 }
 
 /**
@@ -3305,7 +3284,6 @@ async function endWarm($: EngineInterface, w: Warming, what: string) {
   if (warming === w) {
     warming = null
     stopColdTimer()
-    stopWarmTick()
   }
   await showCold($, warmEndText(what, usedText(w)))
 }
@@ -3357,7 +3335,7 @@ async function startWarm($: EngineInterface, c: ColdTurn, ms: number, how: strin
     return
   }
   const gen = ++coldGen
-  const w: Warming = { until: plan.endsAt, pings: 0, spent: 0, rates: billing === 'subscription' ? await windowPerDollar($) : undefined, warmAt: Math.max(c.endedAt, lastWarmAt) }
+  const w: Warming = { until: plan.endsAt, pings: 0, spent: 0, rates: billing === 'subscription' ? await windowPerDollar($) : undefined }
   warming = w
   await log($, `keeping warm until ${clockText(plan.endsAt)} (${how}): ${plan.pings} request${plan.pings === 1 ? '' : 's'} planned, about ${money(plan.cost)}, one every ${Math.round(pingEvery(cacheTtl) / 60_000)} min`)
   await showWarming($, w)
@@ -3374,10 +3352,7 @@ async function sendPing($: EngineInterface, gen: number, c: ColdTurn, w: Warming
   try {
     if (mainBusy) {
       await log($, 'keep warm skipped: a turn is running')
-      if (warming === w) {
-        warming = null
-        stopWarmTick()
-      }
+      if (warming === w) warming = null
       return
     }
     const r = await $.model.fork({ prompt: PING_PROMPT }).catch((err: unknown) => ({ isAnswered: false as const, reason: `error: ${err instanceof Error ? err.message : String(err)}`, usage: undefined }))
@@ -3387,10 +3362,7 @@ async function sendPing($: EngineInterface, gen: number, c: ColdTurn, w: Warming
     w.pings += r.isAnswered ? 1 : 0
     w.spent += cost
     if (r.isAnswered || cost > 0) await logWarm($, c, cost)
-    if (r.isAnswered) {
-      lastWarmAt = await $.clock.now()
-      w.warmAt = lastWarmAt
-    }
+    if (r.isAnswered) lastWarmAt = await $.clock.now()
     if (gen !== coldGen) return
     if (!r.isAnswered) {
       const why = 'status' in r ? `${r.reason}${r.status === null ? '' : ` ${r.status}`}, ${r.error}` : r.reason
@@ -3413,10 +3385,7 @@ async function sendPing($: EngineInterface, gen: number, c: ColdTurn, w: Warming
     await endWarm($, w, `Kept the cache warm until ${clockText(w.until)}`)
   } catch (err) {
     await log($, `keep warm failed: ${err instanceof Error ? err.message : String(err)}`)
-    if (gen === coldGen && warming === w) {
-      warming = null
-      stopWarmTick()
-    }
+    if (gen === coldGen && warming === w) warming = null
   }
 }
 
@@ -5558,7 +5527,7 @@ export const register: Register = (on, options) => {
     const single = rows.length === 1
     // The labels line up in one column, as wide as the longest.
     const width = Math.max(...rows.map(r => r.label.length))
-    // The toned part (the keep-warm countdown) in its theme color, the words around it plain; text without it stays one plain Text.
+    // The toned part (the offer's countdown) in its theme color, the words around it plain; text without it stays one plain Text.
     const toned = (text: string, tone: Row['tone']) => {
       const at = tone ? text.indexOf(tone.text) : -1
       if (!tone || at < 0) return <Text>{text}</Text>

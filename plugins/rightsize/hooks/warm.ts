@@ -280,9 +280,19 @@ export function keepWarmChoices(o: { ttl: number; endedAt: number; cold: number;
  * writes it ("about $1.10", "~2%"). On a 5-minute cache it adds where keeping warm stops paying, also as a clock time.
  */
 export function offerText(o: { ttl: number; endedAt: number; cost: string; breakEven: number; now: number }) {
-  const left = Math.max(1, Math.ceil((o.endedAt + o.ttl - o.now) / MIN))
-  const head = `Goes cold in ${left} min (${clockText(o.endedAt + o.ttl)}) · coming back after costs ${o.cost}`
+  const head = `Goes cold in ${offerCountdown(o).text} (${clockText(o.endedAt + o.ttl)}) · coming back after costs ${o.cost}`
   return o.ttl >= HOUR ? head : `${head}. Keeping warm past ${clockText(o.endedAt + o.breakEven)} costs more.`
+}
+
+/**
+ * The offer's countdown, the part of its line the band colors (P-5): "42 min ▰▰▰▰▰▰▰▱▱▱". Minutes round up and never
+ * read 0 while the cache is warm; the bar is the share of the cache life left (coldBar).
+ */
+export function offerCountdown(o: { ttl: number; endedAt: number; now: number }): { text: string; color: ColdTone } {
+  const left = Math.max(1, Math.ceil((o.endedAt + o.ttl - o.now) / MIN))
+  // The minutes never read 0, so the bar keeps one cell with them.
+  const b = coldBar(o.endedAt + o.ttl, Math.min(o.now, o.endedAt + o.ttl - 1), o.ttl)
+  return { text: `${left} min ${b.bar}`, color: b.tone }
 }
 
 /** How long after a turn ends the offer shows on a cache of 1 hour or more: the person may be about to send a prompt, and the offer would only be in the way. */
@@ -291,34 +301,29 @@ export const OFFER_AFTER_MS = 5 * MIN
 /** When the offer shows, for a turn that ended at `endedAt`: at once on a cache under 1 hour, `OFFER_AFTER_MS` later on a longer one. */
 export const offerAt = (endedAt: number, ttl: number) => (ttl >= HOUR ? endedAt + OFFER_AFTER_MS : endedAt)
 
-/** The theme colors the countdown takes: green with over half the cache life left, yellow down to a fifth, red under it. */
+/** The theme colors the offer's countdown takes: green with over half the cache life left, yellow down to a fifth, red under it. */
 export type ColdTone = 'success' | 'warning' | 'error'
 /** Cells in the countdown bar. */
 export const COLD_BAR_CELLS = 10
-/** How often the keep-warm row redraws its countdown: each minute, and every 10 seconds in the last 2 minutes. */
-export const coldTickMs = (left: number) => (left > 2 * 60_000 ? 60_000 : 10_000)
 
 /**
- * The time left before the cache goes cold, at `now`, for a cache warm until `coldAt` with a life of `ttl`:
- * "cold in 42 min ▰▰▰▰▰▰▰▱▱▱", "cold in 40 s ▰▱▱▱▱▱▱▱▱▱", "cold now ▱▱▱▱▱▱▱▱▱▱". Minutes round up, so a full cache reads
- * its whole life; cells round to the nearest, and any time left shows at least one. `tone` is the color the band draws it in.
+ * The share of the cache life left at `now`, for a cache warm until `coldAt` with a life of `ttl`, as a 10-cell bar:
+ * "▰▰▰▰▰▰▰▱▱▱" at 42 of 60 minutes. Cells round to the nearest, and any time left shows at least one. `tone` is its color.
  */
-export function coldIn(coldAt: number, now: number, ttl: number): { text: string; tone: ColdTone } {
+export function coldBar(coldAt: number, now: number, ttl: number): { bar: string; tone: ColdTone } {
   const left = Math.max(0, coldAt - now)
   const share = ttl > 0 ? Math.min(1, left / ttl) : 0
   const cells = left > 0 ? Math.max(1, Math.round(share * COLD_BAR_CELLS)) : 0
-  const bar = '▰'.repeat(cells) + '▱'.repeat(COLD_BAR_CELLS - cells)
-  const when = left <= 0 ? 'cold now' : left < 60_000 ? `cold in ${Math.ceil(left / 1000)} s` : `cold in ${Math.ceil(left / 60_000 - 1e-9)} min`
-  return { text: `${when} ${bar}`, tone: share > 0.5 ? 'success' : share >= 0.2 ? 'warning' : 'error' }
+  return { bar: '▰'.repeat(cells) + '▱'.repeat(COLD_BAR_CELLS - cells), tone: share > 0.5 ? 'success' : share >= 0.2 ? 'warning' : 'error' }
 }
 
 /**
- * The band while keeping warm: "Warm until 14:05 · cold in 42 min ▰▰▰▰▰▰▰▱▱▱ · ~0.1% used so far" (or "· ~$0.04 so far",
- * "· $0.04 so far", "· $0.00 so far"). `used` is what the requests cost, as the caller writes it ("~0.1% used", "~$0.04",
- * "$0.04", or the zero text before the first request). `cold` is the countdown (coldIn), left out when absent.
+ * The band while keeping warm: "Warm until 14:05 · ~0.1% used", "· ~$0.04", "· $0.04", "· $0.00". `used` is what the
+ * requests cost, as the caller writes it ("~0.1% used", "~$0.04", "$0.04", or the zero text before the first request).
+ * No countdown: keep warm refreshes the cache before it goes cold, so the time that matters is when it stops (P-5).
  */
-export function warmingText(o: { until: number; used: string; cold?: string }) {
-  return `Warm until ${clockText(o.until)} · ${o.cold ? `${o.cold} · ` : ''}${o.used} so far`
+export function warmingText(o: { until: number; used: string }) {
+  return `Warm until ${clockText(o.until)} · ${o.used}`
 }
 
 /** How a keep-warm run ends on the band: "Stopped keeping warm · ~0.1% used." `what` is the end's words, without a full stop. */

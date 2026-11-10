@@ -607,7 +607,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.submit(LOOKUP)
     await coldTurn(d, 't1')
     expect(h.ratings, 'nothing was rated').toBe(0)
-    expect(await bandText($, surface)).toBe('Warm until 2:00 · cold in 60 min ▰▰▰▰▰▰▰▰▰▰ · $0.00 so far')
+    expect(await bandText($, surface)).toBe('Warm until 2:00 · $0.00')
     await h.advance(57 * MIN)
     expect(h.forks.length, 'the first keep-warm request').toBe(1)
     expect(logOf(h)).toContain('keeping warm until 2:00')

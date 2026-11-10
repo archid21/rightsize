@@ -2,7 +2,8 @@
 
 ## Next (unreleased)
 
-- **A countdown on the keep-warm row.** While keep warm runs, the row shows the time left before the cache goes cold and a 10-cell bar: `Warm until 8:30 · cold in 42 min ▰▰▰▰▰▰▰▱▱▱ · ~0.1% used so far`. It counts from the cache life read from the session (5 minutes or 1 hour) and redraws each minute, every 10 seconds in the last 2 minutes, with no request. The countdown is green with over half the life left, yellow down to a fifth, and red under it; the words read the same without color. Each keep-warm request fills it again.
+- **The cache offer counts down with a colored bar.** The offer before the cache goes cold now shows how much of the cache life is left: `Goes cold in 42 min ▰▰▰▰▰▰▰▱▱▱ (14:55) · coming back after costs about $0.63`. The minutes and bar are green with over half the life left, yellow down to a fifth, and red under it; the words read the same without color.
+- **A shorter keep-warm row.** It drops "so far": `Warm until 8:30 · ~0.1% used` (`$0.04` on the API). It shows no countdown: keep warm refreshes the cache before it goes cold, so the time that matters is when keep warm stops.
 
 ## 0.11.0 (2026-11-10)
 

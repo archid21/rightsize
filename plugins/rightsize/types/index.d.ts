@@ -59,7 +59,7 @@ export type RightsizeBand = {
   coldMore?: { id: string; label: string }[]
   /** A link the cache row draws after its buttons, for a note that points to a page (`href` opens it). */
   coldLink?: { label: string; href: string }
-  /** A part of `coldText` drawn in a theme color: the keep-warm countdown. Found by its text, so words added around it keep it; absent there, nothing is colored. */
+  /** A part of `coldText` drawn in a theme color: the offer's countdown. Found by its text, so words added around it keep it; absent there, nothing is colored. */
   coldTone?: { text: string; color: 'success' | 'warning' | 'error' }
 }
 

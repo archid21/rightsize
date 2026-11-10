@@ -116,6 +116,9 @@ import { type Change, type HelperLine, type Lifetime, type RunLine, type SwitchL
 import { LIMIT_BUTTON, LIMIT_COMPACT, LIMIT_HIDE, LIMIT_MORE, LIMIT_WHY, LIMIT_WHY_ID, isLimitId, limitDue, limitText } from './limit'
 import { SIZE_BUTTON, SIZE_COMPACT, SIZE_HIDE, SIZE_MORE, SIZE_WHY, SIZE_WHY_ID, isSizeId, sizeStep, sizeText } from './size'
 import { COMPACT_BASE, NO_FRESH_HANDOFF, WRAP_HEADROOM, WRAP_TURNS, isWhatsnext } from './whatsnext'
+import { ME, REPOS, SHARED_PATH, askText, blockedByClaim, parseShared, readStarCheck, reposToAsk, type Shared } from './star'
+import { STORE_KEY as TIPS_KEY, type Tip, type TipsState, nextTip, parseState, tipById, withSeen } from './tips'
+import { WELCOMED_KEY, welcomeMarkdown, welcomeText } from './welcome'
 import { COMPACT_GAP_MIN, PING_PROMPT, ROW_OF, WRAP_UP, addGap, planLength, alwaysText, compactBoundary, compactWorth, compactedText, idleCompactState, idleEstimate, breakEvenMs, cacheHeld, clockText, coldPlan, ignoredLately, keepWarmChoices, leadMs, learnedChoice, COLD_MIN, breakEvenPings, netSaving, offerAt, offerText, pingCost, pingEvery, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText } from './warm'
 
 // Before a prompt is sent, a quick Haiku call rates the effort, the model and
@@ -484,6 +487,8 @@ let without: Tier[] = []
 let askFirst = false
 /** A Profile row a release before ADR 0021 stored as Quality: Ask before changing on, while that row is not yours. */
 let legacyQuality = false
+/** /rightsize report's Markdown form, by the plain text its row carries: the last 20 reports, for the row's render hook. */
+const reportMarkdown = new Map<string, string>()
 /** The miss rate at which hand-downs and lowering pause; null: never. */
 let missBlock: number | null = MISS_BLOCK
 /** The tasks a kind of work must have logged on a model before a cheaper route to it is used; 0: no minimum. */
@@ -3875,6 +3880,8 @@ const COMMANDS: readonly (readonly [string, string])[] = [
   ['clear', 'drop the session switch'],
   ['resume', 'start changing the model and effort again, after you stepped up and rightsize paused'],
   ['prices', 'check prices now'],
+  ['welcome', 'what rightsize does, as a table'],
+  ['tips', 'show the tips again'],
   ['share', 'message you can paste to tell others'],
   ['reset', 'settings back to defaults, or restart cost measurement (reset <setting> resets one)'],
   ['help', 'this list'],
@@ -4078,6 +4085,249 @@ async function stopStartTips($: EngineInterface) {
   await putConfig($, 'startTips', 'off')
   await setBand($, null)
   $.ui.toast('Rightsize: no more starting-model suggestions. Start suggestions in /config turns them back on.')
+}
+
+// ---- Welcome, tips and the star ask (ADR 0039) ------------------------------------
+//
+// The welcome table shows once per install. One tip at a time shows on the band's own Tip row, at a turn end, only when
+// the band has nothing else to say (no question, no cache offer, no move rightsize made). The star ask is the last tip:
+// it shares one ask with whatsnext through ~/.config/archid21/stars.json (./star.ts, a copy of whatsnext's).
+
+/** The tip the band shows: its id, and for the star tip the repos it names. */
+const TIP = { plugin: 'rightsize', key: 'tip' } as const
+type ShownTip = { id: string; repos?: string[] }
+
+/** `$.store` key: `{ earned: true }` once rightsize has saved something, the milestone the star ask waits for. */
+const STAR_KEY = 'star'
+/** The star ask's checks run at most once per session. */
+let starTried = false
+/** A turn was lowered automatically this session: the retry tip applies. */
+let loweredThisSession = false
+
+function tipSession() {
+  starTried = false
+  loweredThisSession = false
+}
+
+const WELCOME_ID = 'rightsize-welcome'
+/** The one transcript line where no pane can show the welcome: a transcript line is drawn as one paragraph, so no table. */
+const WELCOME_LINE = 'rightsize is on: each prompt runs on the cheapest model and effort that does it well. See what it does: /rightsize welcome'
+
+// Once per install: the welcome in a pane (Markdown, so the table draws on every surface); Esc closes it. With no pane to
+// show (the mobile app, or a surface that does not place it), one transcript line that names /rightsize welcome.
+// A pane opened while the session starts is not placed (Claude Code 2.1.322), so the welcome waits WELCOME_WAIT_MS.
+const WELCOME_WAIT_MS = 1500
+
+async function showWelcome($: EngineInterface) {
+  if ((await $.store.get(WELCOMED_KEY).catch(() => undefined)) === true) return
+  await $.store.set(WELCOMED_KEY, true).catch(() => undefined)
+  $.clock.after(WELCOME_WAIT_MS, () => void openWelcome($))
+}
+
+async function openWelcome($: EngineInterface) {
+  const surfaces = await $.session.surfaces().catch(() => [])
+  if (surfaces.length === 0 || !surfaces.every(x => x === 'mobile')) {
+    const opened = await $.ui.open({ id: WELCOME_ID, title: 'Welcome to rightsize', focus: true, closeOnEscape: true }).catch(() => undefined)
+    if (opened?.isPlaced) return
+    await log($, `welcome pane not placed: ${opened ? (opened as { reason?: string }).reason ?? 'no reason given' : 'open failed'}`)
+    if (opened) await $.ui.close({ id: WELCOME_ID }).catch(() => undefined)
+  }
+  $.ui.log(WELCOME_LINE)
+}
+
+const sharedFile = () => (home ? `${home}/${SHARED_PATH}` : undefined)
+
+async function readShared($: EngineInterface): Promise<Shared> {
+  const path = sharedFile()
+  return parseShared(path ? (await readText($, path)) || undefined : undefined)
+}
+
+/** False when the file cannot be written: then no ask shows, because its answer could not be kept. */
+async function writeShared($: EngineInterface, shared: Shared) {
+  const path = sharedFile()
+  if (!path) return false
+  try {
+    await $.fs.write(path, `${JSON.stringify(shared, null, 2)}\n`)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function isoNow($: EngineInterface) {
+  return new Date(await $.clock.now()).toISOString()
+}
+
+async function loadTips($: EngineInterface) {
+  return parseState(await $.store.get(TIPS_KEY).catch(() => undefined))
+}
+
+async function saveTips($: EngineInterface, state: TipsState) {
+  await $.store.set(TIPS_KEY, { tipsOff: state.tipsOff, seen: state.seen }).catch(() => undefined)
+  return state
+}
+
+async function markSeen($: EngineInterface, id: string) {
+  return saveTips($, withSeen(await loadTips($), id))
+}
+
+/** Says rightsize is installed, so whatsnext's ask can name it too. */
+async function noteInstalled($: EngineInterface) {
+  try {
+    const shared = await readShared($)
+    if (shared.installed[ME]) return
+    shared.installed[ME] = await isoNow($)
+    await writeShared($, shared)
+  } catch {
+    // whatsnext's ask names only its own repo
+  }
+}
+
+async function gh($: EngineInterface, args: string[]) {
+  try {
+    return await $.process.run(['gh', 'api', ...args], { timeoutMs: 15_000 })
+  } catch {
+    return undefined
+  }
+}
+
+/** Tips can show: the band is on and drawn, rightsize is on, and the person did not stop them. */
+async function tipsCanShow($: EngineInterface) {
+  if (off || !(await bandCanAsk($))) return false
+  return !(await loadTips($)).tipsOff
+}
+
+async function showTip($: EngineInterface, tip: ShownTip | null) {
+  await $.state.set(TIP, tip).catch(() => undefined)
+}
+
+async function shownTip($: EngineInterface) {
+  return ((await $.state.get(TIP).catch(() => undefined))?.value ?? null) as ShownTip | null
+}
+
+/** Shows tip `id` when it was not seen and no tip shows yet. */
+async function offerTip($: EngineInterface, id: string, repos?: string[]) {
+  if (await shownTip($)) return false
+  if ((await loadTips($)).seen.includes(id)) return false
+  await showTip($, { id, ...(repos ? { repos } : {}) })
+  return true
+}
+
+/** rightsize has saved something this session: the session's net is a saving. */
+const savedThisSession = () => /saved$/.test(sessionTotal(runLog, sessionId, billing === 'subscription') ?? '')
+
+/**
+ * The automatic star ask: the person has not answered, whatsnext has not claimed the ask in the last 7 days, and GitHub
+ * says this repo is not starred. An unknown answer from GitHub (no gh, not signed in, no network) skips it for this session.
+ */
+async function offerStar($: EngineInterface) {
+  if ((await loadTips($)).seen.includes('star')) return false
+  // Asking GitHub is nonessential traffic: Claude Code's switch for it stops the check (the person can still star from the Next tip walk).
+  if (await $.env.get('CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC').catch(() => undefined)) return false
+  const shared = await readShared($)
+  if (shared.answered || blockedByClaim(shared, await $.clock.now())) return false
+  for (const repo of reposToAsk(shared)) {
+    const check = readStarCheck(await gh($, [`user/starred/${repo}`]))
+    if (check === 'unknown') return false
+    if (check === 'starred') shared.starred[repo] = true
+  }
+  const repos = reposToAsk(shared)
+  if (!repos.includes(REPOS[ME]!)) {
+    await writeShared($, shared)
+    await markSeen($, 'star')
+    return false
+  }
+  shared.claim = { by: ME, at: await isoNow($) }
+  if (!(await writeShared($, shared))) return false
+  // Both plugins may claim at the same moment: the one whose claim stayed in the file asks.
+  if ((await readShared($)).claim?.by !== ME) return false
+  return offerTip($, 'star', repos)
+}
+
+/** At a main turn end that was not interrupted: one tip, when it applies and nothing else shows. */
+async function tipCheck($: EngineInterface) {
+  if (lastAuto?.kind === 'lower') loweredThisSession = true
+  const saved = savedThisSession()
+  if (saved) await $.store.set(STAR_KEY, { earned: true }).catch(() => undefined)
+  if (!(await tipsCanShow($)) || (await shownTip($))) return
+  const band = (await $.state.get(BAND).catch(() => undefined))?.value
+  const question = (await $.state.get(QUESTION).catch(() => undefined))?.value
+  if (question || band?.coldText || band?.acted) return
+  if (saved && (await offerTip($, 'report'))) return
+  if (loweredThisSession && (await offerTip($, 'retry'))) return
+  const earned = ((await $.store.get(STAR_KEY).catch(() => undefined)) as { earned?: unknown } | undefined)?.earned === true
+  if (!earned || starTried) return
+  starTried = true
+  await offerStar($).catch(() => undefined)
+}
+
+/** /rightsize tips: tips on again, and the first tip shows. */
+async function showTipsAgain($: EngineInterface) {
+  const state = await saveTips($, { tipsOff: false, seen: [] })
+  const shared = await readShared($).catch(() => undefined)
+  const tip = nextTip(state.seen, undefined, shared?.starred[REPOS[ME]!] ? ['star'] : [])
+  if (!tip || bandMode === 'off') return 'Tips are on. The band shows them at the end of a turn.'
+  await showTip($, { id: tip.id, ...(tip.action === 'star' && shared ? { repos: reposToAsk(shared) } : {}) })
+  return 'Tips are on. The first one is on the band.'
+}
+
+/** Next tip. The walk skips the star tip once this repo is starred; landing on it, the tip names the repos still to star. */
+async function advanceTip($: EngineInterface, tip: Tip) {
+  const state = await markSeen($, tip.id)
+  const shared = await readShared($).catch(() => undefined)
+  const next = nextTip(state.seen, tip.id, shared?.starred[REPOS[ME]!] ? ['star'] : [])
+  await showTip($, next ? { id: next.id, ...(next.action === 'star' && shared ? { repos: reposToAsk(shared) } : {}) } : null)
+}
+
+async function stopTipsBand($: EngineInterface) {
+  await saveTips($, { ...(await loadTips($)), tipsOff: true })
+  await showTip($, null)
+  $.ui.toast('Rightsize: tips are off. /rightsize tips turns them back on.')
+}
+
+/** × on a tip: seen, and gone. */
+async function closeTip($: EngineInterface, tip: Tip) {
+  await markSeen($, tip.id)
+  await showTip($, null)
+}
+
+/** Opens a page in the person's browser: macOS `open`, then Linux `xdg-open`. */
+async function openPage($: EngineInterface, url: string) {
+  for (const opener of ['open', 'xdg-open']) {
+    try {
+      if ((await $.process.run([opener, url], { timeoutMs: 10_000 })).exitCode === 0) return true
+    } catch {
+      // try the next one
+    }
+  }
+  return false
+}
+
+/** Star on GitHub: stars each repo the tip names with the person's own gh sign-in. A repo that could not be starred opens in the browser. */
+async function pressStar($: EngineInterface, repos: readonly string[]) {
+  const failed: string[] = []
+  const shared = await readShared($)
+  for (const repo of repos) {
+    const ran = await gh($, ['-X', 'PUT', `user/starred/${repo}`])
+    if (ran?.exitCode === 0) shared.starred[repo] = true
+    else failed.push(repo)
+  }
+  shared.answered = await isoNow($)
+  await writeShared($, shared)
+  await markSeen($, 'star')
+  await showTip($, null)
+  if (failed.length === 0) return $.ui.toast('Rightsize: thanks for the star!')
+  const links = failed.map(r => `https://github.com/${r}`)
+  await openPage($, links[0]!)
+  $.ui.toast(`Rightsize: could not star from here. Star it on GitHub: ${links.join(' ')}`)
+}
+
+async function declineStar($: EngineInterface) {
+  const shared = await readShared($)
+  shared.answered = await isoNow($)
+  await writeShared($, shared)
+  await markSeen($, 'star')
+  await showTip($, null)
 }
 
 // ---- Hooks -----------------------------------------------------------------
@@ -4512,7 +4762,10 @@ export const register: Register = (on, options) => {
     compactedAway = null
     manualCompact = false
     boundaryCheck = false
-    await $.command.register({ name: CMD, description: 'Rightsize: settings, status, report, share, retry or clear' })
+    await $.command.register({ name: CMD, description: 'Rightsize: welcome, settings, status, report, share, retry or clear' })
+    tipSession()
+    await noteInstalled($)
+    if (e.isInteractive) await showWelcome($)
     // Claude Code hands over every value with its default filled in; only settings.json tells which ones are yours.
     const configs = await $.settings.read({ key: 'pluginConfigs' }).catch(() => undefined)
     const resetBefore = resetKeys(await $.store.get('resetFields').catch(() => undefined))
@@ -4600,10 +4853,13 @@ export const register: Register = (on, options) => {
       const lifetime = await readLifetime($)
       const now = await $.clock.now()
       const start = startBlock(adviseStart(runs, await startContext($), now), billing === 'subscription', money)
-      // The desktop app (any surface but the terminal) renders the report as Markdown.
-      const surfaces = await $.session.surfaces()
-      const markdown = surfaces.some(x => x !== 'terminal')
-      return { text: buildReport(runs, switches, { now, session: sessionId, subscription: billing === 'subscription', start, pause: missBlock, markdown, watching, details: arg === 'report details', ...(lifetime ? { lifetime } : {}), ...(measureFrom ? { measureFrom: new Date(measureFrom).toISOString() } : {}) }) }
+      // The row's text is the plain report (the terminal, -p, the SDK). Every other surface draws the Markdown form, chosen
+      // per surface when the row draws (its CommandOutput hook): $.session.surfaces() here can miss the desktop app.
+      const opts = { now, session: sessionId, subscription: billing === 'subscription', start, pause: missBlock, watching, details: arg === 'report details', ...(lifetime ? { lifetime } : {}), ...(measureFrom ? { measureFrom: new Date(measureFrom).toISOString() } : {}) }
+      const text = buildReport(runs, switches, opts)
+      reportMarkdown.set(text, buildReport(runs, switches, { ...opts, markdown: true }))
+      while (reportMarkdown.size > 20) reportMarkdown.delete(reportMarkdown.keys().next().value as string)
+      return { text }
     }
     if (arg === 'share') {
       const runs = await readRuns($)
@@ -4612,6 +4868,8 @@ export const register: Register = (on, options) => {
     if (arg === 'clear') return { text: await clearSession($) }
     if (arg === 'resume') return { text: await resumeRightsize($, 'asked') }
     if (arg === 'help') return { text: helpText() }
+    if (arg === 'welcome') return { text: welcomeText() }
+    if (arg === 'tips') return { text: await showTipsAgain($) }
     if (arg === 'status') return { text: await summary($) }
     if (arg === '') return { text: await openSettings($) }
     if (arg !== 'settings') return { text: `Unknown command "${arg}".\n\n${helpText()}` }
@@ -5165,7 +5423,10 @@ export const register: Register = (on, options) => {
     const mode = (await $.state.get(BAND_MODE).catch(() => undefined))?.value ?? bandMode
     const band = (await $.state.get(BAND).catch(() => undefined))?.value
     const shown = bandRows(band, mode)
-    if (!shown.route && !shown.cold && !question) return next(e)
+    // A tip: on its own row, never while a turn runs, and only when the band says nothing else that matters.
+    const shownTipNow = (await $.state.get(TIP).catch(() => undefined))?.value as ShownTip | null | undefined
+    const tip = shownTipNow && mode !== 'off' && !e.props.isWorking && !question && !shown.cold && !(shown.route && band?.acted) ? tipById(shownTipNow.id) : undefined
+    if (!shown.route && !shown.cold && !question && !tip) return next(e)
     const { Box, Button, Link, Text } = $.ui.resolve(e)
     type Row = { key: string; label: string; text: string; buttons: ReturnType<typeof Button>[]; note?: string; link?: { label: string; href: string } }
     const rows: Row[] = []
@@ -5237,16 +5498,31 @@ export const register: Register = (on, options) => {
       const options = question.options.map((label, i) => ({ key: `q-${i}`, label, press: () => answerBand($, question.id, i) }))
       rows.push({ key: 'question', label: question.header, text: question.question, buttons: numbered(options), ...(question.ifNone ? { note: `No answer: ${question.ifNone}.` } : {}) })
     }
+    if (tip) {
+      const repos = shownTipNow?.repos?.length ? shownTipNow.repos : [REPOS[ME]!]
+      const tipButtons =
+        tip.action === 'star'
+          ? [
+              { key: 'tip-star', label: 'Star on GitHub', press: () => pressStar($, repos) },
+              { key: 'tip-no', label: 'No thanks', press: () => declineStar($) },
+            ]
+          : [
+              { key: 'tip-next', label: 'Next tip', press: () => advanceTip($, tip) },
+              { key: 'tip-stop', label: 'Stop tips', press: () => stopTipsBand($) },
+            ]
+      rows.push({ key: 'tip', label: 'Tip', text: tip.action === 'star' ? askText(repos) : tip.text, buttons: numbered(tipButtons), link: { label: 'More', href: tip.action === 'star' ? `https://github.com/${repos[0]}` : tip.link } })
+    }
     // × closes every row: a question closed this way gets its no-answer default. A question alone has no ⋯.
     const close = async () => {
       // × hides the pause row; the pause itself stays (the status line still says it).
       pauseRow = null
       if (band && (shown.route || shown.cold)) await setBand($, null)
       if (question) await answerBand($, question.id, undefined)
+      if (tip) await closeTip($, tip)
     }
     const ends = [
       ...(band && (shown.route || shown.cold) ? [<Button key="mode" label="⋯" onPress={() => void bandMenu($, band)} />] : []),
-      <Button key={question && !shown.route && !shown.cold ? 'q-close' : 'close'} label="×" role="dismiss" onPress={() => void close()} />,
+      <Button key={(question || tip) && !shown.route && !shown.cold ? (question ? 'q-close' : 'tip-close') : 'close'} label="×" role="dismiss" onPress={() => void close()} />,
     ]
     const single = rows.length === 1
     // The labels line up in one column, as wide as the longest.
@@ -5280,6 +5556,33 @@ export const register: Register = (on, options) => {
         {rows.map(drawRow)}
       </Box>
     )
+  })
+
+  // The welcome pane (ADR 0039): the table as Markdown, drawn on each surface as a reply is.
+  on('ui.render', { component: 'Pane', requestId: WELCOME_ID }, async ($, e) => {
+    const { Box, Markdown, Text } = $.ui.resolve(e)
+    return (
+      <Box flexDirection="column">
+        <Text dimColor>Esc closes this. /rightsize welcome shows it again.</Text>
+        <Markdown key="welcome" text={welcomeMarkdown()} />
+      </Box>
+    )
+  })
+
+  // /rightsize welcome: its output row draws the Markdown table; the row's own text (plain, 71 columns) is what -p and the SDK print.
+  on('ui.render', { component: 'CommandOutput' }, async ($, e, next) => {
+    if (e.props.command !== CMD || e.props.args.trim().toLowerCase() !== 'welcome' || e.props.isErrored) return next(e)
+    const { Markdown } = $.ui.resolve(e)
+    return <Markdown key="welcome" text={welcomeMarkdown()} />
+  })
+
+  // /rightsize report: off the terminal the row draws Markdown, with the tables in code fences so their columns line up
+  // (the desktop app's font is not monospace). A row from before a restart has no Markdown form: it draws as one fence.
+  on('ui.render', { component: 'CommandOutput' }, async ($, e, next) => {
+    const args = e.props.args.trim().toLowerCase()
+    if (e.props.command !== CMD || (args !== 'report' && args !== 'report details') || e.props.isErrored || e.surface === 'terminal') return next(e)
+    const { Markdown } = $.ui.resolve(e)
+    return <Markdown key="report" text={reportMarkdown.get(e.props.text) ?? `\`\`\`\n${e.props.text}\n\`\`\``} />
   })
 
   // The settings pane (bare /rightsize): every row of /config as a picker, Advanced rows under their own heading. The mobile
@@ -5345,6 +5648,7 @@ export const register: Register = (on, options) => {
     if (e.agentId === undefined && !e.isAborted) await coldCheck($).catch(err => log($, `before the cache goes cold failed: ${err instanceof Error ? err.message : String(err)}`))
     if (e.agentId === undefined && !e.isAborted) await limitCheck($)
     if (e.agentId === undefined && !e.isAborted) await sizeCheck($)
+    if (e.agentId === undefined && !e.isAborted) await tipCheck($).catch(() => undefined)
     // whatsnext's wrap-up before a compaction ended: the compaction follows (after coldCheck, which cancels timers), from a timer (the hook does not wait for it). An interrupted wrap-up stops it.
     if (e.agentId === undefined && wrapThenCompact) {
       const w = wrapThenCompact

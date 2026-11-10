@@ -1,11 +1,12 @@
 # Privacy
 
-rightsize sends nothing to its author or to any third party. It keeps its logs on your machine.
+rightsize sends nothing to its author. It keeps its logs on your machine. The one third party it may contact is GitHub, through your own `gh`, to ask whether you starred rightsize (below).
 
 ## What rightsize sends
 
-- **Nothing to the author, and nothing to any third party.** It has no analytics, no feedback upload and no account.
+- **Nothing to the author.** It has no analytics, no feedback upload and no account.
 - **One web request of its own:** a plain GET of Anthropic's pricing page, `https://platform.claude.com/docs/en/about-claude/pricing.md`, every 30 days, to keep `prices.json` current. It carries nothing of yours. **Price check** set to off stops it, and rightsize sends nothing while Claude Code's `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` is set.
+- **The GitHub star check (0.11).** Once rightsize has saved you something and tips are on, at most once a session it runs `gh api user/starred/archid21/rightsize` (and `archid21/whatsnext` when whatsnext is installed) with your own `gh` sign-in, to ask GitHub whether you starred it. GitHub sees that your account asked; nothing else of yours is sent. Without `gh`, signed out or offline, it asks nothing. It stops for good once you press **Star on GitHub** or **No thanks**, and never runs while `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` is set or after **Stop tips**. **Star on GitHub** stars the repos with `gh api -X PUT`; if that fails, it opens the repo page in your browser. The answer is kept in `~/.config/archid21/stars.json`, shared with whatsnext so you are asked once for both.
 - **Model calls go through Claude Code,** with your own sign-in, to Anthropic, as your prompts do anyway (see "What the rating sees"). rightsize reads no credential.
 
 ## whatsnext

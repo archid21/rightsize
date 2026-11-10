@@ -34,6 +34,8 @@ Four programs for its logs, started by name with no shell. The only part of a co
 
 With whatsnext installed it starts two more, only to compact: `git rev-parse --show-toplevel` (to find your project's folder; it prints a path) and `python3 <whatsnext's folder>/skills/whatsnext/scripts/whatsnext.py` (whatsnext's own script) with one fixed command: `compact-instructions --session <session ID> --json` (the text to compact with, whether a handoff should come first and whether the folder is a whatsnext project). It changes nothing, and rightsize writes no whatsnext file or setting. rightsize finds whatsnext's folder in Claude Code's list of installed plugins and never runs a script from anywhere else.
 
+For the star ask (ADR 0039; see **Network**) it starts `gh api user/starred/<repo>` (at most once a session) and, only when you press **Star on GitHub**, `gh api -X PUT user/starred/<repo>`, where `<repo>` is `archid21/rightsize` or `archid21/whatsnext`. When starring fails it opens the repo page with `open` (macOS) or `xdg-open` (Linux).
+
 It starts no other program, and fetches no code.
 
 ## Prompts it submits
@@ -45,6 +47,7 @@ One, and only one fixed text: `wrap up`, submitted once before a big session's c
 - The logs listed below.
 - Its own store in Claude Code's plugin store (your answers, calibration, counters, and the lifetime roll-up of the report: sums of cost and saving for runs older than 30 days, no prompt text), `~/.claude/plugins/store/rightsize_*.json`.
 - `prices.json` in its own plugin folder, keeping the old file as `prices.json.bak` (the monthly price check).
+- `~/.config/archid21/stars.json`, shared with whatsnext: which of the two plugins are installed, which repos you starred, when you answered the star ask, and which plugin is asking now. No prompt text, no usage.
 
 These are all the places it writes. Nothing in your project is written, and none of its files is opened by rightsize: it only checks that `.whatsnext/config.json` exists, the sign that whatsnext was started there.
 
@@ -54,11 +57,12 @@ Your prompt, the session's usage and rate limits, your `model` and `effortLevel`
 
 ## Network
 
-It makes one web request of its own, plus the Sonnet and Haiku calls Claude Code makes for it:
+It makes one web request of its own and one through `gh`, plus the Sonnet and Haiku calls Claude Code makes for it:
 
 - `https://platform.claude.com/docs/en/about-claude/pricing.md`, Anthropic's pricing page, a plain GET every 30 days (**Price check**, can be turned off). It sends nothing of yours.
+- GitHub, through your own `gh` sign-in: whether you starred rightsize (and whatsnext, when installed), at most once a session, only after rightsize has saved you something, and never again once you answer the star ask. **Stop tips** stops it too.
 
-It sends nothing to its author or to any third party: no analytics, no feedback upload. [PRIVACY.md](PRIVACY.md) has the detail. rightsize makes no request while Claude Code's `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` is set.
+It sends nothing to its author: no analytics, no feedback upload. [PRIVACY.md](PRIVACY.md) has the detail. rightsize makes no request while Claude Code's `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` is set.
 
 ## Logs
 

@@ -106,6 +106,8 @@ declare module 'claude-code' {
       question: RightsizeQuestion | null
       /** Counts the changes made in the /rightsize settings pane: the pane reads it while it draws, so a change draws it again with the new values. */
       menu: number
+      /** The tip the band's Tip row shows (ADR 0039), and for the star tip the repos it names; null when none. */
+      tip: { id: string; repos?: string[] } | null
     }
   }
 }

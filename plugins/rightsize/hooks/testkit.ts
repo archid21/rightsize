@@ -21,6 +21,8 @@ export type Engine = {
 
 /** Where this session's logs go: its own folder, and only its own. */
 export const LOGS = '/home/test/.claude/mods-logs'
+/** The star ask's file shared with whatsnext (ADR 0039). */
+export const STARS = '/home/test/.config/archid21/stars.json'
 export const SESSION_DIR = `${LOGS}/rightsize/sess-1`
 export const RUNS_FILE = `${SESSION_DIR}/runs.jsonl`
 export const SWITCHES_FILE = `${SESSION_DIR}/switches.jsonl`
@@ -101,7 +103,8 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
     logs: [] as string[],
     filled: [] as string[],
     /** startDayOne: the day-one tip was shown already, so a session on Opus does not open with its band (the tests of the tip clear it). */
-    store: { startDayOne: true, ...(start.store ?? {}) } as Record<string, unknown>,
+    /** welcomed and tips off: the welcome and the tips (ADR 0039) stay out of the way; register.welcome.test.ts clears them. */
+    store: { startDayOne: true, welcomed: true, tips: { tipsOff: true, seen: [] }, ...(start.store ?? {}) } as Record<string, unknown>,
     ratings: 0,
     now: 1_800_000_000_000,
     page: '',
@@ -128,6 +131,14 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
     dropNext: undefined as string | undefined,
     /** Run while a submit is entering, before it answers: where the engine starts the prompt's turn. */
     duringSubmit: undefined as (() => Promise<unknown>) | undefined,
+    /** gh as the star ask finds it (ADR 0039): undefined is not installed; `starred` by repo, `canStar` for -X PUT. */
+    gh: undefined as { starred: Record<string, 'starred' | 'not' | 'unknown'>; canStar: boolean } | undefined,
+    /** True: `open` fails, as on Linux. */
+    openFails: false,
+    /** ~/.config/archid21/stars.json, shared with whatsnext; undefined when there is none. Kept apart from `files`, which hold rightsize's own logs. */
+    stars: undefined as string | undefined,
+    /** True: ~/.config/archid21/stars.json cannot be written. */
+    starsUnwritable: false,
     /** True: rm and rmdir fail to start. */
     rmFails: false,
     /** What $.session.id() answers. */
@@ -304,16 +315,20 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
   })
   reg('fs.exists', async ($, e) => {
     const { path } = e as { path: string }
-    return { value: path.endsWith('/prices.json') ? h.pricesFile !== '' : path in h.files } as never
+    return { value: path.endsWith('/prices.json') ? h.pricesFile !== '' : path === STARS ? h.stars !== undefined : path in h.files } as never
   })
   reg('fs.read', async ($, e) => {
     const { path } = e as { path: string }
-    return { value: path.endsWith('/prices.json') ? h.pricesFile : (h.files[path] ?? '') } as never
+    return { value: path.endsWith('/prices.json') ? h.pricesFile : path === STARS ? (h.stars ?? '') : (h.files[path] ?? '') } as never
   })
   reg('fs.write', async ($, e) => {
     const { path, text } = e as { path: string; text: string }
     if (path.endsWith('/prices.json')) h.pricesFile = text
     if (path.endsWith('/prices.json.bak')) h.backup = text
+    if (path === STARS) {
+      if (h.starsUnwritable) throw new Error('EACCES')
+      h.stars = text
+    }
     if (path.includes('/mods-logs/')) {
       h.files[path] = text
       h.mtimes[path] = h.now
@@ -403,6 +418,14 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
       return { value: { exitCode: reply.exitCode, stdout: reply.stdout, stderr: reply.stderr ?? '' } } as never
     }
     h.ran.push(argv)
+    // gh: missing unless a test sets h.gh. `user/starred/<repo>`: exit 0 is starred, HTTP 404 is not; -X PUT stars.
+    if (argv[0] === 'gh') {
+      if (!h.gh) throw new Error('no such program')
+      if (argv.includes('PUT')) return { value: { exitCode: h.gh.canStar ? 0 : 1, stdout: '', stderr: h.gh.canStar ? '' : 'HTTP 403' } } as never
+      const answer = h.gh.starred[(argv[argv.length - 1] ?? '').replace('user/starred/', '')] ?? 'not'
+      return { value: answer === 'starred' ? { exitCode: 0, stdout: '', stderr: '' } : { exitCode: 1, stdout: '', stderr: answer === 'not' ? 'gh: Not Found (HTTP 404)' : 'gh: not signed in' } } as never
+    }
+    if (argv[0] === 'open') return { value: { exitCode: h.openFails ? 1 : 0, stdout: '', stderr: '' } } as never
     if (h.rmFails && (argv[0] === 'rm' || argv[0] === 'rmdir')) throw new Error('no such program')
     if (argv[0] === 'rm') for (const f of argv.slice(1).filter(a => !a.startsWith('-'))) delete h.files[f]
     return { value: { exitCode: 0, stdout: '', stderr: '' } } as never

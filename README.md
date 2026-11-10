@@ -166,13 +166,13 @@ Want to watch first? In `/config`, set **Mode** to watch only.
 3. **Check.** After the turn it records what happened: rework, a failing test, a reply you correct, your 👍 or 👎. A route that keeps missing for a kind of work is paused for that kind of work.
 4. **Watch the cache and context.** At the end of a turn, rightsize checks the conversation's size and how long the cache will live. It can keep the cache warm, warn that the context is filling, or advise a compact. It acts only when its estimate says the choice pays, and it compacts only when you press a button.
 
-**What leaves your machine.** Nothing goes to the author or to any third party. The rating runs through Claude Code with your own sign-in, like any other prompt. Logs stay in `~/.claude/mods-logs/rightsize/`. rightsize's only web request is a monthly fetch of Anthropic's pricing page (**Price check**, can be turned off): [docs/PRIVACY.md](docs/PRIVACY.md).
+**What leaves your machine.** Nothing goes to the author. The rating runs through Claude Code with your own sign-in, like any other prompt. Logs stay in `~/.claude/mods-logs/rightsize/`. rightsize's web requests are a monthly fetch of Anthropic's pricing page (**Price check**, can be turned off) and a GitHub star check through your own `gh` sign-in (at most once a session, only after rightsize has saved you something, until you answer the star ask): [docs/PRIVACY.md](docs/PRIVACY.md).
 
 **What it costs to run.** Each rating adds about one second and a small Sonnet call before the prompt. The report counts that cost against the savings, so the totals you see are after rightsize's own cost.
 
 **What it never does.** It never changes your model for you, never approves a tool call, never changes a permission, and never touches your project files. Hooks and file paths: [docs/WHAT-IT-TOUCHES.md](docs/WHAT-IT-TOUCHES.md).
 
-**What it runs, writes and sends.** It runs `mkdir`, `chmod`, `rm` and `rmdir` on its own log folders and, with whatsnext installed, `git rev-parse` and whatsnext's own script. The script's commands read what to compact and whether a handoff is missing; rightsize writes none of whatsnext's settings or files. It writes only under `~/.claude/mods-logs/rightsize/`, its own store, and its own `prices.json`. Its only web request is to `platform.claude.com` (Anthropic's pricing page, monthly, sends nothing of yours); it sends nothing to the author. It sets only its own `rightsize.*` settings, submits only the fixed text `wrap up`, reads no credential, and its `tool.call` hook only ever denies, never approves. The full list, checked against the code: [What it runs, writes and sends](plugins/rightsize/README.md#what-it-runs-writes-and-sends).
+**What it runs, writes and sends.** It runs `mkdir`, `chmod`, `rm` and `rmdir` on its own log folders and, with whatsnext installed, `git rev-parse` and whatsnext's own script. For the star ask it runs `gh api` (and `open` or `xdg-open` when starring fails). The script's commands read what to compact and whether a handoff is missing; rightsize writes none of whatsnext's settings or files. It writes only under `~/.claude/mods-logs/rightsize/`, its own store, its own `prices.json`, and `~/.config/archid21/stars.json` (shared with whatsnext). Its web requests go to `platform.claude.com` (Anthropic's pricing page, monthly, sends nothing of yours) and, for the star ask, to GitHub through your own `gh`; it sends nothing to the author. It sets only its own `rightsize.*` settings, submits only the fixed text `wrap up`, reads no credential, and its `tool.call` hook only ever denies, never approves. The full list, checked against the code: [What it runs, writes and sends](plugins/rightsize/README.md#what-it-runs-writes-and-sends).
 
 ## Make it yours
 
@@ -202,6 +202,8 @@ When keeping warm over your usual idle time would cost at least 3 times a compac
 | `/rightsize` | Settings pane |
 | `/rightsize report` | What you saved, what rightsize did, and what to change |
 | `/rightsize report details` | Accuracy, turns not counted, time and whole tasks |
+| `/rightsize welcome` | What rightsize does, as a table (also shown once after install) |
+| `/rightsize tips` | Show the tips again |
 | `/rightsize status` | What is in use and the settings you changed |
 | `/rightsize retry` | Runs the last lowered prompt at normal effort |
 | `/mods` | Turns rightsize on or off |

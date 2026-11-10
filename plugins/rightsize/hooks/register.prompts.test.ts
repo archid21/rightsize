@@ -610,7 +610,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(Math.abs(Number(last(again)?.actual) - TWO_HAIKU_STEPS / 2) < 1e-6, 'only what it spent since it answered').toBe(true)
     expect((h.store[CAL_STORE] as Record<string, { n: number }>)['search:subagent']?.n).toBe(1)
     h.now = Date.now()
-    expect(cellsOf((await d.command('report')).text ?? '', 'Subagents on cheaper model')?.at(-1)).toBe('2')
+    expect(cellsOf(await d.report(), 'Subagents moved')).toEqual(['2 to a cheaper model'])
   })
 
   test(`a moved subagent's first step, before its spawn settles, already runs at its level (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -789,9 +789,11 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(line.escalations?.map(x => [x.step, x.from, x.to])).toEqual([[2, 'medium', 'high'], [4, 'high', 'xhigh']])
     expect(Object.keys(h.store[CAL_STORE] ?? {}).filter(k => k.startsWith('lookup:')), 'a turn at two levels teaches nothing').toEqual([])
     h.now = Date.now()
-    const stuck = (await d.command('report')).text ?? ''
+    const stuck = await d.report()
     expect(stuck).toMatch(/1 turn +raised mid-turn because Claude looked stuck/)
-    expect(stuck).toContain('the same tool call failed twice (1), several of the last 10 tool calls failed and none made progress (1)')
+    // One sign per line; a long one wraps under itself.
+    expect(stuck).toMatch(/\n +the same tool call failed twice \(1\)\n/)
+    expect(stuck.replace(/\s+/g, ' ')).toContain('several of the last 10 tool calls failed and none made progress (1)')
 
     // The next turn starts at the person's level again.
     await d.submit(LOOKUP)
@@ -1048,7 +1050,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     // Deferred MCP tools are not in the context: 20K MCP, 6K memory, 1K agents, 3K skills and commands.
     expect(line.fixed).toEqual({ tokens: 30000, mcp: 20000, memory: 6000, agents: 1000, skills: 3000, hooks: 0, files: { 'CLAUDE.md': 6000 }, servers: { linear: 12000, github: 8000 }, cost: 0.012 })
     h.now = Date.now()
-    const fixed = (await d.command('report')).text ?? ''
+    const fixed = await d.report()
     expect(fixed).toContain('FIXED CONTEXT  ~30K tokens sent with every request')
     // Largest first, the last part closing the tree.
     expect(fixed).toMatch(/├─ MCP tools +20K +linear 12K, github 8K\n +├─ Memory +6K +CLAUDE\.md 6K\n +├─ Skills +3K\n +└─ Agents +1K\n/)
@@ -1256,7 +1258,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const lines = (h.files[RUNS_FILE] ?? '').trim().split('\n').map(l => JSON.parse(l) as { workflows?: number; afterWorkflow?: boolean })
     expect(lines.map(l => [l.workflows ?? 0, l.afterWorkflow ?? false])).toEqual([[0, false], [1, true], [0, true]])
     h.now = Date.now()
-    const flows = (await d.command('report')).text ?? ''
+    const flows = await d.report()
     expect(flows).toMatch(/2 turns +ran during or after a workflow/)
     expect(flows).toContain('1 workflow, from ultracode or asked for')
 
@@ -1362,7 +1364,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await ui.press({ key: 'tip-later' })
     await ui.unmount()
     expect(await bandText($, surface)).toBe('')
-    expect(String((await d.command('report')).text)).toContain('STARTING POINT  Opus at medium, 60 rated prompts in 30 days')
+    expect((await d.report())).toContain('STARTING POINT  Opus at medium, 60 rated prompts in 30 days')
 
     // A day later: not checked again. A week later: checked, but the same start is quiet for 14 days.
     h.now += 24 * 60 * MIN
@@ -1423,7 +1425,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const d = drive($, h)
     await d.start(surface)
     expect(await bandText($, surface)).toBe('')
-    expect(String((await d.command('report')).text), 'the report still compares').toContain('rated prompts in 30 days')
+    expect((await d.report()), 'the report still compares').toContain('rated prompts in 30 days')
   })
 
   test(`waits for 50 rated prompts before suggesting a start (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -1432,7 +1434,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const d = drive($, h)
     await d.start(surface)
     expect(await bandText($, surface)).toBe('')
-    expect(String((await d.command('report')).text)).toContain('STARTING POINT  Needs 50 rated prompts on Opus at medium to compare (has 30).')
+    expect((await d.report())).toContain('STARTING POINT  Needs 50 rated prompts on Opus at medium to compare (has 30).')
   })
 
   // ---- The three feature switches: Routing, Hand-offs, Cache ----------------------------------------------------------

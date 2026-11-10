@@ -153,9 +153,9 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(warmLines(h)[0]?.overhead).toBe(0.01613)
     // The saving is in the totals: 0.6279 saved less 0.01613 of pings, and the band's session total says so.
     h.now = Date.now()
-    const text = (await d.command('report')).text ?? ''
-    expect(text.replace(/\s+/g, ' ')).toContain('Keep warm: 1 run · saved ~$0.63 on 1 return · cost ~$0.02 · net ~$0.61 saved')
-    expect(cellsOf(text, 'Total saved')?.[2]).toBe('~$0.61')
+    const text = await d.report()
+    expect(cellsOf(text, 'Keep warm')).toEqual(['1 run: saved ~$0.63, cost ~$0.02, net ~$0.61 saved'])
+    expect(cellsOf(text, 'Saved')?.[2]).toBe('~$0.61')
   })
 
   test(`keep warm saving: a run the person never returned to has no saving line, and its requests are pure cost in the report (${surface})`, { timeoutMs: 30000, options: WARM8.options }, async ($, on) => {
@@ -165,9 +165,9 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(warmLines(h).length).toBe(8)
     expect(savedLines(h)).toEqual([])
     h.now = Date.now()
-    const text = (await d.command('report')).text ?? ''
-    expect(text.replace(/\s+/g, ' ')).toContain('Keep warm: 1 run · saved nothing: no returns · cost ~$0.13 · net ~$0.13 more')
-    expect(text.split('\n')[1]).toBe('Cost ~$0.13 more than it saved in the last 30 days.')
+    const text = await d.report()
+    expect(cellsOf(text, 'Keep warm')).toEqual(['1 run: no returns, cost ~$0.13, net ~$0.13 more'])
+    expect(text.split('\n')[1]).toBe('Cost ~$0.13 more than it saved.')
   })
 
   test(`keep warm saving: a return before the cache would have gone cold saves nothing, even if its first request read the cache (${surface})`, { timeoutMs: 30000, options: WARM8.options }, async ($, on) => {
@@ -809,12 +809,12 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const saving = { at: new Date().toISOString(), kind: 'run', session: 'sess-1', change: 'lower', offered: 'lower', stay: 0.4, taken: 0.1, actual: 0.1, overhead: 0 }
     h.files[LEGACY_RUNS] = `${JSON.stringify(saving)}\n`
     h.now = Date.now()
-    const before = (await d.command('report')).text
+    const before = (await d.report())
     await d.start(surface)
     await coldOffer(h, d, 't1')
     await pressBand($, 'cold-2h')
     expect(coldChoices(h)).toEqual(['2h'])
-    const after = (await d.command('report')).text
+    const after = (await d.report())
     expect(after).toBe(before)
   })
 

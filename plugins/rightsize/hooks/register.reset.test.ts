@@ -330,9 +330,9 @@ for (const surface of ['desktop', 'terminal'] as const) {
       expect(await settingsText(d), 'in memory too').toContain('Measured runs: 0')
       expect(h.files[RUNS], 'the run log is kept, line for line').toBe(log)
       // The report still counts all of it, and says when measurement restarted.
-      const report = (await d.command('report')).text ?? ''
+      const report = await d.report()
       expect(report).toContain(`Cost measurement restarted on ${new Date(h.now).toISOString().slice(0, 10)}.`)
-      expect(cellsOf(report, 'Prompts rated')?.slice(1)).toEqual(['66', '66'])
+      expect(cellsOf(report, 'Prompts rated')).toEqual(['66'])
       expect(report, 'what went wrong reads the whole history').toMatch(/Haiku's judgement +wrong on 3 of 6 checked prompts \(50%\)/)
       expect(report, 'but nothing is paused any more').not.toContain('Hand-downs paused')
       // Settings stay unless Both.
@@ -374,13 +374,13 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const d = drive($, h)
     await d.start(surface)
     expect(await bandText($, surface), 'before: a cheaper start is suggested').toContain('Starting on Sonnet')
-    expect(String((await d.command('report')).text)).toContain('STARTING POINT  Opus at medium, 60 rated prompts in 30 days')
+    expect((await d.report())).toContain('STARTING POINT  Opus at medium, 60 rated prompts in 30 days')
     h.answers = { Reset: 'Cost measurement', Confirm: 'Yes' }
     await d.command('reset')
     // The report's block waits for rated prompts from now on, though its history still counts the 60.
-    const report = String((await d.command('report')).text)
+    const report = (await d.report())
     expect(report).toContain('STARTING POINT  Needs 50 rated prompts to compare (has 0).')
-    expect(cellsOf(report, 'Prompts rated')?.slice(1)).toEqual(['60', '60'])
+    expect(cellsOf(report, 'Prompts rated')).toEqual(['60'])
     // The next start does not suggest anything either: startCheckedAt is clear, so it checks, and finds nothing to go on.
     await d.start(surface)
     expect(await bandText($, surface)).toBe('')
@@ -582,7 +582,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(runLines(h).filter(l => l.kind === 'unrated').at(-1)?.reason).toBe('rating call failed (status 401)')
 
     // The report counts them as not counted, with a plain reason.
-    const report = (await d.command('report')).text ?? ''
+    const report = await d.report()
     expect(report).toMatch(/3 prompts +not rated \(the rating failed\), so nothing was changed/)
   })
 

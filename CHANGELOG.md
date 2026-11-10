@@ -1,5 +1,11 @@
 # Changelog
 
+## Next (unreleased)
+
+- **`/rightsize report` is shorter and says what the numbers mean.** The report now shows three things: what you gained, what rightsize did, and what to change. On a subscription the headline is hours of Claude's work, for example `You got about 22–23 more hours of Claude's work from your plan.`, then the 5-hour windows that stands for and its value at API prices (under one window, the share of one). On the API it is dollars and the share of your cost. **YOUR SAVINGS** is one table with Today, 7 days, 30 days and Lifetime: extra work time, 5-hour windows and weekly limit on a subscription, then the value, the share of cost saved and the extra on hard prompts. It fits in 80 columns. The Session column is gone; the band still shows the session total. **30-DAY SUMMARY** lists prompts rated, left as they were, effort lowered, sent to a cheaper model, effort raised, sent to a stronger model, subagents moved, suggestions you declined and keep warm, one row each. **RECOMMENDATIONS** replaces Next steps: numbered actions (cut fixed context, with its cost and largest parts; a cheaper start; keep warm, when it cost more than it saved), then a line for a start that needs no change and one for a paused hand-down. A short footer says the figures are estimates and points to the details.
+- **`/rightsize report details`** holds the sections behind the numbers: Starting point, Fixed context, Accuracy (now with close calls), Not counted as savings, Time and Whole tasks, with the full footer. `/rightsize help` lists it.
+- **Not counted as savings stays within 80 columns.** A turn raised because Claude looked stuck lists each sign on its own line, and a long reason or sign wraps under itself instead of running past the edge.
+
 ## 0.10.2 (2026-11-09)
 
 - **Fable 5.2 prices.** Fable is now priced as Fable 5.2: $8 input, $40 output, $0.20 cache read, $10 and $16 for 5-minute and 1-hour cache writes (USD per million tokens). The automatic price check reads the Fable 5.2 row.

@@ -200,7 +200,8 @@ When keeping warm over your usual idle time would cost at least 3 times a compac
 | Command | What it does |
 |---|---|
 | `/rightsize` | Settings pane |
-| `/rightsize report` | What each choice cost and saved |
+| `/rightsize report` | What you saved, what rightsize did, and what to change |
+| `/rightsize report details` | Accuracy, turns not counted, time and whole tasks |
 | `/rightsize status` | What is in use and the settings you changed |
 | `/rightsize retry` | Runs the last lowered prompt at normal effort |
 | `/mods` | Turns rightsize on or off |

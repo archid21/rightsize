@@ -389,12 +389,12 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await h.advance(8 * HOUR)
     expect(warmLines(h).length).toBe(8)
     h.now = Date.now()
-    const only = (await d.command('report')).text ?? ''
-    expect(only.split('\n')[1]).toBe('Cost ~$0.13 more than it saved in the last 30 days.')
-    expect(only.replace(/\s+/g, ' ')).toContain('Total saved is after the cost of rating prompts and of keeping the cache warm ($0.13 in 30 days), and counts what keeping it warm saved when you came back to a warm cache.')
+    const only = await d.report()
+    expect(only.split('\n')[1]).toBe('Cost ~$0.13 more than it saved.')
+    expect(only.replace(/\s+/g, ' ')).toContain('The saving is after the cost of rating prompts and of keeping the cache warm ($0.13 in 30 days), and counts what keeping it warm saved when you came back to a warm cache.')
     // A saving of $0.30 in another session: the 30 days show it less the pings.
     h.files[LEGACY_RUNS] = `${JSON.stringify({ at: new Date().toISOString(), kind: 'run', session: 'other', change: 'lower', offered: 'lower', stay: 0.4, taken: 0.1, actual: 0.1, overhead: 0 })}\n`
-    expect(cellsOf((await d.command('report')).text ?? '', 'Total saved')).toEqual(['-$0.13', '~$0.17', '~$0.17'])
+    expect(cellsOf(await d.report(), 'Saved'), 'today, 7 days, 30 days, lifetime').toEqual(['~$0.17', '~$0.17', '~$0.17', '~$0.17'])
   })
 
   test(`keep warm stops when the person submits a prompt (${surface})`, { timeoutMs: 30000, options: WARM8.options }, async ($, on) => {

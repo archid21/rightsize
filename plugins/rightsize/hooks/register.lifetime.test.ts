@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { LEGACY_RUNS, engine, drive } from './testkit'
+import { LEGACY_RUNS, cellsOf, engine, drive } from './testkit'
 
 // The report's Today and Lifetime columns: at session start, run lines older than 30 days are folded into a roll-up kept in
 // the plugin's own store, so the Lifetime figure survives the logs being trimmed or pruned. The roll-up holds sums only.
@@ -19,13 +19,13 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(lifetime(h)?.t.rated, 'the two old lines are folded; the recent one waits').toBe(2)
     expect(Math.round((lifetime(h)?.t.saved ?? 0) * 1000), 'what the two saved: $0.20 and $0.30').toBe(500)
     expect(Object.keys(lifetime(h) ?? {}).sort(), 'sums only').toEqual(['since', 't', 'through'])
-    const before = (await d.command('report')).text ?? ''
-    expect(before.replace(/\s+/g, ' '), 'lifetime counts all three, labelled as an estimate').toMatch(/Today Lifetime[\s\S]*Prompts rated \d+ 3/)
-    expect(before).toContain('Estimates. Lifetime counts from')
+    const before = await d.report()
+    expect(cellsOf(before, 'Saved'), 'lifetime counts all three: $0.20, $0.30 and $0.50').toEqual(['–', '~$0.50', '~$0.50', '~$1.00'])
+    expect(before).toContain('Lifetime counts from')
     // The log loses the old lines (trimmed or pruned): the roll-up still holds them.
     h.files[LEGACY_RUNS] = line(now - 2 * DAYS, 0.5) + '\n'
-    const after = (await d.command('report')).text ?? ''
-    expect(after.replace(/\s+/g, ' ')).toMatch(/Prompts rated \d+ 3/)
+    const after = await d.report()
+    expect(cellsOf(after, 'Saved')?.at(-1)).toBe('~$1.00')
   })
 
   test(`lifetime: a second start folds nothing twice (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -47,8 +47,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const d = drive($, h)
     await d.start(surface)
     await d.step('t0')
-    const text = (await d.command('report')).text ?? ''
+    const text = await d.report()
     expect(text).toContain('rightsize report')
-    expect(text.replace(/\s+/g, ' ')).toMatch(/Prompts rated \d+ 1/)
+    expect(cellsOf(text, 'Saved')?.at(-1)).toBe('~$0.20')
   })
 }

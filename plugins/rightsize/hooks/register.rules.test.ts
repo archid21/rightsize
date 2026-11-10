@@ -372,7 +372,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
       await d.submit(LOOKUP)
       await d.step('t1')
       expect(last(h.sent)?.effort).toBe(row.effort)
-      const report = (await d.command('report')).text ?? ''
+      const report = await d.report()
       expect(report.includes('Hand-downs paused')).toBe(row.paused)
       expect(report).toMatch(new RegExp(`Haiku's judgement +wrong on ${row.steppedUp} of 6 checked prompts`))
     })
@@ -524,7 +524,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(run.wouldTaken ?? 0, 'cheaper than staying, or it would not be planned').toBeLessThan(run.stay ?? 0)
     const status = (await d.command('status')).text ?? ''
     expect(status).toContain('Mode: watch only (rates and plans every prompt, changes nothing; Mode in /config turns it on)')
-    const report = ((await d.command('report')).text ?? '').replace(/\s+/g, ' ')
+    const report = (await d.report()).replace(/\s+/g, ' ')
     expect(report).toMatch(/Watch only: 1 prompt rated, 1 would have been changed, which would have saved ~\$[\d.]+ against staying \(estimates; nothing was applied\)\. Mode in \/config turns rightsize on\./)
   })
 
@@ -791,7 +791,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
         const sub = lines.filter(l => l.kind === 'subagent')
         expect(sub.map(l => l.afterWorkflow), 'the agent is logged, and marked').toEqual([true])
         h.now = Date.now()
-        expect(cellsOf((await d.command('report')).text ?? '', 'Subagents on cheaper model')?.at(-1)).toBe('1')
+        expect(cellsOf(await d.report(), 'Subagents moved')).toEqual(['1 to a cheaper model'])
       }
     })
   }

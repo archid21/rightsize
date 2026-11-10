@@ -429,10 +429,10 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(last(runs())?.kind).toBe('unrated')
     expect(last(runs())?.overhead, 'Sonnet\'s call and the Haiku fallback\'s, 1000 in and 100 out each').toBe(0.00315)
 
-    const report = (await d.command('report')).text ?? ''
-    expect(cellsOf(report, 'Prompts rated')).toEqual(['2', '2', '2'])
-    expect(cellsOf(report, 'Kept / lowered / raised')).toEqual(['0/2/0', '0/2/0', '0/2/0'])
-    expect(report).toContain('Total saved is after the cost of rating prompts')
+    const report = await d.report()
+    expect(cellsOf(report, 'Prompts rated')).toEqual(['2'])
+    expect(cellsOf(report, 'Effort lowered')).toEqual(['2 prompts'])
+    expect(report).toContain('The saving is after the cost of rating prompts')
     expect(report.includes('```'), 'fenced only in the desktop app').toBe(surface === 'desktop')
     expect(report).toContain('NOT COUNTED AS SAVINGS')
   })
@@ -567,7 +567,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     // The 21st to 39th are not checked; the report counts the disagreement.
     await d.submit(LOOKUP)
     expect(h.completions.filter(m => m === 'sonnet').length).toBe(1)
-    const report = (await d.command('report')).text ?? ''
+    const report = await d.report()
     expect(report).toMatch(/Haiku's judgement +wrong on 1 of 2 checked prompts \(50%\)/)
     expect(report, 'a check line is not a prompt').toContain('Nothing rated yet.')
   })
@@ -723,7 +723,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.ratingTimeouts).toEqual([9000, 2000])
 
     // The report counts the budget hit.
-    const text = (await d.command('report')).text ?? ''
+    const text = await d.report()
     expect(text).toMatch(/Rating budget used up +1 of \d+ prompts?/)
   })
 
@@ -857,7 +857,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     // Nothing leaves the machine: no fetch beyond the price check, and the line is only in the run log.
     expect(h.fetches).toBeLessThanOrEqual(1)
     // One hit (no rework) and one 👎, both Haiku's.
-    expect((await d.command('report')).text ?? '').toMatch(/Haiku's judgement +wrong on 1 of 2 checked prompts \(50%\)/)
+    expect(await d.report()).toMatch(/Haiku's judgement +wrong on 1 of 2 checked prompts \(50%\)/)
   })
 
   test(`👍 and 👎 in the ⋯ menu on an automatic lowering write a feedback line for that run, and 👍 counts as a hit (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -1037,10 +1037,10 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.complete('t1')
     expect(await bandText($, surface)).toBe('')
     // The report says what the record is and what it paused.
-    const report = (await d.command('report')).text ?? ''
+    const report = await d.report()
     expect(report).toMatch(/Haiku's judgement +wrong on 3 of 6 checked prompts \(50%\)/)
     expect(report).toMatch(/Hand-downs paused +lookup work to Opus, wrong on 50% of 6/)
-    expect(report).toContain('Hand-downs of lookup work to Opus, and lowering effort on it, resume when')
+    expect(report.replace(/\s+/g, ' ')).toContain('Paused: hand-downs of lookup work to Opus (wrong on 50% of 6). They resume by themselves')
   })
 
   test(`with a clean record the same lowering goes ahead (${surface})`, { timeoutMs: 30000 }, async ($, on) => {

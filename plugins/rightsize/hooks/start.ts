@@ -192,8 +192,11 @@ export function startTip(a: Extract<StartAdvice, { kind: 'switch' }>, subscripti
   return `Starting on ${to} would have ${less} than ${startName(a.current)} on your last ${n} rated prompts${up}. Switch with /model.`
 }
 
-/** The report's STARTING POINT section: a heading, one row per start (name, value), a note, and the suggestion that goes to NEXT STEPS. */
-export type StartBlock = { head: string; rows: string[][]; note?: string; tip?: string }
+/**
+ * The report's STARTING POINT section (in /rightsize report details): a heading, one row per start (name, value), a note,
+ * and the suggestion that goes to RECOMMENDATIONS. `fits` is the one line RECOMMENDATIONS shows when the start needs no change.
+ */
+export type StartBlock = { head: string; rows: string[][]; note?: string; tip?: string; fits?: string }
 
 /** The report's block: each start's replayed cost, and the advice. */
 export function startBlock(a: StartAdvice, subscription: boolean, money: (d: number) => string): StartBlock {
@@ -210,6 +213,6 @@ export function startBlock(a: StartAdvice, subscription: boolean, money: (d: num
     return [`${startName(r.start)}${yours}`, `${value}${up}`]
   })
   const head = `${startName(a.current)}, ${n} rated prompts in ${START_WINDOW_DAYS} days`
-  if (a.kind === 'switch') return { head, rows, note: 'Estimated from your log. A different start is suggested under NEXT STEPS.', tip: startTip(a, subscription) }
-  return { head, rows, note: 'Estimated from your log. Your start fits: no other start is clearly cheaper without sending more work to a stronger model.' }
+  if (a.kind === 'switch') return { head, rows, note: 'Estimated from your log. A different start is suggested under RECOMMENDATIONS.', tip: startTip(a, subscription) }
+  return { head, rows, note: 'Estimated from your log. Your start fits: no other start is clearly cheaper without sending more work to a stronger model.', fits: `your start (${startName(a.current)}) fits` }
 }

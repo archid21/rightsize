@@ -595,8 +595,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.files[`${LOGS}/rightsize/zzz/switches.jsonl`] = `${JSON.stringify({ at: new Date(h.now - 2 * DAY).toISOString(), kept: false })}\n`
     const d = drive($, h)
     await d.start(surface)
-    const report = String((await d.command('report')).text)
-    expect(cellsOf(report, 'Prompts rated')?.slice(1), 'all three sources, 60 + 1 + 1').toEqual(['62', '62'])
+    const report = (await d.report())
+    expect(cellsOf(report, 'Prompts rated'), 'all three sources, 60 + 1 + 1').toEqual(['62'])
     expect(report, 'the newest prompt is Opus, so Opus is the start').toContain('STARTING POINT  Opus at medium, 62 rated prompts in 30 days')
     expect(report, 'effort switches from both places').toMatch(/2 switches\s+missed the cache, of 2 effort switches/)
   })
@@ -673,6 +673,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.turnStart('t1', DEBUG)
     await d.step('t1')
     await d.complete('t1')
+    // The log's times are the wall clock's: the report's periods count from now.
+    h.now = Date.now()
     const runs = readRuns(h)
     expect(runs.map(l => l.kind)).toEqual(['unbound', 'run'])
     expect(runs[0]).toMatchObject({ kind: 'unbound', reason: 'cancelled before its turn started' })
@@ -680,7 +682,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(runs[1], 'the run in turn t1 is the prompt that started it').toMatchObject({ turnId: 't1' })
     expect(runs[1]?.id).not.toBe(runs[0]?.id)
     expect(runs[1]?.queued, 'typed while idle').toBeUndefined()
-    expect(cellsOf(String((await d.command('report')).text), 'Prompts rated')?.[0], 'one rated run in this session: the unbound prompt is not one').toBe('1')
+    expect(cellsOf(await d.report(), 'Prompts rated'), 'one rated run: the unbound prompt is not one').toEqual(['1'])
   })
 
   test(`a prompt delivered into the running turn is logged unbound when the next turn starts for other text, and does not attach to it (${surface})`, { timeoutMs: 30000 }, async ($, on) => {

@@ -619,6 +619,11 @@ export const drive = (api: unknown, h: ReturnType<typeof engine>) => {
         origin: kind === 'plugin' ? { kind, name: 'other' } : { kind },
       }),
     command: (args: string) => e.command.run({ command: 'rightsize', args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } }),
+    /** /rightsize report, then /rightsize report details, as one text. */
+    report: async () => {
+      const run = (args: string) => e.command.run({ command: 'rightsize', args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
+      return `${(await run('report')).text ?? ''}\n${(await run('report details')).text ?? ''}`
+    },
   }
 }
 

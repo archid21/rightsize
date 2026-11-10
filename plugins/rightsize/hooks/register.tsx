@@ -3869,7 +3869,8 @@ const COMMANDS: readonly (readonly [string, string])[] = [
   ['', 'open the settings pane: change any setting, and see which you set'],
   ['status', 'show your changed settings and current state'],
   ['settings', 'answer the questions again'],
-  ['report', 'what it saved and what went wrong'],
+  ['report', 'what it saved, and what to change'],
+  ['report details', 'how it decided, what went wrong, and time'],
   ['retry', 're-run the last auto-lowered prompt at the original effort'],
   ['clear', 'drop the session switch'],
   ['resume', 'start changing the model and effort again, after you stepped up and rightsize paused'],
@@ -4593,7 +4594,7 @@ export const register: Register = (on, options) => {
     if (arg === 'retry') return { text: await retry($) }
     if (arg === 'reset' || arg.startsWith('reset ')) return { text: await runReset($, e.args.trim().slice('reset'.length)) }
     if (arg === 'prices') return { text: await runCheck($, 'manual') }
-    if (arg === 'report') {
+    if (arg === 'report' || arg === 'report details') {
       const runs = await readRuns($)
       const switches = await readSwitchLines($)
       const lifetime = await readLifetime($)
@@ -4602,7 +4603,7 @@ export const register: Register = (on, options) => {
       // The desktop app (any surface but the terminal) renders the report as Markdown.
       const surfaces = await $.session.surfaces()
       const markdown = surfaces.some(x => x !== 'terminal')
-      return { text: buildReport(runs, switches, { now, session: sessionId, subscription: billing === 'subscription', start, pause: missBlock, markdown, watching, ...(lifetime ? { lifetime } : {}), ...(measureFrom ? { measureFrom: new Date(measureFrom).toISOString() } : {}) }) }
+      return { text: buildReport(runs, switches, { now, session: sessionId, subscription: billing === 'subscription', start, pause: missBlock, markdown, watching, details: arg === 'report details', ...(lifetime ? { lifetime } : {}), ...(measureFrom ? { measureFrom: new Date(measureFrom).toISOString() } : {}) }) }
     }
     if (arg === 'share') {
       const runs = await readRuns($)

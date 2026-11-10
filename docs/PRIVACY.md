@@ -15,7 +15,7 @@ If whatsnext is installed, rightsize runs its script on your machine, found in C
 ## What stays on your machine
 
 - The logs under `~/.claude/mods-logs/rightsize/` (readable by you alone) and rightsize's store in Claude Code's plugin store. They hold what rightsize decided and measured, and are listed in [WHAT-IT-TOUCHES.md](WHAT-IT-TOUCHES.md).
-- Your answers to keep-warm offers (`cold` lines) and what keep warm saved on your returns (`warmSaved` lines). The `warmSaved` lines count toward the report's Total saved, as an estimate of what coming back cold would have cost; the `cold` lines carry no cost and are no part of any figure.
+- Your answers to keep-warm offers (`cold` lines) and what keep warm saved on your returns (`warmSaved` lines). The `warmSaved` lines count toward the report's saving, as an estimate of what coming back cold would have cost; the `cold` lines carry no cost and are no part of any figure.
 - The report's lifetime roll-up: sums of cost and saving for runs older than 30 days, in rightsize's store. No prompt text, no session or task ids. It stays in `~/.claude/plugins/store/`, outside any repository, so no git command picks it up.
 - Your 👍 and 👎 (below).
 

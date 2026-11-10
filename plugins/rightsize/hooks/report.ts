@@ -482,20 +482,66 @@ function lifetimeSince(life: Lifetime | undefined, lines: readonly RunLine[]) {
 
 const DAYS_30 = 'in the last 30 days'
 
-/** The one sentence the report opens with: a subscriber reads the window first, an API user reads dollars. */
-function headline(s: Stats, subscription: boolean) {
-  if (s.empty) return 'Nothing rated in the last 30 days.'
+/** Hours from minutes, for a sentence or a cell: "~22–23 h"; under two hours, minutes: "~8–16 min", "under 16 min". */
+function workTime(m: Share) {
+  if (m.hi < 120) return minutesText(m)
+  const a = Math.max(0, Math.round(m.lo / 60))
+  const b = Math.round(m.hi / 60)
+  if (a === 0) return `under ${b} h`
+  return a === b ? `~${b} h` : `~${a}–${b} h`
+}
+
+/** How many 5-hour windows a share of one stands for: "~10–11", "~3.3–3.5", "under 0.4"; a loss reads "-0.2 to -0.4". */
+function windowsText(s: Share) {
+  const one = (v: number) => (v < 9.95 ? v.toFixed(1) : String(Math.round(v)))
+  const [lo, hi] = s.hi > 0 ? [Math.max(0, s.lo) / 100, s.hi / 100] : [-s.hi / 100, -s.lo / 100]
+  const a = one(lo)
+  const b = one(hi)
+  if (s.hi <= 0) return a === '0.0' ? `0 to -${b === '0.0' ? '0.1' : b}` : a === b ? `-${b}` : `-${a} to -${b}`
+  if (b === '0.0') return 'under 0.1'
+  if (a === '0.0') return `under ${b}`
+  return a === b ? `~${b}` : `~${a}–${b}`
+}
+
+/** A share in whole percents for a table cell ("~135–223%"); a loss reads "-3 to -5%". */
+function pctCell(s: Share) {
+  if (s.hi > 0) return bandShareText(s)
+  const t = bandShareText(s)
+  const m = /^~?([\d.]+)–([\d.]+)%$/.exec(t)
+  if (m) return `-${m[1]} to -${m[2]}%`
+  return t.startsWith('under ') ? `0 to -${t.slice('under '.length)}` : `-${t.replace('~', '')}`
+}
+
+/** The work time for a sentence: "about 22–23 more hours", "about 1 more minute", "up to 16 more minutes". */
+function workWords(m: Share) {
+  const t = workTime(m)
+  const up = t.startsWith('under ')
+  const n = t.replace(/^~|^under /, '')
+  const one = /^1 (h|min)$/.test(n)
+  return `${up ? 'up to' : 'about'} ${n.replace(/ h$/, one ? ' more hour' : ' more hours').replace(/ min$/, one ? ' more minute' : ' more minutes')}`
+}
+
+/**
+ * The sentences the report opens with. A subscriber reads hours of Claude's work first (the window share the saving
+ * stands for, at their own pace), then windows and the API-equivalent value; an API user reads dollars.
+ */
+function headline(s: Stats, subscription: boolean): string[] {
+  if (s.empty) return ['Nothing rated in the last 30 days.']
   const { t, net, kept } = s
-  if (Math.abs(net) < 0.005) return `About even ${DAYS_30}: savings and rating calls cancel out.`
+  if (Math.abs(net) < 0.005) return ['About even: savings and rating calls cancel out.']
   if (subscription) {
     if (kept) {
-      return kept.five.hi > 0
-        ? `Saved ${shareText(kept.five)} of your 5-hour window${kept.mins ? ` (${minutesText(kept.mins)})` : ''} ${DAYS_30}.`
-        : `Used ${shareText(kept.five)} more of your 5-hour window than staying would have ${DAYS_30}.`
+      if (kept.five.hi <= 0) return [`Used ${shareText(kept.five)} more of your 5-hour window than staying would have (~${money(-net)} more, API-equivalent).`]
+      const value = `worth ~${money(net)} at API prices`
+      // Under one window, the share reads better than a count of windows: "~3.3–4.7% of one 5-hour window".
+      const wins = kept.five.hi < 100 ? `${shareText(kept.five)} of one 5-hour window` : `${windowsText(kept.five)} extra 5-hour ${kept.five.hi >= 150 ? 'windows' : 'window'}`
+      return kept.mins
+        ? [`You got ${workWords(kept.mins)} of Claude's work from your plan.`, `That is ${wins}, ${value}.`]
+        : [`You saved ${wins}, ${value}.`]
     }
-    return net > 0 ? `Saved ~${savedShare(t)}% of your usage ${DAYS_30}.` : `Used more than it saved ${DAYS_30} (~${money(-net)} more, API-equivalent).`
+    return [net > 0 ? `You saved ~${savedShare(t)}% of your usage, worth ~${money(net)} at API prices.` : `Used more than it saved (~${money(-net)} more, API-equivalent).`]
   }
-  return net > 0 ? `Saved ~${money(net)} (~${savedShare(t)}%) ${DAYS_30}.` : `Cost ~${money(-net)} more than it saved ${DAYS_30}.`
+  return [net > 0 ? `You saved ~${money(net)} (~${savedShare(t)}% of your cost).` : `Cost ~${money(-net)} more than it saved.`]
 }
 
 /**
@@ -581,56 +627,53 @@ function wrap(text: string, first: string, rest: string, width = 78) {
   return [...out, line]
 }
 
-/** A table row: shown when any period has something for it; a period with nothing rated shows a dash, except on `counts` rows. */
-type Row = { label: string; any: (s: Stats) => boolean; cell: (s: Stats) => string; counts?: true }
+/** A table row: shown when any period has something for it; a period with nothing rated shows a dash. */
+type Row = { label: string; any: (s: Stats) => boolean; cell: (s: Stats) => string }
 
-/** A table cell: the range, with a minus sign in front when the window was used more than staying would have. */
-// A loss gets a minus on both ends, so "-1.7 to -5.0%" can't read as minus 1.7 to plus 5.0.
-const gain = (s: Share) => {
-  if (s.hi > 0) return shareText(s)
-  const t = shareText(s)
-  const m = /^~?(\d+\.\d)–(\d+\.\d)%$/.exec(t)
-  if (m) return `-${m[1]} to -${m[2]}%`
-  return t.startsWith('under ') ? `0 to -${t.slice('under '.length)}` : `-${t.replace('~', '')}`
-}
-const whole = () => true
 const measured = (s: Stats) => !s.empty
+const dollars = (net: number) => (net >= 0.005 ? `~${money(net)}` : net <= -0.005 ? `-${money(-net)}` : 'even')
 
-function tableRows(subscription: boolean): Row[] {
-  const c = (s: Stats) => s.t.changed
-  // The minutes the window share stands for are in the headline; a column of them would not fit in 80.
+/** YOUR SAVINGS rows: on a subscription the work time and windows first, then the dollar rows both bills share. */
+function savingsRows(subscription: boolean): Row[] {
+  // On a subscription a dollar figure is what the same use would cost on the API, never money saved: the label says so.
   const windows: Row[] = [
-    { label: '5-hour window saved', any: s => !!s.kept, cell: s => (s.kept ? gain(s.kept.five) : '–') },
-    { label: '7-day window saved', any: s => s.kept?.week !== undefined, cell: s => (s.kept?.week !== undefined ? gain(s.kept.week) : '–') },
+    { label: 'Extra work time', any: s => !!s.kept?.mins, cell: s => (s.kept?.mins ? workTime(s.kept.mins) : '–') },
+    { label: '5-hour windows', any: s => !!s.kept, cell: s => (s.kept ? windowsText(s.kept.five) : '–') },
+    { label: 'Weekly limit', any: s => s.kept?.week !== undefined, cell: s => (s.kept?.week !== undefined ? pctCell(s.kept.week) : '–') },
   ]
-  // Savings first, then what rightsize did.
   return [
-    // On a subscription a dollar figure is what the same use would cost on the API, never money saved: the label says so.
-    { label: subscription ? 'Total saved (API-equivalent)' : 'Total saved', any: measured, cell: s => (s.net >= 0.005 ? `~${money(s.net)}` : s.net <= -0.005 ? `-${money(-s.net)}` : 'even') },
     ...(subscription ? windows : []),
+    { label: subscription ? 'Value (API prices)' : 'Saved', any: measured, cell: s => dollars(s.net) },
     { label: 'Share of cost saved', any: measured, cell: s => (s.net >= 0.005 ? `~${savedShare(s.t)}%` : '–') },
-    { label: subscription ? 'Extra on harder prompts (API-equivalent)' : 'Extra spent on harder prompts', any: s => s.t.extra > 0.005, cell: s => money(s.t.extra) },
-    { label: 'Prompts rated', any: whole, cell: s => String(s.t.rated), counts: true },
-    { label: 'Kept / lowered / raised', any: whole, cell: s => `${c(s).none}/${c(s).lower}/${c(s).raise}`, counts: true },
-    { label: 'Sent to cheaper / stronger model', any: s => c(s)['delegate-down'] + c(s)['delegate-up'] > 0, cell: s => `${c(s)['delegate-down']}/${c(s)['delegate-up']}` },
-    { label: 'Suggestions declined', any: s => s.t.declined > 0, cell: s => String(s.t.declined) },
-    { label: 'Subagents on cheaper model', any: s => s.t.subagents > 0, cell: s => String(s.t.subagents) },
-    { label: 'Close calls: guide / explored', any: s => !!s.ties && s.ties.guided + s.ties.explored > 0, cell: s => (s.ties ? `${s.ties.guided}/${s.ties.explored}` : '–') },
+    { label: 'Extra on hard prompts', any: s => s.t.extra > 0.005, cell: s => money(s.t.extra).replace('under ', '<') },
   ]
 }
 
-/** Prompts, changes and savings for the session, 7 days and 30 days, in columns. */
-function periodTable(cols: readonly [Stats, Stats, Stats], subscription: boolean) {
-  const rows = tableRows(subscription).filter(r => cols.some(r.any))
-  const cell = (r: Row, s: Stats) => (s.empty && !r.counts ? '–' : r.cell(s))
-  return grid([['', 'Session', '7 days', '30 days'], ...rows.map(r => [r.label, ...cols.map(s => cell(r, s))])], [1, 2, 3])
+/** Today, 7 days, 30 days and lifetime in columns. Lifetime keeps no window shares, so its window rows are dashes. */
+function savingsTable(cols: readonly Stats[], subscription: boolean) {
+  const rows = savingsRows(subscription).filter(r => cols.some(r.any))
+  const cell = (r: Row, s: Stats) => (s.empty ? '–' : r.cell(s))
+  return grid([['', 'Today', '7 days', '30 days', 'Lifetime'], ...rows.map(r => [r.label, ...cols.map(s => cell(r, s))])], [1, 2, 3, 4])
 }
 
-/** Today and lifetime in two columns, with the same rows and cells as the table above. */
-function rollupTable(cols: readonly [Stats, Stats], subscription: boolean) {
-  const rows = tableRows(subscription).filter(r => cols.some(r.any))
-  const cell = (r: Row, s: Stats) => (s.empty && !r.counts ? '–' : r.cell(s))
-  return grid([['', 'Today', 'Lifetime'], ...rows.map(r => [r.label, ...cols.map(s => cell(r, s))])], [1, 2])
+/** 30-DAY SUMMARY: what rightsize did, one row each. Effort and model changes always show once anything was rated. */
+function summaryRows(s: Stats, warm: KeepWarm | undefined, subscription: boolean): string[][] {
+  const c = s.t.changed
+  const prompts = (n: number) => `${n.toLocaleString('en-US')} ${n === 1 ? 'prompt' : 'prompts'}`
+  const rows: string[][] = []
+  if (s.t.rated) {
+    rows.push(['Prompts rated', s.t.rated.toLocaleString('en-US')], ['Left as they were', prompts(c.none)], ['Effort lowered', prompts(c.lower)], ['Cheaper model', prompts(c['delegate-down'])])
+    if (c.raise) rows.push(['Effort raised', prompts(c.raise)])
+    if (c['delegate-up']) rows.push(['Stronger model', prompts(c['delegate-up'])])
+  }
+  if (s.t.subagents) rows.push(['Subagents moved', `${s.t.subagents} to a cheaper model`])
+  if (s.t.declined) rows.push(['You declined', plural(s.t.declined, 'suggestion')])
+  if (warm) {
+    const gain = warm.returns ? `saved ${tildeMoney(warm.saved)}` : 'no returns'
+    const result = Math.abs(warm.net) < 0.005 ? 'about even' : warm.net > 0 ? `net ${tildeMoney(warm.net)} saved` : `net ${tildeMoney(-warm.net)} more`
+    rows.push(['Keep warm', `${plural(warm.runs, 'run')}: ${gain}, cost ${tildeMoney(warm.cost)}, ${result}${subscription ? ' (API prices)' : ''}`])
+  }
+  return rows
 }
 
 /** How far estimates were from what turns cost: the mean of max(actual/estimate, estimate/actual). */
@@ -662,7 +705,8 @@ function haikuRows(lines: readonly RunLine[], pause: number | null, from: number
   // The type `other` is no kind of work: it is what the rater files a prompt under when none fits.
   const what = type === 'other' ? `unclassified work (work the rater could not place in a kind) to ${TIER_NAME[tier]}` : `${type} work to ${TIER_NAME[tier]}`
   rows.push(['Hand-downs paused', `${type === 'other' ? `unclassified work to ${TIER_NAME[tier]}` : what}, wrong on ${Math.round(worst.rate * 100)}% of ${worst.n}`])
-  return { rows, paused: `Hand-downs of ${what}, and lowering effort on it, resume when its miss rate falls under the Pause after misses line (/config).` }
+  const short = `${type === 'other' ? 'unclassified' : type} work to ${TIER_NAME[tier]}`
+  return { rows, note: `hand-downs of ${short} (wrong on ${Math.round(worst.rate * 100)}% of ${worst.n}). They resume by themselves when the miss rate falls under Pause after misses (/config).`, paused: `Hand-downs of ${what}, and lowering effort on it, resume when its miss rate falls under the Pause after misses line (/config).` }
 }
 
 /** How far off the estimates were, early against late; nothing until there are enough measured runs. */
@@ -678,9 +722,9 @@ function calibrationRow(runs: readonly RunLine[]) {
 
 /** How good the ratings and estimates were: Haiku's misses, Sonnet's checks, what is paused for them, and the estimate error. */
 export function accuracyRows(lines: readonly RunLine[], pause: number | null = MISS_BLOCK, from = 0) {
-  const { rows, paused } = haikuRows(lines, pause, from)
+  const { rows, paused, note } = haikuRows(lines, pause, from)
   const calibration = calibrationRow(lines.filter(l => isRun(l) && !l.aborted))
-  return { rows: [...rows, ...(calibration ? [calibration] : [])], ...(paused ? { paused } : {}) }
+  return { rows: [...rows, ...(calibration ? [calibration] : [])], ...(paused ? { paused } : {}), ...(note ? { note } : {}) }
 }
 
 /** One thing that was off: `n` of `unit` (singular, plural), why, and any detail lines. */
@@ -700,8 +744,9 @@ export function problems(lines: readonly RunLine[], switches: readonly SwitchLin
   if (raised.length) {
     const why = new Map<string, number>()
     for (const l of raised) for (const x of l.escalations ?? []) why.set(x.why.replace(/^\d+ /, 'several '), (why.get(x.why.replace(/^\d+ /, 'several ')) ?? 0) + 1)
-    const top = [...why.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([w, n]) => `${w} (${n})`).join(', ')
-    out.push({ n: raised.length, unit: TURN, reason: 'raised mid-turn because Claude looked stuck', detail: [top] })
+    // One sign per line, most first: joined on one line they ran past 80 columns.
+    const top = [...why.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([w, n]) => `${w} (${n})`)
+    out.push({ n: raised.length, unit: TURN, reason: 'raised mid-turn because Claude looked stuck', detail: top })
   }
   const dearer = runs.filter(l => delegated(l) && num(l.stay) > 0 && num(l.actual) > num(l.stay))
   if (dearer.length) {
@@ -741,7 +786,13 @@ function problemRows(ps: readonly Problem[]) {
   const unit = (p: Problem) => p.unit[p.n === 1 ? 0 : 1]
   const nw = Math.max(0, ...ps.map(p => String(p.n).length))
   const uw = Math.max(0, ...ps.map(p => unit(p).length))
-  return ps.flatMap(p => [[`${String(p.n).padStart(nw)} ${unit(p).padEnd(uw)}`, p.reason], ...(p.detail ?? []).map(d => ['', d])])
+  // The text column starts after the 2-space indent, the count and unit, and the 3-space gap; it wraps to stay within 78.
+  const room = 78 - (2 + nw + 1 + uw + 3)
+  const lines = (text: string) => wrap(text, '', '', room)
+  return ps.flatMap(p => [
+    ...lines(p.reason).map((t, i) => [i === 0 ? `${String(p.n).padStart(nw)} ${unit(p).padEnd(uw)}` : '', t]),
+    ...(p.detail ?? []).flatMap(d => lines(d).map(t => ['', t])),
+  ])
 }
 
 const k = (n: number) => (n >= 1000 ? `${Math.round(n / 1000)}K` : `${Math.round(n)}`)
@@ -943,13 +994,23 @@ export function wholeTaskRows(lines: readonly RunLine[], now: number, subscripti
  * and the net. A run the person never came back to is pure cost. Undefined when there was no keep-warm run. A run is the
  * requests that share `warmRun` (an older line with none counts by its session); a dollar figure on a subscription is API-equivalent.
  */
-export function keepWarmLine(lines: readonly RunLine[], subscription: boolean): string | undefined {
+type KeepWarm = { runs: number; returns: number; saved: number; cost: number; net: number }
+
+/** Keep warm's numbers for the period: runs, returns that held the cache, what those saved, what the pings cost, the net. */
+function keepWarm(lines: readonly RunLine[]): KeepWarm | undefined {
   const pings = lines.filter(l => l.kind === 'warm')
   const t = totals(lines.filter(l => l.kind === 'warmSaved'))
   if (!pings.length && !t.returns) return undefined
   const runs = new Set(pings.map(l => l.warmRun ?? `session ${l.session ?? ''}`)).size
   const cost = pings.reduce((n, l) => n + num(l.overhead), 0)
-  const net = t.keptSaved - cost
+  return { runs, returns: t.returns, saved: t.keptSaved, cost, net: t.keptSaved - cost }
+}
+
+export function keepWarmLine(lines: readonly RunLine[], subscription: boolean): string | undefined {
+  const w = keepWarm(lines)
+  if (!w) return undefined
+  const t = { returns: w.returns, keptSaved: w.saved }
+  const { runs, cost, net } = w
   const result = Math.abs(net) < 0.005 ? 'net about even' : net > 0 ? `net ${tildeMoney(net)} saved` : `net ${tildeMoney(-net)} more`
   const gain = t.returns ? `saved ${tildeMoney(t.keptSaved)} on ${plural(t.returns, 'return')}` : 'saved nothing: no returns'
   return `Keep warm: ${plural(runs, 'run')} · ${gain} · cost ${tildeMoney(cost)} · ${result}${subscription ? ' (API-equivalent)' : ''}`
@@ -1012,13 +1073,21 @@ export function fixedBlock(lines: readonly RunLine[], subscription = false) {
     ],
     tree,
     ...(how ? { fix: `rightsize can't trim fixed context. To cut it: ${how}.` } : {}),
+    ...(how
+      ? {
+          rec: `Cut fixed context. ~${k(avg('tokens'))} tokens go with every request: at least ~${money(cost)}${subscription ? ' at API prices' : ''} in 30 days${pct}. Largest: ${big
+            .slice(0, 2)
+            .map(([t, label]) => `${label} ${k(t)}`)
+            .join(', ')}. To cut it: ${how}.`,
+        }
+      : {}),
   }
 }
 
 export function buildReport(
   lines: readonly RunLine[],
   switches: readonly SwitchLine[],
-  opts: { now: number; session: string; subscription: boolean; start?: StartBlock; pause?: number | null; measureFrom?: string; markdown?: boolean; watching?: boolean; lifetime?: Lifetime },
+  opts: { now: number; session: string; subscription: boolean; start?: StartBlock; pause?: number | null; measureFrom?: string; markdown?: boolean; watching?: boolean; lifetime?: Lifetime; details?: boolean },
 ) {
   const since = (days: number) => (l: { at: string }) => opts.now - Date.parse(l.at) <= days * DAY
   const month = lines.filter(since(30))
@@ -1030,58 +1099,88 @@ export function buildReport(
     const out = rows.map(r => `  ${r}`)
     return md && out.length ? ['```', ...out, '```'] : out
   }
+  const para = (text: string, first = '', rest = '') => (md ? [text] : wrap(text, first, rest || first, 78))
   const section = (t: string, rows: readonly string[]) => ['', t, ...indent(rows)]
+  const from = opts.measureFrom ? Date.parse(opts.measureFrom) : 0
+  const thirty = stats(month, sub, true)
+  const fixed = fixedBlock(month, sub)
+  const start = opts.start
+  const accuracy = accuracyRows(month, opts.pause, from)
+  if (opts.details) return detailsReport()
 
-  const cols = [stats(lines.filter(l => opts.session !== '' && l.session === opts.session), sub), stats(lines.filter(since(7)), sub, true), stats(month, sub, true)] as const
-  const nothing = cols.every(s => s.empty)
-  // Today (since local midnight) and lifetime, in the same rows. Both are estimates, like every figure here.
+  // Today (since local midnight), 7 days, 30 days and lifetime. All are estimates.
   const midnight = new Date(opts.now).setHours(0, 0, 0, 0)
-  const rolled = [stats(lines.filter(l => Date.parse(l.at) >= midnight), sub), lifetimeStats(opts.lifetime, lines)] as const
-  const out = ['rightsize report', nothing ? (rolled[1].empty ? 'Nothing rated yet.' : 'Nothing rated in the last 30 days.') : headline(cols[2], sub)]
+  const cols = [stats(lines.filter(l => Date.parse(l.at) >= midnight), sub), stats(lines.filter(since(7)), sub), thirty, lifetimeStats(opts.lifetime, lines)]
+  const nothing = thirty.empty
+  const out = ['rightsize report · last 30 days', ...(nothing ? [cols[3]?.empty ? 'Nothing rated yet.' : 'Nothing rated in the last 30 days.'] : headline(thirty, sub).flatMap(h => para(h)))]
   if (opts.measureFrom) out.push(`Cost measurement restarted on ${opts.measureFrom.slice(0, 10)}.`)
-  if (!nothing) out.push('', ...indent(periodTable(cols, sub)))
-  if (!rolled.every(s => s.empty)) {
-    const note = `Estimates. Lifetime counts from ${lifetimeSince(opts.lifetime, lines)}: older runs are kept as totals, and anything from before rightsize kept them is not in it.`
-    out.push('', ...indent(rollupTable(rolled, sub)), ...(md ? ['', note] : wrap(note, '', '', 78)))
-  }
-  if (!nothing) out.push('', 'Everything below covers the last 30 days.')
-  // Keep warm's own line: its saving is in Total saved above, and so is the cost of its requests.
-  const kept = keepWarmLine(month, sub)
-  if (kept) out.push('', ...(md ? [kept] : wrap(kept, '', '  ')))
+  if (!cols.every(s => s.empty)) out.push(...section('YOUR SAVINGS', savingsTable(cols, sub)))
+
+  const warm = keepWarm(month)
+  const summary = summaryRows(thirty, warm, sub)
+  if (summary.length) out.push(...section('30-DAY SUMMARY', grid(summary)))
   // Watch only: what rightsize would have done, and what that would have saved, against staying. Nothing was applied.
   const watched = watchLine(month, sub, opts.watching === true)
-  if (watched) out.push('', ...(md ? [watched] : wrap(watched, '', '  ')))
+  if (watched) out.push('', ...para(watched))
 
-  const start = opts.start
-  if (start) out.push('', `STARTING POINT  ${start.head}`, ...indent(grid(start.rows)), ...(start.note ? (md ? ['', start.note] : wrap(start.note, '  ', '  ')) : []))
-  const fixed = fixedBlock(month, sub)
-  if (fixed) out.push('', `FIXED CONTEXT  ${fixed.head}`, ...(md ? fixed.notes : fixed.notes.flatMap(n => wrap(n, '  ', '  '))), ...indent(grid(fixed.tree, [1])))
-  const accuracy = accuracyRows(month, opts.pause, opts.measureFrom ? Date.parse(opts.measureFrom) : 0)
-  if (accuracy.rows.length) out.push(...section('ACCURACY', grid(accuracy.rows)))
-  const problem = problems(month, switches.filter(since(30)), sub)
-  out.push(...(problem.length ? section('NOT COUNTED AS SAVINGS', grid(problemRows(problem))) : ['', 'NOT COUNTED AS SAVINGS', md ? 'Nothing yet.' : '  Nothing yet.']))
-  // Time is measured and reported here; it never chooses a route.
-  const time = timeRows(month)
-  out.push(...(time ? section('TIME', grid(time)) : ['', 'Time: not measured yet (needs prompts from rightsize 0.8).']))
-  // What a whole task cost against its estimate, from its first prompt to the rater's "new goal".
-  const whole = wholeTaskRows(lines, opts.now, sub)
-  out.push(...('rows' in whole ? section('WHOLE TASKS', grid(whole.rows)) : ['', ...(nothing ? [] : md ? [whole.need] : wrap(whole.need, '', '  '))]))
-  // Actions from the sections above, in their own words: fixed context, the start, a pause.
-  const next = [fixed?.fix, start?.tip, accuracy.paused].filter((n): n is string => !!n)
-  if (next.length) out.push('', 'NEXT STEPS', ...(md ? next.map(n => `- ${n}`) : indent(next.flatMap(n => wrap(n, '- ', '  ', 76)))))
-  const t = cols[2].t
-  const foot = [
-    'Estimated: actual cost vs staying at your own model and effort.',
-    ...(nothing ? [] : [`Total saved is after the cost of rating prompts${month.some(l => l.kind === 'warm') ? ' and of keeping the cache warm' : ''} (${money(t.overhead)}${sub ? ' API-equivalent' : ''} in 30 days)${month.some(l => l.kind === 'warm' || l.kind === 'warmSaved') ? ', and counts what keeping it warm saved when you came back to a warm cache' : ''}.`]),
-    ...(cols.some(s => s.t.extra > 0.005)
-      ? [sub ? "Extra on harder prompts: what raising effort or using a stronger model would cost on the API, for better answers. It isn't taken off Total saved." : "Extra spent on harder prompts: what raising effort or using a stronger model cost, for better answers. It isn't taken off Total saved."]
-      : []),
-    ...(sub && cols.some(s => s.kept) ? ['Window shares are ranges because the rate limits report whole percents.'] : []),
-    ...(nothing ? [] : [stepLine(lines, opts.measureFrom ? Date.parse(opts.measureFrom) : 0)]),
-    ...(sub ? ['Dollar amounts are API-equivalent: what the same use would cost on the API.', 'You only pay for your subscription.'] : []),
+  // What to do, from the sections in details: fixed context, the start, keep warm. Then what needs no action.
+  const recs = [
+    fixed?.rec,
+    start?.tip,
+    warm && warm.net <= -0.005 ? `Keep warm cost more than it saved (${tildeMoney(-warm.net)} more${sub ? ' at API prices' : ''}). Set Before the cache goes cold to a shorter keep warm, or to ask (/config).` : undefined,
+  ].filter((n): n is string => !!n)
+  const notes = [
+    ...(start?.fits ? [`Checked, no change needed: ${start.fits}.`] : []),
+    ...(accuracy.note ? [`Paused: ${accuracy.note}`] : []),
   ]
-  out.push('', ...(md ? foot : foot.flatMap(f => wrap(f, '', '', 78))))
+  if (recs.length || notes.length) {
+    out.push('', 'RECOMMENDATIONS')
+    recs.forEach((r, i) => out.push(...(md ? [`${i + 1}. ${r}`] : wrap(r, `  ${i + 1}. `, '     ', 78))))
+    for (const n of notes) out.push(...(md ? [`- ${n}`] : wrap(n, '  ', '  ', 78)))
+  }
+
+  const foot = [
+    ...(nothing ? [] : ['Details: /rightsize report details']),
+    `Estimates: actual cost against staying at your own model and effort, after the cost of rating prompts${month.some(l => l.kind === 'warm') ? ' and keeping the cache warm' : ''}.`,
+    ...(cols.some(s => s.t.extra > 0.005) ? ["Extra on hard prompts: raising effort or using a stronger model, for better answers. It isn't taken off the saving."] : []),
+    ...(sub && cols.some(s => s.kept?.mins) ? ["Extra work time is Claude's working time at your usual pace."] : []),
+    ...(sub && cols.some(s => s.kept) ? ['Ranges: the rate limits report whole percents.'] : []),
+    ...(cols[3]?.empty ? [] : [`Lifetime counts from ${lifetimeSince(opts.lifetime, lines)}.`]),
+    ...(sub ? ['Dollar figures are API prices: what the same use would cost on the API. You pay only your subscription.'] : []),
+  ]
+  out.push('', ...foot.flatMap(f => para(f)))
   return out.join('\n')
+
+  /** /rightsize report details: the sections behind the numbers, for the last 30 days. */
+  function detailsReport() {
+    const out = ['rightsize report details · last 30 days']
+    if (opts.measureFrom) out.push(`Cost measurement restarted on ${opts.measureFrom.slice(0, 10)}.`)
+    if (start) out.push('', `STARTING POINT  ${start.head}`, ...indent(grid(start.rows)), ...(start.note ? para(start.note, '  ') : []))
+    if (fixed) out.push('', `FIXED CONTEXT  ${fixed.head}`, ...fixed.notes.flatMap(n => para(n, '  ')), ...indent(grid(fixed.tree, [1])))
+    const ties = thirty.ties && thirty.ties.guided + thirty.ties.explored > 0 ? [['Close calls', `${thirty.ties.guided} guided, ${thirty.ties.explored} explored`]] : []
+    const acc = [...accuracy.rows, ...ties]
+    if (acc.length) out.push(...section('ACCURACY', grid(acc)))
+    const problem = problems(month, switches.filter(since(30)), sub)
+    out.push(...(problem.length ? section('NOT COUNTED AS SAVINGS', grid(problemRows(problem))) : ['', 'NOT COUNTED AS SAVINGS', md ? 'Nothing yet.' : '  Nothing yet.']))
+    // Time is measured and reported here; it never chooses a route.
+    const time = timeRows(month)
+    out.push(...(time ? section('TIME', grid(time)) : ['', 'Time: not measured yet (needs prompts from rightsize 0.8).']))
+    // What a whole task cost against its estimate, from its first prompt to the rater's "new goal".
+    const whole = wholeTaskRows(lines, opts.now, sub)
+    out.push(...('rows' in whole ? section('WHOLE TASKS', grid(whole.rows)) : ['', ...(thirty.empty ? [] : para(whole.need, '', '  '))]))
+    const t = thirty.t
+    const foot = [
+      'Estimated: actual cost vs staying at your own model and effort.',
+      ...(thirty.empty ? [] : [`The saving is after the cost of rating prompts${month.some(l => l.kind === 'warm') ? ' and of keeping the cache warm' : ''} (${money(t.overhead)}${sub ? ' API-equivalent' : ''} in 30 days)${month.some(l => l.kind === 'warm' || l.kind === 'warmSaved') ? ', and counts what keeping it warm saved when you came back to a warm cache' : ''}.`]),
+      ...(t.extra > 0.005
+        ? [sub ? "Extra on hard prompts: what raising effort or using a stronger model would cost on the API, for better answers. It isn't taken off the saving." : "Extra on hard prompts: what raising effort or using a stronger model cost, for better answers. It isn't taken off the saving."]
+        : []),
+      ...(thirty.empty ? [] : [stepLine(lines, from)]),
+      ...(sub ? ['Dollar amounts are API-equivalent: what the same use would cost on the API.', 'You only pay for your subscription.'] : []),
+    ]
+    out.push('', ...foot.flatMap(f => para(f)))
+    return out.join('\n')
+  }
 }
 
 /**

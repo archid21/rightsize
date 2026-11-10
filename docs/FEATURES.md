@@ -34,7 +34,7 @@ Current release: 0.10.1
 |---|---|---|---|
 | Calibration | Real token usage from each turn corrects the estimates per task type, per model and per model at each level. Sessions running at the same time are merged. | Estimates get closer to your own work over time. | 0.4 |
 | Outcome tracking | Rework, a failing test, a reply you correct and your 👍 or 👎 score each route per kind of work and model. A route that misses on 20% of a kind of work is paused for that kind. | A model that keeps missing on, for example, reviews stops getting them until your outcomes say otherwise. | 0.7 |
-| Rater check | Sonnet re-rates every 20th Haiku rating, and Haiku's misses lower its trust per task type. | A cheaper rater is kept honest. | 0.7 |
+| Rater check | Sonnet is the default rater and is not checked against itself. When Haiku rates (**Rater** set to haiku, or Haiku as the fallback after a failed Sonnet rating), Sonnet re-rates every 20th such prompt in the background, and Haiku's misses lower its trust per task type. | A cheaper rater is kept honest. | 0.7 |
 
 ## Cache and context
 

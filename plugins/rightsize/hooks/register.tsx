@@ -4812,8 +4812,8 @@ export const register: Register = (on, options) => {
         if (gated.dropped) await log($, gated.dropped)
         const paced = paceNow.mode === 'normal' ? '' : `, ${paceNow.mode} pace on ${paceNow.window}${paceNow.pace === undefined ? '' : ` (${paceNow.pace.toFixed(2)})`}`
         await log($, `${r.type}${ratedType ? ` (rated ${ratedType}, continues the ${r.type} task)` : ''} on ${s.tier}/${s.level}${paced}: rated ${fit}, plan ${p.kind}${'dir' in p ? ` ${p.dir}` : ''}${run.tie ? ` (tie ${run.tie.by} over ${run.tie.over})` : ''}: ${did}`)
-        // Every 50th Haiku rating gets Sonnet's second opinion, in the background. A Sonnet rating is not checked
-        // (Sonnet would only be asked to agree with itself), and does not count toward the 50.
+        // Every 20th Haiku rating (Rater set to haiku, or Haiku as the fallback when Sonnet fails) gets Sonnet's second opinion, in the background. A Sonnet rating is not checked
+        // (Sonnet would only be asked to agree with itself), and does not count toward the 20.
         const spotDue = by === 'haiku' ? await dueCheck($) : false
         if (spotDue) void spotCheck($, sessionId, run.task, s.tier, s.level, prompt, r)
       } else {

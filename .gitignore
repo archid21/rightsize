@@ -13,3 +13,7 @@ docs/project/HANDOFF.md
 # whatsnext state and session handoff notes stay private
 .whatsnext/
 docs/project/handoffs/
+
+# whatsnext plan and task progress stay private (items come from the private roadmap)
+docs/project/PLAN.md
+docs/project/progress/

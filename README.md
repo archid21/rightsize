@@ -9,6 +9,8 @@ claude plugin marketplace add archid21/rightsize
 claude plugin install rightsize@archid21 --scope user
 ```
 
+**Status: 0.10.2.** Priced for Fable 5.2 and each older model version, and fewer false "stuck" raises. See [New in 0.10.2](#new-in-0102).
+
 MIT license · works with a Claude subscription (Pro, Max, Ultra) or an API key · [Open an issue](https://github.com/archid21/rightsize/issues)
 
 ---
@@ -129,6 +131,15 @@ On a subscription, a keep-warm request draws a small share of your usage window,
 | Remembering to switch | You | You | rightsize |
 
 *Benchmark: real tasks from open-source repositories, each graded by hidden tests the model never sees. Your results depend on your work and settings. Method: [docs/METHOD.md](docs/METHOD.md).*
+
+## New in 0.10.2
+
+- **Fable 5.2 and older models priced correctly.** Each older version, such as Opus 4.8, is priced by its own row. A model with no price row pauses rightsize until you switch.
+- **Keep warm fits your cache.** rightsize reads the cache's life (5 minutes or 1 hour) from the session and keeps a 5-minute cache warm inside long turns. The keep-warm or compact cost is priced over the time keep warm would run.
+- **Fewer false raises.** Permission denials and lookups that miss a file no longer count as failed tool calls.
+- **Tighter hand-offs.** The brief says what is out of scope, and the helper stops to ask when the brief leaves a choice open. A helper's long foreground wait is refused.
+
+Every change: [CHANGELOG.md](CHANGELOG.md). Every feature: [docs/FEATURES.md](docs/FEATURES.md).
 
 ## Quickstart
 

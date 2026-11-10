@@ -10,7 +10,8 @@ Current release: 0.10.1
 
 1. Add a row for each new feature, with **Since** set to `Unreleased`, when the feature lands. Change a row when a release changes how its feature works; remove the row when the feature is removed.
 2. At release, change every `Unreleased` to the new version (for example `0.11`), and set `Current release:` above to the version in `plugins/rightsize/.claude-plugin/plugin.json`.
-3. Run `node scripts/check-features.mjs`. It fails when `Current release:` is not the plugin version, when a row does not have four filled cells, or when a release is out and `Unreleased` rows are left.
+3. In the root `README.md`, update the `**Status:**` line under the install block and replace the `New in` section with this release's main changes.
+4. Run `node scripts/check-features.mjs`. It fails when `Current release:` is not the plugin version, when a row does not have four filled cells, or when a release is out and `Unreleased` rows are left.
 
 ## Routing
 

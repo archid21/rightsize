@@ -8,5 +8,4 @@ One line per record. Follow the link; do not add content here.
 - Vocabulary: `CONTEXT.md`
 - Features (update at each release): `docs/FEATURES.md`
 - Decisions: `docs/decisions/README.md`
-- Ground rules: `docs/project/GROUND-RULES.md`
-- How we work: `docs/project/HOW-WE-WORK.md`
+- Ground rules and the test command: `AGENTS.md`

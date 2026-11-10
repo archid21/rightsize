@@ -178,6 +178,9 @@ test('an effort switch not yet measured is charged the prior share of a cache re
   expect(near(switchCost({ ...big, cal: { [SWITCH_KEY]: { n: 5, ratio: 1 } } }, 1), (5 / CAL_FULL) * rewrite), 'five misses: a quarter of a rewrite').toBe(true)
   expect(near(switchCost({ ...big, cal: freeSwitches }, 2), 0), 'measured to keep the cache: free').toBe(true)
   expect(near(switchCost({ ...big, cal: { [SWITCH_KEY]: { n: CAL_FULL, ratio: 1 } } }, 2), 2 * rewrite), 'measured to miss: the whole rewrite').toBe(true)
+  // ADR 0031: an older model rebuilds the conversation on a switch, whatever the current models have measured.
+  expect(near(switchCost({ ...big, older: true }, 1), rewrite), 'an older model, nothing measured: a rewrite').toBe(true)
+  expect(near(switchCost({ ...big, older: true, cal: freeSwitches }, 2), 2 * rewrite), 'an older model, measured free elsewhere: still a rewrite').toBe(true)
 })
 
 test('a one-prompt lower on a long conversation is not blocked by the switch prior when nothing is measured', async () => {

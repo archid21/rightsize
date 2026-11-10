@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import { DEFAULT_PRICES, idleCost } from './cost'
-import { COMPACT_GAP_MIN, IDLE_COMPACT_DEFAULT, IDLE_COMPACT_FLOOR, compactBoundary, compactedText, idleCompactState, idleCompactThreshold, COMPACT_VALUE, IDLE_CAP, addGap, compactWorth, idleEstimate, ALWAYS_AFTER, BACK_OFF_AFTER, LEARN_OVER, OFFER_AFTER_MS, DEFAULT_START, ROW_OF, breakEvenMs, breakEvenPings, clockText, coldPlan, alwaysText, ignoredLately, keepWarmChoices, leadMs, learnedChoice, netSaving, nextStart, offerAt, offerText, pingCost, pingEvery, pingsFor, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText, WARM_PROOF, cacheHeld } from './warm'
+import { COMPACT_GAP_MIN, IDLE_COMPACT_DEFAULT, IDLE_COMPACT_FLOOR, compactBoundary, compactedText, idleCompactState, idleCompactThreshold, COMPACT_VALUE, IDLE_CAP, addGap, compactWorth, idleEstimate, ALWAYS_AFTER, BACK_OFF_AFTER, LEARN_OVER, OFFER_AFTER_MS, DEFAULT_START, ROW_OF, breakEvenMs, breakEvenPings, clockText, coldPlan, planLength, alwaysText, ignoredLately, keepWarmChoices, leadMs, learnedChoice, netSaving, nextStart, offerAt, offerText, pingCost, pingEvery, pingsFor, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText, WARM_PROOF, cacheHeld } from './warm'
 
 const MIN = 60_000
 const HOUR = 60 * MIN
@@ -362,4 +362,13 @@ test('a compact boundary: a drop after a gap of 50 minutes or more with no /comp
 test('the return note says what Claude did, with the handoff path when there is one', async () => {
   expect(compactedText({ before: 210_400, after: 18_300 })).toBe('Claude compacted this while you were away (210K to 18K tokens).')
   expect(compactedText({ before: 210_400, after: 18_300, handoff: 'docs/project/HANDOFF.md' })).toBe('Claude compacted this while you were away (210K to 18K tokens). Handoff: docs/project/HANDOFF.md')
+})
+
+test('a keep-warm plan pings for its hours, and "until my usual start" no later than the next start (ADR 0013)', async () => {
+  const HOUR = 60 * 60_000
+  const evening = new Date(2026, 10, 9, 22, 0).getTime()
+  expect(planLength({ action: 'warm', hours: 2 }, evening, 9 * 60)).toBe(2 * HOUR)
+  expect(planLength({ action: 'warm' }, evening, 9 * 60), 'no hours: 8').toBe(8 * HOUR)
+  expect(planLength({ action: 'warm', hours: 8, untilStart: true }, evening, 23 * 60), 'start at 23:00: 1 hour').toBe(HOUR)
+  expect(planLength({ action: 'warm', hours: 8, untilStart: true }, evening, 9 * 60), 'start at 9:00 tomorrow: capped at 8 hours').toBe(8 * HOUR)
 })

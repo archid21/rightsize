@@ -43,12 +43,10 @@ export const tierOf = (model: string | null | undefined): Tier | undefined => {
 export const NEWEST: Record<Tier, readonly [number, number]> = { haiku: [5, 5], sonnet: [5, 5], opus: [5, 5], fable: [5, 2] }
 export const versionName = (t: Tier, [major, minor]: readonly [number, number]) => `${TIER_NAME[t]} ${major}${minor ? `.${minor}` : ''}`
 
-/**
- * "Opus 4.8" when the model ID names a version older than NEWEST, else undefined. Reads `claude-opus-4-8`,
- * `claude-opus-4-20250514` (an 8-digit part is a date), `claude-3-5-sonnet-…` and Bedrock or Vertex wraps of these.
- * An ID with no version (`opus`, `sonnet[1m]`) is the newest.
- */
-export function olderModel(model: string | null | undefined): string | undefined {
+/** A model ID's family and version, or undefined when it names no version (`opus`, `sonnet[1m]`). Reads `claude-opus-4-8`,
+ * `claude-opus-4-20250514` (an 8-digit part is a date), `claude-3-5-sonnet-…`, and Bedrock or Vertex wraps of these
+ * (`anthropic.claude-opus-4-8-v1:0`, `claude-opus-4-8@20260101`): the version is found anywhere in the ID (ADR 0031). */
+export function modelVersion(model: string | null | undefined): { tier: Tier; v: readonly [number, number] } | undefined {
   const m = (model ?? '').toLowerCase()
   const t = tierOf(m)
   if (!t) return undefined
@@ -58,10 +56,27 @@ export function olderModel(model: string | null | undefined): string | undefined
   const hit = num(after?.[1]) !== undefined ? after : before
   const major = num(hit?.[1])
   if (major === undefined) return undefined
-  const v = [major, num(hit?.[2]) ?? 0] as const
+  return { tier: t, v: [major, num(hit?.[2]) ?? 0] }
+}
+
+/** The key of a version in prices.json's `versions`: `claude-opus-4-8`, `claude-opus-4` (ADR 0031). */
+export const versionKey = (t: Tier, [major, minor]: readonly [number, number]) => `claude-${t}-${major}${minor ? `-${minor}` : ''}`
+
+const isOlder = (t: Tier, v: readonly [number, number]) => {
   const [nMajor, nMinor] = NEWEST[t]
-  const older = v[0] < nMajor || (v[0] === nMajor && v[1] < nMinor)
-  return older ? versionName(t, v) : undefined
+  return v[0] < nMajor || (v[0] === nMajor && v[1] < nMinor)
+}
+
+/** "Opus 4.8" when the model ID names a version older than NEWEST, else undefined. */
+export function olderModel(model: string | null | undefined): string | undefined {
+  const mv = modelVersion(model)
+  return mv && isOlder(mv.tier, mv.v) ? versionName(mv.tier, mv.v) : undefined
+}
+
+/** The prices.json key of an older version the ID names, else undefined. */
+export function olderKey(model: string | null | undefined): string | undefined {
+  const mv = modelVersion(model)
+  return mv && isOlder(mv.tier, mv.v) ? versionKey(mv.tier, mv.v) : undefined
 }
 
 // ---- Prices ----------------------------------------------------------------
@@ -71,7 +86,9 @@ export function olderModel(model: string | null | undefined): string | undefined
 export type LongPrice = { input: number; output: number; cacheRead: number; cacheWrite: number }
 /** `over100k`: the prices a request pays when its prompt is over 100,000 tokens, where the model has a second tier (Haiku). */
 export type Price = { input: number; output: number; cacheRead: number; cacheWrite: number; over100k?: LongPrice }
-export type Prices = Record<Tier, Price>
+/** Each family's newest model, and (ADR 0031) older versions by `versionKey` where prices.json has them. `family` keeps the
+ * families' own rows when a family's row stands in for the main chat's older version (`forModel`). */
+export type Prices = Record<Tier, Price> & { versions?: Record<string, Price>; family?: Record<Tier, Price> }
 
 // Anthropic first-party prices from the pricing page, checked 2026-11-09;
 // prices.json beside the mod overrides them. cacheWrite is the 1-hour TTL (2x input),
@@ -137,7 +154,43 @@ export function parsePrices(raw: string, ttl?: Ttl): Prices {
       ...(d.over100k ? { over100k: longPrice(long, d.over100k, writeKey) } : {}),
     }
   }
-  return out
+  const versions: Record<string, Price> = {}
+  for (const [key, m] of Object.entries((json as { versions?: Record<string, Record<string, unknown> | undefined> }).versions ?? {})) {
+    const mv = modelVersion(key)
+    if (!m || !mv || versionKey(mv.tier, mv.v) !== key) continue
+    const input = num(m.input, Number.NaN)
+    const output = num(m.output, Number.NaN)
+    const cacheRead = num(m.cacheRead, Number.NaN)
+    // A version row needs its own prices: a missing field has no family default to fall back on.
+    if (![input, output, cacheRead].every(Number.isFinite)) continue
+    versions[key] = { input, output, cacheRead, cacheWrite: num(m[writeKey], input * (writeKey === 'cacheWrite1h' ? 2 : 1.25)) }
+  }
+  return Object.keys(versions).length ? { ...out, versions } : out
+}
+
+/** One request's price: its version's own row when prices.json has one, else its family's; undefined for no family (ADR 0031). */
+export function priceOf(prices: Prices, model: string | null | undefined): Price | undefined {
+  const t = tierOf(model)
+  if (!t) return undefined
+  const key = olderKey(model)
+  return (key && prices.versions?.[key]) || (prices.family ?? prices)[t]
+}
+
+/** Whether the ID names an older version that prices.json has no row for: rightsize pauses there (ADR 0032, 0031). */
+export const unpricedOlder = (prices: Prices, model: string | null | undefined): boolean => {
+  const key = olderKey(model)
+  return key !== undefined && !prices.versions?.[key]
+}
+
+/** The prices the main chat plans with: on an older version with its own row, that row stands in for its family. */
+export function forModel(prices: Prices, model: string | null | undefined): Prices {
+  const base: Prices = prices.family ? { ...prices, ...prices.family } : prices
+  const key = olderKey(model)
+  const t = tierOf(model)
+  const own = key ? base.versions?.[key] : undefined
+  if (!own || !t) return prices.family ? (({ family: _f, ...rest }) => rest as Prices)(base) : prices
+  const family = Object.fromEntries(TIERS.map(x => [x, base[x]])) as Record<Tier, Price>
+  return { ...base, [t]: own, family }
 }
 
 // ---- Cache life ---------------------------------------------------------------
@@ -218,9 +271,9 @@ export const contextOf = (u: Usage) => u.input_tokens + u.cache_read_input_token
 
 // What one API response cost. An unknown model costs nothing rather than a guess.
 export function usageCost(prices: Prices, model: string, u: Usage) {
-  const t = tierOf(model)
-  if (!t) return 0
-  return dollars(atPrompt(prices[t], contextOf(u)), {
+  const p = priceOf(prices, model)
+  if (!p) return 0
+  return dollars(atPrompt(p, contextOf(u)), {
     input: u.input_tokens,
     output: u.output_tokens,
     cacheRead: u.cache_read_input_tokens,
@@ -402,6 +455,8 @@ export type Situation = {
   /** Tokens in the main conversation. */
   context: number
   prices: Prices
+  /** The main chat runs an older version (ADR 0031): an effort switch there rebuilds the conversation, so every switch is priced as a miss. */
+  older?: boolean
   /** Prices at the helpers' cache life (5 minutes unless Claude Code is told otherwise); `prices` when absent. */
   helperPrices?: Prices
   cal: Calibration
@@ -450,7 +505,7 @@ export function rawMainCost(r: Rating, s: Situation, level: Level) {
 export function switchCost(s: Situation, switches: number) {
   const p = atPrompt(s.prices[s.tier], s.context)
   const miss = dollars(p, { cacheWrite: s.context }) - dollars(p, { cacheRead: s.context })
-  return switches * switchMissShare(s.cal) * miss
+  return switches * (s.older ? 1 : switchMissShare(s.cal)) * miss
 }
 
 /** The share of effort switches priced as a cache miss: the learned share, or none once enough measured switches have kept the cache. */

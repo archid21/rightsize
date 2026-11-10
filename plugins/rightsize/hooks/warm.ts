@@ -367,6 +367,15 @@ export const ignoredLately = (lines: readonly Answered[]) => {
 /** What a row value does at a turn's end: `warm` has the hours, or `untilStart` (the usual start time, at most the hours). A handoff without whatsnext is a compaction. */
 export type ColdPlan = { action: 'ask' | 'warm' | 'handoff' | 'compact' | 'off'; hours?: number; untilStart?: true }
 
+/**
+ * How long a keep-warm plan pings after a turn that ended at `endedAt`: its hours (8 unless set), and for "until my usual
+ * start" no later than the next time the clock reads `startMinutes`.
+ */
+export function planLength(plan: ColdPlan, endedAt: number, startMinutes: number): number {
+  const hours = (plan.hours ?? 8) * 60 * 60_000
+  return plan.untilStart ? Math.min(hours, nextStart(endedAt, startMinutes).at - endedAt) : hours
+}
+
 export function coldPlan(value: string, whatsnext: boolean): ColdPlan {
   switch (value) {
     case 'keep warm 2 h':

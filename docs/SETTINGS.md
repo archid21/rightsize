@@ -149,7 +149,7 @@ An "ask" answer opens its own timed dialog (see **Question wait**); every other 
 - Key: `escalation`
 - Options: on · off
 - Default: on
-- on: when a turn shows Claude is stuck (the same tool call failing twice, 3 of the last 10 tool calls failing with none of the 10 making progress (a `grep`, `rg`, `diff` or `test` that exits 1 found nothing: that is not a failed call), the same call running 3 times, a turn passing 3x the rated steps (at least 15) with no progress, or 2 fixes in a row leaving the tests red), raise effort one level for the rest of the turn, at most twice, never above Highest effort and never to max. It follows your Raising rule: automatic raises without asking, otherwise it asks on the band while the turn goes on. off: never raise mid-turn.
+- on: when a turn shows Claude is stuck (the same tool call failing twice, 3 of the last 10 tool calls failing with none of the 10 making progress (a `grep`, `rg`, `diff` or `test` that exits 1 found nothing, and a line of read-only lookups that missed a file: neither is a failed call), the same call running 3 times, a turn passing 3x the rated steps (at least 15) with no progress, or 2 fixes in a row leaving the tests red), raise effort one level for the rest of the turn, at most twice, never above Highest effort and never to max. It follows your Raising rule: automatic raises without asking, otherwise it asks on the band while the turn goes on. off: never raise mid-turn.
 
 ### Rater
 

@@ -207,7 +207,7 @@ claude plugin update rightsize@archid21
 
 ## Limits
 
-- **Built for the newest models:** Haiku 5.5, Sonnet 5.5, Opus 5.5 and Fable 5.2. Older versions cost more, and their cache reads cost more compared with a cache write, so rightsize's costs and its keep-warm and compact choices would be wrong on them. When the main chat runs an older version, such as Opus 4.8 or Fable 5.1, rightsize pauses: the band says so once, and it does nothing until you switch to a current model.
+- **Older models are priced by their own row.** Haiku 5.5, Sonnet 5.5, Opus 5.5 and Fable 5.2 are each family's newest model. Older versions, such as Opus 4.8 or Fable 5.1, cost more, so `prices.json` holds a row for each version the pricing page lists, and rightsize prices a main chat on an older version by its row. An effort change there writes the whole conversation again, so it is priced that way. A version with no row pauses rightsize: the band says so once, and `/rightsize prices` fetches the current list.
 - The rating is a model's estimate. It can be wrong on a single prompt; miss tracking corrects it over time.
 - Hand-offs take longer than staying, because the helper adds a brief and a check. The band says so.
 - If you already use Sonnet for everything, rightsize costs more than you pay now. What you get for it is Opus on reviews.

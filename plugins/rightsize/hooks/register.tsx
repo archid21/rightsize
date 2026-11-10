@@ -63,6 +63,8 @@ import {
   subagentKeys,
   tierOf,
   olderModel,
+  forModel,
+  unpricedOlder,
   NEWEST,
   versionName,
   tierRank,
@@ -75,7 +77,7 @@ import {
 } from './cost'
 import { type FreshRun, type HandedOff, NO_STEPS, type StepState, actingExp, mergeSteps, medians, parseStepState, STEP_PROVE, typicalShrink } from './steps'
 import { type LearningNote, learningNote } from './learning'
-import { applyPrices, diffPrices, isDue, parsePricingPage } from './prices'
+import { applyPrices, diffPrices, familiesFound, isDue, parsePricingPage } from './prices'
 import { confidence, missCounts, missMap, ownTasks, pauseRates } from './misses'
 import { START_CHECK_DAYS, START_MIN_PROMPTS, START_SNOOZE_DAYS, adviseStart, startBlock, startKey, startTip } from './start'
 import {
@@ -114,7 +116,7 @@ import { type Change, type HelperLine, type Lifetime, type RunLine, type SwitchL
 import { LIMIT_BUTTON, LIMIT_COMPACT, LIMIT_HIDE, LIMIT_MORE, LIMIT_WHY, LIMIT_WHY_ID, isLimitId, limitDue, limitText } from './limit'
 import { SIZE_BUTTON, SIZE_COMPACT, SIZE_HIDE, SIZE_MORE, SIZE_WHY, SIZE_WHY_ID, isSizeId, sizeStep, sizeText } from './size'
 import { COMPACT_BASE, NO_FRESH_HANDOFF, WRAP_HEADROOM, WRAP_TURNS, isWhatsnext } from './whatsnext'
-import { COMPACT_GAP_MIN, PING_PROMPT, ROW_OF, WRAP_UP, addGap, alwaysText, compactBoundary, compactWorth, compactedText, idleCompactState, idleEstimate, breakEvenMs, cacheHeld, clockText, coldPlan, ignoredLately, keepWarmChoices, leadMs, learnedChoice, COLD_MIN, breakEvenPings, netSaving, nextStart, offerAt, offerText, pingCost, pingEvery, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText } from './warm'
+import { COMPACT_GAP_MIN, PING_PROMPT, ROW_OF, WRAP_UP, addGap, planLength, alwaysText, compactBoundary, compactWorth, compactedText, idleCompactState, idleEstimate, breakEvenMs, cacheHeld, clockText, coldPlan, ignoredLately, keepWarmChoices, leadMs, learnedChoice, COLD_MIN, breakEvenPings, netSaving, offerAt, offerText, pingCost, pingEvery, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText } from './warm'
 
 // Before a prompt is sent, a quick Haiku call rates the effort, the model and
 // the work needs on each model, and the cost model prices each route that fits. The first time
@@ -399,6 +401,10 @@ let priceCheck: 'monthly' | 'off' = 'monthly'
 let bandMode: BandMode = 'when it acts'
 let checking: Promise<string> | null = null
 let prices: Prices = DEFAULT_PRICES
+/** prices.json as read, before the main chat's version stands in for its family (`forModel`, ADR 0031). */
+let rawPrices: Prices = DEFAULT_PRICES
+/** The main chat's model as last read, for `forModel`. */
+let mainModel: string | undefined
 /** The same prices at the helpers' cache life (their cache writes are 1.25x input, not 2x). */
 let helperPrices: Prices = DEFAULT_PRICES
 /** prices.json as last read or written, re-priced when the cache life changes. */
@@ -816,7 +822,7 @@ async function checkPrices($: EngineInterface, why: 'monthly' | 'manual', claime
     return failed(`Price check failed: ${err instanceof Error ? err.message : String(err)}. prices.json is unchanged.`)
   }
   const page = parsePricingPage(text)
-  const found = Object.keys(page).length
+  const found = familiesFound(page)
   if (found < 4) {
     return failed(`Price check found ${found} of 4 models on the pricing page; its layout may have changed. prices.json is unchanged.`)
   }
@@ -1033,7 +1039,8 @@ async function refreshTtl($: EngineInterface) {
   ttlBy = main.by
   helperTtl = TTL_MS[helper.ttl]
   helperTtlBy = helper.by
-  prices = parsePrices(priceFile, main.ttl)
+  rawPrices = parsePrices(priceFile, main.ttl)
+  prices = forModel(rawPrices, mainModel)
   helperPrices = parsePrices(priceFile, helper.ttl)
   if (changed) await log($, `cache life: ${ttlText(cacheTtl)} (${main.by}); helpers and forks ${ttlText(helperTtl)} (${helper.by})`)
 }
@@ -1450,7 +1457,7 @@ async function situation($: EngineInterface): Promise<Situation> {
   const have = typeof kept === 'number' && kept > 0
   const reported = have ? undefined : (await usageNow($))?.context?.tokens
   const context = have ? kept : typeof reported === 'number' && reported > 0 ? reported : DEFAULT_CONTEXT
-  return { tier, level, context, prices, helperPrices, cal, rules: DEFAULT_RULES, misses, missBlock, minTasks, counts, ceiling, reviewCeiling, without, stepExp: actingExp(stepState) }
+  return { tier, level, context, prices, helperPrices, cal, rules: DEFAULT_RULES, misses, missBlock, minTasks, counts, ceiling, reviewCeiling, without, stepExp: actingExp(stepState), ...(olderModel(mainModel) ? { older: true } : {}) }
 }
 
 // `unsure` says why the rater may have seen too little: the request was cut, or a task is in progress and its last reply could not be read.
@@ -3097,7 +3104,10 @@ async function coldCheck($: EngineInterface) {
   // A row the person did not set is the fixed keep warm: when keeping warm over the idle time this project usually shows
   // costs at least 3 times a compaction and its summary's cold read, compact instead. A row they set is theirs.
   if (!coldYours && plan.action === 'warm') {
-    const estimate = idleEstimate(await idleGaps($))
+    // The expected idle time, but never past the time the pings would stop: the plan's hours, or the next usual start (ADR 0013).
+    const ended = lastTurnAt || (await $.clock.now())
+    const planMs = planLength(plan, ended, usualStart(runLog, await $.clock.now()).minutes)
+    const estimate = Math.min(idleEstimate(await idleGaps($)), planMs)
     const v = compactWorth({ estimate, ttl: cacheTtl, ping: pingCost(prices[tier], context), compact: idle.compact, summaryCold: coldCost(prices, tier, COMPACT_SUMMARY_TOKENS) })
     await log($, `before the cache goes cold: expected idle ${idleFor(estimate)}; keeping warm ${money(v.keepWarm)} against a compaction and its summary ${money(v.cost)}: ${v.worth ? 'compact' : 'keep warm'}`)
     if (v.worth) plan = { action: 'compact' }
@@ -3115,10 +3125,7 @@ async function coldCheck($: EngineInterface) {
   coldTurn = turn
   const gen = coldGen
   if (plan.action === 'warm') {
-    // Until the usual start: to the next time the person usually sends their first prompt, at most 8 hours.
-    const hours = (plan.hours ?? 8) * 60 * 60_000
-    const ms = plan.untilStart ? Math.min(hours, nextStart(turn.endedAt, usualStart(runLog, await $.clock.now()).minutes).at - turn.endedAt) : hours
-    await startWarm($, turn, ms, coldMode)
+    await startWarm($, turn, planLength(plan, turn.endedAt, usualStart(runLog, await $.clock.now()).minutes), coldMode)
   } else if (plan.action === 'handoff' || plan.action === 'compact') {
     await log($, `before the cache goes cold: ${plan.action} ${Math.round(leadMs(cacheTtl) / 60_000)} min before it expires (${money(cold)} cold, ${Math.round(context / 1000)}K tokens on ${TIER_NAME[tier]})`)
     await armCold($, gen, turn.endedAt + cacheTtl - leadMs(cacheTtl), () => atCold($, turn, plan.action as 'handoff' | 'compact'))
@@ -4337,11 +4344,19 @@ async function manualCheck($: EngineInterface): Promise<{ held: boolean; row: bo
 }
 
 /**
- * ADR 0032: rightsize prices only the newest version of each family, so on an older main-chat model it is off, as if the
- * person turned it off. Sets `off` from the switch and the model; shows the pause line once per model per session.
+ * ADR 0032, 0031: on an older main-chat model with no price row of its own in prices.json, rightsize is off, as if the
+ * person turned it off. An older version with its own row runs, priced by that row. Sets `off` from the switch and the
+ * model; shows the pause line once per model per session.
  */
 async function checkOlder($: EngineInterface): Promise<void> {
-  const older = olderModel(await $.session.model().catch(() => undefined)) ?? null
+  const model = await $.session.model().catch(() => undefined)
+  if (model !== mainModel) {
+    mainModel = model
+    const name = olderModel(model)
+    if (name && !unpricedOlder(rawPrices, model)) await log($, `${name}: priced by its own row in prices.json`)
+  }
+  prices = forModel(rawPrices, mainModel)
+  const older = unpricedOlder(rawPrices, model) ? (olderModel(model) ?? null) : null
   const was = olderPause
   olderPause = older
   off = switchedOff || older !== null
@@ -4355,7 +4370,7 @@ async function checkOlder($: EngineInterface): Promise<void> {
     const t = tierOf(older)
     const newest = t ? versionName(t, NEWEST[t]) : 'the newest models'
     await log($, `paused: ${older} is an older model`)
-    await setBand($, { text: `rightsize is paused: it is built for ${newest}, and prices ${older} wrongly. Switch with /model ${t ?? 'opus'} to turn it back on.`, acted: true })
+    await setBand($, { text: `rightsize is paused: prices.json has no price for ${older}. Run /rightsize prices to fetch it, or switch with /model ${t ?? 'opus'} (${newest}).`, acted: true })
   } else if (!older && was) await log($, `resumed: the main chat left ${was}`)
   await showStatus($)
 }
@@ -4963,7 +4978,8 @@ export const register: Register = (on, options) => {
       }
       if (!sw && !lastSwitched && !compactedAway && applied && lastApplied && applied !== lastApplied && lastContext > 5000) {
         const missed = u.cache_read_input_tokens < lastContext * 0.5
-        teach(SWITCH_KEY, missed ? 1 : 0)
+        // An older model rebuilds the conversation on every switch, by design (ADR 0031): it would teach the current models nothing.
+        if (!olderModel(mainModel)) teach(SWITCH_KEY, missed ? 1 : 0)
         // One line per measured switch: the evidence for whether the engine keeps the cache.
         await append(
           $,

@@ -1,14 +1,31 @@
 {
-  "source": "Anthropic Claude API first-party prices, checked against platform.claude.com/docs/en/about-claude/pricing on 2026-11-09. Check the current prices at https://www.anthropic.com/pricing and edit this file when they change.",
+  "source": "Anthropic Claude API first-party prices, checked against platform.claude.com/docs/en/about-claude/pricing on 2026-11-09. rightsize checks them every 30 days; run /rightsize prices to check sooner.",
   "unit": "US dollars per 1 million tokens",
   "models": {
-    "haiku": { "input": 0.10, "output": 0.50, "cacheRead": 0.01, "cacheWrite5m": 0.125, "cacheWrite1h": 0.20, "over100k": { "input": 0.50, "output": 2.50, "cacheRead": 0.05, "cacheWrite5m": 0.625, "cacheWrite1h": 1.00 } },
-    "sonnet": { "input": 2.00, "output": 10.00, "cacheRead": 0.10, "cacheWrite5m": 2.50, "cacheWrite1h": 4.00 },
-    "opus": { "input": 4.00, "output": 20.00, "cacheRead": 0.20, "cacheWrite5m": 5.00, "cacheWrite1h": 8.00 },
-    "fable": { "input": 8.00, "output": 40.00, "cacheRead": 0.20, "cacheWrite5m": 10.00, "cacheWrite1h": 16.00 }
+    "haiku": { "input": 0.1, "output": 0.5, "cacheRead": 0.01, "cacheWrite5m": 0.125, "cacheWrite1h": 0.2, "over100k": { "input": 0.5, "output": 2.5, "cacheRead": 0.05, "cacheWrite5m": 0.625, "cacheWrite1h": 1 } },
+    "sonnet": { "input": 2, "output": 10, "cacheRead": 0.1, "cacheWrite5m": 2.5, "cacheWrite1h": 4 },
+    "opus": { "input": 4, "output": 20, "cacheRead": 0.2, "cacheWrite5m": 5, "cacheWrite1h": 8 },
+    "fable": { "input": 8, "output": 40, "cacheRead": 0.2, "cacheWrite5m": 10, "cacheWrite1h": 16 }
+  },
+  "versions": {
+    "claude-fable-5": { "input": 10, "cacheWrite5m": 12.5, "cacheWrite1h": 20, "cacheRead": 1, "output": 50 },
+    "claude-fable-5-1": { "input": 10, "cacheWrite5m": 12.5, "cacheWrite1h": 20, "cacheRead": 0.25, "output": 50 },
+    "claude-haiku-4-5": { "input": 1, "cacheWrite5m": 1.25, "cacheWrite1h": 2, "cacheRead": 0.1, "output": 5 },
+    "claude-opus-4": { "input": 15, "cacheWrite5m": 18.75, "cacheWrite1h": 30, "cacheRead": 1.5, "output": 75 },
+    "claude-opus-4-1": { "input": 15, "cacheWrite5m": 18.75, "cacheWrite1h": 30, "cacheRead": 1.5, "output": 75 },
+    "claude-opus-4-5": { "input": 5, "cacheWrite5m": 6.25, "cacheWrite1h": 10, "cacheRead": 0.5, "output": 25 },
+    "claude-opus-4-6": { "input": 5, "cacheWrite5m": 6.25, "cacheWrite1h": 10, "cacheRead": 0.5, "output": 25 },
+    "claude-opus-4-7": { "input": 5, "cacheWrite5m": 6.25, "cacheWrite1h": 10, "cacheRead": 0.5, "output": 25 },
+    "claude-opus-4-8": { "input": 5, "cacheWrite5m": 6.25, "cacheWrite1h": 10, "cacheRead": 0.5, "output": 25 },
+    "claude-opus-5": { "input": 5, "cacheWrite5m": 6.25, "cacheWrite1h": 10, "cacheRead": 0.5, "output": 25 },
+    "claude-sonnet-4": { "input": 3, "cacheWrite5m": 3.75, "cacheWrite1h": 6, "cacheRead": 0.3, "output": 15 },
+    "claude-sonnet-4-5": { "input": 3, "cacheWrite5m": 3.75, "cacheWrite1h": 6, "cacheRead": 0.3, "output": 15 },
+    "claude-sonnet-4-6": { "input": 3, "cacheWrite5m": 3.75, "cacheWrite1h": 6, "cacheRead": 0.3, "output": 15 },
+    "claude-sonnet-5": { "input": 2, "cacheWrite5m": 2.5, "cacheWrite1h": 4, "cacheRead": 0.2, "output": 10 }
   },
   "notes": [
     "haiku = Claude Haiku 5.5, sonnet = Claude Sonnet 5.5, opus = Claude Opus 5.5, fable = Claude Fable 5.2.",
+    "versions = older models, by ID without a date (claude-opus-4-8). rightsize prices a session on an older model by its row here; with no row, rightsize pauses on that model. The price check adds a row for every version the pricing page lists and keeps a row the page drops.",
     "Cache writes are 1.25x input for the 5-minute cache and 2x for the 1-hour cache. rightsize reads which one a session writes from Claude Code's settings and environment and from the billing (1 hour on a subscription within its plan, 5 minutes otherwise; helpers always 5 minutes). Behind a gateway it cannot read, add \"cacheTtl\": \"5m\" or \"1h\" here to say so.",
     "Haiku 5.5 is priced by prompt length. A request whose prompt (input, cache reads and cache writes together) is over 100K tokens pays the over100k prices: 0.50 input, 0.625 / 1.00 cache write (5m / 1h), 0.05 cache read, 2.50 output. Each request is priced on its own."
   ]

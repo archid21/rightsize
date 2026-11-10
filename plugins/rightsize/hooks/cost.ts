@@ -84,8 +84,9 @@ export function olderKey(model: string | null | undefined): string | undefined {
 /** US dollars per 1 million tokens. */
 /** The four prices of a request whose prompt is over 100,000 tokens, where the model has a second tier (Haiku). The prompt counts cache reads and writes. */
 export type LongPrice = { input: number; output: number; cacheRead: number; cacheWrite: number }
-/** `over100k`: the prices a request pays when its prompt is over 100,000 tokens, where the model has a second tier (Haiku). */
-export type Price = { input: number; output: number; cacheRead: number; cacheWrite: number; over100k?: LongPrice }
+/** `over100k`: the prices a request pays when its prompt is over 100,000 tokens, where the model has a second tier (Haiku).
+ * `window`: the model's context window in tokens; absent when prices.json does not say. */
+export type Price = { input: number; output: number; cacheRead: number; cacheWrite: number; over100k?: LongPrice; window?: number }
 /** Each family's newest model, and (ADR 0031) older versions by `versionKey` where prices.json has them. `family` keeps the
  * families' own rows when a family's row stands in for the main chat's older version (`forModel`). */
 export type Prices = Record<Tier, Price> & { versions?: Record<string, Price>; family?: Record<Tier, Price> }
@@ -94,13 +95,15 @@ export type Prices = Record<Tier, Price> & { versions?: Record<string, Price>; f
 // prices.json beside the mod overrides them. cacheWrite is the 1-hour TTL (2x input),
 // the one Claude Code sessions usually write.
 export const DEFAULT_PRICES: Prices = {
-  haiku: { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.2, over100k: { input: 0.5, output: 2.5, cacheRead: 0.05, cacheWrite: 1 } },
-  sonnet: { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 4 },
-  opus: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 8 },
-  fable: { input: 8, output: 40, cacheRead: 0.2, cacheWrite: 16 },
+  haiku: { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.2, over100k: { input: 0.5, output: 2.5, cacheRead: 0.05, cacheWrite: 1 }, window: 1_000_000 },
+  sonnet: { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 4, window: 1_000_000 },
+  opus: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 8, window: 1_000_000 },
+  fable: { input: 8, output: 40, cacheRead: 0.2, cacheWrite: 16, window: 1_000_000 },
 }
 
 const num = (v: unknown, fallback: number) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : fallback)
+/** A context window from prices.json: a whole number of tokens above 0, else `fallback`. */
+const windowOf = (v: unknown, fallback?: number) => (typeof v === 'number' && Number.isInteger(v) && v > 0 ? v : fallback)
 
 /** The default prices with every cache write at `ttl`'s multiple of input (1.25x for 5m, 2x for 1h). */
 const withTtl = (p: Prices, ttl: Ttl): Prices => {
@@ -152,6 +155,7 @@ export function parsePrices(raw: string, ttl?: Ttl): Prices {
       cacheRead: num(m.cacheRead, d.cacheRead),
       cacheWrite: num(m[writeKey], input * (writeKey === 'cacheWrite1h' ? 2 : 1.25)),
       ...(d.over100k ? { over100k: longPrice(long, d.over100k, writeKey) } : {}),
+      ...(windowOf(m.window, d.window) !== undefined ? { window: windowOf(m.window, d.window) } : {}),
     }
   }
   const versions: Record<string, Price> = {}
@@ -163,7 +167,8 @@ export function parsePrices(raw: string, ttl?: Ttl): Prices {
     const cacheRead = num(m.cacheRead, Number.NaN)
     // A version row needs its own prices: a missing field has no family default to fall back on.
     if (![input, output, cacheRead].every(Number.isFinite)) continue
-    versions[key] = { input, output, cacheRead, cacheWrite: num(m[writeKey], input * (writeKey === 'cacheWrite1h' ? 2 : 1.25)) }
+    const window = windowOf(m.window)
+    versions[key] = { input, output, cacheRead, cacheWrite: num(m[writeKey], input * (writeKey === 'cacheWrite1h' ? 2 : 1.25)), ...(window ? { window } : {}) }
   }
   return Object.keys(versions).length ? { ...out, versions } : out
 }
@@ -813,7 +818,7 @@ export function effortPlan(r0: Rating, s: Situation, floor: Level): Plan {
 // Reviews run on Opus at high effort or more, whatever the rating says: below that, a review
 // misses the subtle bugs it is for, and the rater can't tell from the prompt. A session below
 // Opus switches the main chat to Opus for that turn; an Opus session raises to high and doesn't lower. Fable plans as usual,
-// with no route below Opus.
+// with no route below Opus. A conversation larger than the target model's window is not switched (fitsWindow).
 export const REVIEW_TIER: Tier = 'opus'
 /** The weakest session model a hand-down to a helper starts from. */
 export const HAND_DOWN_FROM: Tier = 'opus'
@@ -825,12 +830,19 @@ export const HAIKU_TYPES: readonly TaskType[] = ['lookup', 'search', 'bulk-edit'
 export const HAIKU_SWITCH_TYPES: readonly TaskType[] = ['debug', 'feature', 'refactor', 'writing']
 export const HAIKU_SWITCH_TIER: Tier = 'sonnet'
 
+/** Whether the main conversation fits `tier`'s context window (prices.json's `window`): a switch to a smaller window would
+ * fail or compact mid-turn, so it is not made. A model with no window on file fits. */
+export const fitsWindow = (s: Situation, tier: Tier) => {
+  const w = s.prices[tier].window
+  return w === undefined || s.context <= w
+}
+
 // A Haiku session on work Haiku is not suited to: the main chat runs this turn on Sonnet, then goes back, under the
 // Stronger model rule. Nothing when the rater says Sonnet would struggle too, or Sonnet is over the ceiling: plan() then routes as usual.
 function haikuSwitchPlan(r: Rating, s: Situation, floor: Level): Plan | undefined {
   if (s.tier !== 'haiku' || !HAIKU_SWITCH_TYPES.includes(r.type)) return undefined
   const need = r.fit[HAIKU_SWITCH_TIER]
-  if (!need || s.without?.includes(HAIKU_SWITCH_TIER) || overCeiling(need, s)) return undefined
+  if (!need || s.without?.includes(HAIKU_SWITCH_TIER) || overCeiling(need, s) || !fitsWindow(s, HAIKU_SWITCH_TIER)) return undefined
   const level = clampCeiling(clampFloor(need, floor), ceilingOf(s))
   const cost = mainCost(r, { ...s, tier: HAIKU_SWITCH_TIER }, level, 0) + (s.context * atPrompt(s.prices[HAIKU_SWITCH_TIER], s.context).cacheWrite) / 1e6
   return { kind: 'switch', tier: HAIKU_SWITCH_TIER, level, cost, mainCost: mainCost(r, s, s.level, 0), rule: 'haiku' }
@@ -845,7 +857,7 @@ function reviewPlan(r: Rating, s: Situation, floor: Level): Plan | undefined {
   const top = s.reviewCeiling && levelRank(s.reviewCeiling) < levelRank(ceilingOf(s)) ? s.reviewCeiling : ceilingOf(s)
   const level = clampCeiling(clampFloor(atLeast(r.fit[REVIEW_TIER] ?? REVIEW_LEVEL, REVIEW_LEVEL), floor), top)
   if (tierRank(s.tier) < tierRank(REVIEW_TIER)) {
-    if (s.without?.includes(REVIEW_TIER)) return undefined
+    if (s.without?.includes(REVIEW_TIER) || !fitsWindow(s, REVIEW_TIER)) return undefined
     // The main chat on Opus for one turn: its work at that level, plus writing the conversation to Opus's cache once.
     const cost = mainCost(r, { ...s, tier: REVIEW_TIER }, level, 0) + (s.context * atPrompt(s.prices[REVIEW_TIER], s.context).cacheWrite) / 1e6
     return { kind: 'switch', tier: REVIEW_TIER, level, cost, mainCost: mainCost(r, s, s.level, 0), rule: 'review' }

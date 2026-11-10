@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { type Signals, FAILED_TRIES, ERRORS, helperCap, LIMITS, LONG_MIN, LONG_X, LOOP, NOVEL, RECENT_MAX, REPEAT, WINDOW, blockedError, callKey, isEditTool, isTestCommand, noMatchExit, noSignals, noteCall, oneUp, refusedByPerson, struggle, testsOutcome } from './struggle'
+import { type Signals, FAILED_TRIES, ERRORS, helperCap, isBookkeeping, LIMITS, LONG_MIN, LONG_X, LOOP, NOVEL, RECENT_MAX, REPEAT, WINDOW, blockedError, callKey, isEditTool, isTestCommand, noMatchExit, noSignals, noteCall, oneUp, refusedByPerson, struggle, testsOutcome } from './struggle'
 
 // Claude labels each Bash call afresh, so the description differs between runs of one command.
 const bash = (command: string) => callKey('Bash', { tool: 'Bash', tool_use_id: Math.random().toString(), command, description: `run ${command} (${Math.random()})` })
@@ -416,4 +416,9 @@ test('failed-check: fixes that keep leaving the tests red are a sign; how many c
   for (let i = 0; i < 10; i++) none = noteCall(none, bash(`cat h${i}`), false)
   expect([none.failedTries, none.editedSinceRed]).toEqual([undefined, undefined])
   expect(struggle(none, 11, 5)).toBeUndefined()
+})
+
+test('bookkeeping tools are told apart from the work', async () => {
+  for (const t of ['mcp__ccd_turn__update_plan', 'mcp__ccd_turn__wrap_up', 'TodoWrite', 'TaskUpdate', 'AskUserQuestion']) expect(isBookkeeping(t), t).toBe(true)
+  for (const t of ['Bash', 'Read', 'Edit', 'mcp__ccd_session__start_session', 'Agent']) expect(isBookkeeping(t), t).toBe(false)
 })

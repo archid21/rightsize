@@ -142,8 +142,8 @@ test('reports each period in columns, the window kept for a subscriber, and says
   expect(cells(sub, 'Effort lowered')).toEqual(['2 prompts'])
   expect(cells(sub, 'Cheaper model')).toEqual(['0 prompts'])
   // 2% of the window for $1 over 2 runs and 2 minutes, give or take sqrt(2) points of rounding: $0.49 saved is ~0.3–1.7% of one window; the old session's rating calls take it to $0.44 in 30 days.
-  expect(cells(sub, '5-hour windows')).toEqual(['under 0.1', 'under 0.1', 'under 0.1', '–'])
-  expect(cells(sub, 'Extra work time')).toEqual(['under 2 min', 'under 2 min', 'under 2 min', '–'])
+  expect(cells(sub, '5-hour windows'), 'no roll-up yet: lifetime is every line in the logs').toEqual(['under 0.1', 'under 0.1', 'under 0.1', 'under 0.1'])
+  expect(cells(sub, 'Extra work time')).toEqual(['under 2 min', 'under 2 min', 'under 2 min', 'under 2 min'])
   expect(cells(sub, 'Share of cost saved')).toEqual(['~33%', '~33%', '~27%', '~27%'])
   expect(sub.replace(/\s+/g, ' '), 'the rating cost is in the details footer').toContain('The saving is after the cost of rating prompts ($0.06 API-equivalent in 30 days).')
   expect(cells(sub, 'Value (API prices)'), 'dollars on a subscription are labelled').toEqual(['~$0.49', '~$0.49', '~$0.44', '~$0.44'])
@@ -801,8 +801,8 @@ test('the headline, the table and the band show the window share as a range, the
   // 8 points for $1 over 2 runs and 2 minutes, give or take sqrt(2) points; $0.50 saved is 3.3–4.7 points of the window, about 1 minute.
   const text = report(lines, { subscription: true })
   expect(text.split('\n').slice(1, 3)).toEqual(["You got about 1 more minute of Claude's work from your plan.", 'That is ~3.3–4.7% of one 5-hour window, worth ~$0.50 at API prices.'])
-  expect(cells(text, '5-hour windows'), 'a count of windows: under a tenth of one').toEqual(['under 0.1', 'under 0.1', 'under 0.1', '–'])
-  expect(cells(text, 'Extra work time')).toEqual(['~1 min', '~1 min', '~1 min', '–'])
+  expect(cells(text, '5-hour windows'), 'a count of windows: under a tenth of one').toEqual(['under 0.1', 'under 0.1', 'under 0.1', 'under 0.1'])
+  expect(cells(text, 'Extra work time')).toEqual(['~1 min', '~1 min', '~1 min', '~1 min'])
   expect(sessionTotal(lines, 's1', true)).toBe('Session: ~3–5% saved')
   // The 7-day window gets its own range.
   const week = lines.map(l => ({ ...l, before: { ...l.before, seven_day: 20 }, after: { ...l.after, seven_day: 21 } }))
@@ -1195,6 +1195,15 @@ test('on a subscription the dollars are labelled API prices and window shares ar
   const out = report([SAVER({ at: ago(0), ...win })], { lifetime: life, subscription: true })
   expect(out).toContain('Value (API prices)')
   expect(cells(out, '5-hour windows')?.at(-1), 'no window figure for a roll-up').toBe('–')
+})
+
+test('on a subscription with no roll-up yet, lifetime window rows match 30 days: every lifetime line is still in the logs', () => {
+  const win = { before: { five_hour: 10, seven_day: 4 }, after: { five_hour: 12, seven_day: 5 }, durationMs: 60_000 }
+  const out = report([SAVER({ at: ago(0), ...win }), SAVER({ at: ago(3), ...win })], { subscription: true })
+  const five = cells(out, '5-hour windows')
+  expect(five?.at(-1), 'lifetime has a window figure').not.toBe('–')
+  expect(five?.at(-1), 'and it is the 30-day one').toBe(five?.[2])
+  expect(cells(out, 'Weekly limit')?.at(-1)).toBe(cells(out, 'Weekly limit')?.[2])
 })
 
 test('folding: only lines at or before the cutoff and after the last fold, once; nothing to fold leaves it as it was', () => {

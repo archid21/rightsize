@@ -465,10 +465,14 @@ function stats(lines: readonly RunLine[], subscription: boolean, withTies = fals
   return { t, net: t.saved - t.overhead, empty: !t.rated && !t.overhead && !t.subagents && !t.unrated && !t.returns, ...(kept ? { kept } : {}), ...(withTies ? { ties: tieCounts(lines) } : {}) }
 }
 
-/** Lifetime: the roll-up plus every line after it, as a period's numbers. Window shares need the lines themselves, so there are none. */
-function lifetimeStats(life: Lifetime | undefined, lines: readonly RunLine[]): Stats {
-  const live = life ? lines.filter(l => Date.parse(l.at) > Date.parse(life.through)) : lines
-  const t = addTotals(life?.t ?? zeroTotals(), totals(live))
+/**
+ * Lifetime: the roll-up plus every line after it, as a period's numbers. Window shares need the lines themselves: with
+ * no roll-up yet, every lifetime line is still in the logs and gets them like any period; once lines are folded, none.
+ */
+function lifetimeStats(life: Lifetime | undefined, lines: readonly RunLine[], subscription: boolean): Stats {
+  if (!life) return stats(lines, subscription)
+  const live = lines.filter(l => Date.parse(l.at) > Date.parse(life.through))
+  const t = addTotals(life.t, totals(live))
   return { t, net: t.saved - t.overhead, empty: !t.rated && !t.overhead && !t.subagents && !t.unrated && !t.returns }
 }
 
@@ -649,7 +653,7 @@ function savingsRows(subscription: boolean): Row[] {
   ]
 }
 
-/** Today, 7 days, 30 days and lifetime in columns. Lifetime keeps no window shares, so its window rows are dashes. */
+/** Today, 7 days, 30 days and lifetime in columns. Once runs are folded into the roll-up, lifetime has no window shares: its window rows are dashes. */
 function savingsTable(cols: readonly Stats[], subscription: boolean) {
   const rows = savingsRows(subscription).filter(r => cols.some(r.any))
   const cell = (r: Row, s: Stats) => (s.empty ? '–' : r.cell(s))
@@ -1110,7 +1114,7 @@ export function buildReport(
 
   // Today (since local midnight), 7 days, 30 days and lifetime. All are estimates.
   const midnight = new Date(opts.now).setHours(0, 0, 0, 0)
-  const cols = [stats(lines.filter(l => Date.parse(l.at) >= midnight), sub), stats(lines.filter(since(7)), sub), thirty, lifetimeStats(opts.lifetime, lines)]
+  const cols = [stats(lines.filter(l => Date.parse(l.at) >= midnight), sub), stats(lines.filter(since(7)), sub), thirty, lifetimeStats(opts.lifetime, lines, sub)]
   const nothing = thirty.empty
   const out = ['rightsize report · last 30 days', ...(nothing ? [cols[3]?.empty ? 'Nothing rated yet.' : 'Nothing rated in the last 30 days.'] : headline(thirty, sub).flatMap(h => para(h)))]
   if (opts.measureFrom) out.push(`Cost measurement restarted on ${opts.measureFrom.slice(0, 10)}.`)

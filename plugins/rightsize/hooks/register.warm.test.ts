@@ -317,7 +317,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await coldTurn(d, 't1')
     await h.advance(57 * MIN)
     expect(h.forks.length).toBe(1)
-    expect(await bandText($, surface)).toBe('Warm until 2:00 · $0.02 so far')
+    expect(await bandText($, surface)).toBe('Warm until 2:00 · cold in 60 min ▰▰▰▰▰▰▰▰▰▰ · $0.02 so far')
     const result = await d.config('cache', 'off')
     expect(result.deny).toBeUndefined()
     await flush()
@@ -330,7 +330,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     // Back on: the next big turn's end follows the row again.
     await d.config('cache', 'on')
     await coldTurn(d, 't2')
-    expect(await bandText($, surface), 'a new keep-warm run').toMatch(/^Warm until \d+:\d\d · \$0\.00 so far$/)
+    expect(await bandText($, surface), 'a new keep-warm run').toMatch(/^Warm until \d+:\d\d · cold in \d+ min [▰▱]{10} · \$0\.00 so far$/)
   })
 
   test(`Cache turned off with the offer showing: the offer goes and is not logged as ignored (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -350,7 +350,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   test(`keep warm 2 h ends at its end time (${surface})`, { timeoutMs: 30000, options: WARM2.options }, async ($, on) => {
     const { h, d } = await coldSession($, on, { stored: WARM2.stored })
     await coldTurn(d, 't1')
-    expect(await bandText($, surface)).toBe('Warm until 20:00 · $0.00 so far')
+    expect(await bandText($, surface)).toBe('Warm until 20:00 · cold in 60 min ▰▰▰▰▰▰▰▰▰▰ · $0.00 so far')
     await h.advance(5 * HOUR)
     expect(h.forks.length, 'at 57 and 114 minutes; the next would be past 2 hours').toBe(2)
     expect(await bandText($, surface)).toBe('Kept the cache warm until 20:00 · $0.03.')
@@ -624,7 +624,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const { h, d } = await coldSession($, on, FIXED_COLD.over)
     await coldTurn(d, 't1')
     // 18:00: the usual start (9:00 with nothing in the log) is 15 hours away, so the 8-hour cap ends it.
-    expect(await bandText($, surface), 'no offer, no wait: it starts at the turn\'s end').toBe('Warm until 2:00 · $0.00 so far')
+    expect(await bandText($, surface), 'no offer, no wait: it starts at the turn\'s end').toBe('Warm until 2:00 · cold in 60 min ▰▰▰▰▰▰▰▰▰▰ · $0.00 so far')
     expect(await bandButtons($)).toEqual([['cold-stop', 'Stop keeping warm'], ['mode', '⋯'], ['close', '×']])
     expect(h.asked, 'no question').toEqual([])
     await h.advance(57 * MIN)
@@ -643,7 +643,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.start(surface)
     h.now = new Date(2027, 0, 16, 4, 0, 0, 0).getTime()
     await coldTurn(d, 't1')
-    expect(await bandText($, surface), '4:00: 4.5 hours to 8:30, under the 8-hour cap').toBe('Warm until 8:30 · $0.00 so far')
+    expect(await bandText($, surface), '4:00: 4.5 hours to 8:30, under the 8-hour cap').toBe('Warm until 8:30 · cold in 60 min ▰▰▰▰▰▰▰▰▰▰ · $0.00 so far')
     await h.advance(57 * MIN)
     expect(h.forks.length).toBe(1)
     await h.advance(6 * HOUR)
@@ -661,7 +661,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.forks.length, 'no more').toBe(1)
     // Next turn: keeping warm starts again; Don't keep warm again is in the ⋯ menu.
     await coldTurn(d, 't2')
-    expect(await bandText($, surface), 'it is 22:57: the 8-hour cap ends it at 6:57').toBe('Warm until 6:57 · $0.00 so far')
+    expect(await bandText($, surface), 'it is 22:57: the 8-hour cap ends it at 6:57').toBe('Warm until 6:57 · cold in 60 min ▰▰▰▰▰▰▰▰▰▰ · $0.00 so far')
     const asks = await openMenu($, h, { Options: "Don't keep warm again" })
     expect(asks[0]?.options, 'the menu: the cache choice, and the band setting').toEqual(["Don't keep warm again", 'When the band shows…'])
     expect(last(h.sets)).toMatchObject({ key: 'rightsize.beforeCold', value: 'off' })
@@ -725,7 +725,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     // Keeping warm says what it cost in the window too.
     await pressBand($, 'cold-2h')
     await h.advance(57 * MIN)
-    expect(await bandText($, surface)).toMatch(/^Warm until 20:05 · ~0\.1% used so far/)
+    expect(await bandText($, surface)).toMatch(/^Warm until 20:05 · cold in 55 min ▰▰▰▰▰▰▰▰▰▱ · ~0\.1% used so far/)
     expect((await bandText($, surface)).split(' Session:')[0], 'no ping count, no dollars next to the share').not.toMatch(/\bpings?\b|\$/)
     await pressBand($, 'cold-stop')
     expect(await bandText($, surface)).toMatch(/^Stopped keeping warm · ~0\.1% used\./)
@@ -735,9 +735,9 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const { h, d } = await coldSession($, on, { rateLimits: SUB.rateLimits })
     await coldOffer(h, d, 't1')
     await pressBand($, 'cold-2h')
-    expect(await bandText($, surface)).toBe('Warm until 20:00 · ~0% used so far')
+    expect(await bandText($, surface)).toBe('Warm until 20:00 · cold in 55 min ▰▰▰▰▰▰▰▰▰▱ · ~0% used so far')
     await h.advance(57 * MIN)
-    expect(await bandText($, surface)).toMatch(/^Warm until 20:00 · ~\$0\.02 so far/)
+    expect(await bandText($, surface)).toMatch(/^Warm until 20:00 · cold in \d+ min [▰▱]{10} · ~\$0\.02 so far/)
     await pressBand($, 'cold-stop')
     expect(await bandText($, surface)).toMatch(/^Stopped keeping warm · ~\$0\.02\./)
   })
@@ -831,7 +831,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
       ['Let it go cold', "Don't offer again", 'When the band shows…'],
     ])
     await pressBand($, 'cold-8h')
-    expect(await bandText($, surface)).toBe('Warm until 2:00 · $0.00 so far')
+    expect(await bandText($, surface)).toBe('Warm until 2:00 · cold in 55 min ▰▰▰▰▰▰▰▰▰▱ · $0.00 so far')
   })
 
   test(`the one button looks back over 10 answers only, and a tie goes to the most recent (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -894,7 +894,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
       // This offer's choice is done now, as its button would have done it.
       if (a.choice === 'handoff') expect(h.submitted.map(x => x.text)).toEqual(['wrap up'])
       else if (a.choice === 'compact') expect(h.compactions).toBe(1)
-      else expect(await bandText($, surface)).toBe('Warm until ' + (a.choice === '2h' ? '20:00' : '2:00') + ' · $0.00 so far')
+      else expect(await bandText($, surface)).toBe('Warm until ' + (a.choice === '2h' ? '20:00' : '2:00') + ' · cold in 55 min ▰▰▰▰▰▰▰▰▰▱ · $0.00 so far')
       // The row now decides: no more offers.
       await d.step('t2')
       await d.complete('t2')

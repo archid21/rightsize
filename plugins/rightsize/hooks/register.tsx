@@ -119,7 +119,7 @@ import { COMPACT_BASE, NO_FRESH_HANDOFF, WRAP_HEADROOM, WRAP_TURNS, isWhatsnext 
 import { ME, REPOS, SHARED_PATH, askText, blockedByClaim, parseShared, readStarCheck, reposToAsk, type Shared } from './star'
 import { STORE_KEY as TIPS_KEY, type Tip, type TipsState, nextTip, parseState, tipById, withSeen } from './tips'
 import { WELCOMED_KEY, welcomeMarkdown, welcomeText } from './welcome'
-import { COMPACT_GAP_MIN, PING_PROMPT, ROW_OF, WRAP_UP, addGap, planLength, alwaysText, compactBoundary, compactWorth, compactedText, idleCompactState, idleEstimate, breakEvenMs, cacheHeld, clockText, coldPlan, ignoredLately, keepWarmChoices, leadMs, learnedChoice, COLD_MIN, breakEvenPings, netSaving, offerAt, offerText, pingCost, pingEvery, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText } from './warm'
+import { COMPACT_GAP_MIN, PING_PROMPT, ROW_OF, WRAP_UP, addGap, planLength, alwaysText, compactBoundary, compactWorth, compactedText, idleCompactState, idleEstimate, breakEvenMs, cacheHeld, clockText, coldPlan, ignoredLately, keepWarmChoices, leadMs, learnedChoice, COLD_MIN, breakEvenPings, coldIn, coldTickMs, netSaving, offerAt, offerText, pingCost, pingEvery, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText } from './warm'
 
 // Before a prompt is sent, a quick Haiku call rates the effort, the model and
 // the work needs on each model, and the cost model prices each route that fits. The first time
@@ -2986,10 +2986,13 @@ type ColdAsk = { kind: 'always'; choice: string } | { kind: 'stop' }
 let coldTurn: ColdTurn | null = null
 /** An offer is on the band and nobody has answered it: its outcome goes in the run log when it is. */
 let offerOpen = false
-type Warming = { until: number; pings: number; spent: number; rates: Awaited<ReturnType<typeof windowPerDollar>>; note?: CacheNote }
+/** `warmAt`: when the cache was last written (the turn's end, then each answered request); it goes cold one cache life later. */
+type Warming = { until: number; pings: number; spent: number; rates: Awaited<ReturnType<typeof windowPerDollar>>; warmAt: number; note?: CacheNote }
 /** Advice said on the keep-warm row while it runs (the usage-limit advice or the context warning): its text goes first, its button beside Stop. */
 type CacheNote = { text: string; button: { id: string; label: string }; more: readonly { id: string; label: string }[] }
 let warming: Warming | null = null
+/** Redraws the keep-warm row's countdown while the run lasts (UI only: no request). */
+let warmTick: Timer | null = null
 /** A handoff or a compaction ran since the person's last prompt: the turn it caused does not start another round. */
 let coldDone = false
 /** The prompt rightsize itself is submitting: its own prompt.submit hook lets it through unrated. */
@@ -3009,10 +3012,17 @@ function stopColdTimer() {
   coldTimer = null
 }
 
+/** Cancels the keep-warm row's countdown redraw. */
+function stopWarmTick() {
+  warmTick?.cancel()
+  warmTick = null
+}
+
 /** Cancels what waits or pings: the pending timer, and a callback already on its way (`coldGen`). */
 function cancelCold($: EngineInterface, why: string) {
   coldGen += 1
   stopColdTimer()
+  stopWarmTick()
   const w = warming
   warming = null
   if (w) void log($, `keep warm stopped (${why}): ${pingsText(w.pings)}, ${money(w.spent)}`)
@@ -3022,7 +3032,7 @@ function cancelCold($: EngineInterface, why: string) {
 async function clearColdRow($: EngineInterface) {
   const band = (await $.state.get(BAND).catch(() => undefined))?.value
   if (!band || (!band.coldText && !band.cold && !band.coldMore && !band.coldLink)) return
-  const { coldText: _t, cold: _c, coldMore: _m, coldLink: _l, ...route } = band
+  const { coldText: _t, cold: _c, coldMore: _m, coldLink: _l, coldTone: _o, ...route } = band
   await setBand($, route.text ? route : null)
 }
 
@@ -3042,12 +3052,12 @@ async function dropCache($: EngineInterface, why: string) {
  * as the offer's other choices (the ⋯ menu lists them). With `join`, the row sits under what the band said before (a
  * lowering's Retry and 👍 👎 stay); without it, it is the only row.
  */
-async function showCold($: EngineInterface, text: string, cold?: { id: string; label: string }[], join = false, more?: { id: string; label: string }[], link?: { label: string; href: string }) {
+async function showCold($: EngineInterface, text: string, cold?: { id: string; label: string }[], join = false, more?: { id: string; label: string }[], link?: { label: string; href: string }, tone?: Band['coldTone']) {
   if (bandMode === 'off') return
   const had = join ? (await $.state.get(BAND).catch(() => undefined))?.value : undefined
-  const { coldText: _t, cold: _c, coldMore: _m, coldLink: _l, ...route } = had ?? { text: '', acted: false }
+  const { coldText: _t, cold: _c, coldMore: _m, coldLink: _l, coldTone: _o, ...route } = had ?? { text: '', acted: false }
   const lead = had && (had.acted || bandMode === 'always') ? route : { text: '' }
-  await setBand($, { ...lead, acted: true, coldText: text, ...(cold?.length ? { cold } : {}), ...(more?.length ? { coldMore: more } : {}), ...(link ? { coldLink: link } : {}) })
+  await setBand($, { ...lead, acted: true, coldText: text, ...(cold?.length ? { cold } : {}), ...(more?.length ? { coldMore: more } : {}), ...(link ? { coldLink: link } : {}), ...(tone ? { coldTone: tone } : {}) })
 }
 
 /**
@@ -3245,12 +3255,23 @@ async function closeOffer($: EngineInterface, picked: string) {
 const usedText = (w: Warming) => (w.pings === 0 && w.spent === 0 ? undefined : usedTag(w.spent, billing === 'subscription', w.rates))
 
 /** The keep-warm status row: one Stop button; "Don't keep warm again" (the row set to off) waits in the ⋯ menu. Before the first request it shows the zero text in the band's unit. */
-function showWarming($: EngineInterface, w: Warming) {
-  const text = warmingText({ until: w.until, used: usedText(w) ?? (billing === 'subscription' ? '~0% used' : '$0.00') })
+async function showWarming($: EngineInterface, w: Warming) {
+  const now = await $.clock.now()
+  const left = w.warmAt + cacheTtl - now
+  const cold = coldIn(w.warmAt + cacheTtl, now, cacheTtl)
+  const text = warmingText({ until: w.until, used: usedText(w) ?? (billing === 'subscription' ? '~0% used' : '$0.00'), cold: cold.text })
+  const tone = { text: cold.text, color: cold.tone }
   const stop = { id: 'stop', label: 'Stop keeping warm' }
   const off = { id: 'off', label: "Don't keep warm again" }
   const n = w.note
-  return n ? showCold($, `${n.text} ${text}`, [n.button, stop], true, [...n.more, off]) : showCold($, text, [stop], true, [off])
+  await (n ? showCold($, `${n.text} ${text}`, [n.button, stop], true, [...n.more, off], undefined, tone) : showCold($, text, [stop], true, [off], undefined, tone))
+  // The countdown moves on its own: redraw it while this run lasts and the cache is still warm (P-5).
+  stopWarmTick()
+  if (warming === w && left > 0)
+    warmTick = $.clock.after(coldTickMs(left), () => {
+      warmTick = null
+      if (warming === w) void showWarming($, w).catch(err => log($, `keep-warm countdown failed: ${err instanceof Error ? err.message : String(err)}`))
+    })
 }
 
 /**
@@ -3284,6 +3305,7 @@ async function endWarm($: EngineInterface, w: Warming, what: string) {
   if (warming === w) {
     warming = null
     stopColdTimer()
+    stopWarmTick()
   }
   await showCold($, warmEndText(what, usedText(w)))
 }
@@ -3335,7 +3357,7 @@ async function startWarm($: EngineInterface, c: ColdTurn, ms: number, how: strin
     return
   }
   const gen = ++coldGen
-  const w: Warming = { until: plan.endsAt, pings: 0, spent: 0, rates: billing === 'subscription' ? await windowPerDollar($) : undefined }
+  const w: Warming = { until: plan.endsAt, pings: 0, spent: 0, rates: billing === 'subscription' ? await windowPerDollar($) : undefined, warmAt: Math.max(c.endedAt, lastWarmAt) }
   warming = w
   await log($, `keeping warm until ${clockText(plan.endsAt)} (${how}): ${plan.pings} request${plan.pings === 1 ? '' : 's'} planned, about ${money(plan.cost)}, one every ${Math.round(pingEvery(cacheTtl) / 60_000)} min`)
   await showWarming($, w)
@@ -3352,7 +3374,10 @@ async function sendPing($: EngineInterface, gen: number, c: ColdTurn, w: Warming
   try {
     if (mainBusy) {
       await log($, 'keep warm skipped: a turn is running')
-      if (warming === w) warming = null
+      if (warming === w) {
+        warming = null
+        stopWarmTick()
+      }
       return
     }
     const r = await $.model.fork({ prompt: PING_PROMPT }).catch((err: unknown) => ({ isAnswered: false as const, reason: `error: ${err instanceof Error ? err.message : String(err)}`, usage: undefined }))
@@ -3362,7 +3387,10 @@ async function sendPing($: EngineInterface, gen: number, c: ColdTurn, w: Warming
     w.pings += r.isAnswered ? 1 : 0
     w.spent += cost
     if (r.isAnswered || cost > 0) await logWarm($, c, cost)
-    if (r.isAnswered) lastWarmAt = await $.clock.now()
+    if (r.isAnswered) {
+      lastWarmAt = await $.clock.now()
+      w.warmAt = lastWarmAt
+    }
     if (gen !== coldGen) return
     if (!r.isAnswered) {
       const why = 'status' in r ? `${r.reason}${r.status === null ? '' : ` ${r.status}`}, ${r.error}` : r.reason
@@ -3385,7 +3413,10 @@ async function sendPing($: EngineInterface, gen: number, c: ColdTurn, w: Warming
     await endWarm($, w, `Kept the cache warm until ${clockText(w.until)}`)
   } catch (err) {
     await log($, `keep warm failed: ${err instanceof Error ? err.message : String(err)}`)
-    if (gen === coldGen && warming === w) warming = null
+    if (gen === coldGen && warming === w) {
+      warming = null
+      stopWarmTick()
+    }
   }
 }
 
@@ -5428,7 +5459,7 @@ export const register: Register = (on, options) => {
     const tip = shownTipNow && mode !== 'off' && !e.props.isWorking && !question && !shown.cold && !(shown.route && band?.acted) ? tipById(shownTipNow.id) : undefined
     if (!shown.route && !shown.cold && !question && !tip) return next(e)
     const { Box, Button, Link, Text } = $.ui.resolve(e)
-    type Row = { key: string; label: string; text: string; buttons: ReturnType<typeof Button>[]; note?: string; link?: { label: string; href: string } }
+    type Row = { key: string; label: string; text: string; buttons: ReturnType<typeof Button>[]; note?: string; link?: { label: string; href: string }; tone?: Band['coldTone'] }
     const rows: Row[] = []
     const buttons: { key: string; label: string; press: () => Promise<unknown> }[] = []
     if (band && shown.route) {
@@ -5492,7 +5523,7 @@ export const register: Register = (on, options) => {
     if (band && shown.route) rows.push({ key: 'route', label: 'Prompt', text: band.text, buttons: numbered(buttons) })
     if (band && shown.cold && band.coldText) {
       const cold = (band.cold ?? []).map(c => ({ key: `cold-${c.id}`, label: c.label, press: () => pressCold($, c.id) }))
-      rows.push({ key: 'cold', label: 'Cache', text: band.coldText, buttons: numbered(cold), ...(band.coldLink ? { link: band.coldLink } : {}) })
+      rows.push({ key: 'cold', label: 'Cache', text: band.coldText, buttons: numbered(cold), ...(band.coldLink ? { link: band.coldLink } : {}), ...(band.coldTone ? { tone: band.coldTone } : {}) })
     }
     if (question) {
       const options = question.options.map((label, i) => ({ key: `q-${i}`, label, press: () => answerBand($, question.id, i) }))
@@ -5527,6 +5558,18 @@ export const register: Register = (on, options) => {
     const single = rows.length === 1
     // The labels line up in one column, as wide as the longest.
     const width = Math.max(...rows.map(r => r.label.length))
+    // The toned part (the keep-warm countdown) in its theme color, the words around it plain; text without it stays one plain Text.
+    const toned = (text: string, tone: Row['tone']) => {
+      const at = tone ? text.indexOf(tone.text) : -1
+      if (!tone || at < 0) return <Text>{text}</Text>
+      return (
+        <Text>
+          {text.slice(0, at)}
+          <Text color={tone.color}>{tone.text}</Text>
+          {text.slice(at + tone.text.length)}
+        </Text>
+      )
+    }
     const drawRow = (r: Row) => (
       <Box key={r.key} flexDirection="row" columnGap={1}>
         <Box flexShrink={0} {...(single ? {} : { width })}>
@@ -5534,7 +5577,7 @@ export const register: Register = (on, options) => {
         </Box>
         <Box flexDirection="column" flexShrink={1}>
           <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
-            <Text>{r.text}</Text>
+            {toned(r.text, r.tone)}
             {r.buttons}
             {r.link ? <Text><Link key="link" href={r.link.href} label={r.link.label} /></Text> : null}
             {single ? ends : null}

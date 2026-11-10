@@ -1,5 +1,9 @@
 # Changelog
 
+## Next (unreleased)
+
+- **A countdown on the keep-warm row.** While keep warm runs, the row shows the time left before the cache goes cold and a 10-cell bar: `Warm until 8:30 · cold in 42 min ▰▰▰▰▰▰▰▱▱▱ · ~0.1% used so far`. It counts from the cache life read from the session (5 minutes or 1 hour) and redraws each minute, every 10 seconds in the last 2 minutes, with no request. The countdown is green with over half the life left, yellow down to a fifth, and red under it; the words read the same without color. Each keep-warm request fills it again.
+
 ## 0.11.0 (2026-11-10)
 
 - **A welcome table after install.** The first session after install opens a pane with what rightsize does: the short version in three steps, then a table of what you get and how it works, with the five features to learn first. Esc closes it. Claude Code places a pane nobody asked for only in a terminal of 144 columns or more; narrower, and in the mobile app, one line says rightsize is on and names `/rightsize welcome`, which shows the same table in the transcript, drawn as a Markdown table in the terminal and the desktop app.

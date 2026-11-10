@@ -443,14 +443,27 @@ let skipOnce: string | null = null
 let workflowSeen = false
 /** Characters per token, the rough estimate rightsize uses for text it has no count for. */
 const CHARS_PER_TOKEN = 4
+/** How the engine opens the reminder that carries a settings or plugin SessionStart hook's text in the messages. */
+const START_HOOK_HEAD = '<system-reminder>\nSessionStart hook additional context: '
 /**
- * What the SessionStart hooks of settings and plugins put into this session, by text: the estimated tokens of each distinct text.
- * It sits in the conversation's messages, so every request reads it from the cache. The engine may raise the same attachment on
- * more than one request, so a text counts once. Cleared at a session start and after a main-chat compaction (SessionStart runs again).
+ * The estimated tokens of what the SessionStart hooks of settings and plugins put into the main chat, read from the messages the
+ * next request is built from: each distinct text once, 4 characters a token. That text sits in the messages, so every request reads
+ * it from the cache. The messages are the main chat's and follow a compaction, so helpers' text and text a compaction dropped are
+ * not counted. Undefined when the messages can't be read: the report then says "not measured", never 0.
+ * (A `prompt.attachment` hook can't count it: the built-in cc-plugin-sec-default module skips user module hooks on that event.)
  */
-const startHooks = new Map<string, number>()
-/** The estimated tokens of the SessionStart hooks' text so far. */
-const startHookTokens = () => [...startHooks.values()].reduce((n, t) => n + t, 0)
+async function startHookTokens($: EngineInterface): Promise<number | undefined> {
+  const messages = await $.session.messages({ as: 'api' }).catch(() => undefined)
+  if (!Array.isArray(messages)) return undefined
+  const texts = new Set<string>()
+  for (const m of messages as { role?: string; content?: unknown }[]) {
+    if (m.role !== 'user' || !Array.isArray(m.content)) continue
+    for (const b of m.content as { type?: string; text?: unknown }[]) {
+      if (b.type === 'text' && typeof b.text === 'string' && b.text.startsWith(START_HOOK_HEAD)) texts.add(b.text.slice(START_HOOK_HEAD.length).replace(/\n<\/system-reminder>\s*$/, ''))
+    }
+  }
+  return [...texts].reduce((n, t) => n + Math.ceil(t.length / CHARS_PER_TOKEN), 0)
+}
 /**
  * The person stepped up (a stronger model or a higher effort): rightsize changes neither until they resume. The same value is in
  * $.state ('manualPause') for the session; this copy is what the hooks read without awaiting. See manualCheck() and noteEffort().
@@ -2109,13 +2122,14 @@ async function fixedContext($: EngineInterface) {
   const memory = sum(b.memoryFiles)
   const agents = sum(b.agents)
   const skills = (b.skills?.tokens ?? 0) + (b.slashCommands?.tokens ?? 0)
-  const hooks = startHookTokens()
+  const hooks = await startHookTokens($)
   const servers = Object.fromEntries([...byServer.entries()].sort((a, c) => c[1] - a[1]).slice(0, 3))
   // The memory files worth naming, largest first. Two with the same name are told apart by their type (Project, User).
   const big = b.memoryFiles.filter(f => f.tokens >= FILE_MIN).sort((x, y) => y.tokens - x.tokens).slice(0, 3)
   const base = (f: { path: string }) => f.path.split('/').pop() || f.path
   const files = Object.fromEntries(big.map(f => [big.filter(o => base(o) === base(f)).length > 1 ? `${base(f)} (${f.type})` : base(f), f.tokens]))
-  return { tokens: mcp + memory + agents + skills + hooks, mcp, memory, agents, skills, hooks, ...(big.length ? { files } : {}), servers }
+  // `startHooks`, not the older `hooks`: that key was always 0 (its hook never ran), so a line with only `hooks` was not measured.
+  return { tokens: mcp + memory + agents + skills + (hooks ?? 0), mcp, memory, agents, skills, ...(hooks === undefined ? {} : { startHooks: hooks }), ...(big.length ? { files } : {}), servers }
 }
 
 async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs: number) {
@@ -4691,8 +4705,6 @@ export const register: Register = (on, options) => {
   // turns. The person's /compact and a plugin's compact are not it; they only say the drop in context that follows is not one.
   on('session.compact', async ($, e, next) => {
     const result = await next(e)
-    // A compaction drops the old messages, and the SessionStart hooks run again with new output.
-    if (e.agentId === undefined && result.skip === undefined) startHooks.clear()
     if (off || e.agentId !== undefined || result.skip !== undefined) return result
     if (e.trigger === 'manual' || e.trigger === 'plugin') {
       manualCompact = true
@@ -4704,18 +4716,8 @@ export const register: Register = (on, options) => {
     return result
   }).catch((_, e, next) => next(e))
 
-  // What a settings or plugin SessionStart hook adds to the conversation: counted by text, never changed. Helpers' attachments are not the main chat's.
-  on('prompt.attachment', async ($, e, next) => {
-    const result = await next(e)
-    if (e.agentId === undefined && e.origin.kind === 'hook' && e.origin.event === 'SessionStart' && result.text !== null) {
-      startHooks.set(result.text, Math.ceil(result.text.length / CHARS_PER_TOKEN))
-    }
-    return result
-  }).catch((_, e, next) => next(e))
-
   on('session.start', async ($, e, next) => {
     const result = await next(e)
-    startHooks.clear()
     // The plugin can live anywhere (a clone, ~/Projects), so ask for HOME rather than reading it off the path.
     const fromEnv = await $.env.get('HOME').catch(() => undefined)
     const root = $.plugin.root

@@ -119,8 +119,8 @@ export type RunLine = {
   stall?: HelperLine['stall']
   raises?: HelperLine['raises']
   returned?: true
-  /** Tokens every request carried that the person can trim (MCP tools, memory, agents, skills, SessionStart hook output), and what re-reading them cost. `files`: the largest memory files by name. */
-  fixed?: { tokens: number; mcp: number; memory: number; agents: number; skills: number; cost: number; servers?: Record<string, number>; hooks?: number; files?: Record<string, number> }
+  /** Tokens every request carried that the person can trim (MCP tools, memory, agents, skills, SessionStart hook output), and what re-reading them cost. `files`: the largest memory files by name. `startHooks`: SessionStart hook output, absent when it could not be measured; `hooks`, from 0.9 to 0.11, was always 0 and is not read. */
+  fixed?: { tokens: number; mcp: number; memory: number; agents: number; skills: number; cost: number; servers?: Record<string, number>; hooks?: number; startHooks?: number; files?: Record<string, number> }
   before?: Windows
   after?: Windows
   /** The session's own level, before rightsize's change, and the conversation's size: from 0.7. */
@@ -1045,7 +1045,11 @@ export function fixedBlock(lines: readonly RunLine[], subscription = false) {
   const requests = runs.reduce((n, l) => n + num(l.requests), 0)
   const cost = runs.reduce((n, l) => n + num(l.fixed?.cost), 0)
   if (!requests || cost < 0.005) return undefined
-  const avg = (part: 'tokens' | 'mcp' | 'memory' | 'agents' | 'skills' | 'hooks') => runs.reduce((n, l) => n + num(l.fixed?.[part]) * num(l.requests), 0) / requests
+  const avg = (part: 'tokens' | 'mcp' | 'memory' | 'agents' | 'skills') => runs.reduce((n, l) => n + num(l.fixed?.[part]) * num(l.requests), 0) / requests
+  // SessionStart output, over the turns that measured it: undefined when none did (no line says it, or the messages could not be read).
+  const measured = runs.filter(l => typeof l.fixed?.startHooks === 'number')
+  const measuredRequests = measured.reduce((n, l) => n + num(l.requests), 0)
+  const hooks = measuredRequests ? measured.reduce((n, l) => n + num(l.fixed?.startHooks) * num(l.requests), 0) / measuredRequests : undefined
   const last = runs[runs.length - 1]?.fixed
   const byLargest = (r: Record<string, number> | undefined) => Object.entries(r ?? {}).sort((a, b) => b[1] - a[1])
   const servers = byLargest(last?.servers)
@@ -1055,7 +1059,7 @@ export function fixedBlock(lines: readonly RunLine[], subscription = false) {
     [avg('memory'), 'Memory', files, 'trim CLAUDE.md and MEMORY.md (/memory)'],
     [avg('skills'), 'Skills', [], "turn off plugins and skills you don't use (/plugin)"],
     [avg('agents'), 'Agents', [], "remove custom agents you don't use (/agents)"],
-    [avg('hooks'), 'SessionStart hooks', [], "turn off plugins whose SessionStart hooks you don't use (/plugin), or trim your own hooks' output"],
+    [hooks ?? 0, 'SessionStart hooks', [], "turn off plugins whose SessionStart hooks you don't use (/plugin), or trim your own hooks' output"],
   ] as const
   const big = parts.filter(([t]) => t >= 500).sort((a, b) => b[0] - a[0])
   const labels = big.map(([, label], i) => `${i === big.length - 1 ? '└─' : '├─'} ${label}`)
@@ -1068,13 +1072,15 @@ export function fixedBlock(lines: readonly RunLine[], subscription = false) {
   // The share is of what those same turns cost (their actual spend), not of all spend.
   const pct = spent > 0 ? `, ~${Math.round((cost / spent) * 100)}% of what those turns cost` : ''
   // A memory file or the start hooks at LARGE_FIXED or more, largest first.
-  const large = [...files.map(([n, t]) => [n, t] as const), ['SessionStart hooks', avg('hooks')] as const].filter(([, t]) => t >= LARGE_FIXED).sort((a, b) => b[1] - a[1])
+  const large = [...files.map(([n, t]) => [n, t] as const), ['SessionStart hooks', hooks ?? 0] as const].filter(([, t]) => t >= LARGE_FIXED).sort((a, b) => b[1] - a[1])
   return {
     head: `~${k(avg('tokens'))} tokens sent with every request`,
     notes: [
       `Fixed context adds to your ${subscription ? 'usage' : 'cost'} in every session. Cutting it saves more.`,
       `At least ~${money(cost)}${subscription ? ' API-equivalent' : ''} over ${plural(requests, 'request')}${pct}.`,
       ...(large.length ? [`Large: ${large.map(([n, t]) => `${n} ${k(t)}`).join(', ')}.`] : []),
+      // Said, never shown as 0: the total above leaves it out.
+      ...(hooks === undefined ? ['SessionStart hooks: not measured.'] : []),
     ],
     tree,
     ...(how ? { fix: `rightsize can't trim fixed context. To cut it: ${how}.` } : {}),

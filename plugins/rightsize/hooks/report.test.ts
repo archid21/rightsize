@@ -79,7 +79,7 @@ test('keeps raising apart from saving, takes off the rating calls, and skips sto
 
 // A realistic month: 60 rated prompts over 28 days (a third lowered), a stepped-up turn, a hand-off that cost more and needed
 // rework, a skipped hand-off, a stopped turn, a raise mid-turn, workflow turns, and fixed context on every run.
-const fixed = { tokens: 40000, mcp: 25000, memory: 1000, agents: 2000, skills: 11000, cost: 0.03, servers: { Claude_Browser: 11000, 'claude-in-chrome': 7000, ccd_turn: 4000, vercel: 2000 } }
+const fixed = { tokens: 40000, mcp: 25000, memory: 1000, agents: 2000, skills: 11000, startHooks: 0, cost: 0.03, servers: { Claude_Browser: 11000, 'claude-in-chrome': 7000, ccd_turn: 4000, vercel: 2000 } }
 function month(): RunLine[] {
   const base = (i: number) => run({ at: ago(1 + (i % 28)), session: 'old', overhead: 0.001, requests: 4, durationMs: 60_000, fixed, type: 'search', tier: 'opus' })
   const lines = Array.from({ length: 60 }, (_, i) =>
@@ -329,7 +329,8 @@ test('reads the log, skipping a torn first line', async () => {
 test('fixed context: request-weighted, the biggest parts first, nothing when it cost nothing', async () => {
   const f = (tokens: number, requests: number, cost: number) => run({ requests, actual: 1, fixed: { tokens, mcp: tokens - 4000, memory: 4000, agents: 0, skills: 0, cost, servers: { linear: tokens - 4000 } } })
   expect(fixedBlock([f(14000, 10, 0.5), f(24000, 30, 1.5)])).toEqual({
-    head: '~22K tokens sent with every request', notes: ['Fixed context adds to your cost in every session. Cutting it saves more.', 'At least ~$2.00 over 40 requests, ~100% of what those turns cost.'],
+    head: '~22K tokens sent with every request',
+    notes: ['Fixed context adds to your cost in every session. Cutting it saves more.', 'At least ~$2.00 over 40 requests, ~100% of what those turns cost.', 'SessionStart hooks: not measured.'],
     tree: [
       ['├─ MCP tools', '18K', 'linear 20K'],
       ['└─ Memory', '4K'],
@@ -360,7 +361,7 @@ test('fixed context names servers only while the row fits in 80 columns, ending 
 })
 
 test('fixed context names the memory files on the Memory row, from the last run', async () => {
-  const f = (files: Record<string, number> | undefined) => run({ requests: 5, actual: 1, fixed: { tokens: 12000, mcp: 3000, memory: 9000, agents: 0, skills: 0, hooks: 0, cost: 0.5, ...(files ? { files } : {}) } })
+  const f = (files: Record<string, number> | undefined) => run({ requests: 5, actual: 1, fixed: { tokens: 12000, mcp: 3000, memory: 9000, agents: 0, skills: 0, startHooks: 0, cost: 0.5, ...(files ? { files } : {}) } })
   const block = fixedBlock([f({ 'CLAUDE.md': 1000 }), f({ 'MEMORY.md': 2000, 'CLAUDE.md': 6000 })])
   expect(block?.tree).toEqual([['├─ Memory', '9K', 'CLAUDE.md 6K, MEMORY.md 2K'], ['└─ MCP tools', '3K']])
   expect(block?.fix).toContain('trim CLAUDE.md and MEMORY.md (/memory)')
@@ -374,28 +375,38 @@ test('fixed context names the memory files on the Memory row, from the last run'
   expect(text.split('\n').filter(l => l.length > 80)).toEqual([])
 })
 
-test('fixed context counts SessionStart hooks, request-weighted, and advises on them when they are the biggest part', async () => {
-  const f = (hooks: number | undefined, requests: number) => run({ requests, actual: 1, fixed: { tokens: 6000 + (hooks ?? 0), mcp: 0, memory: 3000, agents: 0, skills: 3000, ...(hooks === undefined ? {} : { hooks }), cost: 0.5 } })
-  const block = fixedBlock([f(undefined, 10), f(8000, 30)])
-  expect(block?.tree).toEqual([['├─ SessionStart hooks', '6K'], ['├─ Memory', '3K'], ['└─ Skills', '3K']])
+test('fixed context counts SessionStart hooks over the turns that measured them, and advises on them when they are the biggest part', async () => {
+  const f = (startHooks: number | undefined, requests: number, old?: number) =>
+    run({ requests, actual: 1, fixed: { tokens: 6000 + (startHooks ?? 0), mcp: 0, memory: 3000, agents: 0, skills: 3000, ...(startHooks === undefined ? {} : { startHooks }), ...(old === undefined ? {} : { hooks: old }), cost: 0.5 } })
+  // Request-weighted over the measured turns only: a turn that could not measure them is left out, not counted as 0.
+  const block = fixedBlock([f(undefined, 10), f(6000, 10), f(8000, 30)])
+  expect(block?.tree).toEqual([['├─ SessionStart hooks', '8K'], ['├─ Memory', '3K'], ['└─ Skills', '3K']])
+  expect(block?.notes, 'some turns measured them: no "not measured"').not.toContain('SessionStart hooks: not measured.')
   expect(block?.fix).toBe("rightsize can't trim fixed context. To cut it: turn off plugins whose SessionStart hooks you don't use (/plugin), or trim your own hooks' output, or trim CLAUDE.md and MEMORY.md (/memory).")
-  // Under 500 tokens a part is not listed, and a line without hooks counts as 0.
+  // Under 500 tokens a part is not listed; a measured 0 is not a "not measured".
   expect(fixedBlock([f(400, 10)])?.tree.map(r => r[0])).toEqual(['├─ Memory', '└─ Skills'])
-  expect(fixedBlock([f(undefined, 10)])?.tree.map(r => r[0])).toEqual(['├─ Memory', '└─ Skills'])
+  expect(fixedBlock([f(0, 10)])?.notes).not.toContain('SessionStart hooks: not measured.')
+  // No turn measured them: said, never shown as 0. The old `hooks` key (always 0 from 0.9 to 0.11) is not a measurement.
+  for (const lines of [[f(undefined, 10)], [f(undefined, 10, 0)], [f(undefined, 10, 5000)]]) {
+    const b = fixedBlock(lines)
+    expect(b?.tree.map(r => r[0])).toEqual(['├─ Memory', '└─ Skills'])
+    expect(b?.notes.at(-1)).toBe('SessionStart hooks: not measured.')
+  }
   const text = report([f(8000, 10)])
   expect(text).toMatch(/ {2}├─ SessionStart hooks +8K\n/)
   expect(text.split('\n').filter(l => l.length > 80)).toEqual([])
+  expect(report([f(undefined, 10)])).toMatch(/ {2}SessionStart hooks: not measured\.\n {2}├─ Memory/)
 })
 
 test('fixed context flags a memory file or the SessionStart hooks of 10K tokens or more, largest first', async () => {
-  const f = (over: { hooks?: number; files?: Record<string, number> }, requests = 5) => run({ requests, actual: 1, fixed: { tokens: 30000, mcp: 5000, memory: 12000, agents: 0, skills: 0, hooks: over.hooks ?? 0, cost: 0.5, ...(over.files ? { files: over.files } : {}) } })
+  const f = (over: { hooks?: number; files?: Record<string, number> }, requests = 5) => run({ requests, actual: 1, fixed: { tokens: 30000, mcp: 5000, memory: 12000, agents: 0, skills: 0, startHooks: over.hooks ?? 0, cost: 0.5, ...(over.files ? { files: over.files } : {}) } })
   const notes = (...lines: ReturnType<typeof f>[]) => fixedBlock(lines)?.notes ?? []
   expect(LARGE_FIXED).toBe(10000)
   expect(notes(f({ files: { 'CLAUDE.md': 12000 }, hooks: 24000 }))[2]).toBe('Large: SessionStart hooks 24K, CLAUDE.md 12K.')
   expect(notes(f({ files: { 'CLAUDE.md': 12000, 'MEMORY.md': 10000 } }))[2], 'files only, at the line').toBe('Large: CLAUDE.md 12K, MEMORY.md 10K.')
   expect(notes(f({ hooks: 10000 })), 'hooks at the line').toHaveLength(3)
   expect(notes(f({ hooks: 9999, files: { 'CLAUDE.md': 9999 } })), 'below the line: no note').toHaveLength(2)
-  expect(notes(f({})), 'old lines: no note').toHaveLength(2)
+  expect(notes(f({})), 'nothing large: no note').toHaveLength(2)
   // The hooks are request-weighted: one big run among many small ones does not flag them.
   expect(notes(f({ hooks: 40000 }, 1), f({ hooks: 0 }, 9))).toHaveLength(2)
   // A file is judged on the last run.

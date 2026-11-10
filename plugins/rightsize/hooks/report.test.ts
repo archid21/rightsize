@@ -54,10 +54,12 @@ test('a task that cost more than its baseline is a negative saving, printed as a
   expect(cells(report([run({ change: 'lower', offered: 'lower', actual: 0.101, stay: 0.1, taken: 0.05 })]), 'Saved')).toEqual(['even', 'even', 'even', 'even'])
   // A subscriber reads it in API-equivalent dollars.
   expect(report(lines, { subscription: true }).split('\n')[1]).toBe('Used more than it saved (~$0.10 more, API-equivalent).')
-  // A raise that came out cheaper than its baseline takes the extra down, and a lowering's negative saving counts against savings.
-  const raised = totals([run({ change: 'raise', offered: 'raise', actual: 0.05, stay: 0.1, taken: 0.2 })])
-  expect(Number(raised.extra.toFixed(5)), 'spent less than staying would have').toBe(-0.05)
-  expect(report([run({ change: 'raise', offered: 'raise', actual: 0.05, stay: 0.1, taken: 0.2 })]), 'a negative extra is not shown as a row').not.toContain('Extra on hard')
+  // A raise that came out cheaper than its baseline adds no extra and does not take other raises' extra down.
+  const cheap = run({ change: 'raise', offered: 'raise', actual: 0.05, stay: 0.1, taken: 0.2 })
+  expect(totals([cheap]).extra, 'spent less than staying would have: nothing extra').toBe(0)
+  expect(report([cheap]), 'no extra, no row').not.toContain('Extra on hard')
+  const costly = run({ change: 'raise', offered: 'raise', actual: 0.3, stay: 0.1, taken: 0.2 })
+  expect(Number(totals([costly, cheap, cheap, cheap]).extra.toFixed(5)), 'cheaper raises do not cancel a costlier one').toBe(0.2)
 })
 
 test('keeps raising apart from saving, takes off the rating calls, and skips stopped turns', async () => {
@@ -1204,6 +1206,13 @@ test('on a subscription with no roll-up yet, lifetime window rows match 30 days:
   expect(five?.at(-1), 'lifetime has a window figure').not.toBe('–')
   expect(five?.at(-1), 'and it is the 30-day one').toBe(five?.[2])
   expect(cells(out, 'Weekly limit')?.at(-1)).toBe(cells(out, 'Weekly limit')?.[2])
+})
+
+test('extra on hard prompts never shrinks over a longer period, even when older raises came out cheaper', () => {
+  const costly = SAVER({ change: 'raise', offered: 'raise', actual: 0.3, stay: 0.1, taken: 0.2 })
+  const cheap = SAVER({ change: 'raise', offered: 'raise', actual: 0.05, stay: 0.5, taken: 0.2 })
+  const out = report([{ ...costly, at: ago(1) }, { ...cheap, at: ago(10) }, { ...cheap, at: ago(20) }])
+  expect(cells(out, 'Extra on hard prompts')?.slice(1), '7 days, 30 days and lifetime').toEqual(['$0.20', '$0.20', '$0.20'])
 })
 
 test('folding: only lines at or before the cutoff and after the last fold, once; nothing to fold leaves it as it was', () => {

@@ -256,7 +256,8 @@ export function totals(lines: readonly RunLine[]): Totals {
     t.spent += num(l.actual)
     const diff = counterfactual(l) - num(l.actual)
     if (SAVING.includes(c)) t.saved += diff
-    else if (SPENDING.includes(c)) t.extra -= diff
+    // Only what a raise spent over staying: one that came out cheaper adds nothing, so a longer period never shows less.
+    else if (SPENDING.includes(c)) t.extra += Math.max(0, -diff)
   }
   return t
 }

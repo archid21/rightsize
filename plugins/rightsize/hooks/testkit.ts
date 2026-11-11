@@ -38,6 +38,17 @@ export const WHATSNEXT_ARGS = WHATSNEXT_COMPACT.slice('/compact '.length)
 /** What `compact-instructions --json` prints; the fields rightsize reads are the first two. */
 export const wnAnswer = (wrapUpFirst: boolean, project = true) =>
   JSON.stringify({ instructions: WHATSNEXT_ARGS, compact_prompt: WHATSNEXT_COMPACT, handoff: 'docs/project/HANDOFF.md', handoff_exists: true, wrap_up_first: wrapUpFirst, wrap_up_state: wrapUpFirst ? 'none' : 'written', wrap_up_prompt: 'wrap up', project, session_found: true }, null, 2)
+/** The texts `fresh-instructions --json` hands over (whatsnext ADR 0025): deliberately not whatsnext's real ones, so a test fails when rightsize writes its own. */
+export const FRESH = {
+  wrap_up_prompt: 'wrap up',
+  continue_prompt: 'Pick up from the note: read it first.',
+  new_session_prompt: 'Open a new session called Fresh and say: Pick up from the note: read it first.',
+  terminal_command: 'claude "Pick up from the note: read it first."',
+  clear_command: 'clear',
+}
+/** What `fresh-instructions --json` prints. */
+export const freshAnswer = (wrapUpFirst: boolean, project = true, over: Record<string, unknown> = {}) =>
+  JSON.stringify({ project, session_found: true, handoff: 'docs/project/HANDOFF.md', handoff_exists: true, handoff_foreign: false, wrap_up_first: wrapUpFirst, wrap_up_state: wrapUpFirst ? 'none' : 'written', ...FRESH, ...over }, null, 2)
 /** Makes whatsnext installed (its commands, its entry in installed_plugins.json, its script), and the project `whatsnext init`-ed unless `initialized` is false. */
 export function installWhatsnext(h: { commands: { name: string; description: string; source: string; plugin?: string }[]; files: Record<string, string>; cwd: string; wnReply: { exitCode: number; stdout: string; stderr?: string } }, over: { initialized?: boolean; listed?: boolean } = {}) {
   h.commands = WHATSNEXT_CMDS
@@ -99,7 +110,7 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
     /** Headers whose band answer came after the question had gone: the press found nothing to press. */
     tooLate: [] as string[],
     sent: [] as { effort?: string; model?: string; agentId?: string; turnId: string }[],
-    submitted: [] as { text: string; context?: readonly string[] }[],
+    submitted: [] as { text: string; context?: readonly string[]; asUser?: boolean }[],
     logs: [] as string[],
     filled: [] as string[],
     /** startDayOne: the day-one tip was shown already, so a session on Opus does not open with its band (the tests of the tip clear it). */
@@ -255,6 +266,8 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
     /** What the next whatsnext.py runs answer, in order; when none is left, `wnReply`. */
     wnReplies: [] as { exitCode: number; stdout: string; stderr?: string }[],
     wnReply: { exitCode: 0, stdout: wnAnswer(false) } as { exitCode: number; stdout: string; stderr?: string },
+    /** What `fresh-instructions` answers; the default is a whatsnext that does not know the command yet (P-69 is open). */
+    wnFresh: { exitCode: 2, stdout: '', stderr: "whatsnext.py: error: argument command: invalid choice: 'fresh-instructions'\n" } as { exitCode: number; stdout: string; stderr?: string },
     /** True: sleeps are on a virtual clock. They end only when `advance` reaches them, and the clock moves to each one's time. */
     virtual: false,
     sleepers: [] as { due: number; release: () => void }[],
@@ -440,7 +453,7 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
     if (argv[0] === 'git' && argv[1] === 'rev-parse') return { value: { exitCode: 0, stdout: `${h.cwd}\n`, stderr: '' } } as never
     if (argv[0] === 'python3') {
       h.wnRuns.push(argv)
-      const reply = h.wnReplies.shift() ?? h.wnReply
+      const reply = argv.includes('fresh-instructions') ? h.wnFresh : (h.wnReplies.shift() ?? h.wnReply)
       return { value: { exitCode: reply.exitCode, stdout: reply.stdout, stderr: reply.stderr ?? '' } } as never
     }
     h.ran.push(argv)
@@ -562,7 +575,7 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
       h.dropNext = undefined
       return { drop } as never
     }
-    h.submitted.push({ text: e.text, context: e.context })
+    h.submitted.push({ text: e.text, context: e.context, ...((e.origin as { asUser?: boolean } | undefined)?.asUser ? { asUser: true } : {}) })
     const during = h.duringSubmit
     h.duringSubmit = undefined
     if (during) await during()

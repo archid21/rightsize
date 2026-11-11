@@ -331,6 +331,31 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(run.retries).toBe(1)
   })
 
+  test(`a helper's hook refusals are not struggling, and a hook that timed out is a Blocked stall (ADR 0049) (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: AUTO_RAISE })
+    const d = drive($, h)
+    await d.start(surface)
+    h.rating = NO_CHANGE
+    await d.submit(SEARCH)
+    await d.step('t1', 0)
+    h.rating = LISTING
+    await d.spawn('lister')
+    h.now += 1000
+    await d.step('l1', 0, 'agent-lister')
+    expect(last(h.sent)?.effort).toBe('low')
+    for (let i = 0; i < 3; i++) await d.bash('env:PreToolUse:Read hook error: [trim] /src/a.py is unchanged since your earlier Read.', 'agent-lister')
+    await d.bash('env:Blocked by hook', 'agent-lister')
+    await d.step('l1', 1, 'agent-lister')
+    expect(last(h.sent)?.effort, 'refusals: still low').toBe('low')
+    await d.bash('env:PreToolUse:Bash hook error: [guard.sh]: timed out; blocking because onFailure is "block"', 'agent-lister')
+    await d.step('l1', 2, 'agent-lister')
+    expect(last(h.sent)?.effort, 'a hook that timed out: still low').toBe('low')
+    await d.answer('agent-lister')
+    await d.complete('t1')
+    const sub = readRuns(h).find(l => l.kind === 'subagent') as Record<string, unknown>
+    expect([sub.errors, sub.blocked, sub.stall, sub.raises]).toEqual([0, 1, 'blocked', undefined])
+  })
+
   test(`a new session starts with a fresh retry budget and no helpers watched (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { model: 'claude-fable-5-2', effort: 'high', store: HELPERS })
     const d = drive($, h)

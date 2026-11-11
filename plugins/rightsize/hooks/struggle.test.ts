@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { type Signals, FAILED_TRIES, ERRORS, helperCap, isBookkeeping, LIMITS, LONG_MIN, LONG_X, LOOP, NOVEL, RECENT_MAX, REPEAT, WINDOW, blockedError, callKey, isEditTool, isTestCommand, noMatchExit, noSignals, noteCall, oneUp, refusedByPerson, struggle, testsOutcome } from './struggle'
+import { type Signals, FAILED_TRIES, ERRORS, helperCap, isBookkeeping, LIMITS, LONG_MIN, LONG_X, LOOP, NOVEL, RECENT_MAX, REPEAT, WINDOW, blockedError, callKey, hookFailed, isEditTool, isTestCommand, noMatchExit, noSignals, noteCall, oneUp, refusedByHook, refusedByPerson, struggle, testsOutcome } from './struggle'
 
 // Claude labels each Bash call afresh, so the description differs between runs of one command.
 const bash = (command: string) => callKey('Bash', { tool: 'Bash', tool_use_id: Math.random().toString(), command, description: `run ${command} (${Math.random()})` })
@@ -365,6 +365,25 @@ test('refusedByPerson: a call the person said no to at the permission prompt, in
   expect(refusedByPerson('<tool_use_error>File is in a directory that is denied by your permission settings.</tool_use_error>'), 'a write the settings deny').toBe(true)
   expect(refusedByPerson('File is in a directory that is denied by your permission settings.'), 'without the tags').toBe(true)
   for (const text of ['boom', 'rm: cannot remove build: Permission denied', '<tool_use_error>String to replace not found in file.</tool_use_error>', 'bash: ./run.sh: Permission denied', 'Error: Permission for this tool use was denied', 'error: the user rejected the merge request in review', '']) expect(refusedByPerson(text), text).toBe(false)
+})
+
+test('refusedByHook: the text core makes for a classic PreToolUse hook that said no, matched at the start only', async () => {
+  const text = 'PreToolUse:Read hook error: [trim] /src/a.py is unchanged since your earlier Read.'
+  expect(refusedByHook(text), 'prefix at the start').toBe(true)
+  expect(refusedByHook(`  \n${text}`), 'leading whitespace').toBe(true)
+  expect(refusedByHook(`<tool_use_error>${text}</tool_use_error>`), 'with the tags').toBe(true)
+  expect(refusedByHook('PreToolUse:mcp__x__y hook error: [/bin/guard]: nope'), 'an MCP tool name').toBe(true)
+  expect(refusedByHook('Blocked by hook'), 'a deny with no reason').toBe(true)
+  expect(refusedByHook('  Blocked by hook\n'), 'whitespace around it').toBe(true)
+  for (const t of [`Error: the tool said ${text}`, `Exit code 1\n${text}`, 'PostToolUse:Read hook error: [trim] x', 'Do not edit generated files', 'Blocked by hook because the tests are red', 'The call was Blocked by hook', 'PreToolUse hook error: x', 'PreToolUse:Read hook errors: x', '']) expect(refusedByHook(t), t).toBe(false)
+})
+
+test('hookFailed: a blocking hook that crashed or timed out, in core\'s wording', async () => {
+  expect(hookFailed('PreToolUse:Bash hook error: [/usr/local/bin/guard.sh]: timed out; blocking because onFailure is "block"')).toBe(true)
+  expect(hookFailed('PreToolUse:Bash hook error: [guard]: failed; blocking because this hook is required.')).toBe(true)
+  expect(hookFailed('PreToolUse:Edit hook error: [guard]: failed; blocking because it is one of the user\'s own hooks, which must succeed in this session')).toBe(true)
+  expect(hookFailed('  <tool_use_error>PreToolUse:Bash hook error: [python3 /a/b.py --x]: timed out; blocking because onFailure is "block"\nboom</tool_use_error>')).toBe(true)
+  for (const t of ['PreToolUse:Read hook error: [trim] /src/a.py is unchanged since your earlier Read.', 'PreToolUse:Bash hook error: [guard]: nope', 'Blocked by hook', 'Error: PreToolUse:Bash hook error: [guard]: failed; blocking because this hook is required.', 'PostToolUse:Bash hook error: [guard]: failed; blocking because this hook is required.', '']) expect(hookFailed(t), t).toBe(false)
 })
 
 test('the last test run in a turn is its objective outcome', async () => {

@@ -1244,3 +1244,17 @@ test('a stored roll-up is read back as numbers only: a damaged one counts for no
   expect(parseLifetime({ since: ago(9), through: ago(1), t: { rated: 'many', saved: { a: 1 }, changed: { lower: 'x' } } })?.t.rated).toBe(0)
   expect(addTotals(life!.t, life!.t).rated).toBe(2)
 })
+
+test('trim section: tokens per feature, all time and 30 days, assumed marked; none without data', () => {
+  const trim = { allTime: { tool_cleanup: { saves: 3, tokens: 12345, assumed: false }, browser_scale: { saves: 2, tokens: 1010, assumed: true } }, last30: { tool_cleanup: { saves: 1, tokens: 400, assumed: false } }, session: {} }
+  const opts = { now: NOW, session: 's1', subscription: false, trim }
+  const plain = buildReport([run({})], [], opts)
+  expect(plain).toContain('TRIM SAVINGS (tokens, estimated)')
+  expect(plain).toMatch(/Tool results cleaned\s+12\.3K\s+400/)
+  expect(plain).toMatch(/Browser screenshots\s+1\.0K assumed\s+–/)
+  expect(plain).toContain('"assumed" means a fixed estimate')
+  const md = buildReport([run({})], [], { ...opts, markdown: true })
+  expect(md).toContain('```')
+  expect(md).toContain('12.3K')
+  for (const none of [undefined, { allTime: {}, last30: {}, session: {} }]) expect(buildReport([run({})], [], { now: NOW, session: 's1', subscription: false, ...(none ? { trim: none } : {}) })).not.toContain('TRIM SAVINGS')
+})

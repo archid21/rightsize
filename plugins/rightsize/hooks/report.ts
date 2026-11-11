@@ -3,6 +3,7 @@ import { STEP_PROVE } from './steps'
 import { MISS_MIN, checkTotals, missRates, missTotals } from './misses'
 import type { StartBlock } from './start'
 import type { TrimSavings, TrimSum } from './trim'
+import { resultRows, results, type ChangeLine } from './results'
 
 // /rightsize report: what the mod saved, what it cost to run, and what went
 // wrong, read from its run log. Pure functions, no engine calls.
@@ -1114,7 +1115,7 @@ export function trimRows(trim: TrimSavings | undefined) {
 export function buildReport(
   lines: readonly RunLine[],
   switches: readonly SwitchLine[],
-  opts: { now: number; session: string; subscription: boolean; start?: StartBlock; pause?: number | null; measureFrom?: string; markdown?: boolean; watching?: boolean; lifetime?: Lifetime; details?: boolean; trim?: TrimSavings },
+  opts: { now: number; session: string; subscription: boolean; start?: StartBlock; pause?: number | null; measureFrom?: string; markdown?: boolean; watching?: boolean; lifetime?: Lifetime; details?: boolean; trim?: TrimSavings; changes?: readonly ChangeLine[] },
 ) {
   const since = (days: number) => (l: { at: string }) => opts.now - Date.parse(l.at) <= days * DAY
   const month = lines.filter(since(30))
@@ -1148,6 +1149,9 @@ export function buildReport(
   if (summary.length) out.push(...section('30-DAY SUMMARY', grid(summary)))
   const trimmed = trimRows(opts.trim)
   if (trimmed) out.push(...section('TRIM SAVINGS (tokens, estimated)', grid(trimmed)), ...para(TRIM_NOTE, md ? '' : '  '))
+  // Did it work?: each setting you changed, your prompts after it against before it (ADR 0054). Measured, not estimated.
+  const worked = resultRows(results(lines, opts.changes ?? [], opts.now))
+  if (worked.length) out.push(...section('DID IT WORK? (measured on your prompts)', worked))
   // Watch only: what rightsize would have done, and what that would have saved, against staying. Nothing was applied.
   const watched = watchLine(month, sub, opts.watching === true)
   if (watched) out.push('', ...para(watched))

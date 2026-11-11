@@ -117,6 +117,7 @@ import { BRIEF_MAX, cutRequest, parseRating, ratingPrompt, ratingSystem } from '
 import { isApprovalStep } from './approval'
 import { LIMITS, type Signals, type Struggle, blockedError, callKey, hookFailed, isBookkeeping, isEditTool, helperCap, isTestCommand, noMatchExit, noSignals, noteCall, oneUp, refusedByHook, refusedByPerson, struggle, testsOutcome } from './struggle'
 import { type Change, type HelperLine, type Lifetime, type RunLine, type SwitchLine, type Windows, SESSION_TOTAL, SESSION_TOTAL_FROM, bandShareText, buildReport, costTag, foldLifetime, parseLifetime, parseLines, ratedInSession, sessionTotal, shareMessage, shareOf, usedTag, windowCostText, windowRates } from './report'
+import { isTracked, parseChanges, type ChangeLine } from './results'
 import { type TrimSavings, readTrimSavings } from './trim'
 import { LIMIT_BUTTON, LIMIT_COMPACT, LIMIT_HIDE, LIMIT_MORE, LIMIT_WHY, LIMIT_WHY_ID, isLimitId, limitDue, limitText } from './limit'
 import { SIZE_BUTTON, SIZE_COMPACT, SIZE_FRESH, SIZE_FRESH_BUTTON, SIZE_FRESH_COMPACT, SIZE_FRESH_COPY, SIZE_FRESH_COPY_FAILED, SIZE_FRESH_NOT_NOW, SIZE_FRESH_PASTE_BUTTONS, SIZE_FRESH_SAVING, SIZE_HIDE, SIZE_MORE, SIZE_WHY, SIZE_WHY_FRESH, SIZE_WHY_ID, isSizeId, sizeFreshNotWritten, sizeFreshNotice, sizeFreshPaste, sizeStep, sizeText } from './size'
@@ -699,6 +700,23 @@ function append($: EngineInterface, name: string, line: string, max: number) {
     if (writing.get(path) === turn) writing.delete(path)
   })
   return turn
+}
+
+// Changes to settings that alter what rightsize does, one shared file (ADR 0054): /rightsize report measures each against the days before it.
+const changesFile = () => `${sessionsDir()}/changes.jsonl`
+async function recordChange($: EngineInterface, key: string, from: string, to: string) {
+  if (!isTracked(key) || from === to) return
+  const line: ChangeLine = { at: new Date(await $.clock.now()).toISOString(), key, from, to }
+  const path = changesFile()
+  const turn = (writing.get(path) ?? Promise.resolve()).then(() => writeLine($, path, JSON.stringify(line), 100_000))
+  writing.set(path, turn)
+  void turn.then(() => {
+    if (writing.get(path) === turn) writing.delete(path)
+  })
+  await turn
+}
+async function readChanges($: EngineInterface): Promise<ChangeLine[]> {
+  return parseChanges(await readText($, changesFile()).catch(() => ''))
 }
 
 function log($: EngineInterface, line: string) {
@@ -1339,7 +1357,9 @@ function writeSetting($: EngineInterface, key: SettingKey, value: string): Promi
 async function putConfig($: EngineInterface, key: SettingKey, value: string) {
   const unset = value === NOT_SET
   if (cfg[key] === value && yours.has(key) === !unset) return false
+  const was = cfg[key]
   cfg = { ...cfg, [key]: value }
+  await recordChange($, key, was, value)
   yours = mark(yours, key, !unset)
   if (!unset) await forgetReset($, key)
   applyOption(key)
@@ -5037,7 +5057,9 @@ export const register: Register = (on, options) => {
     if (key === undefined) return next(e)
     const result = await next(e)
     if (result.deny !== undefined || !inOptions(key, result.value)) return result
+    const was = cfg[key]
     cfg = { ...cfg, [key]: result.value }
+    if (e.origin?.kind === 'composer' || e.origin?.kind === 'bridge') await recordChange($, key, was, result.value)
     yours = afterSet(yours, e.key, result.value, e.origin)
     if (yours.has(key)) await forgetReset($, key)
     applyOption(key)
@@ -5213,10 +5235,11 @@ export const register: Register = (on, options) => {
       const lifetime = await readLifetime($)
       const now = await $.clock.now()
       const trim = await readTrim($, now)
+      const changes = await readChanges($)
       const start = startBlock(adviseStart(runs, await startContext($), now), billing === 'subscription', money)
       // The row's text is the plain report (the terminal, -p, the SDK). Every other surface draws the Markdown form, chosen
       // per surface when the row draws (its CommandOutput hook): $.session.surfaces() here can miss the desktop app.
-      const opts = { now, session: sessionId, subscription: billing === 'subscription', start, pause: missBlock, watching, details: arg === 'report details', ...(trim ? { trim } : {}), ...(lifetime ? { lifetime } : {}), ...(measureFrom ? { measureFrom: new Date(measureFrom).toISOString() } : {}) }
+      const opts = { now, session: sessionId, subscription: billing === 'subscription', start, pause: missBlock, watching, details: arg === 'report details', ...(trim ? { trim } : {}), changes, ...(lifetime ? { lifetime } : {}), ...(measureFrom ? { measureFrom: new Date(measureFrom).toISOString() } : {}) }
       const text = buildReport(runs, switches, opts)
       reportMarkdown.set(text, buildReport(runs, switches, { ...opts, markdown: true }))
       while (reportMarkdown.size > 20) reportMarkdown.delete(reportMarkdown.keys().next().value as string)

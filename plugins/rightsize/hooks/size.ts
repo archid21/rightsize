@@ -33,11 +33,11 @@ export const SIZE_FRESH_BUTTON = { id: SIZE_FRESH, label: 'Start fresh' }
 /** The paste row's buttons: Copy puts whatsnext's `continue_prompt` on the clipboard; Compact now compacts this session; Not now takes the row away. */
 export const SIZE_FRESH_COPY = 'size-fresh-copy'
 export const SIZE_FRESH_NOT_NOW = 'size-fresh-not-now'
-/** Compact now on the paste row: keeps going in this session (same compaction as the warning's button). */
+/** Compact and continue here on the paste row (first: the safe choice): keeps going in this session, same compaction as the warning's Compact now. */
 export const SIZE_FRESH_COMPACT = 'size-fresh-compact'
 export const SIZE_FRESH_PASTE_BUTTONS: readonly { id: string; label: string }[] = [
-  { id: SIZE_FRESH_COPY, label: 'Copy for new session' },
   { id: SIZE_FRESH_COMPACT, label: 'Compact and continue here' },
+  { id: SIZE_FRESH_COPY, label: 'Copy for new session' },
   { id: SIZE_FRESH_NOT_NOW, label: 'Not now' },
 ]
 /** First line of both paste rows. */

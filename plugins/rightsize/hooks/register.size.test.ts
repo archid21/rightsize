@@ -85,7 +85,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await ui.press({ key: 'cold-size-compact' })
     await ui.unmount()
     expect(h.compactCalls).toEqual([{ instructions: COMPACT_BASE }])
-    expect((await row($)).text).toMatch(/^Compacted(: \d+K → \d+K tokens)?\. Each turn now costs less\.$/)
+    expect((await row($)).text).toBe('Compacted. Later turns read a short summary, not the whole conversation.')
     expect(log(h)).toContain("context warning: compacted on the person's button")
   })
 

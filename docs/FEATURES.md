@@ -2,7 +2,7 @@
 
 Every rightsize feature: how it works and what it gives you.
 
-Current release: 0.11.0
+Current release: 0.12.0
 
 **Since** is the release that added the feature. `Unreleased` means it is on `main` but not in a release yet. Every setting, with its options: [SETTINGS.md](SETTINGS.md). Every rule and number: [HOW-IT-DECIDES.md](HOW-IT-DECIDES.md).
 
@@ -46,6 +46,7 @@ Current release: 0.11.0
 | Cache life read, not assumed | The cache's life (5 minutes or 1 hour) is read from the session, not taken from `prices.json` alone. | Keep-warm timing and cold-return costs are right on API keys and subscriptions. | 0.10.2 |
 | Idle warning | When a session sat idle past the cache's life, the band notes what the next prompt costs to rebuild the cache and what `/compact` first would have cost. The prompt is never held. | You see the cost of a cold return before it surprises you. | 0.5 |
 | Context-size warning | When the conversation first reaches 40, 50, 60, 70, 80 or 90% of the window, the band says so with a **Compact now** button. It shows while keep warm runs too. | You compact before a long conversation gets expensive. | 0.9 |
+| Start fresh | With whatsnext installed and at least 40K tokens of room, the warning also offers **Start fresh**: whatsnext saves a handoff note, then the row gives the prompt for a new session with **Compact and continue here**, **Copy for new session** and **Not now** (the terminal shows the command to run). | You choose between a short summary here and a new session that starts small, with no context lost unless you pick it. | 0.12 |
 | Compact before your 5-hour limit | Near the 5-hour limit, the band advises a compact while the cache is warm and says what it saves after the reset. | Less usage spent rebuilding the cache after a window reset. | 0.9 |
 | Steps aside for idle compact | When Claude Code will compact an idle session on its own, rightsize does not keep that session warm. | No paying to keep warm a cache that is about to be thrown away. | 0.10 |
 | Handoff before a compact | With whatsnext installed, rightsize asks it to `wrap up` before a compact and uses its compact text. It compacts only once no wrap-up is missing. | A compact keeps the details that matter. | 0.9 |
@@ -59,6 +60,8 @@ Current release: 0.11.0
 | Band | A row above the prompt says what rightsize did and what it cost, with buttons to retry at the original effort or run on your model, and a ⋯ menu to change a rule or rate a choice. **Band** sets when it shows. | Every choice is visible and can be undone in one click. | 0.5 |
 | Watch only | **Mode** set to watch only rates and plans every prompt and changes nothing; the band says what it would have done. | See rightsize's calls on your own work before it acts. | 0.8 |
 | Cost report | `/rightsize report` shows what rightsize saved against staying on your model, for today, 7 days, 30 days and lifetime, net of rating calls: as hours of Claude's work and 5-hour windows on a subscription, in dollars on the API. It lists what rightsize did and recommends what to change, such as fixed context to cut. `/rightsize report details` holds accuracy, turns not counted, time and whole tasks. | Measured savings, including the times rightsize cost more, and what to do about them. | 0.4 (lifetime: 0.10; hours and recommendations: 0.11) |
+| trim savings in the report | With trim installed, `/rightsize report` shows trim's tokens saved per feature, all time and the last 30 days, read only from trim's savings files; fixed estimates are marked "assumed". | One report for both mods. | 0.12 |
+| Concise output suggestion | When written output is at least a quarter of a session's cost (after 20 requests and $1), the band offers the Concise output style for this session or this project. | Shorter replies where output drives the cost. | 0.12 |
 | Switches and rules | **Routing**, **Hand-offs** and **Cache** each turn a feature off. **Ask before changing** makes every move ask first. Four Advanced rules (Lowering, Raising, Stronger model, Cheaper model) set ask, automatic or never per case. | One rule set, two switches: no profiles to tune. | 0.10 |
 | Settings pane | `/rightsize` opens a settings pane; `/rightsize status` lists what is in use and what you changed; `/rightsize reset` gives a reset you can paste. | Change every setting without editing files. | 0.8 |
 | Short questions | A question that must be answered before the prompt runs waits 30 seconds by default, then takes the choice that changes nothing. Questions on the band do not hold up work. | rightsize never blocks you for long. | 0.8 |

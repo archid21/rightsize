@@ -1,7 +1,15 @@
 # Changelog
 
-## Next (unreleased)
+## 0.12.0 (2026-11-11)
 
+- **Start fresh, next to Compact now.** With whatsnext installed, the context-size warning offers **Start fresh** beside **Compact now** when at least 40K tokens of the window are left. Start fresh has whatsnext save a handoff note (it skips that when the note is already fresh), then the row says `Handoff saved. Keep going here, or start a new session from it.` with the new-session prompt, and three buttons: **Compact and continue here**, **Copy for new session** and **Not now**. In the terminal, the row gives the `claude "..."` command to run in a new window instead of Copy. Typing your own prompt clears the row. A plugin cannot start a new session as you, so rightsize gives you the prompt to paste and starts nothing itself.
+- **Compact now says what it did.** After a compact from the warning, the row reads `Compacted. Each turn now costs less.`
+- **A Concise output suggestion.** When Claude's written output is a large share of what a session costs (at least a quarter, after 20 requests and $1), the band offers Claude Code's Concise output style: **This session** (set back when the session ends), **This project**, or **Not now**, with a hint that `/config` sets it everywhere. It writes only the project's local Output style setting.
+- **trim's savings in `/rightsize report`.** With trim installed, the report adds **TRIM SAVINGS (tokens, estimated)**: tokens saved per trim feature, all time and the last 30 days, with fixed estimates marked "assumed". rightsize only reads trim's savings files; it never writes them.
+- **A model switch fits the session's real window.** A per-turn switch is capped at the window Claude Code reports for the session when that is smaller than the model's listed window, and no switch happens when the conversation is larger than the target model's window.
+- **Fewer false "stuck" raises.** A tool call refused by another plugin's hook is steering, not a sign Claude is stuck, and bookkeeping tool calls (task lists and the like) are left out of the stuck signs.
+- **Asks give one reason and four answers.** Each ask (effort, stronger model, subagent, stuck) gives one sentence on why, then once, for this session, keep, or always. **Remember choices** is gone; earlier saved choices move to the matching rows once.
+- **SessionStart hook output is measured from the messages.** The report's fixed context counts it from the session's messages, and says "not measured" when it cannot read them.
 - **The cache offer counts down with a colored bar.** The offer before the cache goes cold now shows how much of the cache life is left: `Goes cold in 42 min ▰▰▰▰▰▰▰▱▱▱ (14:55) · coming back after costs about $0.63`. The minutes and bar are green with over half the life left, yellow down to a fifth, and red under it; the words read the same without color.
 - **A shorter keep-warm row.** It drops "so far": `Warm until 8:30 · ~0.1% used` (`$0.04` on the API). It shows no countdown: keep warm refreshes the cache before it goes cold, so the time that matters is when keep warm stops.
 

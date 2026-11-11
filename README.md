@@ -9,7 +9,7 @@ claude plugin marketplace add archid21/rightsize
 claude plugin install rightsize@archid21 --scope user
 ```
 
-**Status: 0.11.0.** A shorter report that says what the numbers mean, a welcome table, and tips on the band. See [New in 0.11.0](#new-in-0110).
+**Status: 0.12.0.** Start fresh beside Compact now, a Concise output suggestion, and trim's savings in the report. See [New in 0.12.0](#new-in-0120).
 
 MIT license · works with a Claude subscription (Pro, Max, Ultra) or an API key · [Open an issue](https://github.com/archid21/rightsize/issues)
 
@@ -132,14 +132,14 @@ On a subscription, a keep-warm request draws a small share of your usage window,
 
 *Benchmark: real tasks from open-source repositories, each graded by hidden tests the model never sees. Your results depend on your work and settings. Method: [docs/METHOD.md](docs/METHOD.md).*
 
-## New in 0.11.0
+## New in 0.12.0
 
-- **A shorter report that says what the numbers mean.** `/rightsize report` shows what you gained, what rightsize did and what to change. On a subscription it counts hours of Claude's work and 5-hour windows; on the API, dollars. One savings table covers today, 7 days, 30 days and lifetime.
-- **`/rightsize report details`.** The sections behind the numbers: starting point, fixed context, accuracy, time and whole tasks.
-- **Report tables line up in the desktop app.** Today, 7 days, 30 days and lifetime keep their columns there too.
-- **A welcome table after install.** The first session shows what rightsize does and the five features to learn first. Where the pane does not fit, `/rightsize welcome` shows the same table in the transcript.
-- **Tips on the band.** At a turn end with nothing else to say, one tip shows. **Stop tips** turns them off; `/rightsize tips` brings them back.
-- **One GitHub star ask.** rightsize asks once, after it has saved you something, if your own `gh` says the repo is not starred. **No thanks** ends it.
+- **Start fresh, next to Compact now.** With whatsnext installed, a big conversation can end in a handoff note and a new session that starts small. The row gives the prompt to paste, with **Compact and continue here** if you would rather keep going.
+- **Compact now says what it did:** `Compacted. Each turn now costs less.`
+- **A Concise output suggestion.** When Claude's written output drives the cost, the band offers the Concise output style for this session or this project.
+- **trim's savings in the report.** With trim installed, `/rightsize report` shows the tokens trim saved, per feature.
+- **Model switches fit the session's window**, and **fewer false "stuck" raises** when another plugin's hook refuses a tool call.
+- **Asks give one reason and four answers:** once, for this session, keep, or always.
 
 Every change: [CHANGELOG.md](CHANGELOG.md). Every feature: [docs/FEATURES.md](docs/FEATURES.md).
 

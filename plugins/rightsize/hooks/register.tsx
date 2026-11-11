@@ -111,7 +111,7 @@ import {
 } from './settings'
 import { BRIEF_MAX, cutRequest, parseRating, ratingPrompt, ratingSystem } from './rate'
 import { isApprovalStep } from './approval'
-import { LIMITS, type Signals, type Struggle, blockedError, callKey, isBookkeeping, isEditTool, helperCap, isTestCommand, noMatchExit, noSignals, noteCall, oneUp, refusedByPerson, struggle, testsOutcome } from './struggle'
+import { LIMITS, type Signals, type Struggle, blockedError, callKey, hookFailed, isBookkeeping, isEditTool, helperCap, isTestCommand, noMatchExit, noSignals, noteCall, oneUp, refusedByHook, refusedByPerson, struggle, testsOutcome } from './struggle'
 import { type Change, type HelperLine, type Lifetime, type RunLine, type SwitchLine, type Windows, SESSION_TOTAL, SESSION_TOTAL_FROM, bandShareText, buildReport, costTag, foldLifetime, parseLifetime, parseLines, ratedInSession, sessionTotal, shareMessage, shareOf, usedTag, windowCostText, windowRates } from './report'
 import { LIMIT_BUTTON, LIMIT_COMPACT, LIMIT_HIDE, LIMIT_MORE, LIMIT_WHY, LIMIT_WHY_ID, isLimitId, limitDue, limitText } from './limit'
 import { SIZE_BUTTON, SIZE_COMPACT, SIZE_HIDE, SIZE_MORE, SIZE_WHY, SIZE_WHY_ID, isSizeId, sizeStep, sizeText } from './size'
@@ -3739,8 +3739,9 @@ async function noteHelperCall($: EngineInterface, id: string, w: Watch, e: Recor
   const r = result as { deny?: string; isError?: boolean }
   if (r.deny) return
   let isError = r.isError === true
-  if (isError && refusedByPerson(errorText(result))) return
-  if (isError && blockedError(errorText(result))) {
+  const hookDown = isError && hookFailed(errorText(result))
+  if (isError && !hookDown && (refusedByPerson(errorText(result)) || refusedByHook(errorText(result)))) return
+  if (isError && (hookDown || blockedError(errorText(result)))) {
     w.blocked += 1
     if (w.stall !== 'struggling') w.stall = 'blocked'
     if (w.blocked === 1) await log($, `helper ${id} blocked by the environment: more effort will not help`)
@@ -5376,11 +5377,14 @@ export const register: Register = (on, options) => {
       if (String(e.tool) === 'Agent' && active.delegate && tierOf(typeof model === 'string' ? model : undefined) === active.delegate.tier) active.delegated = true
       if (String(e.tool) === 'Agent' || String(e.tool) === 'SendMessage') active.agentCalls += 1
       // A call the person said no to at the permission prompt comes back as an error: it is their steering, not a failure.
-      const refused = (result as { isError?: boolean }).isError === true && refusedByPerson(errorText(result))
-      const isError = (result as { isError?: boolean }).isError === true && !refused
-      // An error from the environment (no network, a denied sandbox, a missing program) is a Blocked
+      // A classic hook's refusal is the same: the setup said no (ADR 0049). One that crashed or timed out is the environment failing.
+      const failed = (result as { isError?: boolean }).isError === true
+      const hookDown = failed && hookFailed(errorText(result))
+      const refused = failed && !hookDown && (refusedByPerson(errorText(result)) || refusedByHook(errorText(result)))
+      const isError = failed && !refused
+      // An error from the environment (no network, a denied sandbox, a missing program, a hook that crashed) is a Blocked
       // stall: more effort would not fix it, so it is neither an error nor a sign of struggling.
-      const blocked = isError && blockedError(errorText(result))
+      const blocked = isError && (hookDown || blockedError(errorText(result)))
       // A grep, diff or test that exits 1 found nothing: that is its answer, not a failure (ADR 0026).
       const noMatch = isError && !blocked && noMatchExit(String(e.tool), e as Record<string, unknown>, errorText(result))
       if (blocked) active.blocked += 1

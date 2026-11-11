@@ -1009,6 +1009,80 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.complete('t1')
   })
 
+  const HOOK_NO = 'PreToolUse:Read hook error: [trim] /src/a.py is unchanged since your earlier Read; use what you have.'
+  const HOOK_BARE = 'Blocked by hook'
+  const HOOK_TIMEOUT = 'PreToolUse:Bash hook error: [/usr/local/bin/guard.sh]: timed out; blocking because onFailure is "block"'
+
+  test(`a classic hook's refusal is the setup saying no: three of them, or the same one repeated, raise nothing and leave a lowered turn lowered (ADR 0049) (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: AUTO_RAISE })
+    const d = drive($, h)
+    await d.start(surface)
+    await d.config('lowerRule', 'never lower')
+    h.rating = NO_CHANGE
+    await d.submit(LOOKUP)
+    await d.step('t1', 0)
+    // Read, refused, the same Read again, refused: not a loop and not a repeat failure.
+    for (let i = 0; i < 3; i++) await d.bash(`env:${HOOK_NO}`)
+    await d.step('t1', 1)
+    expect(last(h.sent)?.effort, 'the same refusal three times').toBe('medium')
+    for (const t of [HOOK_BARE, `<tool_use_error>${HOOK_NO}</tool_use_error>`, `  ${HOOK_NO}`]) await d.bash(`env:${t}`)
+    await d.step('t1', 2)
+    expect(last(h.sent)?.effort, 'every wording of a refusal').toBe('medium')
+    expect(h.asked.length).toBe(0)
+    await d.complete('t1')
+    const line = JSON.parse(last((h.files[RUNS_FILE] ?? '').trim().split('\n')) ?? '{}') as Record<string, unknown>
+    expect('blocked' in line, 'a refusal is not blocked either').toBe(false)
+    expect(line.escalations).toBeUndefined()
+  })
+
+  test(`a hook refusal does not step an auto-lowered turn back up; a real error does (ADR 0049) (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES } })
+    const d = drive($, h)
+    await d.start(surface)
+    await d.step('t0')
+    await d.complete('t0')
+    h.rating = LOWER
+
+    await d.submit(LOOKUP)
+    await d.step('t1', 0)
+    expect(last(h.sent)?.effort, 'lowered').toBe('low')
+    for (let i = 0; i < 3; i++) await d.bash(`env:${HOOK_NO}`)
+    await d.step('t1', 1)
+    expect(last(h.sent)?.effort, 'a hook said no: the task is no harder').toBe('low')
+    await d.bash(`env:${HOOK_BARE}`)
+    await d.step('t1', 2)
+    expect(last(h.sent)?.effort, 'a bare deny: still lowered').toBe('low')
+    // The prefix inside a real error's body is not a refusal.
+    await d.bash(`env:Error: tool output said: ${HOOK_NO}`)
+    await d.step('t1', 3)
+    expect(last(h.sent)?.effort, 'a real error with the hook text in its body: back to medium').toBe('medium')
+    await d.complete('t1')
+  })
+
+  test(`a blocking hook that timed out counts as blocked, not as an error, and a real error with the prefix in its body counts (ADR 0049) (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: AUTO_RAISE })
+    const d = drive($, h)
+    await d.start(surface)
+    await d.config('lowerRule', 'never lower')
+    h.rating = NO_CHANGE
+    await d.submit(LOOKUP)
+    await d.step('t1', 0)
+    for (let i = 0; i < 3; i++) await d.bash(`env:${HOOK_TIMEOUT}`)
+    await d.bash('env:PreToolUse:Bash hook error: [guard]: failed; blocking because this hook is required.')
+    await d.step('t1', 1)
+    expect(last(h.sent)?.effort, 'a hook that timed out or crashed: more effort would not help').toBe('medium')
+    await d.complete('t1')
+    const line = JSON.parse(last((h.files[RUNS_FILE] ?? '').trim().split('\n')) ?? '{}') as { blocked?: number }
+    expect(line.blocked, 'counted as blocked').toBe(4)
+
+    await d.submit(LOOKUP)
+    await d.step('t2', 0)
+    for (let i = 0; i < 2; i++) await d.bash(`env:npm ERR! ${HOOK_NO}`)
+    await d.step('t2', 1)
+    expect(last(h.sent)?.effort, 'the prefix mid-body is an ordinary error, twice').toBe('high')
+    await d.complete('t2')
+  })
+
   test(`Escalation off in /config: no mid-turn raise (${surface})`, { timeoutMs: 30000, options: { escalation: 'off' } }, async ($, on) => {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: AUTO_RAISE })
     const d = drive($, h)

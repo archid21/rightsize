@@ -111,6 +111,26 @@ const REFUSED = /^(?:<tool_use_error>\s*)?(?:The user doesn't want to proceed wi
 
 export const refusedByPerson = (text: string): boolean => REFUSED.test(text.trimStart())
 
+/**
+ * Core's text for a classic (settings.json or hooks.json) PreToolUse hook that refused a call: exit code 2,
+ * an old-style {"decision":"block"}, or a hook set to block that crashed. The prefix is core's; the rest is
+ * the hook's own words, so only the start is matched, never a plugin's name or message. A `permissionDecision`
+ * of "deny" with no reason gives core's own `Blocked by hook`. The hook said no: that is the setup steering,
+ * not Claude struggling (ADR 0049).
+ */
+const HOOK_REFUSED = /^(?:<tool_use_error>\s*)?PreToolUse:\S+ hook error:/
+const HOOK_BLOCKED_BARE = /^(?:<tool_use_error>\s*)?Blocked by hook(?:\s*<\/tool_use_error>)?$/
+/** Core's crash or timeout of a hook that must succeed: `[<hook>]: failed; blocking because ...` or `timed out; blocking because ...`. */
+const HOOK_FAILED = /^(?:<tool_use_error>\s*)?PreToolUse:\S+ hook error: \[[^\n]*\]: (?:failed|timed out); blocking because /
+
+export const refusedByHook = (text: string): boolean => {
+  const t = text.trimStart()
+  return HOOK_REFUSED.test(t) || HOOK_BLOCKED_BARE.test(t.trimEnd())
+}
+
+/** A blocking hook that crashed or timed out: an environment failure, like `blockedError`. Check this before `refusedByHook`. */
+export const hookFailed = (text: string): boolean => HOOK_FAILED.test(text.trimStart())
+
 /** Programs whose exit code 1 means "nothing found" or "the two differ" (or, for test and `[`, "false"), not "the call failed". */
 const NO_MATCH_PROGRAMS: ReadonlySet<string> = new Set(['grep', 'egrep', 'fgrep', 'rg', 'ag', 'ack', 'git grep', 'diff', 'cmp', 'comm', 'test', '['])
 /** Core's text for a Bash call that ended with exactly exit code 1 (not 10, not 2). */

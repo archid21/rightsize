@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import { CAL_STORE } from './cost'
 import { KEYS, SETTINGS, type SettingKey, plainTitle } from './settings'
-import { RUNS_FILE, LOG_PATH, LEGACY_RUNS, LOOKUP, DEBUG, NO_ONE, SEARCH, NO_CHANGE, FREE_SWITCHES, cellsOf, engine, drive, settle, untilAsked, DAY, last, mount, bandText, LOWER } from './testkit'
+import { RUNS_FILE, LOG_PATH, LEGACY_RUNS, LOOKUP, DEBUG, NO_ONE, SEARCH, NO_CHANGE, FREE_SWITCHES, cellsOf, engine, drive, settle, DAY, last, bandText, LOWER } from './testkit'
 
 declare const setTimeout: (fn: (...a: unknown[]) => void, ms: number) => unknown
 
@@ -45,24 +45,11 @@ for (const surface of ['desktop', 'terminal'] as const) {
   const lookupLog = (h: { now: number }, steppedUp: number) =>
     Array.from({ length: 6 }, (_, i) => JSON.stringify({ at: new Date(h.now - (6 - i) * 60_000).toISOString(), kind: 'run', type: 'lookup', route: 'main', tier: 'opus', change: 'lower', steppedUp: i < steppedUp })).join('\n') + '\n'
 
-  // Remember follows a rule the person sets, here from the band's ⋯ menu on a raise (the default answers are not asked about).
-  /** A prompt rated for a raise (the default raises on its own), and the person picks "Never raise" in the band's ⋯ menu. */
-  const setRaiseFromBand = async ($: unknown, h: ReturnType<typeof engine>, d: ReturnType<typeof drive>, answers: Record<string, string> = {}) => {
-    h.rating = RAISE_HIGH
-    await d.submit(DEBUG)
-    h.answers = { Options: 'Never raise', ...answers }
-    const before = h.asked.length
-    const ui = await mount($, surface)
-    await ui.press({ key: 'mode' })
-    await untilAsked(h, before)
-    await ui.unmount()
-  }
-
   // ---- /rightsize reset ------------------------------------------------------------------------------------
 
-  const SETTINGS_GO = "Every rightsize setting in /config goes back to its default, and your saved answers to the four questions are forgotten. This can't be undone."
+  const SETTINGS_GO = "Every rightsize setting in /config goes back to its default, and the rules you set for this session are cleared. This can't be undone."
   const MEASURE_GO = "rightsize goes back to its starting estimates and relearns from your next prompts. This can't be undone."
-  const SOME_SET = { floor: 'medium', idleWarning: 'over $1', lowerRule: 'never lower', remember: 'every session', billing: 'api', band: 'always', pacing: 'off' }
+  const SOME_SET = { floor: 'medium', idleWarning: 'over $1', lowerRule: 'never lower', raiseRule: 'raise automatically', billing: 'api', band: 'always', pacing: 'off' }
 
   // A session with settings made, answers saved, and a cost measurement behind it.
   const measured = (h: ReturnType<typeof engine>) => {
@@ -76,8 +63,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
     spotChecks: 3,
     startCheckedAt: 1_800_000_000_000 - DAY,
     startSnooze: { key: 'sonnet:high', until: 1_900_000_000_000 },
-    remember: true,
-    choices: { raise: 'auto' },
   }
 
   test(`/rightsize reset asks what to reset, with four choices, then confirms with what goes (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -140,19 +125,18 @@ for (const surface of ['desktop', 'terminal'] as const) {
       const h = engine(on, { ...OPUS, store: MEASURE_STORE, stored: SOME_SET })
       measured(h)
       const { d, out, before } = await resetSettingsRun($, h, choice)
-      expect(out).toContain('Every setting is back to its default, and the saved answers are forgotten.')
+      expect(out).toContain('Every setting is back to its default, and the rules you set for this session are cleared.')
       const text = await settingsText(d)
       expect(text).toContain('are at their defaults')
       for (const key of KEYS) expect(listed(text, plainTitle(SETTINGS[key].title)), key).toBe(false)
       // The defaults were written, through the config API (plugin origin), where the value was not already the default.
       for (const key of ROWS_RESET) expect(h.stored[key], `${key} stored as its default`).toBe(SETTINGS[key as SettingKey].default)
-      // Raising was the saved answer, shown in its row at the start: the reset writes it back to not set.
-      expect(h.sets.slice(before).map(x => x.key.replace('rightsize.', '')).sort(), 'only the rows that were not default').toEqual(['band', 'floor', 'idleWarning', 'lowerRule', 'pacing', 'raiseRule', 'remember'])
+      // Raising was set to raise automatically, shown in its row at the start: the reset writes it back to not set.
+      expect(h.sets.slice(before).map(x => x.key.replace('rightsize.', '')).sort(), 'only the rows that were not default').toEqual(['band', 'floor', 'idleWarning', 'lowerRule', 'pacing', 'raiseRule'])
       // billing was stored as api, which is the default: reset without a write.
       expect(h.stored.billing).toBe('api')
-      expect(h.store.choices, 'saved answers cleared').toBeNull()
       for (const key of ROWS_RESET) expect(h.store.resetFields, `${key} is on the list`).toContain(key)
-      // The saved answers are gone from this session too: Raising (saved as automatic) is no rule now, so the default decides again.
+      // The session rules are cleared too: Raising (saved as automatic) is no rule now, so the default decides again.
       h.rating = RAISE_HIGH
       const asked = h.asked.length
       await d.submit(DEBUG)
@@ -218,9 +202,9 @@ for (const surface of ['desktop', 'terminal'] as const) {
       expect(text).toContain('Budget pacing: off')
       expect(h.stored.idleWarning).toBe('over $0.50')
       expect(h.store.resetFields).toEqual(['idleWarning'])
-      expect(h.store.choices, 'the saved answers stay').toEqual({ raise: 'auto' })
-      // The other six rows, and the saved answer for Raising: seven.
-      expect(changedCount(text)).toBe(7)
+      expect(h.stored.raiseRule, 'the other rows stay').toBe('raise automatically')
+      // The other six rows (Lowest effort, Lowering, Raising, Reports, Band, Budget pacing).
+      expect(changedCount(text)).toBe(6)
     })
   }
 
@@ -286,22 +270,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.complete('t1')
     expect(h.store.billing).toEqual({ value: 'subscription', by: 'detected' })
     expect(await settingsText(d)).toContain('Reports: subscription (detected)')
-  })
-
-  test(`/rightsize reset on Remember choices asks about keeping answers again (${surface})`, { timeoutMs: 30000, options: { remember: 'every session' } }, async ($, on) => {
-    const h = engine(on, { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES, remember: true }, stored: { remember: 'every session' } })
-    const d = drive($, h)
-    await d.start(surface)
-    h.answers = { Confirm: 'Yes' }
-    await d.command('reset remember')
-    expect(h.store.remember, 'the old yes is forgotten').toBe(false)
-    h.asked.length = 0
-    // A rule the person sets (here from the band) is followed by the Remember question again.
-    await setRaiseFromBand($, h, d, { Remember: 'This session' })
-    await d.step('t1')
-    await d.complete('t1')
-    await settle()
-    expect(h.asked.map(a => a.header)).toEqual(['Options', 'Remember'])
   })
 
   test(`/rightsize reset with a name it does not know says so and lists the keys, and asks nothing (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -395,7 +363,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(out).toContain('Every setting is back to its default')
     expect(out).toContain('Cost measurement restarted')
     expect(h.store[CAL_STORE]).toBeNull()
-    expect(h.store.choices).toBeNull()
     expect(await settingsText(d)).toContain('are at their defaults')
   })
 
@@ -772,7 +739,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.bash('fail a', 'agent-helper')
     await d.step('t1', 1, 'agent-helper')
     expect(h.asked.map(a => a.header), 'the dialog: the band is off').toEqual(['Stuck'])
-    expect(h.asked[0]?.question).toContain("It uses one of this task's 2 retries. With no answer in 30 seconds it goes on at low.")
+    expect(h.asked[0]?.question).toContain("It uses one of this task's 2 retries. No answer in 30 seconds: it goes on at low.")
     expect(h.question, 'not on the band').toBeNull()
     await d.step('t1', 2, 'agent-helper')
     expect(last(h.sent)?.effort, 'not raised').toBe('low')
@@ -803,7 +770,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.sleepEnds = true
     await d.submit(LOOKUP)
     await d.step('t1', 0)
-    expect(h.asked.map(a => a.header), 'the dialog is the Effort question; no Remember question either').toEqual(['Effort'])
+    expect(h.asked.map(a => a.header), 'the dialog is the Effort question').toEqual(['Effort'])
     expect(h.asked[0]?.question).toContain(`${NO_ANSWER} it stays as it is.`)
     expect(last(h.sent)?.effort, 'no change').toBe('medium')
     expect(h.store.choices, 'nothing saved').toBeUndefined()
@@ -832,29 +799,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.store.choices).toBeUndefined()
     expect(helperLog(h)).toContain('no answer in 30 seconds to Subagent')
     await d.complete('t1')
-  })
-
-  test(`Remember with nobody to answer: it waits on the band for the turn to end, and with no answer by the next prompt it is this session only (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
-    const d = drive($, h)
-    await d.start(surface)
-    await d.step('t0')
-    await d.complete('t0')
-    // The rule is the person's, set from the band: that is what the question follows.
-    await setRaiseFromBand($, h, d, { Remember: NO_ONE })
-    await d.step('t1', 0)
-    expect(last(h.sent)?.effort, 'the prompt did not wait for Remember').toBe('high')
-    expect(h.asked.map(a => a.header), 'Remember waits for the turn to end').toEqual(['Options'])
-    await d.complete('t1')
-    await settle()
-    expect(h.asked.map(a => a.header)).toEqual(['Options', 'Remember'])
-    expect(h.asked[1]?.question).toBe('Keep your rules (Raising: never raise) in every session? No answer: this session only.')
-    h.rating = NO_CHANGE
-    await d.submit(LOOKUP)
-    expect(h.question, 'the next prompt took it away').toBeNull()
-    expect(h.store.remember, 'not kept for every session').toBeUndefined()
-    expect(h.store.choices).toBeUndefined()
-    expect(helperLog(h)).toContain('no answer on the band to Remember: these choices stay for this session only')
   })
 
   test(`Billing with nobody to answer: it waits on the band, API prices for now, not saved, asked again next session (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -935,7 +879,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.bash('fail make')
     h.answers = { Stuck: NO_ONE }
     await d.step('t1', 1)
-    expect(h.asked[0]?.question).toBe('Claude looks stuck: the same tool call failed twice. Raise effort from medium to high for the rest of this turn? No answer: the turn goes on at medium.')
+    expect(h.asked[0]?.question).toBe('The same tool call failed twice. Raise effort from medium to high for the rest of this turn? No answer: the turn goes on at medium.')
     expect(h.question?.header, 'on the band').toBe('Stuck')
     await d.step('t1', 2)
     expect(last(h.sent)?.effort, 'the turn went on, not raised').toBe('medium')

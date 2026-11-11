@@ -96,10 +96,10 @@ declare module 'claude-code' {
       context: number
       /** Whether Claude Code will compact this session by itself while it sits idle (ADR 0019), as read at the last main turn's end: `context` is the size it was read at, `at` the time in ms. Absent before the first turn that ended with a conversation. */
       idleCompact: { on: boolean; context: number; at: number }
-      /** Answers to Q1-Q4 for this session. */
+      /** The rules for this session: set from a question's "for this session" answer, or followed from the /config rows. */
       choices: RightsizeChoices
-      /** True once "Use these choices in every session?" was answered this session. */
-      rememberAsked: boolean
+      /** A stuck raise made automatic for this session only (a Stuck question's "for this session" answer); null when none. */
+      stuckRule: 'auto' | null
       /** The band above the prompt; null when there is nothing to show or it was closed. */
       band: RightsizeBand | null
       /** When the band shows. */

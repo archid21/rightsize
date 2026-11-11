@@ -41,7 +41,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
   const OPUS = { model: 'claude-opus-5-5', effort: 'medium' }
   const noteOf = (h: ReturnType<typeof engine>) => last(h.submitted)?.context?.join('\n') ?? ''
   const handedTo = (h: ReturnType<typeof engine>) => /model "(\w+)"/.exec(noteOf(h))?.[1]
-  const YES_REMEMBER = { Remember: 'This session' }
   // A raise fixture: a review, the one task type whose rated raise is still taken at prompt time on Opus (ADR 0021).
   const RAISE_HIGH = '{"level":"high","model":"same","type":"review","read":20000,"write":3000,"steps":8,"reason":"unknown cause"}'
   const NEEDS_FABLE = '{"level":"high","model":"fable","size":"small","type":"debug","read":30000,"write":4000,"steps":12,"reason":"subtle concurrency bug"}'
@@ -475,7 +474,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
       const d = drive($, h)
       await d.start(surface)
       const [lower, raise, up, down] = FIRST[ask]
-      h.answers = { Lowering: lower, Raising: raise, Stronger: up, Cheaper: down, ...YES_REMEMBER }
+      h.answers = { Lowering: lower, Raising: raise, Stronger: up, Cheaper: down }
       await d.command('settings')
       const asked = h.asked.filter(a => ['Lowering', 'Raising', 'Stronger', 'Cheaper'].includes(a.header))
       expect(asked.map(a => a.header), 'all four, once each').toEqual(['Lowering', 'Raising', 'Stronger', 'Cheaper'])

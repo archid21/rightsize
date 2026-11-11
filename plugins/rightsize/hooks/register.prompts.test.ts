@@ -22,9 +22,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.complete('t1')
     const stepped = ((h.files[RUNS_FILE] ?? '').trim().split('\n').map(l => JSON.parse(l) as Record<string, unknown>)).filter(r => r.steppedUp)
     expect(stepped, 'no step-up: a step count is size, not difficulty').toEqual([])
-    expect(h.store.remember, 'nothing is saved: the profile decided').toBeUndefined()
-    expect(h.store.choices, 'no rule is kept either').toBeUndefined()
-    expect(h.asked, 'Remember follows only a rule the person set').toEqual([])
+    expect(h.store.choices, 'nothing is saved: the profile decided').toBeUndefined()
+    expect(h.asked, 'still no question').toEqual([])
 
     // Same situation again: no question, lowered on its own, and the band does not say it again.
     await d.submit(LOOKUP)
@@ -75,9 +74,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(last(h.sent)?.effort).toBe('high')
     await d.complete('t1')
     await settle()
-    expect(h.store.remember, 'nothing was answered, so nothing is kept').toBeUndefined()
-    expect(h.store.choices).toBeUndefined()
-    expect(h.asked, 'no Remember question: no rule of the person\'s').toEqual([])
+    expect(h.store.choices, 'nothing was answered, so nothing is kept').toBeUndefined()
+    expect(h.asked, 'no question: no rule of the person\'s').toEqual([])
 
     // A lookup: effort switches are free (no miss assumed), so it lowers with no question.
     h.rating = '{"level":"low","model":"same","type":"lookup","read":2000,"write":300,"steps":1}'
@@ -196,7 +194,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.sleepEnds = true
     await d.submit(DEBUG)
     expect(h.asked.map(a => a.header), 'the band asks').toEqual(['Stronger'])
-    expect(h.asked[0]?.question ?? '').toContain('Haiku alone usually manages it; the switch is for when it does not. Run this prompt on Sonnet at medium, then go back to Haiku? About $')
+    expect(h.asked[0]?.question ?? '').toContain('This is debug work, and Haiku alone usually manages it. Run this prompt on Sonnet at medium, then go back to Haiku? About $')
     expect(h.asked[0]?.options).toEqual(['Run it on Sonnet', 'Stay on Haiku'])
     await d.step('t1')
     expect(last(h.sent)?.model, 'nobody answered: nothing is switched').toBe('claude-haiku-5-5')
@@ -324,8 +322,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(runs.find(l => l.type === 'review')?.switched).toBeUndefined()
   })
 
-  test(`asking: a review's question offers Opus or staying, and Opus runs the turn (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { model: 'claude-sonnet-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES, remember: true, choices: { up: 'ask' } } })
+  test(`asking: a review's question offers Opus once, for the session, staying, or always, and Opus runs the turn (${surface})`, { timeoutMs: 30000, options: { upRule: 'ask first' } }, async ($, on) => {
+    const h = engine(on, { model: 'claude-sonnet-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES }, stored: { upRule: 'ask first' } })
     const d = drive($, h)
     await d.start(surface)
     await d.step('t0')
@@ -336,7 +334,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.submit(DEBUG)
     expect(h.asked.map(a => a.header)).toEqual(['Stronger'])
     expect(h.asked[0]?.question ?? '').toContain('This is a review: reviews run on Opus at high effort or more. Run this prompt on Opus at high, then go back to Sonnet?')
-    expect(h.asked[0]?.options).toEqual(['Run it on Opus', 'Stay on Sonnet'])
+    expect(h.asked[0]?.options).toEqual(['Run it on Opus', 'Use the stronger model for this session', 'Stay on Sonnet', 'Always use the stronger model'])
     await d.step('t1')
     expect(last(h.sent)).toMatchObject({ model: 'opus', effort: 'high' })
   })
@@ -751,7 +749,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.asked.map(a => a.header), 'the Raising rule is the person\'s and says ask, so it asks, as it always does').toEqual(['Effort'])
     await d.step('t1')
     expect(last(h.sent)?.effort, 'kept: "Ask" never raises on its own').toBe('medium')
-    expect(last(h.asked)?.question ?? '', 'the question names the raise').toContain('Raise from medium to high?')
+    expect(last(h.asked)?.question ?? '', 'the question names the raise').toContain('Raise effort from medium to high for this prompt?')
   })
 
   const AUTO_RAISE = { remember: true, choices: { raise: 'auto' } }
@@ -832,7 +830,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.bash('fail make')
     h.answers = { Stuck: 'Keep medium' }
     await d.step('t1', 1)
-    expect(h.asked.map(a => a.question)).toEqual(['Claude looks stuck: the same tool call failed twice. Raise effort from medium to high for the rest of this turn? No answer: the turn goes on at medium.'])
+    expect(h.asked.map(a => a.question)).toEqual(['The same tool call failed twice. Raise effort from medium to high for the rest of this turn? No answer: the turn goes on at medium.'])
     await settle()
     await d.step('t1', 2)
     expect(last(h.sent)?.effort).toBe('medium')
@@ -1296,7 +1294,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   // A raise fixture: a review, the one task type whose rated raise is still taken at prompt time on Opus (ADR 0021).
   const HIGH = '{"level":"high","model":"same","type":"review","read":20000,"write":3000,"steps":8,"reason":"unknown cause"}'
 
-  test(`the ⋯ menu of a band lists the other rules; one pick sets the rule's /config row, and Remember follows it (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`the ⋯ menu of a band lists the other rules; one pick sets the rule's /config row (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES }, stored: NO_COLD })
     const d = drive($, h)
     await d.start(surface)
@@ -1306,10 +1304,10 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.rating = HIGH
     await d.submit(DEBUG)
     expect(await bandText($, surface)).toMatch(/Effort raised: medium → high.* The default decided \(Raising\); ⋯ changes it\.$/)
-    expect(h.asked, 'nothing asked yet: Remember follows only a rule the person sets').toEqual([])
+    expect(h.asked, 'nothing asked yet').toEqual([])
     const ui = await mount($, surface)
     expect((await ui.findAll({ type: 'Button' })).map(b => b.key), 'no marks on a raise').toEqual(['mode', 'close'])
-    h.answers = { Options: 'Ask me each time', Remember: 'This session' }
+    h.answers = { Options: 'Ask me each time' }
     let asked = h.asked.length
     await ui.press({ key: 'mode' })
     await untilAsked(h, asked)
@@ -1321,7 +1319,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t1')
     await d.complete('t1')
     await settle()
-    expect(h.asked.map(a => a.header), 'the rule is the person\'s now: Remember follows it, when the turn ends').toContain('Remember')
+    expect(h.asked.map(a => a.header), 'nothing else is asked when the turn ends').toEqual(['Options'])
     // Dismissing the menu (no answer) does nothing.
     h.answers = {}
     asked = h.asked.length

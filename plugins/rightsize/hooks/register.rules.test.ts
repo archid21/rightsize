@@ -38,7 +38,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
   const FABLE = { model: 'claude-fable-5-2', effort: 'high' }
   const noteOf = (h: ReturnType<typeof engine>) => last(h.submitted)?.context?.join('\n') ?? ''
   const handedTo = (h: ReturnType<typeof engine>) => /model "(\w+)"/.exec(noteOf(h))?.[1]
-  const YES_REMEMBER = { Remember: 'This session' }
   // A raise fixture: a review, the one task type whose rated raise is still taken at prompt time on Opus (ADR 0021).
   const RAISE_HIGH = '{"level":"high","model":"same","type":"review","read":20000,"write":3000,"steps":8,"reason":"unknown cause"}'
   const NEEDS_FABLE = '{"level":"high","model":"fable","size":"small","type":"debug","read":30000,"write":4000,"steps":12,"reason":"subtle concurrency bug"}'
@@ -144,7 +143,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.rateLimits = [{ kind: 'five_hour', percentUsed: 12 }]
     const d = drive($, h)
     await d.start(surface)
-    h.answers = { Billing: 'Subscription (Pro, Max, Team or Enterprise)', ...YES_REMEMBER }
+    h.answers = { Billing: 'Subscription (Pro, Max, Team or Enterprise)' }
     await d.command('settings')
     expect(h.asked.some(a => a.header === 'Billing'), 'asked, though the rate limits could answer').toBe(true)
     expect(h.stored.billing).toBe('subscription')
@@ -288,7 +287,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
       want: { effort: 'high', asked: [], band: 'Effort raised: medium → high for this prompt. Why: Unknown cause. 93% of the 5-hour window is used, so rightsize saves all it can. (hand-off bar 70% → 95%, lowering bar 90% → 100%)' },
     },
     {
-      name: 'Raising answered in an earlier session and saved: yours too, and the default thresholds that moved are said',
+      name: 'Raising kept by an earlier release: moved to its row at the start, and used like a row you set',
       store: { remember: true, choices: { raise: 'auto' } },
       stored: {},
       want: r => {
@@ -395,7 +394,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     { name: 'lower automatically', rule: 'lower automatically', want: { asked: [], effort: 'low' } },
     { name: 'never lower', rule: 'never lower', want: { asked: [], effort: 'medium' } },
     { name: 'ask me: asks each time, with the effort question', rule: 'ask me', want: { asked: ['Effort'], effort: 'medium' } },
-    { name: 'never lower, over the saved answers of an earlier session', rule: 'never lower', store: { remember: true, choices: { lower: 'auto' } }, want: { asked: [], effort: 'medium' } },
+    { name: 'never lower, over what an earlier release kept', rule: 'never lower', store: { remember: true, choices: { lower: 'auto' } }, want: { asked: [], effort: 'medium' } },
   ]
   for (const row of RULE_ROWS) {
     test(`Lowering set in /config to ${row.name} is used as it is (${surface})`, { timeoutMs: 30000, options: { lowerRule: row.rule } }, async ($, on) => {
@@ -410,14 +409,13 @@ for (const surface of ['desktop', 'terminal'] as const) {
     })
   }
 
-  test(`a rule row set back to "not set" clears the rule, in this session and in the saved copy: the profile decides again (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES, remember: true, choices: { lower: 'auto', raise: 'auto' } } })
+  test(`a rule row set back to "not set" clears the rule in this session: the profile decides again (${surface})`, { timeoutMs: 30000, options: { lowerRule: 'lower automatically', raiseRule: 'raise automatically' } }, async ($, on) => {
+    const h = engine(on, { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES }, stored: { lowerRule: 'lower automatically', raiseRule: 'raise automatically' } })
     const d = drive($, h)
     await d.start(surface)
-    expect(await settingsText(d), 'the saved answer is yours').toContain('Lowering: lower automatically')
+    expect(await settingsText(d), 'the row is yours').toContain('Lowering: lower automatically')
     await d.config('lowerRule', 'not set')
     expect(await settingsText(d)).not.toContain('Lowering:')
-    expect(h.store.choices, 'the saved copy keeps only the other rule').toEqual({ raise: 'auto' })
     h.rating = LOWER
     await d.submit(LOOKUP)
     expect(h.asked, 'nothing is asked: the profile decides').toEqual([])
@@ -428,7 +426,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await settingsText(d)).toContain('Raising: raise automatically')
   })
 
-  // Remember follows a rule the person sets, here from the band's ⋯ menu on a raise (the profile's own answers are not asked about).
   /** A prompt rated for a raise (Balanced raises on its own), and the person picks "Never raise" in the band's ⋯ menu. */
   const setRaiseFromBand = async ($: unknown, h: ReturnType<typeof engine>, d: ReturnType<typeof drive>, answers: Record<string, string> = {}) => {
     h.rating = RAISE_HIGH
@@ -441,45 +438,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await ui.unmount()
   }
 
-  const KEEP_ROWS: { name: string; mode?: string; remember: string; asked: string[]; kept: boolean; row: boolean; remembered?: boolean }[] = [
-    { name: 'ask, yes: kept, and Remember choices becomes every session', remember: 'Every session', asked: ['Options', 'Remember'], kept: true, row: true, remembered: true },
-    // The band button is the person's own choice: the row shows it at once, kept or not.
-    { name: 'ask, just this session: kept for the session only', remember: 'This session', asked: ['Options', 'Remember'], kept: false, row: true },
-    { name: 'every session: kept without asking', mode: 'every session', remember: 'This session', asked: ['Options'], kept: true, row: true },
-    { name: 'this session: never asked, never kept', mode: 'this session', remember: 'Every session', asked: ['Options'], kept: false, row: false },
-  ]
-  for (const row of KEEP_ROWS) {
-    test(`Remember choices, ${row.name} (${surface})`, { timeoutMs: 30000, ...(row.mode ? { options: { remember: row.mode } } : {}) }, async ($, on) => {
-      const h = engine(on, { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES }, stored: { ...NO_COLD, ...(row.mode ? { remember: row.mode } : {}) } })
-      const d = drive($, h)
-      await d.start(surface)
-      await setRaiseFromBand($, h, d, { Remember: row.remember })
-      // Remember waits on the band for the turn to end.
-      await d.step('t1')
-      await d.complete('t1')
-      await settle()
-      expect(h.asked.map(a => a.header)).toEqual(row.asked)
-      expect(h.store.choices, 'the store').toEqual(row.kept ? { raise: 'never' } : undefined)
-      expect(h.stored.raiseRule, 'the Raising row').toBe(row.row ? 'never raise' : undefined)
-      expect(h.store.remember).toBe(row.remembered ? true : undefined)
-      if (row.remembered) expect(h.stored.remember, 'the Remember choices row').toBe('every session')
-      expect(await settingsText(d), 'the rule is the person\'s either way').toContain('Raising: never raise')
-    })
-  }
-
-  test(`Remember choices set live to every session keeps what was answered so far, and back to ask asks again (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES } })
-    const d = drive($, h)
-    await d.start(surface)
-    await setRaiseFromBand($, h, d)
-    expect(h.store.choices, 'not kept yet').toBeUndefined()
-    await d.config('remember', 'every session')
-    expect(h.store.choices).toEqual({ raise: 'never' })
-    expect(h.stored.raiseRule).toBe('never raise')
-    await d.config('remember', 'ask')
-    expect(h.store.remember, 'ask again').toBe(false)
-  })
-
   test(`a band button sets the rule's /config row, and so does /rightsize settings (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES } })
     const d = drive($, h)
@@ -489,7 +447,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.sets.find(x => x.key === 'rightsize.raiseRule')?.value).toBe('never raise')
 
     // /rightsize settings asks the four questions again and writes every row.
-    h.answers = { Lowering: 'Ask me each time', Raising: 'Raise automatically (Recommended)', Stronger: 'Use the stronger model automatically (Recommended)', Cheaper: 'Ask before sending it', ...YES_REMEMBER }
+    h.answers = { Lowering: 'Ask me each time', Raising: 'Raise automatically (Recommended)', Stronger: 'Use the stronger model automatically (Recommended)', Cheaper: 'Ask before sending it' }
     const text = (await d.command('settings')).text ?? ''
     expect(h.asked.map(a => a.header).slice(-4), 'all four questions are asked, as before').toEqual(['Lowering', 'Raising', 'Stronger', 'Cheaper'])
     expect(h.stored).toMatchObject({ lowerRule: 'ask me', raiseRule: 'raise automatically', upRule: 'always send', downRule: 'ask first' })

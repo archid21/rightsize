@@ -67,3 +67,10 @@ export function sizeText(step: number, tokens: number, window: number) {
   const k = (n: number) => `${Math.round(n / 1000)}K`
   return `Context is ${step}% full (${k(tokens)} of ${k(window)} tokens). A compact now makes every later turn cheaper.`
 }
+
+/** "Compacted: 534K → 20K tokens. Each turn now costs less." Without both sizes, or when the size did not drop: "Compacted. Each turn now costs less." */
+export function sizeCompactedText(before: number | undefined, after: number | undefined) {
+  const k = (n: number) => `${Math.max(1, Math.round(n / 1000))}K`
+  if (typeof before === 'number' && typeof after === 'number' && before > 0 && after > 0 && after < before) return `Compacted: ${k(before)} → ${k(after)} tokens. Each turn now costs less.`
+  return 'Compacted. Each turn now costs less.'
+}

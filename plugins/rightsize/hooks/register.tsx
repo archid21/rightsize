@@ -119,7 +119,7 @@ import { LIMITS, type Signals, type Struggle, blockedError, callKey, hookFailed,
 import { type Change, type HelperLine, type Lifetime, type RunLine, type SwitchLine, type Windows, SESSION_TOTAL, SESSION_TOTAL_FROM, bandShareText, buildReport, costTag, foldLifetime, parseLifetime, parseLines, ratedInSession, sessionTotal, shareMessage, shareOf, usedTag, windowCostText, windowRates } from './report'
 import { type TrimSavings, readTrimSavings } from './trim'
 import { LIMIT_BUTTON, LIMIT_COMPACT, LIMIT_HIDE, LIMIT_MORE, LIMIT_WHY, LIMIT_WHY_ID, isLimitId, limitDue, limitText } from './limit'
-import { SIZE_BUTTON, SIZE_COMPACT, SIZE_FRESH, SIZE_FRESH_BUTTON, SIZE_FRESH_COMPACT, SIZE_FRESH_COPY, SIZE_FRESH_COPY_FAILED, SIZE_FRESH_NOT_NOW, SIZE_FRESH_PASTE_BUTTONS, SIZE_FRESH_SAVING, SIZE_HIDE, SIZE_MORE, SIZE_WHY, SIZE_WHY_FRESH, SIZE_WHY_ID, isSizeId, sizeFreshNotWritten, sizeFreshNotice, sizeFreshPaste, sizeStep, sizeText } from './size'
+import { SIZE_BUTTON, SIZE_COMPACT, SIZE_FRESH, SIZE_FRESH_BUTTON, SIZE_FRESH_COMPACT, SIZE_FRESH_COPY, SIZE_FRESH_COPY_FAILED, SIZE_FRESH_NOT_NOW, SIZE_FRESH_PASTE_BUTTONS, SIZE_FRESH_SAVING, SIZE_HIDE, SIZE_MORE, SIZE_WHY, SIZE_WHY_FRESH, SIZE_WHY_ID, isSizeId, sizeFreshNotWritten, sizeFreshNotice, sizeFreshPaste, sizeCompactedText, sizeStep, sizeText } from './size'
 import { COMPACT_BASE, NO_FRESH_HANDOFF, WRAP_HEADROOM, WRAP_TURNS, isWhatsnext } from './whatsnext'
 import { ME, REPOS, SHARED_PATH, askText, blockedByClaim, parseShared, readStarCheck, reposToAsk, type Shared } from './star'
 import { STORE_KEY as TIPS_KEY, type Tip, type TipsState, nextTip, parseState, tipById, withSeen } from './tips'
@@ -3231,11 +3231,13 @@ async function answerFresh($: EngineInterface, id: string) {
 async function compactForSize($: EngineInterface) {
   cancelCold($, 'Compact now pressed')
   coldDone = true
+  const before = (await usageNow($))?.context?.tokens
   const done = (noFresh?: boolean) => async () => {
     sizeShown = 0
     idleWarnedFor = lastTurnAt
-    await log($, `context warning: compacted on the person's button${noFresh ? ` (${NO_FRESH_HANDOFF})` : ''}`)
-    await showCold($, withHandoffNote('Compacted. Later turns read a short summary, not the whole conversation.', noFresh))
+    const after = (await usageNow($))?.context?.tokens
+    await log($, `context warning: compacted on the person's button${noFresh ? ` (${NO_FRESH_HANDOFF})` : ''}${typeof before === 'number' && typeof after === 'number' ? ` (${Math.round(before / 1000)}K to ${Math.round(after / 1000)}K tokens)` : ''}`)
+    await showCold($, withHandoffNote(sizeCompactedText(before, after), noFresh))
   }
   const own = async () => {
     const skip = await ownCompact($)

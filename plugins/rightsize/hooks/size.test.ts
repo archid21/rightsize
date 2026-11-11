@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { SIZE_STEPS, isSizeId, sizeStep, sizeText } from './size'
+import { SIZE_STEPS, isSizeId, sizeCompactedText, sizeStep, sizeText } from './size'
 
 test('the steps are 40, 50, 60, 70, 80 and 90 percent', async () => {
   expect([...SIZE_STEPS]).toEqual([40, 50, 60, 70, 80, 90])
@@ -31,4 +31,12 @@ test('the words and ids', async () => {
   expect(sizeText(60, 120_000, 200_000)).toBe('Context is 60% full (120K of 200K tokens). A compact now makes every later turn cheaper.')
   expect(['size-compact', 'size-why', 'size-hide'].every(isSizeId)).toBe(true)
   expect(isSizeId('limit-compact')).toBe(false)
+})
+
+test('the compacted row gives the size before and after when it dropped', async () => {
+  expect(sizeCompactedText(534_000, 20_400)).toBe('Compacted: 534K → 20K tokens. Each turn now costs less.')
+  expect(sizeCompactedText(534_000, undefined)).toBe('Compacted. Each turn now costs less.')
+  expect(sizeCompactedText(undefined, 20_000)).toBe('Compacted. Each turn now costs less.')
+  expect(sizeCompactedText(20_000, 30_000)).toBe('Compacted. Each turn now costs less.')
+  expect(sizeCompactedText(534_000, 300)).toBe('Compacted: 534K → 1K tokens. Each turn now costs less.')
 })

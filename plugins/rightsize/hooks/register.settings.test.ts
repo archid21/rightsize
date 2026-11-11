@@ -349,6 +349,23 @@ for (const surface of ['desktop', 'terminal'] as const) {
       set: 0,
       def: 1,
     },
+    {
+      key: 'outputAdvice',
+      value: 'off',
+      start: { ...OPUS, stored: { ...NO_COLD } },
+      // 20 main-chat requests at $0.26, 38% of it output: the Concise question is asked once with the row on, never with it off.
+      see: async c => {
+        c.h.stepUsage = { input_tokens: 200, output_tokens: 5000, cache_read_input_tokens: 20_000, cache_creation_input_tokens: 20_000 }
+        c.h.answers = { Output: 'Not now' }
+        const t = c.turn()
+        for (let i = 0; i < 20; i++) await c.d.step(t, i)
+        await c.d.complete(t)
+        await settle()
+        return c.h.asked.filter(a => a.header === 'Output').length
+      },
+      set: 0,
+      def: 1,
+    },
   ]
 
   test(`every setting has a scenario here, and every scenario's value is one of its options (${surface})`, async () => {

@@ -283,6 +283,16 @@
         "monthly",
         "off"
       ]
+    },
+    "outputAdvice": {
+      "type": "string",
+      "title": "Advanced · Output suggestion",
+      "description": "on: once a session, when output is a large share of the cost (at least 25%, after 20 requests and $1.00 spent at list prices), suggest the Concise output style. off: never suggest it. This row does not change your output style. To use Concise in every project, set Output style to Concise in your Claude settings.",
+      "default": "on",
+      "options": [
+        "on",
+        "off"
+      ]
     }
   },
   "homepage": "https://aivalue.blog/rightsize",

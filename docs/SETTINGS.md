@@ -206,3 +206,10 @@ An "ask" answer opens its own timed dialog (see **Question wait**); every other 
 - Options: monthly · off
 - Default: monthly
 - monthly: compare prices.json with Anthropic's pricing page every 30 days and update it. off: never check. /rightsize prices checks right away, whatever this says.
+
+### Output suggestion
+
+- Key: `outputAdvice`
+- Options: on · off
+- Default: on
+- on: once a session, when output is a large share of the cost (at least 25%, after 20 requests and $1.00 spent at list prices), rightsize asks whether to use the Concise output style. off: it never asks. This row does not change your output style. To use Concise in every project, set Output style to Concise in your Claude settings.

@@ -54,6 +54,7 @@ export const SETTINGS = {
   band: { title: 'Advanced · Band', options: ['when it acts', 'always', 'off'], default: 'when it acts' },
   questionWait: { title: 'Advanced · Question wait', options: ['30 seconds', '1 minute', '2 minutes'], default: '30 seconds' },
   priceCheck: { title: 'Advanced · Price check', options: ['monthly', 'off'], default: 'monthly' },
+  outputAdvice: { title: 'Advanced · Output suggestion', options: ['on', 'off'], default: 'on' },
 } as const satisfies Record<string, Spec>
 
 /** Every row but the first five (Mode, Routing, Hand-offs, Ask before changing, Cache) is titled with this prefix, so /config lists those first and the rest as Advanced. */

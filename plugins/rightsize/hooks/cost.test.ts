@@ -24,6 +24,10 @@ import {
   learn,
   mainCost,
   money,
+  OUTPUT_ADVICE,
+  outputAdviceDue,
+  outputCost,
+  outputShareText,
   parsePrices,
   fitsWindow,
   parseShare,
@@ -1191,4 +1195,20 @@ test('usage-limit saving: the cold re-read after the reset, less a warm compacti
   expect(limitSaving(P, 'opus', 100_000, 3000), 'a smaller summary saves more').toBeGreaterThan(normal)
   expect(limitSaving(P, 'opus', 5000), 'a context smaller than its summary: clamped to 0').toBe(0)
   expect(limitSaving(P, 'opus', 0)).toBe(0)
+})
+
+test('output advice: 25% of the cost, 20 requests and $1.00 at list prices, all three; thinking tokens are output', async () => {
+  expect(OUTPUT_ADVICE).toEqual({ share: 0.25, requests: 20, cost: 1 })
+  const u = { input_tokens: 200, output_tokens: 5000, cache_read_input_tokens: 20_000, cache_creation_input_tokens: 20_000 }
+  // Opus: 5000 x $20 per million = $0.10 of output.
+  expect(near(outputCost(DEFAULT_PRICES, 'claude-opus-5-5', u), 0.1)).toBe(true)
+  expect(outputCost(DEFAULT_PRICES, 'claude-unknown-9', u), 'an unknown model costs nothing').toBe(0)
+  expect(outputCost(DEFAULT_PRICES, 'claude-opus-5-5', { ...u, output_tokens: 0 })).toBe(0)
+  const met = { output: 0.25, total: 1, requests: 20 }
+  expect(outputAdviceDue(met), 'exactly at all three bars').toBe(true)
+  expect(outputAdviceDue({ ...met, output: 0.249 }), 'share under 25%').toBe(false)
+  expect(outputAdviceDue({ ...met, requests: 19 }), 'under 20 requests').toBe(false)
+  expect(outputAdviceDue({ ...met, total: 0.99, output: 0.5 }), 'under $1.00').toBe(false)
+  expect(outputAdviceDue({ output: 0, total: 0, requests: 0 })).toBe(false)
+  expect(outputShareText({ output: 0.38, total: 1, requests: 20 })).toBe("Output is about 38% of this session's cost.")
 })

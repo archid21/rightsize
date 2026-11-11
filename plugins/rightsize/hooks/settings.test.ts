@@ -35,7 +35,7 @@ import {
 const set = (...keys: SettingKey[]) => new Set<SettingKey>(keys)
 
 test('every row is a picker: a title, two or more options, and a default among them', async () => {
-  expect(KEYS.length).toBe(25)
+  expect(KEYS.length).toBe(26)
   for (const k of KEYS) {
     const row = SETTINGS[k]
     expect(row.title.length, k).toBeGreaterThan(0)

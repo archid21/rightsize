@@ -286,6 +286,28 @@ export function usageCost(prices: Prices, model: string, u: Usage) {
   })
 }
 
+/** What one response's output tokens cost (thinking tokens are output). An unknown model costs nothing rather than a guess. */
+export function outputCost(prices: Prices, model: string, u: Usage) {
+  const p = priceOf(prices, model)
+  if (!p) return 0
+  return dollars(atPrompt(p, contextOf(u)), { output: u.output_tokens })
+}
+
+// ---- Output advice ----------------------------------------------------------
+
+/** When rightsize suggests the Concise output style: output at least 25% of the session's cost, 20 main-chat requests, $1.00 at list prices (ADR 0050). */
+export const OUTPUT_ADVICE = { share: 0.25, requests: 20, cost: 1 } as const
+
+/** The main chat's totals so far this session, at list (API) prices. */
+export type SessionSpend = { output: number; total: number; requests: number }
+
+/** True when all three bars are met. */
+export const outputAdviceDue = (s: SessionSpend): boolean =>
+  s.requests >= OUTPUT_ADVICE.requests && s.total >= OUTPUT_ADVICE.cost && s.total > 0 && s.output / s.total >= OUTPUT_ADVICE.share
+
+/** "Output is about 38% of this session's cost." */
+export const outputShareText = (s: SessionSpend): string => `Output is about ${Math.round((s.output / s.total) * 100)}% of this session's cost.`
+
 // ---- Rating ----------------------------------------------------------------
 
 /** Per model, the lowest level it does the work well at; null where it would struggle, absent where unknown. */

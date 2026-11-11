@@ -69,6 +69,10 @@ import {
   versionName,
   tierRank,
   usageCost,
+  outputCost,
+  outputAdviceDue,
+  outputShareText,
+  type SessionSpend,
   type Usage,
   CAL_STORE,
   routeFactor,
@@ -385,6 +389,12 @@ let billing: Billing = 'api'
  */
 let billingBy: 'detected' | 'answered' | 'saved' | null = null
 let billingAsked = false
+/** Output suggestion in /config: whether rightsize may suggest the Concise output style. */
+let outputAdvice = true
+/** The main chat's output cost, total cost and requests this session, at list prices (not subagents). Reset at session start and end. */
+let spend: SessionSpend = { output: 0, total: 0, requests: 0 }
+/** True once the Output question was asked this session, whatever the answer. */
+let outputAsked = false
 /** What this session's rate limits showed, even when Reports is yours and they change nothing. */
 let detectedBilling: Billing | undefined
 let priceCheck: 'monthly' | 'off' = 'monthly'
@@ -1141,6 +1151,7 @@ const QUESTION = { plugin: 'rightsize', key: 'question' } as const
 type BandWhy =
   | { kind: 'billing' }
   | { kind: 'workflow' }
+  | { kind: 'output' }
   | { kind: 'stuck'; run: Run; cur: Level; to: Level; sign: Struggle; step: number }
   | { kind: 'helper'; id: string; w: Watch; cur: Level; to: Level; sign: Struggle }
 
@@ -1210,6 +1221,8 @@ async function bandAnswered($: EngineInterface, why: BandWhy, v: unknown) {
       await log($, `workflow question: ${v ?? 'dismissed'}`)
       if (isWorkflowMode(v)) await putConfig($, 'workflows', v)
       return
+    case 'output':
+      return answerOutput($, v)
     case 'stuck': {
       const { run, cur, to, sign, step } = why
       // The rule part of the answer stands, whether or not the turn still runs. A raise applies only while that turn runs, from its next request.
@@ -1238,6 +1251,8 @@ async function bandUnanswered($: EngineInterface, why: BandWhy) {
       return logUnanswered($, 'Billing', 'reports use API prices for this session; not saved')
     case 'workflow':
       return logUnanswered($, 'Workflow', 'rightsize paused for this workflow; not saved')
+    case 'output':
+      return logUnanswered($, 'Output', 'the output style is unchanged')
     case 'stuck':
       return logUnanswered($, 'Stuck', `kept ${why.cur}`)
     case 'helper':
@@ -1294,6 +1309,7 @@ function writeSetting($: EngineInterface, key: SettingKey, value: string): Promi
     case 'escalation': return $.config.set({ key: 'rightsize.escalation', value: value })
     case 'rater': return $.config.set({ key: 'rightsize.rater', value: value })
     case 'startTips': return $.config.set({ key: 'rightsize.startTips', value: value })
+    case 'outputAdvice': return $.config.set({ key: 'rightsize.outputAdvice', value: value })
     case 'idleWarning': return $.config.set({ key: 'rightsize.idleWarning', value: value })
     case 'beforeCold': return $.config.set({ key: 'rightsize.beforeCold', value: value })
     case 'billing': return $.config.set({ key: 'rightsize.billing', value: value })
@@ -2823,6 +2839,116 @@ async function limitCheck($: EngineInterface) {
     await log($, `usage-limit advice: shown, compacting now saves ${money(saving)} after the reset (${Math.round(context / 1000)}K tokens on ${TIER_NAME[tier]}, resets ${clockText(due.resetAt)})`)
   } catch {
     // Advice must never hold up a turn.
+  }
+}
+
+// ---- Output advice -------------------------------------------------------------------------------------------------
+
+// ADR 0050. At the end of a main turn, when output is at least 25% of this session's cost at list prices, after 20 main-chat
+// requests and $1.00, rightsize asks once whether to use Claude Code's built-in Concise output style. It sets that style's
+// /config row (outputStyle), which writes the project's local settings, the same as /output-style; it never rewrites a prompt.
+// "This session" keeps the earlier value in the store and sets it back when the session ends (or at the next start, after a crash).
+
+/** The store key: what "This session" must put back (`previous`), and the project it was set in (`root`). */
+const OUTPUT_RESTORE = 'outputRestore'
+const CONCISE = 'Concise'
+
+type OutputAnswer = 'session' | 'project' | 'no'
+const qOutput = (spent: SessionSpend): Question<OutputAnswer> => ({
+  header: 'Output',
+  question: `${outputShareText(spent)} To use it in every project, set Output style to Concise in your Claude settings. Use the Concise output style?`,
+  options: [
+    ['This session', 'session'],
+    ['This project', 'project'],
+    ['Not now', 'no'],
+  ],
+})
+
+/** Claude Code's Output style row, as /config lists it now. */
+async function outputRow($: EngineInterface) {
+  const rows = await $.config.list().catch(() => [])
+  return rows.find(r => r.key === 'outputStyle')
+}
+
+/** The row can be set to Concise: it exists, is a picker with a Concise option, is not locked and does not read Concise already. */
+function mayUseConcise(row: Awaited<ReturnType<typeof outputRow>>): row is NonNullable<typeof row> {
+  return row !== undefined && row.kind === 'choice' && !row.isLocked && row.options?.includes(CONCISE) === true && row.value !== CONCISE
+}
+
+/** Sets the Output style row, then reads it back: a policy or flag setting can override the write. True when the row holds `value`. */
+async function setOutputStyle($: EngineInterface, value: string): Promise<boolean> {
+  const r = await $.config.set({ key: 'outputStyle', value }).catch((err: unknown) => ({ deny: err instanceof Error ? err.message : String(err) }))
+  if (r.deny !== undefined) {
+    await log($, `output style: Claude Code refused to write it: ${r.deny}`)
+    return false
+  }
+  if ((await outputRow($))?.value !== value) {
+    await log($, `output style ${value}: not applied (another source sets it)`)
+    return false
+  }
+  return true
+}
+
+/** The turn ended: asks when the three bars are met. At most once a session. Never throws. */
+async function outputCheck($: EngineInterface) {
+  try {
+    if (off || !outputAdvice || outputAsked || !outputAdviceDue(spend)) return
+    if (!mayUseConcise(await outputRow($))) return
+    outputAsked = true
+    const q = qOutput(spend)
+    if (watching) {
+      await log($, `watch only: would suggest the Concise output style (${outputShareText(spend)})`)
+      return
+    }
+    await log($, `output suggestion: asked (${Math.round((spend.output / spend.total) * 100)}% output, ${spend.requests} requests, ${money(spend.total)})`)
+    if (await bandCanAsk($)) return askBand($, withNextPrompt(q, 'the output style is unchanged'), 'prompt', true, { kind: 'output' })
+    const a = await askWithin($, withWait(q, 'the output style is unchanged'), late => answerOutput($, late))
+    if (a === TIMED_OUT) await logTimeout($, 'Output', 'the output style is unchanged')
+    else await answerOutput($, a)
+  } catch (err) {
+    await log($, `output suggestion failed: ${err instanceof Error ? err.message : String(err)}`).catch(() => undefined)
+  }
+}
+
+/** An Output answer: "This session" sets Concise and keeps the earlier value to put back; "This project" sets it and leaves it; anything else writes nothing. */
+async function answerOutput($: EngineInterface, a: unknown) {
+  if (a !== 'session' && a !== 'project') return log($, `output suggestion: ${a === 'no' ? 'not now' : 'no answer'}; the output style is unchanged`)
+  const row = await outputRow($)
+  if (!mayUseConcise(row)) return log($, 'output suggestion: the Output style row cannot be set to Concise now; nothing written')
+  const previous = String(row.value)
+  if (a === 'session') {
+    const root = await $.session.root().catch(() => '')
+    // Kept before the write: a crash after it still leaves the way back.
+    await $.store.set(OUTPUT_RESTORE, { previous, root }).catch(() => undefined)
+    if (!(await setOutputStyle($, CONCISE))) {
+      await $.store.set(OUTPUT_RESTORE, null).catch(() => undefined)
+      return
+    }
+    await log($, `output style: Concise for this session (was ${previous})`)
+    return
+  }
+  if (await setOutputStyle($, CONCISE)) await log($, `output style: Concise for this project (was ${previous})`)
+}
+
+/**
+ * Puts the Output style back to what "This session" replaced, when it still reads Concise: a style changed meanwhile is never overwritten.
+ * At a session start (`start`) it runs only in the project the style was set in. The note is cleared once the style is back or was changed
+ * meanwhile; a refused write keeps it for the next start. Never throws.
+ */
+async function restoreOutput($: EngineInterface, why: string, start: boolean) {
+  try {
+    const held = (await $.store.get(OUTPUT_RESTORE).catch(() => undefined)) as { previous?: unknown; root?: unknown } | null | undefined
+    if (!held || typeof held.previous !== 'string') return
+    if (start && held.root !== (await $.session.root().catch(() => ''))) return
+    const row = await outputRow($)
+    if (row?.value !== CONCISE) {
+      await log($, `output style: not put back (${why}); it no longer reads ${CONCISE}`)
+    } else if (await setOutputStyle($, held.previous)) {
+      await log($, `output style: put back to ${held.previous} (${why})`)
+    } else return
+    await $.store.set(OUTPUT_RESTORE, null).catch(() => undefined)
+  } catch (err) {
+    await log($, `output style restore failed: ${err instanceof Error ? err.message : String(err)}`).catch(() => undefined)
   }
 }
 
@@ -4432,6 +4558,9 @@ function applyOption(key: SettingKey) {
     case 'startTips':
       startEvery = v === 'weekly' || v === 'monthly' ? START_CHECK_DAYS[v] : null
       return
+    case 'outputAdvice':
+      outputAdvice = v !== 'off'
+      return
     case 'idleWarning':
       idleWarning = parseIdleWarning(v)
       return
@@ -4723,6 +4852,14 @@ export const register: Register = (on, options) => {
     return result
   }).catch((_, e, next) => next(e))
 
+  on('session.end', async ($, e, next) => {
+    // "This session" ends here: the output style goes back to what it was, if it still reads Concise.
+    await restoreOutput($, `the session ended (${e.reason})`, false)
+    spend = { output: 0, total: 0, requests: 0 }
+    outputAsked = false
+    return next(e)
+  })
+
   on('session.start', async ($, e, next) => {
     const result = await next(e)
     // The plugin can live anywhere (a clone, ~/Projects), so ask for HOME rather than reading it off the path.
@@ -4793,6 +4930,8 @@ export const register: Register = (on, options) => {
     // Until this session's first response shows its rate limits, an earlier session's reading stands.
     const saved = (await $.store.get('billing').catch(() => undefined)) as { value?: unknown; by?: unknown } | undefined
     billingAsked = false
+    spend = { output: 0, total: 0, requests: 0 }
+    outputAsked = false
     billingBy = null
     detectedBilling = undefined
     billing = cfg.billing === 'subscription' ? 'subscription' : 'api'
@@ -4817,6 +4956,8 @@ export const register: Register = (on, options) => {
         void runCheck($, 'monthly', lastChecked)
       }
     }
+    // A "This session" Concise style an earlier session never put back (it crashed): put back now.
+    await restoreOutput($, 'a session started', true)
     cal = parseCalibration(await $.store.get(CAL_STORE).catch(() => undefined))
     stepState = parseStepState(await $.store.get(STEP_STORE).catch(() => undefined))
     // The rules: this session's, then any rule set in /config. A rule lasts a session or, in its /config row, always.
@@ -5286,8 +5427,10 @@ export const register: Register = (on, options) => {
       await $.state.set({ plugin: 'rightsize', key: 'context' }, lastContext)
       // The session's own model stays the one the next prompt is planned on.
       if (!sw) await $.state.set({ plugin: 'rightsize', key: 'seenModel' }, u.model)
+      const requestCost = usageCost(prices, u.model, u)
+      spend = { output: spend.output + outputCost(prices, u.model, u), total: spend.total + requestCost, requests: spend.requests + 1 }
       if (run) {
-        run.mainCost += usageCost(prices, u.model, u)
+        run.mainCost += requestCost
         run.requests += 1
       }
     }
@@ -5670,6 +5813,7 @@ export const register: Register = (on, options) => {
     if (e.agentId === undefined && !e.isAborted) await limitCheck($)
     if (e.agentId === undefined && !e.isAborted) await sizeCheck($)
     if (e.agentId === undefined && !e.isAborted) await tipCheck($).catch(() => undefined)
+    if (e.agentId === undefined && !e.isAborted) await outputCheck($)
     // whatsnext's wrap-up before a compaction ended: the compaction follows (after coldCheck, which cancels timers), from a timer (the hook does not wait for it). An interrupted wrap-up stops it.
     if (e.agentId === undefined && wrapThenCompact) {
       const w = wrapThenCompact

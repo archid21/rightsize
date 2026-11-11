@@ -11,7 +11,7 @@ export type StepInput = { effort?: string; model?: string; turnId: string; index
 export type LooseStep = (event: 'turn.step', hook: (api: unknown, e: StepInput) => AsyncGenerator<never, unknown>) => void
 export type Run = { text?: string }
 export type Engine = {
-  session: { start: (x: unknown) => Promise<unknown> }
+  session: { start: (x: unknown) => Promise<unknown>; end: (x: unknown) => Promise<unknown> }
   prompt: { submit: (x: unknown) => Promise<unknown>; attachment: (x: unknown) => Promise<unknown> }
   turn: { start: (x: unknown) => Promise<unknown>; step: (x: unknown) => unknown; complete: (x: unknown) => Promise<unknown> }
   tool: { call: (x: unknown) => Promise<unknown> }
@@ -157,6 +157,10 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
     configKey: start.configKey ?? 'rightsize@archid21',
     /** True: settings cannot be read. */
     settingsFail: false,
+    /** Claude Code's own Output style row as /config lists it; undefined: no such row. Locked: a trusted source owns it. */
+    outputStyle: { value: 'default', options: ['default', 'Explanatory', 'Learning', 'Concise'], isLocked: false } as { value: string; options: string[]; isLocked: boolean } | undefined,
+    /** A policy or flag setting that wins over a write: the row is set, and still reads this. */
+    outputPinned: undefined as string | undefined,
     /** Other top-level settings a read of one key returns (`idleCompaction`, `autoCompactEnabled`). */
     settings: {} as Record<string, unknown>,
     /** What reached the engine, in order: each question asked (`ask:<header>`) and each workflow started (`workflow`). */
@@ -282,6 +286,7 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
     h.surfaces = e.surface ? [e.surface] : []
     return { cwd: e.cwd } as never
   })
+  reg('session.end', async () => ({ sessionId: h.sessionId }) as never)
   reg('session.surfaces', async () => ({ value: h.surfaces }) as never)
   reg('ui.open', async ($, e) => {
     h.paneOpens.push(e as (typeof h.paneOpens)[number])
@@ -315,6 +320,11 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
     return { value: h.messages } as never
   })
   reg('session.cwd', async () => ({ value: h.cwd }) as never)
+  reg('session.root', async () => ({ value: h.cwd }) as never)
+  reg('config.list', async () => {
+    const o = h.outputStyle
+    return { value: o ? [{ key: 'outputStyle', label: 'Output style', kind: 'choice', value: h.outputPinned ?? o.value, options: o.options, provider: { kind: 'core' }, isLocked: o.isLocked }] : [] } as never
+  })
   reg('session.id', async () => ({ value: h.sessionId }) as never)
   reg('session.model', async () => ({ value: h.liveModel ?? h.model }) as never)
   reg('session.usage', async ($, e) => {
@@ -398,6 +408,14 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
   // The writer: a value outside a row's options does not fit, so the row is left as it was; one that fits goes into settings.json.
   reg('config.set', async ($, e) => {
     const { key, value, origin } = e as { key: string; value: unknown; origin?: { kind: string } }
+    if (key === 'outputStyle') {
+      if (!h.outputStyle) throw new Error('no such row')
+      if (h.outputStyle.isLocked) return { deny: 'a trusted source owns this row' } as never
+      if (typeof value !== 'string' || !h.outputStyle.options.includes(value)) return { deny: `${String(value)} does not fit` } as never
+      h.sets.push({ key, value, ...(origin ? { origin } : {}) })
+      if (h.outputPinned === undefined) h.outputStyle.value = value
+      return { value } as never
+    }
     const field = key.startsWith('rightsize.') ? key.slice('rightsize.'.length) : ''
     const known = KEYS.find(k => k === field)
     if (known && !inOptions(known, value)) return { deny: `${String(value)} is not one of ${known}'s options` } as never
@@ -619,6 +637,8 @@ export const drive = (api: unknown, h: ReturnType<typeof engine>) => {
   h.test$ = api
   return {
     start: (surface: string) => e.session.start({ source: 'startup', cwd: '/tmp', surface, isInteractive: true }),
+    /** The session ends (exit by default). */
+    end: (reason = 'prompt_input_exit') => e.session.end({ reason, sessionId: h.sessionId, resume: { id: h.sessionId } }),
     /** `turnId`: the turn that was running when the prompt was typed; left out, the session was idle. */
     submit: (text: string, turnId?: string) => e.prompt.submit({ text, origin: { kind: 'composer' }, wait: false, ...(turnId ? { turnId } : {}) }),
     /** The engine starting a main-chat turn for this text ("" for a continuation). */

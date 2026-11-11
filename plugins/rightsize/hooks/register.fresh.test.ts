@@ -1,9 +1,9 @@
 import { type TestBody, expect, test } from 'claude-code/testing'
 import { LOG_PATH, NO_CHANGE, NO_COLD, FRESH, WHATSNEXT_ARGS, WHATSNEXT_SCRIPT, engine, drive, freshAnswer, installWhatsnext, mount, rowText, untilAsked } from './testkit'
-import { SIZE_FRESH_TEXT, SIZE_WHY, SIZE_WHY_FRESH } from './size'
+import { SIZE_FRESH_COPY_FAILED, SIZE_FRESH_SAVING, SIZE_WHY, SIZE_WHY_FRESH, sizeFreshNotWritten, sizeFreshNotice, sizeFreshPaste } from './size'
 
-// ---- Wrap up and start fresh (ADR 0051; whatsnext ADR 0025) ----------------------------------------------------
-// The context-size warning also offers Wrap up and start fresh when whatsnext's `fresh-instructions --json` says this is a
+// ---- Start fresh (ADR 0051; whatsnext ADR 0025) ----------------------------------------------------
+// The context-size warning also offers Start fresh when whatsnext's `fresh-instructions --json` says this is a
 // whatsnext project and the window has room for a wrap-up turn (WRAP_HEADROOM, 40,000 tokens). Every text comes from the
 // command's answer; the tests give it texts that are not whatsnext's own.
 
@@ -12,6 +12,9 @@ const API = { billing: 'api' }
 const WRAP = 'wrap up, please'
 const FRESH_BTN = 'cold-size-fresh'
 const COMPACT_BTN = 'cold-size-compact'
+const COPY_BTN = 'cold-size-fresh-copy'
+const FRESH_COMPACT_BTN = 'cold-size-fresh-compact'
+const NOT_NOW_BTN = 'cold-size-fresh-not-now'
 
 for (const surface of ['desktop', 'terminal'] as const) {
   /** A session at `tokens` of a 200K window with whatsnext installed; `fresh` is what `fresh-instructions` answers (undefined: the command is unknown). */
@@ -53,7 +56,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     return { h, d }
   }
 
-  test(`the warning offers Wrap up and start fresh beside Compact now when the command says project and there is room (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
+  test(`the warning offers Start fresh beside Compact now when the command says project and there is room (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
     const { h } = await warned($, on, 120_000, freshAnswer(false))
     const r = await row($)
     expect(r.text).toContain('Context is 60% full')
@@ -96,16 +99,71 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.wnRuns).toEqual([])
   })
 
-  test(`wrap_up_first true: the button submits exactly wrap_up_prompt, and nothing else starts until whatsnext's band takes over (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
+  const ok = (stdout: string) => ({ exitCode: 0, stdout })
+  const written = (over: Record<string, unknown> = {}) => freshAnswer(false, true, { wrap_up_state: 'written', ...over })
+  /** The wrap-up's turn, from its start to its end, and the timer that asks whatsnext again. */
+  const wrapTurn = async (d: ReturnType<typeof drive>, h: ReturnType<typeof engine>, id: string) => {
+    await d.turnStart(id, WRAP)
+    await d.step(id)
+    await d.complete(id)
+    await h.advance(0)
+  }
+
+  test(`wrap_up_first true: Start fresh submits exactly wrap_up_prompt, and the row says it is saving (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
     const { h } = await warned($, on, 120_000, freshAnswer(true, true, { wrap_up_prompt: WRAP }))
     await press($, FRESH_BTN)
     expect(h.submitted.map(x => x.text), 'the wrap-up is the only prompt after the person\'s own').toEqual(['continue', WRAP])
-    expect(h.commandRuns, 'no /clear and no /compact before the note is written').toEqual([])
+    expect(h.submitted.every(x => !x.asUser), 'never in the person\'s own words').toBe(true)
+    expect(h.commandRuns, 'no /clear and no /compact').toEqual([])
     expect(h.compactions).toBe(0)
     const r = await row($)
-    expect(r.text, 'rightsize shows nothing more: whatsnext\'s band offers the new chat').toBe('')
-    expect(r.buttons).not.toContain('cold-size-fresh-new')
+    expect(r.text).toBe(SIZE_FRESH_SAVING)
+    expect(r.buttons).not.toContain(COPY_BTN)
     expect(log(h)).toContain(`submitted "${WRAP}"`)
+  })
+
+  test(`wrap_up_first true: when the wrap-up turn ends with the note written, the row shows the paste text (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
+    const { h, d } = await warned($, on, 120_000, freshAnswer(true, true, { wrap_up_prompt: WRAP }))
+    h.wnFreshReplies = [ok(freshAnswer(true, true, { wrap_up_prompt: WRAP })), ok(written())]
+    await press($, FRESH_BTN)
+    await h.advance(60_000)
+    expect(freshRuns(h).length, 'nothing is asked while the wrap-up turn runs').toBe(2)
+    await wrapTurn(d, h, 't2')
+    expect(freshRuns(h).length, 'asked again at the end of the turn').toBe(3)
+    const r = await row($)
+    if (surface === 'desktop') {
+      expect(r.text).toBe(sizeFreshPaste(FRESH.continue_prompt))
+      expect(r.buttons).toEqual(expect.arrayContaining([COPY_BTN, FRESH_COMPACT_BTN, NOT_NOW_BTN]))
+    } else {
+      expect(r.text).toBe(sizeFreshNotice(FRESH.terminal_command))
+      expect(r.buttons).toContain(NOT_NOW_BTN)
+      expect(r.buttons).not.toContain(COPY_BTN)
+    }
+    expect(h.submitted.map(x => x.text), 'nothing else is submitted').toEqual(['continue', WRAP])
+    expect(h.commandRuns).toEqual([])
+  })
+
+  test(`wrap_up_first true: a wrap-up that is not written after 2 turns says so in the row and stops (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
+    const { h, d } = await warned($, on, 120_000, freshAnswer(true, true, { wrap_up_prompt: WRAP }))
+    h.wnFresh = ok(freshAnswer(true, true, { wrap_up_prompt: WRAP }))
+    await press($, FRESH_BTN)
+    await wrapTurn(d, h, 't2')
+    expect(log(h)).toContain('the handoff is not written yet (turn 1 of 2)')
+    expect((await row($)).text).toBe(SIZE_FRESH_SAVING)
+    await wrapTurn(d, h, 't3')
+    const r = await row($)
+    expect(r.text).toBe(sizeFreshNotWritten(2))
+    expect(r.buttons).not.toContain(COPY_BTN)
+    expect(h.copies).toEqual([])
+  })
+
+  test(`wrap_up_first true: an interrupted wrap-up shows no paste row (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
+    const { h } = await warned($, on, 120_000, freshAnswer(true, true, { wrap_up_prompt: WRAP }))
+    h.wnFreshReplies = [ok(freshAnswer(true, true, { wrap_up_prompt: WRAP })), ok(written())]
+    await press($, FRESH_BTN)
+    const runs = freshRuns(h).length
+    // (an interrupted turn: the same hook, with isAborted)
+    expect(runs).toBe(2)
   })
 
   test(`wrap_up_first true: a refused wrap-up leaves the row and says why (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
@@ -117,56 +175,88 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.toasts.at(-1)).toContain('wrap-up was refused')
   })
 
-  test(`wrap_up_first false: no wrap-up turn runs; the row shows the two choices (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
+  test(`wrap_up_first false: no wrap-up turn runs; the paste row shows at once (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
     const { h } = await warned($, on, 120_000, freshAnswer(false))
     await press($, FRESH_BTN)
     expect(h.submitted.map(x => x.text), 'no wrap-up').toEqual(['continue'])
     expect(h.commandRuns).toEqual([])
     const r = await row($)
-    expect(r.text).toBe(SIZE_FRESH_TEXT)
-    expect(r.buttons).toEqual(expect.arrayContaining(['cold-size-fresh-new', 'cold-size-fresh-clear', 'cold-size-fresh-not-now']))
-    expect(r.buttons).not.toContain(COMPACT_BTN)
-  })
-
-  test(`wrap_up_first false: New session uses new_session_prompt on the desktop and terminal_command on the terminal (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
-    const { h } = await warned($, on, 120_000, freshAnswer(false))
-    await press($, FRESH_BTN)
-    await press($, 'cold-size-fresh-new')
     if (surface === 'desktop') {
-      expect(h.submitted.at(-1)).toEqual({ text: FRESH.new_session_prompt, asUser: true })
-      expect((await row($)).text).toBe('')
+      expect(r.text).toBe(sizeFreshPaste(FRESH.continue_prompt))
+      expect(r.buttons).toEqual(expect.arrayContaining([COPY_BTN, NOT_NOW_BTN]))
     } else {
-      expect(h.submitted.map(x => x.text), 'a terminal cannot open a window: nothing is submitted').toEqual(['continue'])
-      expect((await row($)).text).toContain(FRESH.terminal_command)
+      expect(r.text).toBe(sizeFreshNotice(FRESH.terminal_command))
+      expect(r.buttons).toEqual(expect.arrayContaining([FRESH_COMPACT_BTN, NOT_NOW_BTN]))
+      expect(r.buttons).not.toContain(COPY_BTN)
     }
-    expect(h.commandRuns, 'New session keeps this chat').toEqual([])
+    expect(r.buttons, 'Compact now is gone while the paste row shows').not.toContain(COMPACT_BTN)
   })
 
-  test(`wrap_up_first false: Clear and continue runs clear_command, then submits continue_prompt (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
+  if (surface === 'desktop') {
+    test(`Copy puts continue_prompt on the clipboard from the surface the person is on (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
+      const { h } = await warned($, on, 120_000, freshAnswer(false))
+      await press($, FRESH_BTN)
+      await press($, COPY_BTN)
+      expect(h.copies).toEqual([{ text: FRESH.continue_prompt, surface }])
+      expect(h.toasts.at(-1)).toContain('Copied. Open a new session in this project and paste it.')
+      expect((await row($)).text, 'the text stays on the row').toContain(FRESH.continue_prompt)
+      expect(h.submitted.map(x => x.text), 'rightsize submits nothing and starts no session').toEqual(['continue'])
+    })
+
+    test(`when the copy does not work, the text stays on the row and the row says so (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
+      const { h } = await warned($, on, 120_000, freshAnswer(false))
+      await press($, FRESH_BTN)
+      h.copyFails = 'no-clipboard'
+      await press($, COPY_BTN)
+      const r = await row($)
+      expect(r.text).toContain(FRESH.continue_prompt)
+      expect(r.text).toContain(SIZE_FRESH_COPY_FAILED)
+      expect(r.buttons).toEqual(expect.arrayContaining([COPY_BTN, NOT_NOW_BTN]))
+    })
+  }
+
+  test(`Compact now on the paste row compacts with whatsnext's text and clears the row (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
     const { h } = await warned($, on, 120_000, freshAnswer(false))
     await press($, FRESH_BTN)
-    await press($, 'cold-size-fresh-clear')
-    expect(h.commandRuns).toEqual([{ command: 'clear', args: '' }])
-    expect(h.submitted.at(-1)).toEqual({ text: FRESH.continue_prompt, asUser: true })
-    expect((await row($)).text).toBe('')
+    h.wnRuns.length = 0
+    await press($, FRESH_COMPACT_BTN)
+    expect(h.wnRuns).toEqual([['python3', WHATSNEXT_SCRIPT, 'compact-instructions', '--session', 'sess-1', '--json']])
+    expect(h.commandRuns).toEqual([{ command: 'compact', args: WHATSNEXT_ARGS }])
+    expect(h.submitted.map(x => x.text)).toEqual(['continue'])
+    const r = await row($)
+    expect(r.text).not.toContain(FRESH.continue_prompt)
+    expect(r.buttons).not.toContain(FRESH_COMPACT_BTN)
+    expect(r.buttons).not.toContain(NOT_NOW_BTN)
+    expect(log(h)).toContain('context warning: Start fresh: Compact now')
   })
 
-  test(`wrap_up_first false: Clear and continue says what to type when /clear cannot run (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
+  test(`Not now takes the paste row away and starts nothing (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
     const { h } = await warned($, on, 120_000, freshAnswer(false))
     await press($, FRESH_BTN)
-    h.commandRunFails = 'no clear'
-    await press($, 'cold-size-fresh-clear')
-    expect(h.submitted.map(x => x.text), 'the continue prompt is not sent into the old chat').toEqual(['continue'])
-    expect((await row($)).text).toBe(`Could not clear this chat. Type /clear, then: ${FRESH.continue_prompt}`)
-  })
-
-  test(`wrap_up_first false: Not now takes the row away and starts nothing (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
-    const { h } = await warned($, on, 120_000, freshAnswer(false))
-    await press($, FRESH_BTN)
-    await press($, 'cold-size-fresh-not-now')
+    await press($, NOT_NOW_BTN)
     expect((await row($)).text).toBe('')
     expect(h.submitted.map(x => x.text)).toEqual(['continue'])
     expect(h.commandRuns).toEqual([])
+    expect(h.copies).toEqual([])
+  })
+
+  test(`the person's own next prompt takes the paste row away (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
+    const { h, d } = await warned($, on, 120_000, freshAnswer(false))
+    await press($, FRESH_BTN)
+    expect((await row($)).text).not.toBe('')
+    await d.submit('another')
+    expect((await row($)).text).toBe('')
+    expect(h.submitted.at(-1)?.text).toBe('another')
+  })
+
+  test(`the person's own prompt while the wrap-up runs cancels the paste row (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
+    const { h, d } = await warned($, on, 120_000, freshAnswer(true, true, { wrap_up_prompt: WRAP }))
+    h.wnFreshReplies = [ok(freshAnswer(true, true, { wrap_up_prompt: WRAP })), ok(written())]
+    await press($, FRESH_BTN)
+    await d.submit('wait, one more thing')
+    await wrapTurn(d, h, 't2')
+    expect(freshRuns(h).length, 'not asked again: the person is back').toBe(2)
+    expect((await row($)).text).not.toContain(FRESH.continue_prompt)
   })
 
   test(`the answer is asked again at the press: a project that stopped being whatsnext's gets nothing (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
@@ -190,17 +280,17 @@ for (const surface of ['desktop', 'terminal'] as const) {
     return h.logs.at(-1)
   }
 
-  test(`Why? describes Wrap up and start fresh only when the row offers it (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
+  test(`Why? describes Start fresh only when the row offers it (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
     const offered = await warned($, on, 120_000, freshAnswer(false))
     expect(await why($, offered.h)).toBe(SIZE_WHY + SIZE_WHY_FRESH)
   })
 
-  test(`Why? says nothing of Wrap up and start fresh when the row does not offer it (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
+  test(`Why? says nothing of Start fresh when the row does not offer it (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
     const plain = await warned($, on, 120_000, freshAnswer(false, false))
     expect(await why($, plain.h)).toBe(SIZE_WHY)
   })
 
-  test(`Compact now behaves as before while Wrap up and start fresh is offered (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
+  test(`Compact now behaves as before while Start fresh is offered (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
     const { h } = await warned($, on, 120_000, freshAnswer(false))
     h.wnRuns.length = 0
     await press($, COMPACT_BTN)

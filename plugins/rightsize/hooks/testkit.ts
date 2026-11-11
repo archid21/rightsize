@@ -42,9 +42,7 @@ export const wnAnswer = (wrapUpFirst: boolean, project = true) =>
 export const FRESH = {
   wrap_up_prompt: 'wrap up',
   continue_prompt: 'Pick up from the note: read it first.',
-  new_session_prompt: 'Open a new session called Fresh and say: Pick up from the note: read it first.',
   terminal_command: 'claude "Pick up from the note: read it first."',
-  clear_command: 'clear',
 }
 /** What `fresh-instructions --json` prints. */
 export const freshAnswer = (wrapUpFirst: boolean, project = true, over: Record<string, unknown> = {}) =>
@@ -270,6 +268,11 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
     wnReply: { exitCode: 0, stdout: wnAnswer(false) } as { exitCode: number; stdout: string; stderr?: string },
     /** What `fresh-instructions` answers; the default is a whatsnext that does not know the command yet (P-69 is open). */
     wnFresh: { exitCode: 2, stdout: '', stderr: "whatsnext.py: error: argument command: invalid choice: 'fresh-instructions'\n" } as { exitCode: number; stdout: string; stderr?: string },
+    /** What the next `fresh-instructions` runs answer, in order; when none is left, `wnFresh`. */
+    wnFreshReplies: [] as { exitCode: number; stdout: string; stderr?: string }[],
+    /** Every $.ui.copy, and a reason to make the next one fail (isCopied false). */
+    copies: [] as { text: string; surface?: string }[],
+    copyFails: undefined as string | undefined,
     /** True: sleeps are on a virtual clock. They end only when `advance` reaches them, and the clock moves to each one's time. */
     virtual: false,
     sleepers: [] as { due: number; release: () => void }[],
@@ -416,6 +419,16 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
     if (h.fetchFails) return { value: { status: 503, ok: false, headers: {}, text: '' } } as never
     return { value: { status: 200, ok: true, headers: {}, text: h.page } } as never
   })
+  reg('ui.copy', async ($, e) => {
+    const { text, surface } = e as { text: string; surface?: string }
+    h.copies.push({ text, ...(surface ? { surface } : {}) })
+    if (h.copyFails !== undefined) {
+      const reason = h.copyFails
+      h.copyFails = undefined
+      return { value: { isCopied: false, reason } } as never
+    }
+    return { value: { isCopied: true } } as never
+  })
   reg('ui.toast', async ($, e) => {
     h.toasts.push((e as { text: string }).text)
     return { value: undefined } as never
@@ -455,7 +468,7 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
     if (argv[0] === 'git' && argv[1] === 'rev-parse') return { value: { exitCode: 0, stdout: `${h.cwd}\n`, stderr: '' } } as never
     if (argv[0] === 'python3') {
       h.wnRuns.push(argv)
-      const reply = argv.includes('fresh-instructions') ? h.wnFresh : (h.wnReplies.shift() ?? h.wnReply)
+      const reply = argv.includes('fresh-instructions') ? (h.wnFreshReplies.shift() ?? h.wnFresh) : (h.wnReplies.shift() ?? h.wnReply)
       return { value: { exitCode: reply.exitCode, stdout: reply.stdout, stderr: reply.stderr ?? '' } } as never
     }
     h.ran.push(argv)

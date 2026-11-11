@@ -119,7 +119,7 @@ import { LIMITS, type Signals, type Struggle, blockedError, callKey, hookFailed,
 import { type Change, type HelperLine, type Lifetime, type RunLine, type SwitchLine, type Windows, SESSION_TOTAL, SESSION_TOTAL_FROM, bandShareText, buildReport, costTag, foldLifetime, parseLifetime, parseLines, ratedInSession, sessionTotal, shareMessage, shareOf, usedTag, windowCostText, windowRates } from './report'
 import { type TrimSavings, readTrimSavings } from './trim'
 import { LIMIT_BUTTON, LIMIT_COMPACT, LIMIT_HIDE, LIMIT_MORE, LIMIT_WHY, LIMIT_WHY_ID, isLimitId, limitDue, limitText } from './limit'
-import { SIZE_BUTTON, SIZE_COMPACT, SIZE_FRESH, SIZE_FRESH_BUTTON, SIZE_FRESH_CHOICES, SIZE_FRESH_CLEAR, SIZE_FRESH_NEW, SIZE_FRESH_NOT_NOW, SIZE_FRESH_TEXT, SIZE_HIDE, SIZE_MORE, SIZE_WHY, SIZE_WHY_FRESH, SIZE_WHY_ID, isSizeId, sizeFreshByHand, sizeFreshNotice, sizeStep, sizeText } from './size'
+import { SIZE_BUTTON, SIZE_COMPACT, SIZE_FRESH, SIZE_FRESH_BUTTON, SIZE_FRESH_COMPACT, SIZE_FRESH_COPY, SIZE_FRESH_COPY_FAILED, SIZE_FRESH_NOT_NOW, SIZE_FRESH_PASTE_BUTTONS, SIZE_FRESH_SAVING, SIZE_HIDE, SIZE_MORE, SIZE_WHY, SIZE_WHY_FRESH, SIZE_WHY_ID, isSizeId, sizeFreshNotWritten, sizeFreshNotice, sizeFreshPaste, sizeStep, sizeText } from './size'
 import { COMPACT_BASE, NO_FRESH_HANDOFF, WRAP_HEADROOM, WRAP_TURNS, isWhatsnext } from './whatsnext'
 import { ME, REPOS, SHARED_PATH, askText, blockedByClaim, parseShared, readStarCheck, reposToAsk, type Shared } from './star'
 import { STORE_KEY as TIPS_KEY, type Tip, type TipsState, nextTip, parseState, tipById, withSeen } from './tips'
@@ -2720,9 +2720,9 @@ type WhatsnextFresh = {
   wrapUpFirst: boolean
   wrapUpPrompt: string
   continuePrompt: string
-  newSessionPrompt: string
   terminalCommand: string
-  clearCommand: string
+  /** `wrap_up_state` (`written` once the note is saved); undefined when whatsnext does not say. */
+  wrapUpState?: string
 }
 
 /** Asks whatsnext how to start a fresh chat from this open session: its texts, or why it cannot (not installed, an unknown command, an error, an answer that is not JSON). Never throws. */
@@ -2741,13 +2741,11 @@ async function whatsnextFresh($: EngineInterface): Promise<{ fresh: WhatsnextFre
   const text = (k: string) => (typeof out?.[k] === 'string' && (out[k] as string).trim() ? (out[k] as string) : undefined)
   const wrapUpPrompt = text('wrap_up_prompt')
   const continuePrompt = text('continue_prompt')
-  const newSessionPrompt = text('new_session_prompt')
   const terminalCommand = text('terminal_command')
-  const clearCommand = text('clear_command')
-  if (typeof out?.project !== 'boolean' || typeof out.wrap_up_first !== 'boolean' || !wrapUpPrompt || !continuePrompt || !newSessionPrompt || !terminalCommand || !clearCommand) {
+  if (typeof out?.project !== 'boolean' || typeof out.wrap_up_first !== 'boolean' || !wrapUpPrompt || !continuePrompt || !terminalCommand) {
     return { why: 'fresh-instructions answered without every field rightsize needs' }
   }
-  return { fresh: { project: out.project, wrapUpFirst: out.wrap_up_first, wrapUpPrompt, continuePrompt, newSessionPrompt, terminalCommand, clearCommand } }
+  return { fresh: { project: out.project, wrapUpFirst: out.wrap_up_first, wrapUpPrompt, continuePrompt, terminalCommand, ...(text('wrap_up_state') ? { wrapUpState: text('wrap_up_state') } : {}) } }
 }
 
 /**
@@ -2768,11 +2766,11 @@ async function ownCompact($: EngineInterface): Promise<string | undefined> {
 /** `text` with " no fresh handoff" said when the compaction went ahead without one. */
 const withHandoffNote = (text: string, noFresh: boolean | undefined) => (noFresh ? `${text.replace(/\.$/, '')}; ${NO_FRESH_HANDOFF}.` : text)
 
-/** Submits rightsize's own prompt, which its hook lets through unrated. `asUser`: in the person's own words (they pressed the button that asks for it). Resolves to the reason when it is refused. */
-async function submitOwn($: EngineInterface, text: string, asUser = false): Promise<string | undefined> {
+/** Submits rightsize's own prompt, which its hook lets through unrated. Resolves to the reason when it is refused. */
+async function submitOwn($: EngineInterface, text: string): Promise<string | undefined> {
   coldPrompt = text.trim()
   try {
-    return (await $.prompt.submit({ text, ...(asUser ? { asUser: true } : {}) })).drop
+    return (await $.prompt.submit({ text })).drop
   } catch (err) {
     return `error: ${err instanceof Error ? err.message : String(err)}`
   } finally {
@@ -3015,7 +3013,7 @@ async function restoreOutput($: EngineInterface, why: string, start: boolean) {
 const SIZE_HIDDEN = 'sizeWarningHidden'
 /** The highest step already said in this conversation (0: none). */
 let sizeShown = 0
-/** True when the warning on the row offers Wrap up and start fresh (Why? then says what it does). */
+/** True when the warning on the row offers Start fresh (Why? then says what it does). */
 let sizeFreshShown = false
 
 async function sizeCheck($: EngineInterface) {
@@ -3042,7 +3040,7 @@ async function sizeCheck($: EngineInterface) {
       return
     }
     if (bandMode === 'off') return
-    // Wrap up and start fresh: only when whatsnext can do it and the window has room for a wrap-up turn. Anything else leaves Compact now alone.
+    // Start fresh: only when whatsnext can do it and the window has room for a wrap-up turn. Anything else leaves Compact now alone.
     const fresh = await freshOffered($, window - tokens)
     sizeFreshShown = fresh
     await showAdvice($, { text, button: SIZE_BUTTON, more: SIZE_MORE, ...(fresh ? { extra: SIZE_FRESH_BUTTON } : {}) })
@@ -3068,12 +3066,21 @@ async function pressSize($: EngineInterface, id: string): Promise<void> {
     }
     if (id === SIZE_FRESH) {
       if (mainBusy) {
-        $.ui.toast('Rightsize: a turn is running. Press Wrap up and start fresh again when it ends.')
+        $.ui.toast('Rightsize: a turn is running. Press Start fresh again when it ends.')
         return
       }
       return await startFresh($)
     }
-    if (id === SIZE_FRESH_NEW || id === SIZE_FRESH_CLEAR || id === SIZE_FRESH_NOT_NOW) return await answerFresh($, id)
+    if (id === SIZE_FRESH_COPY || id === SIZE_FRESH_NOT_NOW) return await answerFresh($, id)
+    if (id === SIZE_FRESH_COMPACT) {
+      if (mainBusy) {
+        $.ui.toast('Rightsize: a turn is running. Press Compact now again when it ends.')
+        return
+      }
+      freshHeld = null
+      await log($, 'context warning: Start fresh: Compact now')
+      return await compactForSize($)
+    }
     if (id !== SIZE_COMPACT) return
     if (mainBusy) {
       $.ui.toast('Rightsize: a turn is running. Press Compact now again when it ends.')
@@ -3085,27 +3092,33 @@ async function pressSize($: EngineInterface, id: string): Promise<void> {
   }
 }
 
-// ---- Wrap up and start fresh (ADR 0051; whatsnext ADR 0025) ---------------------------------------------------------
+// ---- Start fresh (ADR 0051, revised 2026-11-11; whatsnext ADR 0025) -----------------------------------------------------
 //
 // The warning's second button. rightsize decides when; whatsnext (`fresh-instructions --json`) says how and gives every text.
+// rightsize starts no session itself: the desktop app counts a plugin's prompt as the plugin's, so a session started from one
+// is refused and becomes a card. The person starts the new session and pastes whatsnext's `continue_prompt`.
 //  - Not a whatsnext project, or less than WRAP_HEADROOM tokens of room left: the button is not offered; Compact now stays.
-//  - `wrap_up_first` true: submit `wrap_up_prompt`. whatsnext's own band offers New session and Clear and continue after
-//    the note is written, so rightsize shows nothing more.
-//  - `wrap_up_first` false: the note is fresh, no wrap-up turn runs and whatsnext's band does not show. The row shows the same
-//    two choices and runs them: `new_session_prompt` (desktop) or `terminal_command` (terminal), and `clear_command`
-//    then `continue_prompt`.
+//  - `wrap_up_first` true: submit `wrap_up_prompt` (whatsnext hides its own band for it). At the end of that turn ask again:
+//    when `wrap_up_state` is `written` the row shows the paste text; else it says the note was not written, and stops.
+//  - `wrap_up_first` false: the note is fresh, no wrap-up turn runs: the row shows the paste text at once.
+//  - The paste row: `continue_prompt` with Copy and Not now (desktop), or `terminal_command` to run in a new terminal window
+//    (terminal). The person's next prompt takes the row away, as it does every row.
 
-/** What the two choices run, held from the press of Wrap up and start fresh until the person answers. */
-let freshChoice: { fresh: WhatsnextFresh; desktop: boolean } | null = null
+/** What the paste row copies, held from the moment it shows until it goes. */
+let freshHeld: { prompt: string } | null = null
+/** True from the wrap-up's submit until the end of its turn (or the person's own prompt): the paste row follows. */
+let wrapThenFresh = false
+/** Main-turn ends since the wrap-up was submitted at which the note was still not written. */
+let wrapFreshTurns = 0
 
-/** True when the warning offers Wrap up and start fresh: whatsnext is installed, says this is its project, and `room` tokens fit a wrap-up turn. Never throws. */
+/** True when the warning offers Start fresh: whatsnext is installed, says this is its project, and `room` tokens fit a wrap-up turn. Never throws. */
 async function freshOffered($: EngineInterface, room: number): Promise<boolean> {
   try {
     if (room < WRAP_HEADROOM) return false
     if ((await whatsnextInstalled($)) !== true) return false
     const got = await whatsnextFresh($)
     if ('why' in got) {
-      await log($, `context warning: Wrap up and start fresh not offered (${got.why})`)
+      await log($, `context warning: Start fresh not offered (${got.why})`)
       return false
     }
     return got.fresh.project
@@ -3114,12 +3127,28 @@ async function freshOffered($: EngineInterface, room: number): Promise<boolean> 
   }
 }
 
-/** The person pressed Wrap up and start fresh: ask whatsnext again (the note may have changed since the warning), then follow ADR 0025 item 3. */
+/** True when whatsnext says the handoff note is written (`wrap_up_state`; without it, when no wrap-up is wanted). */
+const noteWritten = (f: WhatsnextFresh) => (f.wrapUpState !== undefined ? f.wrapUpState === 'written' : !f.wrapUpFirst)
+
+/** The paste row: the text for a new session (Copy, Not now) on the desktop, the command to run in a new window on the terminal. `failed`: the last copy did not work. */
+async function showPaste($: EngineInterface, f: WhatsnextFresh, failed = false) {
+  const surfaces = await $.session.surfaces().catch(() => [])
+  const desktop = surfaces.length > 0 && surfaces.every(x => x === 'desktop')
+  if (!desktop) {
+    freshHeld = null
+    await showCold($, sizeFreshNotice(f.terminalCommand), SIZE_FRESH_PASTE_BUTTONS.filter(b => b.id === SIZE_FRESH_NOT_NOW || b.id === SIZE_FRESH_COMPACT), true)
+    return
+  }
+  freshHeld = { prompt: f.continuePrompt }
+  await showCold($, `${sizeFreshPaste(f.continuePrompt)}${failed ? `\n${SIZE_FRESH_COPY_FAILED}` : ''}`, [...SIZE_FRESH_PASTE_BUTTONS], true)
+}
+
+/** The person pressed Start fresh: ask whatsnext again (the note may have changed since the warning), then follow ADR 0025 item 3. */
 async function startFresh($: EngineInterface) {
-  cancelCold($, 'Wrap up and start fresh pressed')
+  cancelCold($, 'Start fresh pressed')
   coldDone = true
   const refuse = async (why: string, said: string) => {
-    await log($, `context warning: Wrap up and start fresh stopped (${why})`)
+    await log($, `context warning: Start fresh stopped (${why})`)
     $.ui.toast(`Rightsize: ${said} Compact now still works.`)
   }
   const got = await whatsnextFresh($)
@@ -3131,64 +3160,71 @@ async function startFresh($: EngineInterface) {
     return refuse(`${Math.round(ctx.window - ctx.tokens)} tokens left in the window, under ${WRAP_HEADROOM}`, 'there is not enough room left for a wrap-up.')
   }
   if (f.wrapUpFirst) {
+    wrapThenFresh = true
+    wrapFreshTurns = 0
     const drop = await submitOwn($, f.wrapUpPrompt)
-    if (drop !== undefined) return refuse(`"${f.wrapUpPrompt}" was refused: ${drop}`, 'the wrap-up was refused.')
-    await clearColdRow($)
-    await log($, `context warning: Wrap up and start fresh: submitted "${f.wrapUpPrompt}"; whatsnext offers the new chat once the note is written`)
+    if (drop !== undefined) {
+      wrapThenFresh = false
+      return refuse(`"${f.wrapUpPrompt}" was refused: ${drop}`, 'the wrap-up was refused.')
+    }
+    await showCold($, SIZE_FRESH_SAVING)
+    await log($, `context warning: Start fresh: submitted "${f.wrapUpPrompt}"; the paste text shows once the note is written`)
     return
   }
-  const surfaces = await $.session.surfaces().catch(() => [])
-  freshChoice = { fresh: f, desktop: surfaces.length > 0 && surfaces.every(x => x === 'desktop') }
-  await showCold($, SIZE_FRESH_TEXT, [...SIZE_FRESH_CHOICES], true)
-  await log($, `context warning: Wrap up and start fresh: the handoff note is fresh; offered New session and Clear and continue`)
+  await showPaste($, f)
+  await log($, 'context warning: Start fresh: the handoff note is fresh; showed the paste text')
 }
 
-/** An answer to the two choices. */
+/**
+ * A main turn ended after the wrap-up was submitted (the turn may be a prompt queued ahead of it): ask whatsnext again. Show
+ * the paste row once the note is written; otherwise wait for the next turn's end, and after WRAP_TURNS of them say so and stop.
+ */
+async function resumeFresh($: EngineInterface) {
+  const got = await whatsnextFresh($)
+  if ('why' in got) {
+    await log($, `context warning: Start fresh stopped (${got.why})`)
+    await showCold($, `whatsnext could not say whether the handoff was written (${got.why}).`)
+    return
+  }
+  if (noteWritten(got.fresh)) {
+    wrapFreshTurns = 0
+    await showPaste($, got.fresh)
+    await log($, 'context warning: Start fresh: the note is written; showed the paste text')
+    return
+  }
+  wrapFreshTurns += 1
+  if (wrapFreshTurns < WRAP_TURNS) {
+    wrapThenFresh = true
+    await log($, `context warning: Start fresh: the handoff is not written yet (turn ${wrapFreshTurns} of ${WRAP_TURNS}); waiting for the next turn`)
+    return
+  }
+  wrapFreshTurns = 0
+  await log($, `context warning: Start fresh: no handoff after ${WRAP_TURNS} turns`)
+  await showCold($, sizeFreshNotWritten(WRAP_TURNS))
+}
+
+/** An answer on the paste row: Copy or Not now. */
 async function answerFresh($: EngineInterface, id: string) {
-  const held = freshChoice
-  freshChoice = null
   if (id === SIZE_FRESH_NOT_NOW) {
+    freshHeld = null
     await clearColdRow($)
-    await log($, 'context warning: Wrap up and start fresh: Not now')
+    await log($, 'context warning: Start fresh: Not now')
     return
   }
+  const held = freshHeld
   if (!held) {
-    $.ui.toast('Rightsize: that choice is gone. Press Wrap up and start fresh again.')
+    $.ui.toast('Rightsize: that choice is gone. Press Start fresh again.')
     return
   }
-  const f = held.fresh
-  if (id === SIZE_FRESH_NEW) {
-    if (!held.desktop) {
-      await showCold($, sizeFreshNotice(f.terminalCommand), undefined, true)
-      await log($, 'context warning: Wrap up and start fresh: New session; showed the terminal command')
-      return
-    }
-    const drop = await submitOwn($, f.newSessionPrompt, true)
-    await clearColdRow($)
-    if (drop !== undefined) {
-      $.ui.toast(`Rightsize: the new session was not started (${drop}).`)
-      await log($, `context warning: Wrap up and start fresh: New session refused: ${drop}`)
-      return
-    }
-    await log($, 'context warning: Wrap up and start fresh: New session; asked the agent to start it')
+  const surface = (await $.session.surfaces().catch(() => []))[0]
+  const copied = await $.ui.copy({ text: held.prompt, ...(surface ? { surface } : {}) }).then(r => r.isCopied, () => false)
+  if (copied) {
+    $.ui.toast('Copied. Open a new session in this project and paste it.')
+    await log($, 'context warning: Start fresh: copied the paste text')
     return
   }
-  // Clear and continue: the old chat stays in /resume.
-  try {
-    await $.command.run({ command: f.clearCommand.replace(/^\//, ''), args: '' })
-  } catch (err) {
-    await showCold($, sizeFreshByHand(f.clearCommand, f.continuePrompt), undefined, true)
-    await log($, `context warning: Wrap up and start fresh: ${f.clearCommand} could not run: ${err instanceof Error ? err.message : String(err)}`)
-    return
-  }
-  const drop = await submitOwn($, f.continuePrompt, true)
-  if (drop !== undefined) {
-    await showCold($, `Cleared. Type: ${f.continuePrompt}`, undefined, true)
-    await log($, `context warning: Wrap up and start fresh: "${f.continuePrompt}" was refused: ${drop}`)
-    return
-  }
-  await clearColdRow($)
-  await log($, 'context warning: Wrap up and start fresh: Clear and continue')
+  await showCold($, `${sizeFreshPaste(held.prompt)}\n${SIZE_FRESH_COPY_FAILED}`, [...SIZE_FRESH_PASTE_BUTTONS], true)
+  await log($, 'context warning: Start fresh: copy did not work')
 }
 
 /** Runs the compaction the person asked for with "Compact now" on the warning: whatsnext's way when it is installed, else rightsize's own. */
@@ -3199,7 +3235,7 @@ async function compactForSize($: EngineInterface) {
     sizeShown = 0
     idleWarnedFor = lastTurnAt
     await log($, `context warning: compacted on the person's button${noFresh ? ` (${NO_FRESH_HANDOFF})` : ''}`)
-    await showCold($, withHandoffNote('Compacted. Later turns read a short summary, not the whole conversation.', noFresh))
+    await showCold($, withHandoffNote('Compacted. Each turn now costs less.', noFresh))
   }
   const own = async () => {
     const skip = await ownCompact($)
@@ -3359,6 +3395,7 @@ async function dropCache($: EngineInterface, why: string) {
   offerOpen = false
   warmReturn = null
   wrapThenCompact = null
+  wrapThenFresh = false
   idleNote = ''
   await clearColdRow($)
 }
@@ -5072,6 +5109,8 @@ export const register: Register = (on, options) => {
     coldDone = false
     coldPrompt = null
     wrapThenCompact = null
+    wrapThenFresh = false
+    freshHeld = null
     projectFlag = null
     sizeShown = 0
     mainBusy = false
@@ -5225,6 +5264,8 @@ export const register: Register = (on, options) => {
     if (!off && fromPerson(e) && !e.command && !e.isMeta) {
       coldDone = false
       wrapThenCompact = null
+      wrapThenFresh = false
+      freshHeld = null
       if (mainBusy) {
         midPrompt = true
         await stopWait($, 'a prompt was typed into the turn')
@@ -5993,6 +6034,13 @@ export const register: Register = (on, options) => {
       wrapThenCompact = null
       if (e.isAborted) await log($, `${w.label}: the wrap-up was interrupted; not compacting`)
       else if (!off) await armCold($, coldGen, await $.clock.now(), () => resumeCompact($, w))
+    }
+    // Start fresh's wrap-up ended: the paste row follows once the note is written (a timer, as above).
+    if (e.agentId === undefined && wrapThenFresh) {
+      wrapThenFresh = false
+      if (e.isAborted) {
+        await log($, 'context warning: Start fresh: the wrap-up was interrupted')
+      } else if (!off) await armCold($, coldGen, await $.clock.now(), () => resumeFresh($))
     }
     return result
   })

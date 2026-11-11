@@ -2,6 +2,7 @@ import { MISS_BLOCK, TIER_NAME, isTier, money } from './cost'
 import { STEP_PROVE } from './steps'
 import { MISS_MIN, checkTotals, missRates, missTotals } from './misses'
 import type { StartBlock } from './start'
+import type { TrimSavings, TrimSum } from './trim'
 
 // /rightsize report: what the mod saved, what it cost to run, and what went
 // wrong, read from its run log. Pure functions, no engine calls.
@@ -1095,10 +1096,25 @@ export function fixedBlock(lines: readonly RunLine[], subscription = false) {
   }
 }
 
+const TRIM_LABEL: Record<string, string> = { output_cap: 'Command output cut', tool_cleanup: 'Tool results cleaned', repeat_reads: 'Repeat reads', browser_scale: 'Browser screenshots' }
+const TRIM_NOTE = 'Read from trim\'s savings log. "assumed" means a fixed estimate per use, not a measurement. Tokens only, not dollars.'
+const tokensText = (n: number) => (n >= 1000 ? `${(Math.round(n / 100) / 10).toFixed(1)}K` : `${Math.round(n)}`)
+
+/** Rows for the trim section (feature, all time, last 30 days), or undefined when trim saved nothing. */
+export function trimRows(trim: TrimSavings | undefined) {
+  if (!trim) return undefined
+  const cell = (s: TrimSum | undefined) => (s && s.tokens > 0 ? `${tokensText(s.tokens)}${s.assumed ? ' assumed' : ''}` : '–')
+  const names = [...new Set([...Object.keys(trim.allTime), ...Object.keys(trim.last30)])].filter(f => (trim.allTime[f]?.tokens ?? 0) > 0 || (trim.last30[f]?.tokens ?? 0) > 0)
+  if (!names.length) return undefined
+  const order = Object.keys(TRIM_LABEL)
+  names.sort((a, b) => (order.indexOf(a) + 1 || 99) - (order.indexOf(b) + 1 || 99))
+  return [['', 'All time', '30 days'], ...names.map(f => [TRIM_LABEL[f] ?? f, cell(trim.allTime[f]), cell(trim.last30[f])])]
+}
+
 export function buildReport(
   lines: readonly RunLine[],
   switches: readonly SwitchLine[],
-  opts: { now: number; session: string; subscription: boolean; start?: StartBlock; pause?: number | null; measureFrom?: string; markdown?: boolean; watching?: boolean; lifetime?: Lifetime; details?: boolean },
+  opts: { now: number; session: string; subscription: boolean; start?: StartBlock; pause?: number | null; measureFrom?: string; markdown?: boolean; watching?: boolean; lifetime?: Lifetime; details?: boolean; trim?: TrimSavings },
 ) {
   const since = (days: number) => (l: { at: string }) => opts.now - Date.parse(l.at) <= days * DAY
   const month = lines.filter(since(30))
@@ -1130,6 +1146,8 @@ export function buildReport(
   const warm = keepWarm(month)
   const summary = summaryRows(thirty, warm, sub)
   if (summary.length) out.push(...section('30-DAY SUMMARY', grid(summary)))
+  const trimmed = trimRows(opts.trim)
+  if (trimmed) out.push(...section('TRIM SAVINGS (tokens, estimated)', grid(trimmed)), ...para(TRIM_NOTE, md ? '' : '  '))
   // Watch only: what rightsize would have done, and what that would have saved, against staying. Nothing was applied.
   const watched = watchLine(month, sub, opts.watching === true)
   if (watched) out.push('', ...para(watched))

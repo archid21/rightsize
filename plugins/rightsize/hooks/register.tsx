@@ -117,6 +117,7 @@ import { BRIEF_MAX, cutRequest, parseRating, ratingPrompt, ratingSystem } from '
 import { isApprovalStep } from './approval'
 import { LIMITS, type Signals, type Struggle, blockedError, callKey, hookFailed, isBookkeeping, isEditTool, helperCap, isTestCommand, noMatchExit, noSignals, noteCall, oneUp, refusedByHook, refusedByPerson, struggle, testsOutcome } from './struggle'
 import { type Change, type HelperLine, type Lifetime, type RunLine, type SwitchLine, type Windows, SESSION_TOTAL, SESSION_TOTAL_FROM, bandShareText, buildReport, costTag, foldLifetime, parseLifetime, parseLines, ratedInSession, sessionTotal, shareMessage, shareOf, usedTag, windowCostText, windowRates } from './report'
+import { type TrimSavings, readTrimSavings } from './trim'
 import { LIMIT_BUTTON, LIMIT_COMPACT, LIMIT_HIDE, LIMIT_MORE, LIMIT_WHY, LIMIT_WHY_ID, isLimitId, limitDue, limitText } from './limit'
 import { SIZE_BUTTON, SIZE_COMPACT, SIZE_HIDE, SIZE_MORE, SIZE_WHY, SIZE_WHY_ID, isSizeId, sizeStep, sizeText } from './size'
 import { COMPACT_BASE, NO_FRESH_HANDOFF, WRAP_HEADROOM, WRAP_TURNS, isWhatsnext } from './whatsnext'
@@ -717,6 +718,17 @@ async function readAll<T extends { at: string }>($: EngineInterface, name: strin
   }
   const parts = await Promise.all(files.map(f => readText($, f).then(t => parseLines<T>(t)).catch(() => [] as T[])))
   return parts.flat().sort((a, b) => atOf(a) - atOf(b))
+}
+
+// trim's savings files (trim ADR 0012; rightsize ADR 0052): read only, never created or changed. A missing or damaged file shows no section.
+async function readTrim($: EngineInterface, now: number): Promise<TrimSavings | undefined> {
+  try {
+    const dir = (await $.env.get('TRIM_HOME').catch(() => undefined)) || `${home}/.claude/trim`
+    const [log, totals] = await Promise.all([readText($, `${dir}/savings.jsonl`), readText($, `${dir}/savings-totals.json`)])
+    return readTrimSavings(log, totals, now, sessionId)
+  } catch {
+    return undefined
+  }
 }
 
 function readRuns($: EngineInterface): Promise<RunLine[]> {
@@ -5001,10 +5013,11 @@ export const register: Register = (on, options) => {
       const switches = await readSwitchLines($)
       const lifetime = await readLifetime($)
       const now = await $.clock.now()
+      const trim = await readTrim($, now)
       const start = startBlock(adviseStart(runs, await startContext($), now), billing === 'subscription', money)
       // The row's text is the plain report (the terminal, -p, the SDK). Every other surface draws the Markdown form, chosen
       // per surface when the row draws (its CommandOutput hook): $.session.surfaces() here can miss the desktop app.
-      const opts = { now, session: sessionId, subscription: billing === 'subscription', start, pause: missBlock, watching, details: arg === 'report details', ...(lifetime ? { lifetime } : {}), ...(measureFrom ? { measureFrom: new Date(measureFrom).toISOString() } : {}) }
+      const opts = { now, session: sessionId, subscription: billing === 'subscription', start, pause: missBlock, watching, details: arg === 'report details', ...(trim ? { trim } : {}), ...(lifetime ? { lifetime } : {}), ...(measureFrom ? { measureFrom: new Date(measureFrom).toISOString() } : {}) }
       const text = buildReport(runs, switches, opts)
       reportMarkdown.set(text, buildReport(runs, switches, { ...opts, markdown: true }))
       while (reportMarkdown.size > 20) reportMarkdown.delete(reportMarkdown.keys().next().value as string)

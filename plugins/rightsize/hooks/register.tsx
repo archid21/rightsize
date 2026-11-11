@@ -119,7 +119,7 @@ import { LIMITS, type Signals, type Struggle, blockedError, callKey, hookFailed,
 import { type Change, type HelperLine, type Lifetime, type RunLine, type SwitchLine, type Windows, SESSION_TOTAL, SESSION_TOTAL_FROM, bandShareText, buildReport, costTag, foldLifetime, parseLifetime, parseLines, ratedInSession, sessionTotal, shareMessage, shareOf, usedTag, windowCostText, windowRates } from './report'
 import { type TrimSavings, readTrimSavings } from './trim'
 import { LIMIT_BUTTON, LIMIT_COMPACT, LIMIT_HIDE, LIMIT_MORE, LIMIT_WHY, LIMIT_WHY_ID, isLimitId, limitDue, limitText } from './limit'
-import { SIZE_BUTTON, SIZE_COMPACT, SIZE_FRESH, SIZE_FRESH_BUTTON, SIZE_FRESH_COPY, SIZE_FRESH_COPY_FAILED, SIZE_FRESH_NOT_NOW, SIZE_FRESH_PASTE_BUTTONS, SIZE_FRESH_SAVING, SIZE_HIDE, SIZE_MORE, SIZE_WHY, SIZE_WHY_FRESH, SIZE_WHY_ID, isSizeId, sizeFreshNotWritten, sizeFreshNotice, sizeFreshPaste, sizeStep, sizeText } from './size'
+import { SIZE_BUTTON, SIZE_COMPACT, SIZE_FRESH, SIZE_FRESH_BUTTON, SIZE_FRESH_COMPACT, SIZE_FRESH_COPY, SIZE_FRESH_COPY_FAILED, SIZE_FRESH_NOT_NOW, SIZE_FRESH_PASTE_BUTTONS, SIZE_FRESH_SAVING, SIZE_HIDE, SIZE_MORE, SIZE_WHY, SIZE_WHY_FRESH, SIZE_WHY_ID, isSizeId, sizeFreshNotWritten, sizeFreshNotice, sizeFreshPaste, sizeStep, sizeText } from './size'
 import { COMPACT_BASE, NO_FRESH_HANDOFF, WRAP_HEADROOM, WRAP_TURNS, isWhatsnext } from './whatsnext'
 import { ME, REPOS, SHARED_PATH, askText, blockedByClaim, parseShared, readStarCheck, reposToAsk, type Shared } from './star'
 import { STORE_KEY as TIPS_KEY, type Tip, type TipsState, nextTip, parseState, tipById, withSeen } from './tips'
@@ -3072,6 +3072,15 @@ async function pressSize($: EngineInterface, id: string): Promise<void> {
       return await startFresh($)
     }
     if (id === SIZE_FRESH_COPY || id === SIZE_FRESH_NOT_NOW) return await answerFresh($, id)
+    if (id === SIZE_FRESH_COMPACT) {
+      if (mainBusy) {
+        $.ui.toast('Rightsize: a turn is running. Press Compact now again when it ends.')
+        return
+      }
+      freshHeld = null
+      await log($, 'context warning: Start fresh: Compact now')
+      return await compactForSize($)
+    }
     if (id !== SIZE_COMPACT) return
     if (mainBusy) {
       $.ui.toast('Rightsize: a turn is running. Press Compact now again when it ends.')
@@ -3127,7 +3136,7 @@ async function showPaste($: EngineInterface, f: WhatsnextFresh, failed = false) 
   const desktop = surfaces.length > 0 && surfaces.every(x => x === 'desktop')
   if (!desktop) {
     freshHeld = null
-    await showCold($, sizeFreshNotice(f.terminalCommand), SIZE_FRESH_PASTE_BUTTONS.filter(b => b.id === SIZE_FRESH_NOT_NOW), true)
+    await showCold($, sizeFreshNotice(f.terminalCommand), SIZE_FRESH_PASTE_BUTTONS.filter(b => b.id === SIZE_FRESH_NOT_NOW || b.id === SIZE_FRESH_COMPACT), true)
     return
   }
   freshHeld = { prompt: f.continuePrompt }

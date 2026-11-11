@@ -13,6 +13,7 @@ const WRAP = 'wrap up, please'
 const FRESH_BTN = 'cold-size-fresh'
 const COMPACT_BTN = 'cold-size-compact'
 const COPY_BTN = 'cold-size-fresh-copy'
+const FRESH_COMPACT_BTN = 'cold-size-fresh-compact'
 const NOT_NOW_BTN = 'cold-size-fresh-not-now'
 
 for (const surface of ['desktop', 'terminal'] as const) {
@@ -132,7 +133,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const r = await row($)
     if (surface === 'desktop') {
       expect(r.text).toBe(sizeFreshPaste(FRESH.continue_prompt))
-      expect(r.buttons).toEqual(expect.arrayContaining([COPY_BTN, NOT_NOW_BTN]))
+      expect(r.buttons).toEqual(expect.arrayContaining([COPY_BTN, FRESH_COMPACT_BTN, NOT_NOW_BTN]))
     } else {
       expect(r.text).toBe(sizeFreshNotice(FRESH.terminal_command))
       expect(r.buttons).toContain(NOT_NOW_BTN)
@@ -185,7 +186,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
       expect(r.buttons).toEqual(expect.arrayContaining([COPY_BTN, NOT_NOW_BTN]))
     } else {
       expect(r.text).toBe(sizeFreshNotice(FRESH.terminal_command))
-      expect(r.buttons).toEqual(expect.arrayContaining([NOT_NOW_BTN]))
+      expect(r.buttons).toEqual(expect.arrayContaining([FRESH_COMPACT_BTN, NOT_NOW_BTN]))
       expect(r.buttons).not.toContain(COPY_BTN)
     }
     expect(r.buttons, 'Compact now is gone while the paste row shows').not.toContain(COMPACT_BTN)
@@ -213,6 +214,21 @@ for (const surface of ['desktop', 'terminal'] as const) {
       expect(r.buttons).toEqual(expect.arrayContaining([COPY_BTN, NOT_NOW_BTN]))
     })
   }
+
+  test(`Compact now on the paste row compacts with whatsnext's text and clears the row (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
+    const { h } = await warned($, on, 120_000, freshAnswer(false))
+    await press($, FRESH_BTN)
+    h.wnRuns.length = 0
+    await press($, FRESH_COMPACT_BTN)
+    expect(h.wnRuns).toEqual([['python3', WHATSNEXT_SCRIPT, 'compact-instructions', '--session', 'sess-1', '--json']])
+    expect(h.commandRuns).toEqual([{ command: 'compact', args: WHATSNEXT_ARGS }])
+    expect(h.submitted.map(x => x.text)).toEqual(['continue'])
+    const r = await row($)
+    expect(r.text).not.toContain(FRESH.continue_prompt)
+    expect(r.buttons).not.toContain(FRESH_COMPACT_BTN)
+    expect(r.buttons).not.toContain(NOT_NOW_BTN)
+    expect(log(h)).toContain('context warning: Start fresh: Compact now')
+  })
 
   test(`Not now takes the paste row away and starts nothing (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
     const { h } = await warned($, on, 120_000, freshAnswer(false))

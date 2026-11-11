@@ -30,11 +30,14 @@ export const SIZE_MORE: readonly { id: string; label: string }[] = [
 // handoff note if needed, then the row shows the text to paste into a new session (revised 2026-11-11).
 export const SIZE_FRESH = 'size-fresh'
 export const SIZE_FRESH_BUTTON = { id: SIZE_FRESH, label: 'Start fresh' }
-/** The paste row's two buttons: Copy puts whatsnext's `continue_prompt` on the clipboard; Not now takes the row away. */
+/** The paste row's buttons: Copy puts whatsnext's `continue_prompt` on the clipboard; Compact now compacts this session; Not now takes the row away. */
 export const SIZE_FRESH_COPY = 'size-fresh-copy'
 export const SIZE_FRESH_NOT_NOW = 'size-fresh-not-now'
+/** Compact now on the paste row: keeps going in this session (same compaction as the warning's button). */
+export const SIZE_FRESH_COMPACT = 'size-fresh-compact'
 export const SIZE_FRESH_PASTE_BUTTONS: readonly { id: string; label: string }[] = [
   { id: SIZE_FRESH_COPY, label: 'Copy' },
+  { id: SIZE_FRESH_COMPACT, label: 'Compact now' },
   { id: SIZE_FRESH_NOT_NOW, label: 'Not now' },
 ]
 /** The desktop paste row: whatsnext's `continue_prompt` follows this text. */
@@ -49,7 +52,7 @@ export const sizeFreshNotWritten = (turns: number) => `whatsnext's handoff was n
 export const SIZE_FRESH_COPY_FAILED = 'Copy did not work. Select the text above and copy it by hand.'
 
 export const isSizeId = (id: string) =>
-  id === SIZE_COMPACT || id === SIZE_WHY_ID || id === SIZE_HIDE || id === SIZE_FRESH || id === SIZE_FRESH_COPY || id === SIZE_FRESH_NOT_NOW
+  id === SIZE_COMPACT || id === SIZE_WHY_ID || id === SIZE_HIDE || id === SIZE_FRESH || id === SIZE_FRESH_COPY || id === SIZE_FRESH_COMPACT || id === SIZE_FRESH_NOT_NOW
 
 export const SIZE_WHY =
   'Every request re-reads the whole conversation, so a bigger one costs more on each turn, and a cold cache writes all of it again. A compact now leaves a short summary instead.'

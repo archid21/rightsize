@@ -1475,9 +1475,11 @@ async function situation($: EngineInterface): Promise<Situation> {
   const kept = (await $.state.get({ plugin: 'rightsize', key: 'context' }).catch(() => undefined))?.value
   // Nothing kept yet (the first prompt, or a resumed session): the live window's fill, as the engine reports it.
   const have = typeof kept === 'number' && kept > 0
-  const reported = have ? undefined : (await usageNow($))?.context?.tokens
+  const usage = await usageNow($)
+  const reported = have ? undefined : usage?.context?.tokens
+  const reportedWindow = typeof usage?.context?.window === 'number' && usage.context.window > 0 ? usage.context.window : undefined
   const context = have ? kept : typeof reported === 'number' && reported > 0 ? reported : DEFAULT_CONTEXT
-  return { tier, level, context, prices, helperPrices, cal, rules: DEFAULT_RULES, misses, missBlock, minTasks, counts, ceiling, reviewCeiling, without, stepExp: actingExp(stepState), ...(olderModel(mainModel) ? { older: true } : {}) }
+  return { tier, level, context, ...(reportedWindow !== undefined ? { reportedWindow } : {}), prices, helperPrices, cal, rules: DEFAULT_RULES, misses, missBlock, minTasks, counts, ceiling, reviewCeiling, without, stepExp: actingExp(stepState), ...(olderModel(mainModel) ? { older: true } : {}) }
 }
 
 // `unsure` says why the rater may have seen too little: the request was cut, or a task is in progress and its last reply could not be read.

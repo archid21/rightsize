@@ -481,6 +481,8 @@ export type Situation = {
   level: Level
   /** Tokens in the main conversation. */
   context: number
+  /** The context window Claude Code reports for the session (its current model); absent when it did not say. See `fitsWindow`. */
+  reportedWindow?: number
   prices: Prices
   /** The main chat runs an older version (ADR 0031): an effort switch there rebuilds the conversation, so every switch is priced as a miss. */
   older?: boolean
@@ -852,10 +854,24 @@ export const HAIKU_TYPES: readonly TaskType[] = ['lookup', 'search', 'bulk-edit'
 export const HAIKU_SWITCH_TYPES: readonly TaskType[] = ['debug', 'feature', 'refactor', 'writing']
 export const HAIKU_SWITCH_TIER: Tier = 'sonnet'
 
-/** Whether the main conversation fits `tier`'s context window (prices.json's `window`): a switch to a smaller window would
- * fail or compact mid-turn, so it is not made. A model with no window on file fits. */
-export const fitsWindow = (s: Situation, tier: Tier) => {
+/** The window a switch to `tier` must fit: prices.json's `window` for it, capped by the window Claude Code reports for the
+ * session (ADR 0053). The report is for the session's own model, so it caps a target only when it is below that model's
+ * window in prices.json: the account or plan holds the session under the model's full window (a 1M model run at 200K), and the
+ * target is held the same way. A report equal to or above the session model's own window says nothing about other models
+ * (a 200K Haiku session must still reach Sonnet at 1M). Undefined: no window known. */
+export const switchWindow = (s: Situation, tier: Tier) => {
   const w = s.prices[tier].window
+  const r = s.reportedWindow
+  if (typeof r !== 'number' || !(r > 0)) return w
+  const own = s.prices[s.tier].window
+  const held = own === undefined || r < own
+  return held ? (w === undefined ? r : Math.min(w, r)) : w
+}
+
+/** Whether the main conversation fits `tier`'s context window (`switchWindow`): a switch to a smaller window would
+ * fail or compact mid-turn, so it is not made. A model with no window on file and no report fits. */
+export const fitsWindow = (s: Situation, tier: Tier) => {
+  const w = switchWindow(s, tier)
   return w === undefined || s.context <= w
 }
 

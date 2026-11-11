@@ -225,6 +225,8 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
     liveModel: undefined as string | undefined,
     /** The input tokens of the live window's last response, as $.session.usage() reports; undefined: none yet. */
     contextTokens: undefined as number | undefined,
+    /** The window $.session.usage() reports for the session; undefined: none reported. */
+    contextWindow: 200_000 as number | undefined,
     /** Rating replies to give before `rating`, in order; a reply starting with "timeout" is a timed-out call, one starting with "unavailable" a refused one. */
     ratingQueue: [] as string[],
     /** How long each rating call takes, in ms, in order: the clock moves on by it before the call answers. A call with none listed takes no time. */
@@ -342,7 +344,7 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
   reg('session.model', async () => ({ value: h.liveModel ?? h.model }) as never)
   reg('session.usage', async ($, e) => {
     const breakdown = (e as { breakdown?: string }).breakdown && h.breakdown ? { breakdown: h.breakdown } : {}
-    return { value: { startedAt: 0, context: { window: 200_000, ...(h.contextTokens === undefined ? {} : { tokens: h.contextTokens }), ...breakdown }, rateLimits: h.rateLimits, ...(h.ledger === undefined ? {} : { cost: { usd: h.ledger } }) } } as never
+    return { value: { startedAt: 0, context: { ...(h.contextWindow === undefined ? {} : { window: h.contextWindow }), ...(h.contextTokens === undefined ? {} : { tokens: h.contextTokens }), ...breakdown }, rateLimits: h.rateLimits, ...(h.ledger === undefined ? {} : { cost: { usd: h.ledger } }) } } as never
   })
   reg('fs.exists', async ($, e) => {
     const { path } = e as { path: string }

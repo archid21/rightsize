@@ -198,7 +198,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
       await press($, FRESH_BTN)
       await press($, COPY_BTN)
       expect(h.copies).toEqual([{ text: FRESH.continue_prompt, surface }])
-      expect(h.toasts.at(-1)).toContain('copied')
+      expect(h.toasts.at(-1)).toContain('Copied. Open a new session in this project and paste it.')
       expect((await row($)).text, 'the text stays on the row').toContain(FRESH.continue_prompt)
       expect(h.submitted.map(x => x.text), 'rightsize submits nothing and starts no session').toEqual(['continue'])
     })

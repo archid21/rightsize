@@ -3140,7 +3140,7 @@ async function showPaste($: EngineInterface, f: WhatsnextFresh, failed = false) 
     return
   }
   freshHeld = { prompt: f.continuePrompt }
-  await showCold($, `${sizeFreshPaste(f.continuePrompt)}${failed ? ` ${SIZE_FRESH_COPY_FAILED}` : ''}`, [...SIZE_FRESH_PASTE_BUTTONS], true)
+  await showCold($, `${sizeFreshPaste(f.continuePrompt)}${failed ? `\n${SIZE_FRESH_COPY_FAILED}` : ''}`, [...SIZE_FRESH_PASTE_BUTTONS], true)
 }
 
 /** The person pressed Start fresh: ask whatsnext again (the note may have changed since the warning), then follow ADR 0025 item 3. */
@@ -3219,11 +3219,11 @@ async function answerFresh($: EngineInterface, id: string) {
   const surface = (await $.session.surfaces().catch(() => []))[0]
   const copied = await $.ui.copy({ text: held.prompt, ...(surface ? { surface } : {}) }).then(r => r.isCopied, () => false)
   if (copied) {
-    $.ui.toast('Rightsize: copied. Paste it in a new session in this project.')
+    $.ui.toast('Copied. Open a new session in this project and paste it.')
     await log($, 'context warning: Start fresh: copied the paste text')
     return
   }
-  await showCold($, `${sizeFreshPaste(held.prompt)} ${SIZE_FRESH_COPY_FAILED}`, [...SIZE_FRESH_PASTE_BUTTONS], true)
+  await showCold($, `${sizeFreshPaste(held.prompt)}\n${SIZE_FRESH_COPY_FAILED}`, [...SIZE_FRESH_PASTE_BUTTONS], true)
   await log($, 'context warning: Start fresh: copy did not work')
 }
 

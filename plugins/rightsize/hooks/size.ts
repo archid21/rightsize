@@ -36,20 +36,22 @@ export const SIZE_FRESH_NOT_NOW = 'size-fresh-not-now'
 /** Compact now on the paste row: keeps going in this session (same compaction as the warning's button). */
 export const SIZE_FRESH_COMPACT = 'size-fresh-compact'
 export const SIZE_FRESH_PASTE_BUTTONS: readonly { id: string; label: string }[] = [
-  { id: SIZE_FRESH_COPY, label: 'Copy' },
-  { id: SIZE_FRESH_COMPACT, label: 'Compact now' },
+  { id: SIZE_FRESH_COPY, label: 'Copy for new session' },
+  { id: SIZE_FRESH_COMPACT, label: 'Compact and continue here' },
   { id: SIZE_FRESH_NOT_NOW, label: 'Not now' },
 ]
+/** First line of both paste rows. */
+const SIZE_FRESH_SAVED = 'Handoff saved. Keep going here, or start a new session from it.'
 /** The desktop paste row: whatsnext's `continue_prompt` follows this text. */
-export const sizeFreshPaste = (prompt: string) => `Paste this in a new session in this project to continue fresh: ${prompt}`
+export const sizeFreshPaste = (prompt: string) => `${SIZE_FRESH_SAVED}\nNew-session prompt: "${prompt}"`
 /** The terminal cannot copy for you: the row shows the command (whatsnext's own text) to run in a new window. */
-export const sizeFreshNotice = (command: string) => `In a new terminal window, in this project's folder, run: ${command}`
+export const sizeFreshNotice = (command: string) => `${SIZE_FRESH_SAVED}\nIn a new terminal window in this folder, run: ${command}`
 /** Said while the wrap-up turn runs. */
 export const SIZE_FRESH_SAVING = 'Saving a handoff with whatsnext. The text to start fresh shows here when it is done.'
 /** Said when the wrap-up turn ended and the note was still not written. */
 export const sizeFreshNotWritten = (turns: number) => `whatsnext's handoff was not written after ${turns} turns, so there is nothing to start fresh from yet.`
 /** Added to the paste row when the copy did not work: the text stays on screen to select. */
-export const SIZE_FRESH_COPY_FAILED = 'Copy did not work. Select the text above and copy it by hand.'
+export const SIZE_FRESH_COPY_FAILED = 'Copy did not work. Select the prompt above and copy it.'
 
 export const isSizeId = (id: string) =>
   id === SIZE_COMPACT || id === SIZE_WHY_ID || id === SIZE_HIDE || id === SIZE_FRESH || id === SIZE_FRESH_COPY || id === SIZE_FRESH_COMPACT || id === SIZE_FRESH_NOT_NOW

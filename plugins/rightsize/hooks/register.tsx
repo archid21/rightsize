@@ -3235,7 +3235,7 @@ async function compactForSize($: EngineInterface) {
     sizeShown = 0
     idleWarnedFor = lastTurnAt
     await log($, `context warning: compacted on the person's button${noFresh ? ` (${NO_FRESH_HANDOFF})` : ''}`)
-    await showCold($, withHandoffNote('Compacted. Later turns read a short summary, not the whole conversation.', noFresh))
+    await showCold($, withHandoffNote('Compacted. Each turn now costs less.', noFresh))
   }
   const own = async () => {
     const skip = await ownCompact($)

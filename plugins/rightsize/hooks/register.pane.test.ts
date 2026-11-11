@@ -136,7 +136,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await ui.unmount()
   })
 
-  const BAND_PAGE = [...Array<string>(7).fill('More…'), 'Band: when it acts']
+  const BAND_PAGE = [...Array<string>(6).fill('More…'), 'Band: when it acts']
   test(`with no pane placed it asks instead: pick a row shown as Row: value (paged), pick its value, back to the rows, until Done (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const { h, d } = await start($, on)
     h.panePlaced = false

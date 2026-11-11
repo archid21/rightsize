@@ -95,7 +95,7 @@
     "raiseRule": {
       "type": "string",
       "title": "Advanced · Raising",
-      "description": "When a prompt needs more effort on the same model. ask me: ask each time. raise automatically: raise without asking. never raise: never. This rule also decides raises mid-turn when Claude looks stuck. not set (the default): Ask before changing decides (off: done without asking; on: asked first), and the band says so the first time the case comes up in a session, with the other rules in its ⋯ menu. A rule set here is used as it is. The band's ⋯ menu and /rightsize settings set it too; set it back to not set to let Ask before changing decide again.",
+      "description": "When a prompt needs more effort on the same model. ask me: ask each time. raise automatically: raise without asking. never raise: never. While Raise when stuck is follow Raising, this rule also decides raises mid-turn when Claude looks stuck. not set (the default): Ask before changing decides (off: done without asking; on: asked first), and the band says so the first time the case comes up in a session, with the other rules in its ⋯ menu. A rule set here is used as it is. The band's ⋯ menu and /rightsize settings set it too; set it back to not set to let Ask before changing decide again.",
       "default": "not set",
       "options": [
         "ask me",
@@ -128,17 +128,6 @@
         "stay, lower effort only",
         "ask each time",
         "not set"
-      ]
-    },
-    "remember": {
-      "type": "string",
-      "title": "Advanced · Remember choices",
-      "description": "What happens to rules you set from the band's ⋯ menu or /rightsize settings. ask: after your first such rule, ask on the band whether to keep your rules in every session (the default). every session: keep every rule for later sessions, without asking. this session: never keep a rule and never ask; rules last until the session ends. A rule set in its row above is always kept.",
-      "default": "ask",
-      "options": [
-        "ask",
-        "every session",
-        "this session"
       ]
     },
     "useHaiku": {
@@ -196,10 +185,12 @@
     "escalation": {
       "type": "string",
       "title": "Advanced · Raise when stuck",
-      "description": "on: when a turn shows Claude is stuck (the same tool call failing twice, 3 tool calls failing, the same call running 3 times, a turn passing 3x the rated steps (at least 15) with no progress, or 2 fixes in a row leaving the tests red), raise effort one level for the rest of the turn, at most twice, never above Highest effort and never to max. It follows your Raising rule: automatic raises without asking, otherwise it asks on the band while the turn goes on. off: never raise mid-turn.",
-      "default": "on",
+      "description": "What to do when a turn shows Claude is stuck (the same tool call failing twice, 3 tool calls failing, the same call running 3 times, a turn passing 3x the rated steps (at least 15) with no progress, or 2 fixes in a row leaving the tests red). A raise is one level for the rest of the turn, at most twice, never above Highest effort and never to max. follow Raising (the default): the Raising rule decides. ask me: ask on the band while the turn goes on. raise automatically: raise without asking, whatever Raising says. off: never raise mid-turn. The same rule covers a helper that looks stuck. The question's \"for this session\" answer lasts until the session ends; \"Always raise when stuck\" sets this row to raise automatically. A value of on from an older release reads as follow Raising.",
+      "default": "follow Raising",
       "options": [
-        "on",
+        "follow Raising",
+        "ask me",
+        "raise automatically",
         "off"
       ]
     },

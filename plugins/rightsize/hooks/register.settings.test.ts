@@ -77,7 +77,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
   const FABLE = { model: 'claude-fable-5-2', effort: 'high' }
   const noteOf = (h: ReturnType<typeof engine>) => last(h.submitted)?.context?.join('\n') ?? ''
   const handedTo = (h: ReturnType<typeof engine>) => /model "(\w+)"/.exec(noteOf(h))?.[1]
-  const YES_REMEMBER = { Remember: 'This session' }
   const LOWER_300 = '{"level":"low","model":"same","size":"small","type":"lookup","read":2000,"write":300,"steps":1}'
   // A raise fixture: a review, the one task type whose rated raise is still taken at prompt time on Opus (ADR 0021).
   const RAISE_HIGH = '{"level":"high","model":"same","type":"review","read":20000,"write":3000,"steps":8,"reason":"unknown cause"}'
@@ -174,30 +173,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
     { key: 'raiseRule', value: 'never raise', start: OPUS, see: c => asking(c, DEBUG, RAISE_HIGH), set: { asked: [], effort: 'medium' }, def: { asked: [], effort: 'high' } },
     { key: 'upRule', value: 'stay, raise effort only', start: OPUS, see: c => handOff(c, DEBUG, NEEDS_FABLE), set: { asked: [], to: undefined }, def: { asked: [], to: 'fable' } },
     { key: 'downRule', value: 'stay, lower effort only', start: FABLE, warm: true, see: c => handOff(c, SEARCH, HAIKU_SEARCH), set: { asked: [], to: undefined }, def: { asked: [], to: 'haiku' } },
-    {
-      key: 'remember',
-      value: 'this session',
-      start: { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES }, stored: NO_COLD },
-      see: async c => {
-        // Nothing is asked for the default answers: Remember follows a rule the person sets, here from the band's ⋯ menu.
-        c.h.rating = RAISE_HIGH
-        await c.d.submit(DEBUG)
-        const t = c.turn()
-        await c.d.step(t)
-        c.h.answers = { Options: 'Never raise', Remember: 'Every session' }
-        const before = c.h.asked.length
-        const ui = await mount(c.$, c.surface)
-        await ui.press({ key: 'mode' })
-        await untilAsked(c.h, before)
-        await ui.unmount()
-        // Remember waits on the band for the turn to end.
-        await c.d.complete(t)
-        await settle()
-        return { asked: c.h.asked.slice(before).map(a => a.header).filter(x => x === 'Remember'), saved: c.h.store.choices, remembered: c.h.store.remember }
-      },
-      set: { asked: [], saved: undefined, remembered: undefined },
-      def: { asked: ['Remember'], saved: { raise: 'never' }, remembered: true },
-    },
     { key: 'useHaiku', value: 'off', start: FABLE, warm: true, see: async c => (await handOff(c, SEARCH, FIT_LOW)).to, set: 'sonnet', def: 'haiku' },
     { key: 'useFable', value: 'off', start: OPUS, see: async c => (await handOff(c, DEBUG, NEEDS_FABLE)).to, set: undefined, def: 'fable' },
     {

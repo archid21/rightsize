@@ -258,19 +258,6 @@ const qWorkflow: Question<WorkflowMode> = {
     ['Also right-size every workflow agent (one Haiku rating per agent; many may run on cheaper models at once)', 'right-size every agent'],
   ],
 }
-/** Remember choices, naming the rules set so far: "Keep your rules (Lowering: lower automatically) in every session?" */
-const qRemember = (c: Choices): Question<boolean> => {
-  const set = (Object.keys(RULE_NAME) as (keyof Choices)[]).filter(r => c[r] !== undefined).map(r => `${RULE_NAME[r]}: ${ruleLabel(r, c[r])}`)
-  return {
-    header: 'Remember',
-    question: `Keep your rules${set.length ? ` (${set.join('; ')})` : ''} in every session?`,
-    options: [
-      ['Every session', true],
-      ['This session', false],
-    ],
-  }
-}
-
 /** Why the rater may have seen too little: the request was cut, or a task is in progress and Claude's last reply could not be read. */
 type Unsure = 'cut' | 'missing'
 
@@ -529,8 +516,6 @@ let compactedAway: { before: number; after?: number; handoff?: string; shown: bo
 let manualCompact = false
 /** The next main-chat request is the first since a turn ended: the idle gap and the context are checked on it. */
 let boundaryCheck = false
-/** What happens to the answers to the four questions: ask whether to keep them, keep them, or forget them at the end of the session. */
-let rememberMode: 'ask' | 'every session' | 'this session' = 'ask'
 /** The pace the prompt being rated was decided at. */
 let paceNow: Pace = NORMAL_PACE
 /** The pace note, for a subscription only: it quotes how full a usage window is, and a window share is never shown on the API. */
@@ -546,10 +531,11 @@ const paceText = (acts: boolean, moved?: { from: Rules; to: Rules }) => {
   ]
   return bars.length ? `${note} (${bars.join(', ')})` : note
 }
-/** Raise effort mid-turn when the turn shows it is struggling. */
-let escalation = true
-/** A stuck turn is raised: Raise when stuck is on, and so is Routing. */
-const raising = () => escalation && routing
+/** Raise when stuck: `follow Raising` lets the Raising rule decide; the others are this row's own rule. */
+type StuckRow = 'follow Raising' | 'ask me' | 'raise automatically' | 'off'
+let escalation: StuckRow = 'follow Raising'
+/** A stuck turn is raised: Raise when stuck is not off, and Routing is on. */
+const raising = () => escalation !== 'off' && routing
 /** Days between suggestions of a different starting model and level; null: off. */
 let startEvery: number | null = START_CHECK_DAYS.weekly
 /** The model that rates first (Rater). The other one is the fallback. */
@@ -925,13 +911,6 @@ async function choices($: EngineInterface): Promise<Choices> {
   return v && typeof v === 'object' ? v : {}
 }
 
-// Whether the answers to the four questions are kept for later sessions: always or never
-// when Remember choices says so; otherwise once the person has said yes to the question.
-async function remembers($: EngineInterface) {
-  if (rememberMode !== 'ask') return rememberMode === 'every session'
-  return (await $.store.get('remember').catch(() => undefined)) === true
-}
-
 // Samples learned since the last save. Other sessions save calibration too, so a
 // save applies these to the stored copy rather than writing this session's over it.
 let unsaved: { key: string; sample: number }[] = []
@@ -1139,7 +1118,7 @@ async function askWithin<V>($: EngineInterface, q: Question<V>, onLate?: (v: V) 
 // A question that need not stop the work is a row on the band, under what rightsize did, and nobody waits for it:
 // the work goes on with the question's safe default, and the answer is applied when it comes. Nothing has a hook
 // open then, so the band can draw it and its buttons answer it. A question lasts until the main chat's turn ends
-// (`turn`: Stuck, a stuck helper) or until the next prompt (`prompt`: Remember choices, Reports, Workflow).
+// (`turn`: Stuck, a stuck helper) or until the next prompt (`prompt`: Reports, Workflow).
 // Unanswered by then, its `gone` applies the default. Without the band (Band "Never", or a surface that does not
 // draw it, such as the mobile app) the caller asks in the engine's dialog, as before.
 
@@ -1148,7 +1127,6 @@ const QUESTION = { plugin: 'rightsize', key: 'question' } as const
 /** What a band question is about, with what its answer needs. */
 type BandWhy =
   | { kind: 'billing' }
-  | { kind: 'remember' }
   | { kind: 'workflow' }
   | { kind: 'stuck'; run: Run; cur: Level; to: Level; sign: Struggle; step: number }
   | { kind: 'helper'; id: string; w: Watch; cur: Level; to: Level; sign: Struggle }
@@ -1215,26 +1193,23 @@ async function bandAnswered($: EngineInterface, why: BandWhy, v: unknown) {
     case 'billing':
       if (isBilling(v)) await answerBilling($, v)
       return
-    case 'remember':
-      if (v === true) await rememberAlways($)
-      // ×: asked again after the next answer.
-      else if (v === undefined) await $.state.set({ plugin: 'rightsize', key: 'rememberAsked' }, false)
-      return
     case 'workflow':
       await log($, `workflow question: ${v ?? 'dismissed'}`)
       if (isWorkflowMode(v)) await putConfig($, 'workflows', v)
       return
     case 'stuck': {
       const { run, cur, to, sign, step } = why
-      // Raised only while that turn still runs; it applies from its next request.
-      if (v !== 'yes' || active !== run || run.raisedTo === to) return
+      // The rule part of the answer stands, whether or not the turn still runs. A raise applies only while that turn runs, from its next request.
+      const raises = await stuckAnswered($, v)
+      if (!raises || active !== run || run.raisedTo === to) return
       return raiseRun($, run, cur, to, sign, step)
     }
     case 'helper': {
       const { id, w, cur, to, sign } = why
+      const raises = await stuckAnswered($, v)
       if (v === 'no') return log($, `helper ${id} struggling (${sign.why}): kept at ${cur}, as you chose`)
       // Gone back, or done: nothing left to raise.
-      if (v !== 'yes' || w.returned || watches.get(id) !== w || w.raisedTo === to) return
+      if (!raises || w.returned || watches.get(id) !== w || w.raisedTo === to) return
       if (!(await useChance($, w.task))) return log($, `helper ${id} not raised: the task has no retry left`)
       return raiseHelper($, id, w, cur, to, sign)
     }
@@ -1248,8 +1223,6 @@ async function bandUnanswered($: EngineInterface, why: BandWhy) {
       // Not saved: asked again next session.
       billing = 'api'
       return logUnanswered($, 'Billing', 'reports use API prices for this session; not saved')
-    case 'remember':
-      return logUnanswered($, 'Remember', 'these choices stay for this session only')
     case 'workflow':
       return logUnanswered($, 'Workflow', 'rightsize paused for this workflow; not saved')
     case 'stuck':
@@ -1300,7 +1273,6 @@ function writeSetting($: EngineInterface, key: SettingKey, value: string): Promi
     case 'raiseRule': return $.config.set({ key: 'rightsize.raiseRule', value: value })
     case 'upRule': return $.config.set({ key: 'rightsize.upRule', value: value })
     case 'downRule': return $.config.set({ key: 'rightsize.downRule', value: value })
-    case 'remember': return $.config.set({ key: 'rightsize.remember', value: value })
     case 'useHaiku': return $.config.set({ key: 'rightsize.useHaiku', value: value })
     case 'useFable': return $.config.set({ key: 'rightsize.useFable', value: value })
     case 'subagents': return $.config.set({ key: 'rightsize.subagents', value: value })
@@ -1347,14 +1319,6 @@ async function mirrorRules($: EngineInterface, c: Choices) {
   for (const rule of RULE_IDS) await putConfig($, RULE_KEYS[rule], ruleLabel(rule, c[rule]))
 }
 
-// Keeps the answers for later sessions: in the store, and in the /config rows.
-async function keepChoices($: EngineInterface, next: Choices) {
-  await $.store.set('choices', next).catch(() => undefined)
-  await mirrorRules($, next)
-}
-
-// `explicit`: the person set these rules on purpose (a band button, /rightsize settings), so the
-// rows show them at once; an answer to a question is kept only the way Remember choices says.
 // A Workflow call the person has not been asked about yet, once per call. The answer is Workflows in /config, and the
 // person's. Not answered: paused for this workflow, asked at the next. On the band the workflow starts at once,
 // paused, and an answer applies from then on; in the dialog it is asked before the workflow starts.
@@ -1376,40 +1340,10 @@ async function askWorkflow($: EngineInterface, id: string | undefined) {
   if (v !== undefined) await putConfig($, 'workflows', v)
 }
 
-async function saveChoices($: EngineInterface, next: Choices, explicit = false) {
+// The rules the person set on purpose (/rightsize settings): this session's choices, and the four rows, which show them at once.
+async function saveChoices($: EngineInterface, next: Choices) {
   await $.state.set({ plugin: 'rightsize', key: 'choices' }, next)
-  if (rememberMode === 'this session') return
-  if (explicit) await mirrorRules($, next)
-  if (await remembers($)) {
-    await keepChoices($, next)
-    return
-  }
-  const asked = (await $.state.get({ plugin: 'rightsize', key: 'rememberAsked' }).catch(() => undefined))?.value
-  if (asked === true) return
-  await $.state.set({ plugin: 'rightsize', key: 'rememberAsked' }, true)
-  // It changes nothing about this prompt, so it waits on the band; an answer applies to the choices as they stand then.
-  if (await bandCanAsk($)) return askBand($, withNextPrompt(qRemember(next), 'this session only'), 'prompt', false, { kind: 'remember' })
-  // A late answer is applied as an on-time one would be, to the choices as they stand then.
-  const yes = await askWithin($, withWait(qRemember(next), 'this session only'), async late => {
-    if (late === true) await rememberAlways($)
-  })
-  if (yes === TIMED_OUT) {
-    await logTimeout($, 'Remember', 'these choices stay for this session only')
-  } else if (yes === true) {
-    await $.store.set('remember', true).catch(() => undefined)
-    await keepChoices($, next)
-    await putConfig($, 'remember', 'every session')
-  } else if (yes === undefined) {
-    // Dismissed: ask again after the next answer.
-    await $.state.set({ plugin: 'rightsize', key: 'rememberAsked' }, false)
-  }
-}
-
-/** Remember choices: every session, from the choices as they stand now. */
-async function rememberAlways($: EngineInterface) {
-  await $.store.set('remember', true).catch(() => undefined)
-  await keepChoices($, await choices($))
-  await putConfig($, 'remember', 'every session')
+  await mirrorRules($, next)
 }
 
 // A rule row changed in /config: the rule follows it at once. "not set" clears the rule, so its question comes back.
@@ -1422,10 +1356,50 @@ async function followRuleRow($: EngineInterface, rule: keyof Choices, label: str
     return next as Choices
   }
   await $.state.set({ plugin: 'rightsize', key: 'choices' }, change(await choices($)))
-  // An earlier session's saved copy stays in step: left alone, it would bring a cleared rule back.
-  const saved = await $.store.get('choices').catch(() => undefined)
-  if (saved && typeof saved === 'object' && !Array.isArray(saved)) await $.store.set('choices', change(saved as Choices)).catch(() => undefined)
 }
+
+/**
+ * Once, at the session start: rules an older release kept for every session (the store's `remember` and `choices`, from the retired
+ * Remember choices question) move to their /config rows, each only where its row is still "not set". Then both store keys are cleared.
+ */
+async function moveSavedChoices($: EngineInterface) {
+  const remember = await $.store.get('remember').catch(() => undefined)
+  const kept = await $.store.get('choices').catch(() => undefined)
+  if (remember === true && kept && typeof kept === 'object' && !Array.isArray(kept)) {
+    const moved: string[] = []
+    for (const rule of RULE_IDS) {
+      const label = ruleLabel(rule, (kept as Choices)[rule])
+      if (label === NOT_SET || cfg[RULE_KEYS[rule]] !== NOT_SET) continue
+      await putConfig($, RULE_KEYS[rule], label)
+      moved.push(`${RULE_NAME[rule]}: ${label}`)
+    }
+    if (moved.length) await log($, `saved rules moved to their /config rows: ${moved.join('; ')}`)
+  }
+  if (remember !== undefined && remember !== null) await $.store.set('remember', null).catch(() => undefined)
+  if (kept !== undefined && kept !== null) await $.store.set('choices', null).catch(() => undefined)
+}
+
+/**
+ * "Always" on a question: the rule goes to its /config row, the same write the settings pane makes, and the session follows it at
+ * once. `putConfig` runs none of the row's follow-up, so the rule follows here, even when the row already held the value.
+ */
+async function alwaysRule($: EngineInterface, rule: keyof Choices, value: NonNullable<Choices[keyof Choices]>) {
+  const label = ruleLabel(rule, value)
+  await putConfig($, RULE_KEYS[rule], label)
+  await followRuleRow($, rule, label)
+}
+
+/** "For this session" on a question: the rule changes in this session's choices. Nothing goes to the store or to /config. */
+async function sessionRule($: EngineInterface, rule: keyof Choices, value: NonNullable<Choices[keyof Choices]>) {
+  await $.state.set({ plugin: 'rightsize', key: 'choices' }, { ...(await choices($)), [rule]: value })
+}
+
+/** The rater's reason, or any fragment ("the same tool call ran 3 times"), as one sentence. */
+const sentence = (text: string) => {
+  const t = text.trim().replace(/[.\s]+$/, '')
+  return t ? `${t[0]!.toUpperCase()}${t.slice(1)}.` : ''
+}
+
 
 // The answer for one situation: a rule you set, or the saved answer, else the default (act, or ask while Ask before changing
 // is on). Nothing is saved: a rule row left at "not set" means the default decides, and the band says so the first time each case comes up
@@ -1669,19 +1643,24 @@ async function resolveEffort($: EngineInterface, p: Plan, r: Rating, s: Situatio
   if (c === 'auto') return { level: p.level, auto: p.dir === 'lower' }
   if (c !== 'ask') return {}
   const verb = p.dir === 'lower' ? 'Lower' : 'Raise'
-  const why = r.reason ? ` (${r.reason})` : ''
   const a = await askWithin($, withWait({
     header: 'Effort',
-    question: `This looks like a ${p.level}-effort task${why}. ${verb} from ${s.level} to ${p.level}?`,
+    question: `${sentence(r.reason) || `This looks like a ${p.level}-effort task.`} ${verb} effort from ${s.level} to ${p.level} for this prompt?`,
     options: [
       [`${verb} for this prompt`, 'prompt'],
       [`${verb} for this session`, 'session'],
       [`Keep ${s.level}`, 'keep'],
+      [`Always ${verb.toLowerCase()}`, 'always'],
     ],
   }, 'it stays as it is'))
   if (a === TIMED_OUT) await logTimeout($, 'Effort', `kept ${s.level}`)
   if (a === 'prompt') return { level: p.level }
   if (a === 'session') return { session: p.level }
+  // Always: the rule goes to its row, and this prompt follows it as an automatic one does.
+  if (a === 'always') {
+    await alwaysRule($, p.dir, 'auto')
+    return { level: p.level, auto: p.dir === 'lower' }
+  }
   return {}
 }
 
@@ -1702,11 +1681,21 @@ async function resolve($: EngineInterface, p: Plan, r: Rating, s: Situation): Pr
     if (c === 'auto') return send
     if (c === 'stay') return stay()
     if (c !== 'ask' && c !== 'each') return {}
-    const why = p.rule === 'review' ? `This is a review: reviews run on ${to} at ${REVIEW_LEVEL} effort or more.` : `This is ${r.type} work. ${cur} alone usually manages it; the switch is for when it does not.`
+    const why = p.rule === 'review' ? `This is a review: reviews run on ${to} at ${REVIEW_LEVEL} effort or more.` : `This is ${r.type} work, and ${cur} alone usually manages it.`
     const question = `${why} Run this prompt on ${to} at ${p.level}, then go back to ${cur}? ${costLine(p.cost, p.mainCost, cur)}`
-    const a = await askWithin($, withWait({ header: 'Stronger', question, options: [[`Run it on ${to}`, 'send'], [`Stay on ${cur}`, 'stay']] }, 'it stays as it is'))
+    // The Haiku-start switch always asks (ADR 0027), and "ask each time" never remembers: neither offers a rule.
+    const keeps = p.rule !== 'haiku' && c !== 'each'
+    const options: (readonly [string, 'send' | 'session' | 'stay' | 'always'])[] = [
+      [`Run it on ${to}`, 'send'],
+      ...(keeps ? [['Use the stronger model for this session', 'session'] as const] : []),
+      [`Stay on ${cur}`, 'stay'],
+      ...(keeps ? [['Always use the stronger model', 'always'] as const] : []),
+    ]
+    const a = await askWithin($, withWait({ header: 'Stronger', question, options }, 'it stays as it is'))
     if (a === TIMED_OUT) await logTimeout($, 'Stronger', `stayed on ${cur}`)
-    return a === 'send' ? send : a === 'stay' ? stay() : {}
+    if (a === 'session') await sessionRule($, 'up', 'auto')
+    if (a === 'always') await alwaysRule($, 'up', 'auto')
+    return a === 'send' || a === 'session' || a === 'always' ? send : a === 'stay' ? stay() : {}
   }
   const c = p.dir === 'up' ? await choice($, 'up', qUp(cur, to)) : await choice($, 'down', qDown(cur, to))
   const send: Decision = { delegate: { tier: p.tier, level: p.level, dir: p.dir } }
@@ -1714,13 +1703,21 @@ async function resolve($: EngineInterface, p: Plan, r: Rating, s: Situation): Pr
   if (c === 'auto') return send
   if (c === 'stay') return stay()
   if (c !== 'ask' && c !== 'each') return {}
-  const why = r.reason ? ` (${r.reason})` : ''
-  const lead = p.dir === 'up' ? `This needs a stronger model${why}.` : `${to} at ${p.level} effort could do this${why}${p.instead ? `, where ${cur} needs ${p.instead}` : ''}.`
-  const question = `${lead} Send it to a ${to} subagent? ${costLine(p.delegateCost, p.mainCost, cur)}`
+  const leadOf = (why: string) => (p.dir === 'up' ? `This needs a stronger model${why}.` : `${to} at ${p.level} effort could do this${why}${p.instead ? `, where ${cur} needs ${p.instead}` : ''}.`)
+  const question = `${leadOf(r.reason ? ` (${r.reason})` : '')} Send it to a ${to} subagent? ${costLine(p.delegateCost, p.mainCost, cur)}`
   if (c === 'ask') {
-    const a = await askWithin($, withWait({ header: 'Subagent', question, options: [[`Send it to a ${to} subagent`, 'send'], [`Stay on ${cur}`, 'stay']] }, 'it stays as it is'))
+    const reason = sentence(r.reason) || leadOf('')
+    const options: readonly (readonly [string, 'send' | 'session' | 'stay' | 'always'])[] = [
+      [`Send it to a ${to} subagent`, 'send'],
+      [`Send to ${to} subagents for this session`, 'session'],
+      [`Stay on ${cur}`, 'stay'],
+      ['Always send', 'always'],
+    ]
+    const a = await askWithin($, withWait({ header: 'Subagent', question: `${reason} Send it to a ${to} subagent? ${costLine(p.delegateCost, p.mainCost, cur)}`, options }, 'it stays as it is'))
     if (a === TIMED_OUT) await logTimeout($, 'Subagent', `stayed on ${cur}`)
-    return a === 'send' ? send : a === 'stay' ? stay() : {}
+    if (a === 'session') await sessionRule($, p.dir, 'auto')
+    if (a === 'always') await alwaysRule($, p.dir, 'auto')
+    return a === 'send' || a === 'session' || a === 'always' ? send : a === 'stay' ? stay() : {}
   }
   const ep = effortOnly(r, s)
   const options: (readonly [string, 'send' | 'effort' | 'keep'])[] = [[`Send it to a ${to} subagent`, 'send']]
@@ -1975,7 +1972,10 @@ export function bandFor(run: Pick<Run, 'id' | 'tier' | 'normal' | 'auto' | 'dele
 }
 
 async function setRule($: EngineInterface, key: keyof Choices, value: string) {
-  await saveChoices($, { ...(await choices($)), [key]: value } as Choices, true)
+  // The one row, as the settings pane writes it: the other rules stay as they are (a rule held for this session only is not saved by it).
+  const row = ruleLabel(key, value)
+  await putConfig($, RULE_KEYS[key], row)
+  await followRuleRow($, key, row)
   const label = RULES[key].find(r => r[0] === value)?.[1] ?? value
   $.ui.toast(`Rightsize: ${RULE_NAME[key]} is now "${label}".`)
 }
@@ -2256,32 +2256,23 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
   await showStatus($)
 }
 
-// The turn is struggling: one level up for the rest of it (never above Highest effort),
-// the way the person's Raising rule says (asked mid-turn unless it is automatic). Each sign
-// is weighed once, raised or not, so a "Keep" is not asked again for the same sign.
-// A window nearly used up skips the raise only while Raising is left at its default.
+// The turn is struggling: one level up for the rest of it (never above Highest effort), the way Raise when stuck says:
+// follow Raising (the default: the Raising rule decides), ask me, or raise automatically. A rule that is not automatic asks
+// mid-turn. Each sign is weighed once, raised or not, so a "Keep" is not asked again for the same sign.
+// A window nearly used up skips the raise only while no rule of yours decides it.
 async function escalate($: EngineInterface, run: Run, sign: Struggle, from: Level | undefined, step: number) {
   run.signals = { ...run.signals, fired: [...run.signals.fired, sign.kind] }
   const cur = run.raisedTo ?? from
   const to = cur ? oneUp(cur, ceiling) : undefined
   if (!cur || !to) return
-  const set = (await choices($)).raise
-  if (paceNow.mode === 'max' && set === undefined) {
+  const { rule, set } = await stuckRule($)
+  if (paceNow.mode === 'max' && !set) {
     await log($, `mid-turn raise to ${to} skipped (${sign.why}): the usage window is nearly used up`)
     return
   }
-  // No rule set: the default Raising answer decides, as for a rated raise.
-  const rule = set ?? answers.raise
   if (rule === 'never') return
   if (rule !== 'auto') {
-    const q: Question<'yes' | 'no'> = {
-      header: 'Stuck',
-      question: `Claude looks stuck: ${sign.why}. Raise effort from ${cur} to ${to} for the rest of this turn?`,
-      options: [
-        [`Raise to ${to} for this turn`, 'yes'],
-        [`Keep ${cur}`, 'no'],
-      ],
-    }
+    const q = qStuck(`${sentence(sign.why)} Raise effort from ${cur} to ${to} for the rest of this turn?`, `Raise to ${to} for this turn`, cur)
     // The turn goes on at its effort while the band asks; a Raise applies from its next request, while the turn still runs.
     if (await bandCanAsk($)) {
       if (onBand('Stuck')) return
@@ -2289,9 +2280,46 @@ async function escalate($: EngineInterface, run: Run, sign: Struggle, from: Leve
     }
     const a = await askWithin($, withWait(q, `it keeps ${cur}`))
     if (a === TIMED_OUT) await logTimeout($, 'Stuck', `kept ${cur}`)
-    if (a !== 'yes') return
+    if (!(await stuckAnswered($, a))) return
   }
   await raiseRun($, run, cur, to, sign, step)
+}
+
+/** A Stuck answer: raise for this turn ('yes'), raise when stuck for this session, keep, or always raise when stuck. */
+type StuckAnswer = 'yes' | 'session' | 'no' | 'always'
+const STUCK_RULE = { plugin: 'rightsize', key: 'stuckRule' } as const
+
+/** The Stuck question, for the main chat or a helper: the reason sentence, the question, and the four answers. */
+const qStuck = (question: string, once: string, keep: Level): Question<StuckAnswer> => ({
+  header: 'Stuck',
+  question,
+  options: [
+    [once, 'yes'],
+    ['Raise when stuck for this session', 'session'],
+    [`Keep ${keep}`, 'no'],
+    ['Always raise when stuck', 'always'],
+  ],
+})
+
+/**
+ * The rule that decides a stuck raise now, main chat or helper. Raise when stuck's own rule (ask me, raise automatically) decides when
+ * it is set; follow Raising leaves it to the Raising rule, else the default. "For this session" on a Stuck question makes it automatic
+ * until the session ends. `set`: a rule of yours decides, so a nearly used usage window does not skip the raise.
+ */
+async function stuckRule($: EngineInterface): Promise<{ rule: Raise; set: boolean }> {
+  const session = (await $.state.get(STUCK_RULE).catch(() => undefined))?.value === 'auto'
+  if (escalation === 'off') return { rule: 'never', set: true }
+  if (escalation === 'ask me') return { rule: session ? 'auto' : 'ask', set: true }
+  if (escalation === 'raise automatically' || session) return { rule: 'auto', set: true }
+  const raise = (await choices($)).raise
+  return { rule: raise ?? answers.raise, set: raise !== undefined }
+}
+
+/** What a Stuck answer changes besides this raise: for this session, a session-only rule; always, the row Raise when stuck. True when the answer raises. */
+async function stuckAnswered($: EngineInterface, a: unknown): Promise<boolean> {
+  if (a === 'session') await $.state.set(STUCK_RULE, 'auto').catch(() => undefined)
+  if (a === 'always') await changeRow($, 'escalation', 'raise automatically')
+  return a === 'yes' || a === 'session' || a === 'always'
 }
 
 async function raiseRun($: EngineInterface, run: Run, cur: Level, to: Level, sign: Struggle, step: number) {
@@ -2314,10 +2342,9 @@ async function escalateHelper($: EngineInterface, id: string, w: Watch, sign: St
     await log($, `helper ${id} looks stuck (${sign.why}) but only the environment failed: can't tell, no raise`)
     return
   }
-  const set = (await choices($)).raise
-  const rule = set ?? answers.raise
+  const { rule, set } = await stuckRule($)
   if (rule === 'never') return
-  if (paceNow.mode === 'max' && set === undefined) {
+  if (paceNow.mode === 'max' && !set) {
     await log($, `raise of helper ${id} skipped (${sign.why}): the usage window is nearly used up`)
     return
   }
@@ -2331,25 +2358,17 @@ async function escalateHelper($: EngineInterface, id: string, w: Watch, sign: St
   else if (usedNow >= chances) why = 'the task has no retry left'
   else if (rule !== 'auto' && (await bandCanAsk($))) {
     if (onBand('Stuck')) return
-    const q: Question<'yes' | 'no'> = {
-      header: 'Stuck',
-      question: `A helper looks stuck: ${sign.why}. Raise its effort from ${cur} to ${to}? It uses one of this task's ${chances} retries.`,
-      options: [
-        [`Raise to ${to}`, 'yes'],
-        [`Keep ${cur}`, 'no'],
-      ],
-      ifNone: `it goes on at ${cur}`,
-    }
+    const q = { ...qStuck(helperQuestion(sign, cur, to), `Raise to ${to}`, cur), ifNone: `it goes on at ${cur}` }
     return askBand($, q, 'turn', true, { kind: 'helper', id, w, cur, to, sign })
   } else if (rule !== 'auto') {
     const a = await askHelper($, sign, cur, to)
-    if (a === 'no') {
-      await log($, `helper ${id} struggling (${sign.why}): kept at ${cur}, as you chose`)
-      return
-    }
     // No answer: the helper goes on at its effort, as on the band. Sending it back on silence would make a quality risk out of a missed dialog.
     if (a === 'timeout') {
       await log($, `helper ${id} struggling (${sign.why}): no answer in ${questionWait}, goes on at ${cur}`)
+      return
+    }
+    if (!(await stuckAnswered($, a))) {
+      await log($, `helper ${id} struggling (${sign.why}): kept at ${cur}, as you chose`)
       return
     }
   }
@@ -2369,24 +2388,19 @@ async function raiseHelper($: EngineInterface, id: string, w: Watch, cur: Level,
   await log($, `raised helper ${id} ${cur} → ${to} at step ${w.steps}: ${sign.why}`)
 }
 
+const helperQuestion = (sign: Struggle, cur: Level, to: Level) => `${sentence(sign.why)} Raise the helper's effort from ${cur} to ${to}? It uses one of this task's ${chances} retries.`
+
 // The Stuck question for a helper, in the dialog. A dismissed question is a no, as for the main chat. An answer
 // that comes after the wait is too late: the helper went on at its effort.
-async function askHelper($: EngineInterface, sign: Struggle, cur: Level, to: Level): Promise<'yes' | 'no' | 'timeout'> {
+async function askHelper($: EngineInterface, sign: Struggle, cur: Level, to: Level): Promise<StuckAnswer | 'timeout'> {
   const a = await askWithin(
     $,
-    {
-      header: 'Stuck',
-      question: `A helper looks stuck: ${sign.why}. Raise its effort from ${cur} to ${to}? It uses one of this task's ${chances} retries. With no answer in ${questionWait} it goes on at ${cur}.`,
-      options: [
-        [`Raise to ${to}`, 'yes'],
-        [`Keep ${cur}`, 'no'],
-      ],
-    },
+    withWait(qStuck(helperQuestion(sign, cur, to), `Raise to ${to}`, cur), `it goes on at ${cur}`),
     late => {
-      if (late === 'yes') $.ui.toast(`rightsize: too late, the helper went on at ${cur}.`)
+      if (late !== 'no') $.ui.toast(`rightsize: too late, the helper went on at ${cur}.`)
     },
   )
-  return a === TIMED_OUT ? 'timeout' : a === 'yes' ? 'yes' : 'no'
+  return a === TIMED_OUT ? 'timeout' : (a ?? 'no')
 }
 
 // ---- Idle resume -------------------------------------------------------------
@@ -3915,7 +3929,7 @@ const qConfirm = (question: string): Question<boolean> => ({
     ['No', false],
   ],
 })
-const SETTINGS_GO = 'Every rightsize setting in /config goes back to its default, and your saved answers to the four questions are forgotten.'
+const SETTINGS_GO = 'Every rightsize setting in /config goes back to its default, and the rules you set for this session are cleared.'
 const MEASURE_GO = 'rightsize goes back to its starting estimates and relearns from your next prompts.'
 const UNDONE = "This can't be undone."
 
@@ -3970,20 +3984,20 @@ async function resetSettings($: EngineInterface, keys: readonly SettingKey[], al
     applyOption(key)
     const rule = RULE_IDS.find(r => RULE_KEYS[r] === key)
     if (rule) await followRuleRow($, rule, dflt)
-    else if (changes || key === 'remember') await followRow($, key, dflt)
+    else if (changes) await followRow($, key, dflt)
     if (key === 'billing') await resetBilling($)
   }
   if (all) {
     await $.state.set({ plugin: 'rightsize', key: 'choices' }, {})
-    await $.store.set('choices', null).catch(() => undefined)
+    await $.state.set(STUCK_RULE, null).catch(() => undefined)
   }
   await keepReset($, listed)
-  if (!blocked.length) return all ? 'Every setting is back to its default, and the saved answers are forgotten.' : `${plainTitle(SETTINGS[keys[0] ?? 'floor'].title)} is back to its default, ${SETTINGS[keys[0] ?? 'floor'].default}.`
+  if (!blocked.length) return all ? 'Every setting is back to its default, and the rules you set for this session are cleared.' : `${plainTitle(SETTINGS[keys[0] ?? 'floor'].title)} is back to its default, ${SETTINGS[keys[0] ?? 'floor'].default}.`
   // Claude Code would not write these here (the desktop app has no /config menu): say how to reset them from a terminal.
   const names = blocked.map(k => plainTitle(SETTINGS[k].title)).join(', ')
   const json = JSON.stringify(Object.fromEntries(blocked.map(k => [k, SETTINGS[k].default])))
   const fix = `To reset ${blocked.length === 1 ? 'it' : 'them'}, run this in a terminal, then restart Claude Code: claude plugin configure rightsize@archid21 --values-stdin <<< '${json}'`
-  const done = all && blocked.length < keys.length ? 'The other settings are back to their defaults, and the saved answers are forgotten. ' : ''
+  const done = all && blocked.length < keys.length ? 'The other settings are back to their defaults, and the rules you set for this session are cleared. ' : ''
   return `${done}${names} could not be changed from here. ${fix}`
 }
 
@@ -4363,9 +4377,6 @@ function applyOption(key: SettingKey) {
     case 'downRule':
       // The rules follow their rows through the session's choices (session start, followRuleRow).
       return
-    case 'remember':
-      rememberMode = v === 'every session' || v === 'this session' ? v : 'ask'
-      return
     case 'mode':
       watching = watchOnly(v)
       return
@@ -4396,7 +4407,8 @@ function applyOption(key: SettingKey) {
       pacing = v !== 'off'
       return
     case 'escalation':
-      escalation = v !== 'off'
+      // A stored `on` (before this row had rules) is not one of the options: it reads as the default, follow Raising.
+      escalation = v === 'ask me' || v === 'raise automatically' || v === 'off' ? v : 'follow Raising'
       return
     case 'rater':
       rater = v === 'haiku' ? 'haiku' : 'sonnet'
@@ -4445,6 +4457,10 @@ async function followRow($: EngineInterface, key: SettingKey, value: string) {
       // Reports set in /config by the person counts as the answer to the billing question.
       if (isBilling(value) && yours.has('billing')) await saveBilling($, value, 'answered')
       return
+    case 'escalation':
+      // The row is the person's word now: a stuck rule held for this session only ends.
+      await $.state.set(STUCK_RULE, null).catch(() => undefined)
+      return
     case 'lowerRule':
       await followRuleRow($, 'lower', value)
       return
@@ -4457,17 +4473,6 @@ async function followRow($: EngineInterface, key: SettingKey, value: string) {
     case 'downRule':
       await followRuleRow($, 'down', value)
       return
-    case 'remember': {
-      if (value === 'every session') {
-        const have = await choices($)
-        if (Object.keys(have).length) await keepChoices($, have)
-      } else if (value === 'ask') {
-        // Ask again: the question comes back after the next answer.
-        await $.store.set('remember', false).catch(() => undefined)
-        await $.state.set({ plugin: 'rightsize', key: 'rememberAsked' }, false)
-      }
-      return
-    }
     default:
       return
   }
@@ -4810,13 +4815,12 @@ export const register: Register = (on, options) => {
     }
     cal = parseCalibration(await $.store.get(CAL_STORE).catch(() => undefined))
     stepState = parseStepState(await $.store.get(STEP_STORE).catch(() => undefined))
-    // The rules: answers saved by an earlier session, then this session's, then any rule set in /config.
-    const kept = (await remembers($)) ? await $.store.get('choices').catch(() => undefined) : undefined
+    // The rules: this session's, then any rule set in /config. A rule lasts a session or, in its /config row, always.
+    await moveSavedChoices($)
     const given = await choices($)
-    const followed: Choices = { ...(kept && typeof kept === 'object' ? (kept as Choices) : {}), ...given, ...rulesOf(cfg) }
+    const followed: Choices = { ...given, ...rulesOf(cfg) }
     await $.state.set({ plugin: 'rightsize', key: 'choices' }, followed)
-    // Answers an earlier session saved show in /config too, so the rows say what rightsize follows.
-    if (kept && typeof kept === 'object') await mirrorRules($, followed)
+    await $.state.set(STUCK_RULE, null).catch(() => undefined)
     // Clearing out old sessions never holds up the start.
     void rollUpLifetime($).finally(() => pruneSessions($))
     runLog = await readRuns($)
@@ -4888,9 +4892,7 @@ export const register: Register = (on, options) => {
     if (up.length) next.up = await pick($, qUp(cur, names(up)))
     if (down.length) next.down = await pick($, qDown(cur, names(down)))
     for (const k of Object.keys(next) as (keyof Choices)[]) if (next[k] === undefined) delete next[k]
-    await $.state.set({ plugin: 'rightsize', key: 'rememberAsked' }, false)
-    await $.store.set('remember', false).catch(() => undefined)
-    await saveChoices($, next, true)
+    await saveChoices($, next)
     return { text: await summary($) }
   }).catch((_, e, next) => next(e))
 

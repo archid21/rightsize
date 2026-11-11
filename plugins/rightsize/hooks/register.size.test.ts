@@ -76,6 +76,19 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect((await row($)).text, 'nothing above the threshold').toBe('')
   })
 
+  test(`Compacted gives Claude Code's own before and after sizes (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
+    const h = setup(on, 120_000)
+    h.compactTokens = { before: 534_000, after: 20_400 }
+    const d = drive($, h)
+    await d.start(surface)
+    await turn(d, 't1')
+    const ui = await mount($, surface)
+    await ui.press({ key: 'cold-size-compact' })
+    await ui.unmount()
+    expect((await row($)).text).toBe('Compacted: 534K → 20K tokens. Each turn now costs less.')
+    expect(log(h)).toContain('(534K to 20K tokens)')
+  })
+
   test(`Compact now compacts with rightsize's own text when whatsnext is not installed, and starts the steps over (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
     const h = setup(on, 120_000)
     const d = drive($, h)

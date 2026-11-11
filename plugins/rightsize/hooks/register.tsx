@@ -2760,7 +2760,14 @@ let wrapTurns = 0
 
 /** rightsize's own compaction, for when whatsnext is not there or cannot compact: one text for every path. Resolves to the reason when it was skipped. */
 async function ownCompact($: EngineInterface): Promise<string | undefined> {
-  return (await $.session.compact({ instructions: COMPACT_BASE })).skip
+  const r = await $.session.compact({ instructions: COMPACT_BASE })
+  if (r.skip === undefined) lastCompactSizes = compactSizes(r)
+  return r.skip
+}
+
+/** The before and after token counts a compaction reports, the ones it has. */
+function compactSizes(r: { tokensBefore?: number; tokensAfter?: number }) {
+  return { ...(typeof r.tokensBefore === 'number' ? { before: r.tokensBefore } : {}), ...(typeof r.tokensAfter === 'number' && r.tokensAfter > 0 ? { after: r.tokensAfter } : {}) }
 }
 
 /** `text` with " no fresh handoff" said when the compaction went ahead without one. */
@@ -3227,15 +3234,24 @@ async function answerFresh($: EngineInterface, id: string) {
   await log($, 'context warning: Start fresh: copy did not work')
 }
 
+/** The token counts of the last compaction a person or plugin started, from Claude Code's session.compact result; null until one ends. */
+let lastCompactSizes: { before?: number; after?: number } | null = null
+
 /** Runs the compaction the person asked for with "Compact now" on the warning: whatsnext's way when it is installed, else rightsize's own. */
 async function compactForSize($: EngineInterface) {
   cancelCold($, 'Compact now pressed')
   coldDone = true
-  const before = (await usageNow($))?.context?.tokens
+  lastCompactSizes = null
+  const estimate = async () => (await $.session.usage({ breakdown: 'summary' }).catch(() => undefined))?.context?.tokens
+  const pressedAt = await estimate()
   const done = (noFresh?: boolean) => async () => {
     sizeShown = 0
     idleWarnedFor = lastTurnAt
-    const after = (await usageNow($))?.context?.tokens
+    // Claude Code's own counts from the compaction (session.compact), else the local estimate: the status line's figure
+    // waits for the next request, so it has no size yet right after a compact.
+    const sizes = lastCompactSizes as { before?: number; after?: number } | null
+    const before = sizes?.before ?? pressedAt
+    const after = sizes?.after ?? (await estimate())
     await log($, `context warning: compacted on the person's button${noFresh ? ` (${NO_FRESH_HANDOFF})` : ''}${typeof before === 'number' && typeof after === 'number' ? ` (${Math.round(before / 1000)}K to ${Math.round(after / 1000)}K tokens)` : ''}`)
     await showCold($, withHandoffNote(sizeCompactedText(before, after), noFresh))
   }
@@ -5055,6 +5071,7 @@ export const register: Register = (on, options) => {
     if (off || e.agentId !== undefined || result.skip !== undefined) return result
     if (e.trigger === 'manual' || e.trigger === 'plugin') {
       manualCompact = true
+      lastCompactSizes = compactSizes(result)
       return result
     }
     if (e.trigger !== 'auto' || mainBusy || !lastTurnAt || manualCompact || (await $.clock.now()) - lastTurnAt < COMPACT_GAP_MIN) return result

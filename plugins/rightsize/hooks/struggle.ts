@@ -319,6 +319,14 @@ export function isTestCommand(tool: string, input: Record<string, unknown>): boo
   return tool === 'Bash' && typeof input.command === 'string' && TEST_RUNNER.test(input.command)
 }
 
+/**
+ * Tools that only report where the work stands: the app's task list and next-step box, Claude Code's own
+ * task tools and a question to the person. Their calls repeat by design (`update_plan {"advance": true}` once
+ * per finished step), so they are no sign of anything and do not join the signals at all.
+ */
+const BOOKKEEPING = new Set(['TodoWrite', 'TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet', 'AskUserQuestion'])
+export const isBookkeeping = (tool: string): boolean => BOOKKEEPING.has(tool) || tool.startsWith('mcp__ccd_turn__')
+
 /** Tools that change a file: a call to one that works is progress. */
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
 export const isEditTool = (tool: string): boolean => EDIT_TOOLS.has(tool)

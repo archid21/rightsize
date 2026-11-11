@@ -866,6 +866,23 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.complete('t1')
   })
 
+  test(`Moving the task list on three times is not going round: no Stuck question (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+    const d = drive($, h)
+    await d.start(surface)
+    await d.config('raiseRule', 'ask me')
+    h.rating = NO_CHANGE
+    await d.submit(LOOKUP)
+    await d.step('t1', 0)
+    for (let i = 1; i <= 4; i++) {
+      await d.advance()
+      await d.step('t1', i)
+    }
+    expect(h.asked.map(a => a.header), 'bookkeeping is no sign').toEqual([])
+    expect(new Set(h.sent.map(x => x.effort)).size, 'no raise mid-turn').toBe(1)
+    await d.complete('t1')
+  })
+
   test(`Stuck in the main chat with nobody to answer: the turn goes on at its effort, and the question goes when the turn ends (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
     const d = drive($, h)

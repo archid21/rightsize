@@ -25,6 +25,7 @@ import {
   mainCost,
   money,
   parsePrices,
+  fitsWindow,
   parseShare,
   plan,
   share,
@@ -414,6 +415,30 @@ test('a Haiku session switches the main chat to Sonnet for debugging, features, 
   expect(p.kind === 'switch' && p.cost > p.mainCost, 'costs more than staying').toBe(true)
   // Not on Sonnet itself.
   expect(plan(r('feature'), sonnetSession, 'low').kind).not.toBe('switch')
+})
+
+test('no switch for the turn when the conversation is larger than the target model\'s window', async () => {
+  const small = (t: 'sonnet' | 'opus') => ({ ...DEFAULT_PRICES, [t]: { ...DEFAULT_PRICES[t], window: 200_000 } })
+  // Haiku to Sonnet: over Sonnet's window, the usual route instead (a fresh helper has no conversation to fit).
+  const haiku: Situation = { tier: 'haiku', level: 'medium', context: 300_000, prices: small('sonnet'), cal: {} }
+  const feature = rating({ type: 'feature', level: 'medium', fit: { haiku: 'medium', sonnet: 'medium', opus: 'medium' }, read: 30_000, write: 2000, steps: 10 })
+  expect(plan(feature, haiku, 'low').kind, 'over the window').not.toBe('switch')
+  expect(plan(feature, { ...haiku, context: 200_000 }, 'low'), 'exactly the window fits').toMatchObject({ kind: 'switch', tier: 'sonnet' })
+  // A review on Sonnet: over Opus's window, no switch to Opus.
+  const sonnet: Situation = { ...sonnetSession, context: 300_000, prices: small('opus') }
+  expect(plan(review({ sonnet: 'high', opus: 'high' }), sonnet, 'low').kind).not.toBe('switch')
+  expect(plan(review({ sonnet: 'high', opus: 'high' }), { ...sonnet, context: 150_000 }, 'low')).toMatchObject({ kind: 'switch', tier: 'opus', rule: 'review' })
+  // No window on file: nothing holds the switch back.
+  const { window: _w, ...noWindow } = DEFAULT_PRICES.opus
+  expect(fitsWindow({ ...sonnetSession, context: 5_000_000, prices: { ...DEFAULT_PRICES, opus: noWindow } }, 'opus')).toBe(true)
+})
+
+test('reads each model\'s context window from prices.json, and a bad one falls back', async () => {
+  for (const t of ['haiku', 'sonnet', 'opus', 'fable'] as const) expect(parsePrices('{}')[t].window, t).toBe(1_000_000)
+  expect(parsePrices('{"versions":{"claude-haiku-4-5":{"input":1,"output":5,"cacheRead":0.1,"window":200000}}}').versions?.['claude-haiku-4-5']?.window).toBe(200_000)
+  expect(parsePrices('{"models":{"opus":{"window":-1}}}').opus.window, 'a bad window keeps the default').toBe(1_000_000)
+  expect(parsePrices('{"models":{"opus":{"window":500000}}}').opus.window).toBe(500_000)
+  expect(parsePrices('{"versions":{"claude-opus-4-8":{"input":5,"output":25,"cacheRead":0.5}}}').versions?.['claude-opus-4-8']?.window, 'a version row without one has none').toBeUndefined()
 })
 
 // ---- research priors: where the evidence rule starts ----

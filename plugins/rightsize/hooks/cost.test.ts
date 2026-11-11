@@ -30,6 +30,7 @@ import {
   outputShareText,
   parsePrices,
   fitsWindow,
+  switchWindow,
   parseShare,
   plan,
   share,
@@ -435,6 +436,29 @@ test('no switch for the turn when the conversation is larger than the target mod
   // No window on file: nothing holds the switch back.
   const { window: _w, ...noWindow } = DEFAULT_PRICES.opus
   expect(fitsWindow({ ...sonnetSession, context: 5_000_000, prices: { ...DEFAULT_PRICES, opus: noWindow } }, 'opus')).toBe(true)
+})
+
+test('the switch window is capped at the window Claude Code reports for the session', async () => {
+  const sonnet: Situation = { ...sonnetSession, context: 300_000 }
+  const rev = review({ sonnet: 'high', opus: 'high' })
+  // Prices say 1M for Sonnet and Opus; the session reports 200K (an account that cannot use 1M): capped, no switch.
+  const held: Situation = { ...sonnet, reportedWindow: 200_000 }
+  expect(switchWindow(held, 'opus')).toBe(200_000)
+  expect(fitsWindow(held, 'opus')).toBe(false)
+  expect(plan(rev, held, 'low').kind).not.toBe('switch')
+  expect(plan(rev, { ...held, context: 150_000 }, 'low')).toMatchObject({ kind: 'switch', tier: 'opus' })
+  // Nothing reported: prices.json alone decides, as before.
+  expect(switchWindow(sonnet, 'opus')).toBe(1_000_000)
+  expect(plan(rev, sonnet, 'low')).toMatchObject({ kind: 'switch', tier: 'opus' })
+  // Reported larger than prices: the prices window is used.
+  const wide: Situation = { ...sonnet, prices: { ...DEFAULT_PRICES, opus: { ...DEFAULT_PRICES.opus, window: 200_000 } }, reportedWindow: 2_000_000 }
+  expect(switchWindow(wide, 'opus')).toBe(200_000)
+  expect(plan(rev, wide, 'low').kind).not.toBe('switch')
+  // A report that only equals the session model's own window is no hold: a 200K Haiku session still reaches Sonnet at 1M.
+  const haiku: Situation = { tier: 'haiku', level: 'medium', context: 300_000, prices: { ...DEFAULT_PRICES, haiku: { ...DEFAULT_PRICES.haiku, window: 200_000 } }, cal: {}, reportedWindow: 200_000 }
+  expect(switchWindow(haiku, 'sonnet')).toBe(1_000_000)
+  // A bad report (zero, not a number) is ignored.
+  expect(switchWindow({ ...sonnet, reportedWindow: 0 }, 'opus')).toBe(1_000_000)
 })
 
 test('reads each model\'s context window from prices.json, and a bad one falls back', async () => {

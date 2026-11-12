@@ -1,0 +1,68 @@
+import { expect, test } from 'claude-code/testing'
+import { checkRows, savingCheck } from './check'
+import type { RunLine } from './report'
+
+const at = '2026-11-10T12:00:00.000Z'
+const run = (x: Partial<RunLine>): RunLine => ({ at, kind: 'run', session: 's', type: 'feature', change: 'none', offered: 'none', stay: 1, taken: 1, actual: 1, ...x })
+const many = (n: number, x: Partial<RunLine>) => Array.from({ length: n }, () => run(x))
+/** 40 left-alone prompts that cost 80% of their prediction, and 12 handed-off ones predicted at $1 and costing $0.30. */
+const base = () => [...many(40, { actual: 0.8 }), ...many(12, { change: 'delegate-down', offered: 'delegate-down', stay: 1, actual: 0.3 })]
+
+test('check: left-alone prompts correct the prediction of the changed ones', () => {
+  const c = savingCheck(base())
+  expect(c.ok).toBe(true)
+  if (!c.ok) return
+  expect(Math.round((c.predicted) * 1000) / 1000).toBe(Math.round((12) * 1000) / 1000)
+  expect(Math.round((c.corrected) * 1000) / 1000).toBe(Math.round((9.6) * 1000) / 1000)
+  expect(Math.round((c.actual) * 1000) / 1000).toBe(Math.round((3.6) * 1000) / 1000)
+  expect(Math.round((c.factor) * 1000) / 1000).toBe(Math.round((0.8) * 1000) / 1000)
+  const rows = checkRows(c, false)
+  expect(rows.table.join('\n')).toMatch(/Saving, as predicted\s+~\$8\.40/)
+  expect(rows.table.join('\n')).toMatch(/Saving, corrected\s+~\$6\.00/)
+  expect(rows.notes[0]).toContain('80% of what was predicted')
+  expect(rows.notes[0]).toContain('still saved ~$6.00')
+})
+
+test('check: a kind of work with 10 prompts uses its own rate; a thin one uses the overall rate', () => {
+  const lines = [...many(30, { type: 'feature', actual: 0.5 }), ...many(10, { type: 'search', actual: 1.0 }), ...many(10, { type: 'search', change: 'delegate-down', actual: 0.2 }), ...many(2, { type: 'extract', change: 'lower', actual: 0.2 })]
+  const c = savingCheck(lines)
+  expect(c.ok).toBe(true)
+  if (!c.ok) return
+  // search: own rate 1.0 (corrected stay stays $1); extract: no own rate, falls back to overall 0.625.
+  expect(Math.round((c.corrected) * 1000) / 1000).toBe(Math.round((10 * 1.0 + 2 * 0.625) * 1000) / 1000)
+  expect(c.own).toBe(2)
+  expect(c.fellBack).toBe(2)
+})
+
+test('check: too few left-alone or changed prompts says what is missing, never a figure', () => {
+  const few = savingCheck(many(20, { actual: 0.8 }))
+  expect(few.ok).toBe(false)
+  expect(checkRows(few, false).notes[0]).toContain('20 of 30 prompts left alone')
+  const noChange = savingCheck([...many(40, { actual: 0.8 }), ...many(3, { change: 'lower' })])
+  expect(noChange.ok).toBe(false)
+  expect(checkRows(noChange, false).notes[0]).toContain('3 of 10 prompts rightsize changed')
+  expect(checkRows(savingCheck([]), false)).toEqual({ table: [], notes: [] })
+})
+
+test('check: stepped-up, raised, aborted and workflow prompts and ones without a prediction are left out', () => {
+  const odd = [run({ steppedUp: true }), run({ escalations: [{ step: 1, from: 'low', to: 'medium', why: 'x' }] }), run({ aborted: true }), run({ afterWorkflow: true }), run({ stay: 0 }), run({ actual: 0 }), run({ kind: 'subagent' })]
+  const c = savingCheck([...base(), ...odd])
+  expect(c.ok && c.untouched).toBe(40)
+})
+
+test('check: declined advice is counted with its cost and prediction', () => {
+  const c = savingCheck([...base(), ...many(5, { offered: 'delegate-down', actual: 0.6 })])
+  expect(c.ok && c.declined.n).toBe(5)
+  if (!c.ok) return
+  expect(Math.round((c.declined.actual) * 1000) / 1000).toBe(Math.round((3) * 1000) / 1000)
+  expect(checkRows(c, false).notes.join(' ')).toContain('You declined 5 suggestions')
+})
+
+test('check: when the correction removes the saving, it says so', () => {
+  const c = savingCheck([...many(40, { actual: 0.3 }), ...many(12, { change: 'delegate-down', actual: 0.5 })])
+  expect(c.ok).toBe(true)
+  if (!c.ok) return
+  const rows = checkRows(c, true)
+  expect(rows.table.join('\n')).toMatch(/Saving, corrected\s+~\$.* more|about even/)
+  expect(rows.notes[0]).toContain('API prices')
+})

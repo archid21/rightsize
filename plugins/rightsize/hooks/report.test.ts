@@ -106,7 +106,7 @@ test('the report is laid out: title and headline, savings, summary, recommendati
   expect(out[1]).toMatch(/^You got about \d+–\d+ more minutes of Claude's work from your plan\.$/)
   expect(out[2]).toMatch(/^That is ~[\d.]+–[\d.]+% of one 5-hour window, worth ~\$[\d.]+ at API prices\.$/)
   expect(out[3], 'the restart note is near the top').toMatch(/^Cost measurement restarted on 2026-10-0\d\.$/)
-  expect(titles(text)).toEqual(['YOUR SAVINGS', '30-DAY SUMMARY', 'RECOMMENDATIONS'])
+  expect(titles(text)).toEqual(['YOUR SAVINGS', '30-DAY SUMMARY', 'SAVING CHECK (last 30 days, API prices)', 'RECOMMENDATIONS'])
   expect(out.indexOf('Details: /rightsize report details'), 'the footer follows the last section').toBeGreaterThan(out.indexOf('RECOMMENDATIONS'))
   expect(out.slice(-2).join(' '), 'the footer is last').toBe(SUB_FOOT)
   const more = details(month(), opts)
@@ -561,7 +561,7 @@ test('recommendations collect the actions, then what needs none; the block is le
   }
   const lines = [...month(), handDown(true), handDown(true), handDown(false), handDown(false), handDown(false)]
   const text = summary(lines, { start })
-  expect(titles(text)).toEqual(['YOUR SAVINGS', '30-DAY SUMMARY', 'RECOMMENDATIONS'])
+  expect(titles(text)).toEqual(['YOUR SAVINGS', '30-DAY SUMMARY', 'SAVING CHECK (last 30 days)', 'RECOMMENDATIONS'])
   expect(titles(details(lines, { start }))).toEqual(['STARTING POINT', 'FIXED CONTEXT', 'ACCURACY', 'NOT COUNTED AS SAVINGS'])
   expect(sectionOf(details(lines, { start }), 'STARTING POINT')[0]).toMatch(/^Opus at medium \(yours\) +~\$12.00 per 100 prompts$/)
   const recs = sectionOf(text, 'RECOMMENDATIONS')
@@ -845,7 +845,7 @@ test('on a subscription, every dollar figure in the report is labelled as API pr
   const text = report(month(), { subscription: true, markdown: true, switches: [{ at: ago(0), kept: false }, { at: ago(0), kept: true }] })
   const lines = text.split('\n')
   // The savings table's dollar rows say it in their label, and the footer says it for the whole table.
-  const table = new Set(lines.slice(lines.indexOf('YOUR SAVINGS'), lines.indexOf('30-DAY SUMMARY')))
+  const table = new Set([...lines.slice(lines.indexOf('YOUR SAVINGS'), lines.indexOf('30-DAY SUMMARY')), ...lines.slice(lines.findIndex(l => l.startsWith('SAVING CHECK')), lines.indexOf('RECOMMENDATIONS'))])
   const dollars = lines.filter(l => l.includes('$') && !table.has(l))
   // The headline, the recommendation, the problems, the details' footer.
   expect(dollars.length).toBeGreaterThanOrEqual(4)

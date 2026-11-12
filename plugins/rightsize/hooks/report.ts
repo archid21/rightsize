@@ -3,6 +3,7 @@ import { STEP_PROVE } from './steps'
 import { MISS_MIN, checkTotals, missRates, missTotals } from './misses'
 import type { StartBlock } from './start'
 import type { TrimSavings, TrimSum } from './trim'
+import { checkRows, savingCheck } from './check'
 import { resultRows, results, type ChangeLine } from './results'
 
 // /rightsize report: what the mod saved, what it cost to run, and what went
@@ -1149,6 +1150,10 @@ export function buildReport(
   if (summary.length) out.push(...section('30-DAY SUMMARY', grid(summary)))
   const trimmed = trimRows(opts.trim)
   if (trimmed) out.push(...section('TRIM SAVINGS (tokens, estimated)', grid(trimmed)), ...para(TRIM_NOTE, md ? '' : '  '))
+  // Saving check: prompts rightsize left alone show how far its "staying" prediction is off; the changed prompts are re-priced by it (ADR 0055).
+  const check = checkRows(savingCheck(month), sub)
+  const checkTitle = `SAVING CHECK (last 30 days${sub ? ', API prices' : ''})`
+  if (check.table.length || check.notes.length) out.push(...(check.table.length ? section(checkTitle, check.table) : ['', checkTitle]), ...check.notes.flatMap(n => para(n, md ? '' : '  ')))
   // Did it work?: each setting you changed, your prompts after it against before it (ADR 0054). Measured, not estimated.
   const worked = resultRows(results(lines, opts.changes ?? [], opts.now))
   if (worked.length) out.push(...section('DID IT WORK? (measured on your prompts)', worked))

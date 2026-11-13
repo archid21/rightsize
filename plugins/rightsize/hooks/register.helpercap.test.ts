@@ -1,19 +1,27 @@
 import { expect, test } from 'claude-code/testing'
-import { RUNS_FILE, LOG_PATH, SEARCH, engine, drive, last } from './testkit'
+import { RUNS_FILE, LOG_PATH, NO_ONE, SEARCH, engine, drive, last, settle } from './testkit'
 
-// The helper call cap (fixed: 25 for Haiku, 40 for Sonnet): a helper on a cheaper tier gets a fixed number of tool calls for a task. At the cap it is
-// struggling, and it goes back to the main chat the way a helper with no retry left does. Haiku 25 and Sonnet 40 by default.
+// The helper spend limit: a helper on a cheaper tier may spend 1.5, 2 or 3 times what its task is estimated to cost on the main
+// model (by its rated tool calls). Near the limit, while it is not stuck, Long helpers decides: ask on the band, extend by itself up
+// to 10x, or stop. At the limit it goes back to the main chat the way a helper with no retry left does. The flat call cap
+// (25 for Haiku, 40 for Sonnet) stays only as the fallback for a helper with no estimate.
 
 for (const surface of ['desktop', 'terminal'] as const) {
   const HELPERS = { remember: true, choices: { raise: 'auto', down: 'auto' } }
-  const HAND_OFF = '{"fit":{"haiku":"low","sonnet":"low","opus":"low","fable":"low"},"type":"search","read":150000,"write":3000,"steps":30,"continues":false,"reason":"repo-wide search"}'
-  const SONNET_FIT = '{"fit":{"haiku":"no","sonnet":"low","opus":"low","fable":"low"},"type":"search","read":150000,"write":3000,"steps":30,"continues":false,"reason":"repo-wide search"}'
+  // The 1.5x band (10 rated calls or fewer) is covered by struggle.test.ts: a task that short is not handed off in these fixtures, so no helper starts.
+  const rating = (steps: number, haiku = 'low') =>
+    `{"fit":{"haiku":"${haiku}","sonnet":"low","opus":"low","fable":"low"},"type":"search","read":150000,"write":3000,"steps":${steps},"continues":false,"reason":"repo-wide search"}`
+  const HAND_OFF = rating(30)
   const log = (h: ReturnType<typeof engine>) => h.files[LOG_PATH] ?? ''
   type Drive = ReturnType<typeof drive>
-  type HelperEntry = { agent: string; kind: string; calls?: number; stall?: string; returned?: boolean; capped?: number; raises?: unknown[] }
-  const runLine = (h: ReturnType<typeof engine>) => (h.files[RUNS_FILE] ?? '').trim().split('\n').map(l => JSON.parse(l) as { kind?: string; helpers?: HelperEntry[]; retries?: number }).find(l => l.kind === 'run')
+  type H = ReturnType<typeof engine>
+  type HelperEntry = { agent: string; kind: string; calls?: number; stall?: string; returned?: boolean; capped?: number; limited?: number; spend?: number; limit?: number; raises?: unknown[] }
+  const runLine = (h: H) => (h.files[RUNS_FILE] ?? '').trim().split('\n').map(l => JSON.parse(l) as { kind?: string; helpers?: HelperEntry[]; retries?: number }).find(l => l.kind === 'run')
+  const LONG = 'Long helper'
+  // Output prices per million tokens of the helper's model: a step's cost is its output tokens times this.
+  const PRICE = { haiku: 0.5, sonnet: 10 } as const
 
-  async function warm(d: Drive, h: ReturnType<typeof engine>, sub: string) {
+  async function warm(d: Drive, h: H, sub: string) {
     h.subModel = sub
     await d.step('t0')
     await d.complete('t0')
@@ -26,84 +34,157 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.spawn('helper', tier)
     await d.step('t1', 0, 'agent-helper')
   }
-  // `n` distinct, successful calls from the helper: none repeats, so no other sign of struggling can fire.
-  const calls = async (d: Drive, n: number, from = 0) => {
+  // The limit the helper got, and what it is a multiple of, as the log says.
+  const limitOf = (h: H) => {
+    const m = /spend limit \$([\d.]+), ([\d.]+)x its \$([\d.]+) estimate/.exec(log(h))
+    return m ? { limit: Number(m[1]), multiple: Number(m[2]), estimate: Number(m[3]) } : undefined
+  }
+  // Each of `n` helper requests costs `share` of a block (the first limit), and is followed by one distinct, successful call.
+  // None repeats, so no other sign of struggling can fire.
+  let at = 0
+  async function work(d: Drive, h: H, tier: 'haiku' | 'sonnet', n: number, share: number) {
+    const block = limitOf(h)?.limit ?? 1
+    h.stepUsage = { input_tokens: 0, output_tokens: Math.round((block * share / PRICE[tier]) * 1e6), cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
     const out: { deny?: string }[] = []
-    for (let i = from; i < from + n; i++) out.push((await d.bash(`ls dir${i}`, 'agent-helper')) as { deny?: string })
+    for (let i = 0; i < n; i++) {
+      await d.step('t1', ++at, 'agent-helper')
+      out.push((await d.bash(`ls dir${at}`, 'agent-helper')) as { deny?: string })
+      await settle()
+    }
     return out
   }
-
-  test(`a Haiku helper may make 25 tool calls; the 26th is refused and sends it back to the main chat (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { model: 'claude-fable-5-2', effort: 'high', store: HELPERS })
-    const d = drive($, h)
+  async function begin(on: Parameters<typeof engine>[0], d$: unknown, tier: 'haiku' | 'sonnet', rated = HAND_OFF, extra: Record<string, unknown> = {}) {
+    const h = engine(on, { model: 'claude-fable-5-2', effort: 'high', store: HELPERS, ...extra })
+    const d = drive(d$, h)
     await d.start(surface)
-    await warm(d, h, 'claude-haiku-5-5')
-    h.rating = HAND_OFF
-    await startHelper(d, 'haiku')
-    const first = await calls(d, 25)
-    expect(first.filter(r => r.deny), 'the first 25 go through').toEqual([])
-    const [over] = await calls(d, 1, 25)
-    expect(over?.deny, 'the 26th is refused with the cap in the reason').toContain('25 tool calls')
+    await warm(d, h, tier === 'haiku' ? 'claude-haiku-5-5' : 'claude-sonnet-5-5')
+    h.rating = tier === 'sonnet' ? rated.replace('"haiku":"low"', '"haiku":"no"') : rated
+    await startHelper(d, tier)
+    at = 0
+    return { h, d }
+  }
+
+  for (const [steps, multiple] of [[30, 2], [31, 3], [60, 3]] as const) {
+    test(`a helper rated ${steps} tool calls gets ${multiple}x its estimate as the spend limit (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+      const { h } = await begin(on, $, 'sonnet', rating(steps))
+      const got = limitOf(h)
+      expect(got?.multiple, log(h)).toBe(multiple)
+      expect(got?.limit, 'the limit is the multiple times the estimate').toBeGreaterThan(0)
+    })
+  }
+
+  test(`a helper making progress is not stopped at the old 25 or 40 calls (${surface})`, { timeoutMs: 60000 }, async ($, on) => {
+    const { h, d } = await begin(on, $, 'haiku')
+    expect(limitOf(h), 'there is an estimate, so the spend limit applies').toBeDefined()
+    const calls = await work(d, h, 'haiku', 45, 0.001)
+    expect(calls.filter(r => r.deny), 'cheap calls go on past the flat cap').toEqual([])
+    await d.complete('t1')
+    const [line] = runLine(h)?.helpers ?? []
+    expect(line?.calls).toBe(45)
+    expect(line?.limit, 'the log keeps the limit').toBeGreaterThan(0)
+    expect(line?.returned).toBeUndefined()
+  })
+
+  test(`Ask: the band asks at 80% of the limit, and no answer stops the helper at the limit with the new text (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const { h, d } = await begin(on, $, 'sonnet')
+    h.answers = { [LONG]: NO_ONE }
+    expect((await work(d, h, 'sonnet', 1, 0.45)).filter(r => r.deny), 'at 45% nothing is asked').toEqual([])
+    expect(h.asked.filter(a => a.header === LONG)).toEqual([])
+    expect((await work(d, h, 'sonnet', 1, 0.45)).filter(r => r.deny), 'at 90% the helper goes on while it is asked').toEqual([])
+    const [q] = h.asked.filter(a => a.header === LONG)
+    expect(q?.question).toMatch(/^Sonnet helper has spent \$[\d.]+ of its \$[\d.]+ limit and is still finding new things \(\d+ of its last \d+ calls were new\)\. Let it continue\?/)
+    expect(q?.question, 'the first question carries the one-time hint').toContain('Default: ask. No answer means the helper stops and reports. To change it, use Long helpers in /config.')
+    expect(q?.options).toEqual(['Continue', 'Stop and report', "Always while it's making progress"])
+    const [over] = await work(d, h, 'sonnet', 1, 0.45)
+    const limit = limitOf(h)?.limit ?? 0
+    expect(over?.deny).toContain(`This helper reached its spend limit ($${limit.toFixed(2)})`)
+    expect(over?.deny).toContain('next and only call must be SubagentHandback with what you found, what is left and where you stopped')
     expect(over?.deny).toContain('The main chat takes it from here')
-    expect(((await calls(d, 1, 26))[0] as { deny?: string }).deny, 'and so is every call after').toContain('25 tool calls')
-    expect(log(h)).toContain('returned helper agent-helper to the main chat at step 1: it reached the 25-call cap for haiku')
-    expect(((await d.bash('ls')) as { deny?: string }).deny, 'the main chat has no cap').toBeUndefined()
+    for (let i = 0; i < 2; i++) expect(((await d.handback('agent-helper')) as { deny?: string }).deny, 'the report goes through, even when tried again').toBeUndefined()
+    expect(((await d.bash('ls elsewhere', 'agent-helper')) as { deny?: string }).deny, 'other work is still refused').toContain('spend limit')
+    expect(log(h)).toContain('returned helper agent-helper to the main chat at step')
+    expect(((await d.bash('ls')) as { deny?: string }).deny, 'the main chat has no limit').toBeUndefined()
     await d.complete('t1')
     const run = runLine(h)
-    expect(run?.helpers?.map(x => [x.stall, x.returned, x.capped, x.raises])).toEqual([['struggling', true, 25, undefined]])
-    expect(run?.helpers?.map(x => x.calls), 'the helper logs the 25 calls it made; the refused ones do not count').toEqual([25])
-    expect('retries' in (run ?? {}), 'no retry is spent: the cap goes straight back to the main chat').toBe(false)
+    expect(run?.helpers?.map(x => [x.stall, x.returned, x.limited === limit, x.capped, x.raises])).toEqual([['struggling', true, true, undefined, undefined]])
+    expect(run?.helpers?.map(x => x.calls), 'the report is not counted as a call; the refused call neither').toEqual([2])
+    expect('retries' in (run ?? {}), 'no retry is spent: the limit goes straight back to the main chat').toBe(false)
   })
 
-  test(`a Sonnet helper may make 40 tool calls (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { model: 'claude-fable-5-2', effort: 'high', store: HELPERS })
-    const d = drive($, h)
-    await d.start(surface)
-    await warm(d, h, 'claude-sonnet-5-5')
-    h.rating = SONNET_FIT
-    await startHelper(d, 'sonnet')
-    expect((await calls(d, 40)).filter(r => r.deny), 'the first 40 go through').toEqual([])
-    expect(((await calls(d, 1, 40))[0] as { deny?: string }).deny, 'the 41st is refused').toContain('40 tool calls')
-    expect(log(h)).toContain('it reached the 40-call cap for sonnet')
+  test(`Ask: Continue adds one block, and the band asks again at 80% of the new limit; the hint shows once (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const { h, d } = await begin(on, $, 'sonnet')
+    h.answers = { [LONG]: 'Continue' }
+    const calls = await work(d, h, 'sonnet', 3, 0.45)
+    expect(calls.filter(r => r.deny), 'at 135% of the first limit it is still going: the limit is now two blocks').toEqual([])
+    expect(log(h)).toMatch(/extended helper agent-helper's spend limit \$[\d.]+ → \$[\d.]+ \(you chose to continue\)/)
+    expect((await work(d, h, 'sonnet', 2, 0.45)).filter(r => r.deny), 'at 225% it asks again at 80% of two blocks, and goes on to three').toEqual([])
+    const qs = h.asked.filter(a => a.header === LONG)
+    expect(qs.length, 'each extension asks again').toBe(2)
+    expect(qs[0]?.question).toContain('Default: ask.')
+    expect(qs[1]?.question, 'the hint does not come again').not.toContain('Default: ask.')
+    h.answers = { [LONG]: NO_ONE }
+    expect((await work(d, h, 'sonnet', 3, 0.45)).some(r => r.deny), 'with no answer it stops at the limit').toBe(true)
   })
 
-  test(`a helper sent back at the cap can still deliver its report: SubagentHandback goes through (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { model: 'claude-fable-5-2', effort: 'high', store: HELPERS })
-    const d = drive($, h)
-    await d.start(surface)
-    await warm(d, h, 'claude-haiku-5-5')
-    h.rating = HAND_OFF
-    await startHelper(d, 'haiku')
-    await calls(d, 25)
-    const [over] = await calls(d, 1, 25)
-    expect(over?.deny, 'the refusal names the one call left').toContain('next and only call must be SubagentHandback')
-    for (let i = 0; i < 2; i++) expect(((await d.handback('agent-helper')) as { deny?: string }).deny, 'the report goes through, even when tried again').toBeUndefined()
-    expect(((await calls(d, 1, 26))[0] as { deny?: string }).deny, 'other work is still refused').toContain('25 tool calls')
-    await d.complete('t1')
-    expect(runLine(h)?.helpers?.map(x => x.calls), 'the report is not counted as a call').toEqual([25])
+  test(`Ask: Stop and report refuses the next call (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const { h, d } = await begin(on, $, 'sonnet')
+    h.answers = { [LONG]: 'Stop and report' }
+    const calls = await work(d, h, 'sonnet', 3, 0.45)
+    expect(calls[1]?.deny, 'the call that asked goes through').toBeUndefined()
+    expect(calls[2]?.deny, 'the next call is refused').toContain('spend limit')
+    expect(log(h)).toContain('stop and report, as you chose')
   })
 
-  test(`a report made exactly at the cap goes through and does not send the helper back (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { model: 'claude-fable-5-2', effort: 'high', store: HELPERS })
-    const d = drive($, h)
-    await d.start(surface)
-    await warm(d, h, 'claude-haiku-5-5')
-    h.rating = HAND_OFF
-    await startHelper(d, 'haiku')
-    await calls(d, 25)
+  test(`Ask: Always while it's making progress sets the row and extends from then on (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const { h, d } = await begin(on, $, 'sonnet')
+    h.answers = { [LONG]: "Always while it's making progress" }
+    expect((await work(d, h, 'sonnet', 4, 0.45)).filter(r => r.deny)).toEqual([])
+    expect(h.asked.filter(a => a.header === LONG).length, 'asked once: the row now extends by itself').toBe(1)
+    expect(JSON.stringify(h.configSet)).toContain('continue while making progress')
+  })
+
+  test(`Long helpers "continue while making progress" extends by itself up to 10x the estimate, then asks (${surface})`, { timeoutMs: 60000 }, async ($, on) => {
+    const { h, d } = await begin(on, $, 'sonnet')
+    await d.config('longHelpers', 'continue while making progress')
+    h.answers = { [LONG]: NO_ONE }
+    const got = limitOf(h)
+    expect(got?.multiple).toBe(2)
+    // 2x blocks: 2, 4, 6, 8 and 10x are taken without a question.
+    const calls = await work(d, h, 'sonnet', 5, 0.85)
+    expect(calls.filter(r => r.deny)).toEqual([])
+    expect((log(h).match(/extended helper agent-helper's spend limit/g) ?? []).length, 'four automatic blocks').toBe(4)
+    expect(h.asked.filter(a => a.header === LONG).length, 'at 10x it asks').toBe(1)
+    expect(h.asked.find(a => a.header === LONG)?.question, 'the one-time hint still shows with the first question').toContain('Default: ask.')
+    expect((await work(d, h, 'sonnet', 2, 0.85)).some(r => r.deny), 'no answer: it stops at 10x').toBe(true)
+  })
+
+  test(`Long helpers "stop at the limit" never asks or extends (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const { h, d } = await begin(on, $, 'sonnet')
+    await d.config('longHelpers', 'stop at the limit')
+    const calls = await work(d, h, 'sonnet', 3, 0.45)
+    expect(h.asked.filter(a => a.header === LONG)).toEqual([])
+    expect(calls[1]?.deny, 'at 90% it goes on').toBeUndefined()
+    expect(calls[2]?.deny, 'at the limit it stops').toContain('spend limit')
+    expect(log(h)).not.toContain("extended helper agent-helper's")
+  })
+
+  test(`a report made exactly when the helper is at its limit goes through and does not send it back (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const { h, d } = await begin(on, $, 'sonnet')
+    await d.config('longHelpers', 'stop at the limit')
+    // One request that costs more than the whole limit; the helper has made no call since.
+    const block = limitOf(h)?.limit ?? 1
+    h.stepUsage = { input_tokens: 0, output_tokens: Math.round(((block * 1.2) / PRICE.sonnet) * 1e6), cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+    await d.step('t1', 1, 'agent-helper')
     expect(((await d.handback('agent-helper')) as { deny?: string }).deny).toBeUndefined()
-    expect(log(h)).not.toContain('reached the 25-call cap')
+    expect(log(h)).not.toContain('returned helper agent-helper')
   })
 
   test(`a refused call does not count: the denied approval steps of a helper leave its calls untouched (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { model: 'claude-fable-5-2', effort: 'high', store: HELPERS })
-    const d = drive($, h)
-    await d.start(surface)
-    await warm(d, h, 'claude-haiku-5-5')
-    h.rating = HAND_OFF
-    await startHelper(d, 'haiku')
+    const { h, d } = await begin(on, $, 'haiku')
     for (let i = 0; i < 5; i++) expect(((await d.bash(`git push origin b${i}`, 'agent-helper')) as { deny?: string }).deny, 'refused as an approval step').toContain('cannot push')
-    expect((await calls(d, 25)).filter(r => r.deny), 'all 25 of its allowed calls are still there').toEqual([])
+    expect((await work(d, h, 'haiku', 3, 0.001)).filter(r => r.deny)).toEqual([])
     expect(last(h.sent)?.agentId).toBe('agent-helper')
+    await d.complete('t1')
+    expect(runLine(h)?.helpers?.map(x => x.calls)).toEqual([3])
   })
 }

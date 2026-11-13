@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { type Signals, FAILED_TRIES, ERRORS, helperCap, isBookkeeping, LIMITS, LONG_MIN, LONG_X, LOOP, NOVEL, RECENT_MAX, REPEAT, WINDOW, blockedError, callKey, hookFailed, isEditTool, isTestCommand, noMatchExit, noSignals, noteCall, oneUp, refusedByHook, refusedByPerson, struggle, testsOutcome } from './struggle'
+import { type Signals, FAILED_TRIES, ERRORS, helperCap, isBookkeeping, LIMITS, LONG_MIN, LONG_X, LOOP, NOVEL, RECENT_MAX, REPEAT, WINDOW, blockedError, callKey, hookFailed, isEditTool, isTestCommand, noMatchExit, noSignals, noteCall, oneUp, refusedByHook, refusedByPerson, spendMultiple, SPEND_ASK_AT, SPEND_AUTO_MAX, struggle, testsOutcome } from './struggle'
 
 // Claude labels each Bash call afresh, so the description differs between runs of one command.
 const bash = (command: string) => callKey('Bash', { tool: 'Bash', tool_use_id: Math.random().toString(), command, description: `run ${command} (${Math.random()})` })
@@ -440,4 +440,11 @@ test('failed-check: fixes that keep leaving the tests red are a sign; how many c
 test('bookkeeping tools are told apart from the work', async () => {
   for (const t of ['mcp__ccd_turn__update_plan', 'mcp__ccd_turn__wrap_up', 'TodoWrite', 'TaskUpdate', 'AskUserQuestion']) expect(isBookkeeping(t), t).toBe(true)
   for (const t of ['Bash', 'Read', 'Edit', 'mcp__ccd_session__start_session', 'Agent']) expect(isBookkeeping(t), t).toBe(false)
+})
+
+test('the helper spend limit multiple follows the rated tool calls: 1.5 up to 10, 2 for 11 to 30, 3 above', async () => {
+  expect([0, 1, 10].map(spendMultiple)).toEqual([1.5, 1.5, 1.5])
+  expect([11, 20, 30].map(spendMultiple)).toEqual([2, 2, 2])
+  expect([31, 60, 200].map(spendMultiple)).toEqual([3, 3, 3])
+  expect([SPEND_ASK_AT, SPEND_AUTO_MAX]).toEqual([0.8, 10])
 })

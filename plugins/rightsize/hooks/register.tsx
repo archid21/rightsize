@@ -115,7 +115,7 @@ import {
 } from './settings'
 import { BRIEF_MAX, cutRequest, parseRating, ratingPrompt, ratingSystem } from './rate'
 import { isApprovalStep } from './approval'
-import { HANDBACK, LIMITS, type Signals, type Struggle, blockedError, callKey, hookFailed, isBookkeeping, isEditTool, helperCap, isTestCommand, noMatchExit, noSignals, noteCall, oneUp, refusedByHook, refusedByPerson, struggle, testsOutcome } from './struggle'
+import { HANDBACK, LIMITS, type Signals, type Struggle, blockedError, callKey, hookFailed, isBookkeeping, isEditTool, helperCap, SPEND_ASK_AT, SPEND_AUTO_MAX, spendMultiple, isTestCommand, noMatchExit, noSignals, noteCall, oneUp, refusedByHook, refusedByPerson, struggle, testsOutcome } from './struggle'
 import { type Change, type HelperLine, type Lifetime, type RunLine, type SwitchLine, type Windows, SESSION_TOTAL, SESSION_TOTAL_FROM, bandShareText, buildReport, costTag, foldLifetime, parseLifetime, parseLines, ratedInSession, sessionTotal, shareMessage, shareOf, usedTag, windowCostText, windowRates } from './report'
 import { isTracked, parseChanges, type ChangeLine } from './results'
 import { type TrimSavings, readTrimSavings } from './trim'
@@ -393,6 +393,8 @@ let billingBy: 'detected' | 'answered' | 'saved' | null = null
 let billingAsked = false
 /** Output suggestion in /config: whether rightsize may suggest the Concise output style. */
 let outputAdvice = true
+/** What a helper does at 80% of its spend limit while it is making progress (the Long helpers row). */
+let longHelpers: 'ask' | 'continue while making progress' | 'stop at the limit' = 'ask'
 /** The main chat's output cost, total cost and requests this session, at list prices (not subagents). Reset at session start and end. */
 let spend: SessionSpend = { output: 0, total: 0, requests: 0 }
 /** True once the Output question was asked this session, whatever the answer. */
@@ -624,6 +626,20 @@ type Watch = {
   capped?: number
   /** The can't-tell and blocked cases are logged once. */
   said?: boolean
+  /** What its own requests cost so far, at list prices. */
+  spend: number
+  /** The spend limit: `limit` now, in blocks of `block` (the first limit), from `estimate` (the task's cost on the main model). Absent: no estimate, the call cap applies. */
+  limit?: number
+  block?: number
+  estimate?: number
+  /** Blocks added to the first limit. */
+  extended?: number
+  /** The question about going on past the limit was asked for the current block. */
+  asked?: true
+  /** The person chose Stop and report: the next call is refused. */
+  stopNow?: true
+  /** The spend limit that sent it back, when that is why. */
+  limited?: number
 }
 /** Every helper watched this session, by agent id. */
 const watches = new Map<string, Watch>()
@@ -1184,6 +1200,7 @@ type BandWhy =
   | { kind: 'output' }
   | { kind: 'stuck'; run: Run; cur: Level; to: Level; sign: Struggle; step: number }
   | { kind: 'helper'; id: string; w: Watch; cur: Level; to: Level; sign: Struggle }
+  | { kind: 'spend'; id: string; w: Watch }
 
 type BandAsk = {
   q: BandQuestion
@@ -1260,6 +1277,8 @@ async function bandAnswered($: EngineInterface, why: BandWhy, v: unknown) {
       if (!raises || active !== run || run.raisedTo === to) return
       return raiseRun($, run, cur, to, sign, step)
     }
+    case 'spend':
+      return answerSpend($, why.id, why.w, v)
     case 'helper': {
       const { id, w, cur, to, sign } = why
       const raises = await stuckAnswered($, v)
@@ -1287,6 +1306,8 @@ async function bandUnanswered($: EngineInterface, why: BandWhy) {
       return logUnanswered($, 'Stuck', `kept ${why.cur}`)
     case 'helper':
       return logUnanswered($, 'Stuck', `helper ${why.id} kept at ${why.cur}`)
+    case 'spend':
+      return logUnanswered($, 'Long helper', `helper ${why.id} stops at its ${money(why.w.limit ?? 0)} limit`)
   }
 }
 
@@ -1346,6 +1367,7 @@ function writeSetting($: EngineInterface, key: SettingKey, value: string): Promi
     case 'band': return $.config.set({ key: 'rightsize.band', value: value })
     case 'questionWait': return $.config.set({ key: 'rightsize.questionWait', value: value })
     case 'priceCheck': return $.config.set({ key: 'rightsize.priceCheck', value: value })
+    case 'longHelpers': return $.config.set({ key: 'rightsize.longHelpers', value: value })
   }
 }
 
@@ -1806,6 +1828,7 @@ export function delegateNote(d: NonNullable<Run['delegate']>, rounds = FIXED.cha
     '   If the request includes steps only the person can approve (pushing, publishing, releasing, deploying, sending messages, acting in their accounts), the subagent prepares everything (edits, tests, notes) and stops before those steps. It cannot see the person\'s approval, so it would refuse them. You do those steps yourself after step 2.',
     '2. When it reports back, check its result against every Done-means item yourself. Use real proof where you can (run the tests, read the changed files), not its summary.',
     `3. If an item fails, send that subagent a specific fix-up note (continue it with SendMessage where you can; otherwise start it again with the note and its last result). At most ${rounds === 1 ? '1 rework round' : `${rounds} rework rounds`}.`,
+    '   A helper that rightsize stopped (its spend limit, or no retry left) cannot be resumed with SendMessage: its next call is refused. Start a new subagent on the same model with the "what is left" list from its report as the brief. That uses one rework.',
     d.dir === 'down'
       ? `4. If an item still fails after ${n}, finish the task yourself.`
       : `4. If an item still fails after ${n}, stop and say where it stands.`,
@@ -4004,6 +4027,8 @@ const APPROVAL_DENY =
 // A stopped helper may still make one call: SubagentHandback, the only way its report reaches the main chat.
 const HELPER_RETURN =
   'rightsize: stop now. You are stuck, and this task\'s retry budget is used up, so more effort or more tries will not help. Your next and only call must be SubagentHandback with what you tried, what failed, and where you are stuck; any other call is refused. The main chat takes it from here.'
+const limitReturn = (limit: number) =>
+  `rightsize: stop now. This helper reached its spend limit (${money(limit)}). Your next and only call must be SubagentHandback with what you found, what is left and where you stopped; any other call is refused. The main chat takes it from here.`
 const capReturn = (cap: number) =>
   `rightsize: stop now. You have used the ${cap} tool calls this task allows a helper. Your next and only call must be SubagentHandback with what you found, what is left and where you stopped; any other call is refused. The main chat takes it from here.`
 // A helper's cache cannot be kept warm from outside, so a foreground wait longer than it lives is refused (ADR 0030).
@@ -4053,6 +4078,15 @@ async function useChance($: EngineInterface, task: string): Promise<boolean> {
   }
 }
 
+/** The helper's first spend limit: the multiple for its rated calls times `estimate`. No estimate, or a tier with no call cap: none. */
+function setLimit(w: Watch, estimate: number | undefined) {
+  if (!w.tier || helperCap(w.tier) === undefined || !(typeof estimate === 'number' && estimate > 0)) return
+  const block = spendMultiple(w.rated) * estimate
+  w.estimate = estimate
+  w.block = block
+  w.limit = block
+}
+
 // The watch on a helper: the hand-off's subagent, or one rightsize moved to a cheaper
 // model. Any other agent is left alone. It starts at the helper's spawn or first step.
 async function helperWatch($: EngineInterface, id: string): Promise<Watch | undefined> {
@@ -4064,15 +4098,95 @@ async function helperWatch($: EngineInterface, id: string): Promise<Watch | unde
   const startedAt = await $.clock.now()
   let w: Watch | undefined
   if (run?.delegate && run.subAgents.includes(id)) {
-    w = { kind: 'handoff', run: run.id, task: run.task, level: run.delegate.level, rated: run.rating.steps, signals: noSignals(), steps: 0, startedAt, blocked: 0, raises: [], calls: 0, ...(run.delegate.dir === 'down' ? { tier: run.delegate.tier } : {}) }
+    w = { kind: 'handoff', run: run.id, task: run.task, level: run.delegate.level, rated: run.rating.steps, signals: noSignals(), steps: 0, startedAt, blocked: 0, raises: [], calls: 0, spend: 0, ...(run.delegate.dir === 'down' ? { tier: run.delegate.tier } : {}) }
+    setLimit(w, run.stay)
   } else if (sized) {
     const task = sized.task ?? (await currentTask($))?.id ?? sessionId
-    w = { kind: 'moved', ...(sized.run ? { run: sized.run } : {}), task, level: sized.level, rated: sized.steps ?? 5, signals: noSignals(), steps: 0, startedAt, blocked: 0, raises: [], calls: 0, tier: sized.tier }
+    w = { kind: 'moved', ...(sized.run ? { run: sized.run } : {}), task, level: sized.level, rated: sized.steps ?? 5, signals: noSignals(), steps: 0, startedAt, blocked: 0, raises: [], calls: 0, spend: 0, tier: sized.tier }
+    setLimit(w, sized.parentRaw)
   }
   const raced = watches.get(id)
   if (raced) return raced
   if (w) watches.set(id, w)
+  if (w?.limit !== undefined && w.estimate !== undefined) await log($, `helper ${id}: spend limit ${money(w.limit)}, ${Number((w.limit / w.estimate).toFixed(2))}x its ${money(w.estimate)} estimate on the main model (${w.rated} calls rated)`)
   return w
+}
+
+// ---- Helper spend limit ------------------------------------------------------
+
+const LONG_HELPER = 'Long helper'
+const HINT_SEEN = 'longHelpersHint'
+const LONG_HELPER_HINT = 'Default: ask. No answer means the helper stops and reports. To change it, use Long helpers in /config.'
+
+/** The band question for a helper nearing its spend limit while it still finds new things. */
+const qSpend = (w: Watch, spend: number, limit: number, hint: boolean): Question<'continue' | 'stop' | 'always'> => {
+  const recent = (w.signals.recent ?? []).slice(-LIMITS.window)
+  const fresh = recent.filter(r => r.novel).length
+  const name = TIER_NAME[w.tier ?? 'sonnet']
+  return {
+    header: LONG_HELPER,
+    question: `${name} helper has spent ${money(spend)} of its ${money(limit)} limit and is still finding new things (${fresh} of its last ${recent.length} calls were new). Let it continue?${hint ? ` ${LONG_HELPER_HINT}` : ''}`,
+    options: [
+      ['Continue', 'continue'],
+      ['Stop and report', 'stop'],
+      ["Always while it's making progress", 'always'],
+    ],
+    ifNone: `the helper stops at its ${money(limit)} limit and reports`,
+  }
+}
+
+/** One more block on the helper's limit; its question may be asked again at 80% of the new limit. Not a retry: no chance of the task is used. */
+function extendLimit($: EngineInterface, id: string, w: Watch, why: string) {
+  const from = w.limit ?? 0
+  w.limit = from + (w.block ?? 0)
+  w.extended = (w.extended ?? 0) + 1
+  delete w.asked
+  return log($, `extended helper ${id}'s spend limit ${money(from)} → ${money(w.limit)} (${why})`)
+}
+
+/** A Long helper answer. A helper that has gone back, or ended, is not extended. */
+async function answerSpend($: EngineInterface, id: string, w: Watch, v: unknown) {
+  if (v === 'always') await changeRow($, 'longHelpers', 'continue while making progress')
+  if (v === 'stop') {
+    if (!w.returned) w.stopNow = true
+    return log($, `helper ${id}: stop and report, as you chose`)
+  }
+  if (v !== 'continue' && v !== 'always') return
+  if (w.returned || watches.get(id) !== w) return log($, `helper ${id} had already gone back or finished: not extended`)
+  return extendLimit($, id, w, 'you chose to continue')
+}
+
+/**
+ * Before a helper's call: its spend against its limit. At the limit it goes back to the main chat (a returned helper makes only
+ * SubagentHandback). At 80% of the limit, while it is not stuck (the stuck detector decides that, unchanged, with no question),
+ * Long helpers decides: ask on the band without pausing the helper, extend by itself up to SPEND_AUTO_MAX x the estimate, or never.
+ * Returns the refusal when the call is not allowed.
+ */
+async function spendCheck($: EngineInterface, id: string, w: Watch): Promise<string | undefined> {
+  const limit = w.limit
+  if (limit === undefined) return
+  if (w.spend >= limit || w.stopNow) {
+    w.returned = true
+    w.stall = 'struggling'
+    w.limited = limit
+    const gone = bandAsks.filter(x => x.why.kind === 'spend' && x.why.w === w)
+    for (const x of gone) bandAsks.splice(bandAsks.indexOf(x), 1)
+    if (gone.length) await showQuestion($)
+    await setBand($, { text: `Helper stopped and sent back to the main chat: it ${w.stopNow ? 'was stopped' : 'reached'} its ${money(limit)} spend limit (${money(w.spend)} spent).`, acted: true })
+    await log($, `returned helper ${id} to the main chat at step ${w.steps}: ${w.stopNow ? 'you chose stop' : 'it reached'} its ${money(limit)} spend limit, ${money(w.spend)} spent`)
+    return limitReturn(limit)
+  }
+  if (w.spend < SPEND_ASK_AT * limit || w.asked || longHelpers === 'stop at the limit') return
+  if (struggle(w.signals, w.steps, w.rated, LIMITS, Infinity)) return
+  const next = limit + (w.block ?? 0)
+  if (longHelpers === 'continue while making progress' && next <= SPEND_AUTO_MAX * (w.estimate ?? 0) + 1e-9) return extendLimit($, id, w, 'making progress')
+  // Nobody to ask on the band (Band "Never", or a surface that does not draw it): it stops at the limit, as with no answer.
+  if (!(await bandCanAsk($))) return
+  w.asked = true
+  const hint = !(await $.store.get(HINT_SEEN).catch(() => undefined))
+  if (hint) await $.store.set(HINT_SEEN, true).catch(() => undefined)
+  await log($, `helper ${id} has spent ${money(w.spend)} of its ${money(limit)} limit while making progress: asked whether to continue`)
+  await askBand($, qSpend(w, w.spend, limit, hint), 'turn', true, { kind: 'spend', id, w })
 }
 
 /** What the log keeps of a watched helper. `ms` runs to its answer, or to now while it has not answered. */
@@ -4086,6 +4200,8 @@ const helperLine = (w: Watch, now: number): HelperLine => ({
   ...(w.raises.length ? { raises: w.raises } : {}),
   ...(w.returned ? { returned: true as const } : {}),
   ...(w.capped ? { capped: w.capped } : {}),
+  ...(w.limit !== undefined ? { spend: round(w.spend), limit: round(w.limit) } : {}),
+  ...(w.limited ? { limited: round(w.limited) } : {}),
 })
 
 // A helper's tool call, after it ran. An error from the environment is a Blocked stall: more effort
@@ -4790,6 +4906,9 @@ function applyOption(key: SettingKey) {
       return
     case 'outputAdvice':
       outputAdvice = v !== 'off'
+      return
+    case 'longHelpers':
+      longHelpers = v === 'continue while making progress' || v === 'stop at the limit' ? v : 'ask'
       return
     case 'idleWarning':
       idleWarning = parseIdleWarning(v)
@@ -5556,6 +5675,7 @@ export const register: Register = (on, options) => {
         const cost = usageCost(prices, out.usage.model, out.usage)
         if (run) run.subCost += cost
         if (sized) sized.spend += cost
+        if (watch) watch.spend += cost
       }
       return out
     }
@@ -5702,7 +5822,7 @@ export const register: Register = (on, options) => {
     const helper = e.agentId === undefined ? undefined : await helperWatch($, e.agentId)
     // Its report is the exception: SubagentHandback ends the run, and refusing it loses the report (ADR 0057).
     const handback = String(e.tool) === HANDBACK
-    if (helper?.returned && !handback) return { deny: helper.capped ? capReturn(helper.capped) : HELPER_RETURN }
+    if (helper?.returned && !handback) return { deny: helper.limited ? limitReturn(helper.limited) : helper.capped ? capReturn(helper.capped) : HELPER_RETURN }
     // A helper's foreground Bash wait over HELPER_WAIT_CAP_MS outlasts its 5-minute cache. A refused call is not counted in helper.calls.
     const timeout = (e as unknown as { timeout?: unknown }).timeout
     const background = (e as unknown as { run_in_background?: unknown }).run_in_background
@@ -5711,7 +5831,10 @@ export const register: Register = (on, options) => {
     // A helper on a cheaper tier gets a fixed number of tool calls, however well they go. At the cap it is struggling:
     // it goes back to the main chat, the way a helper with no retry left does.
     if (helper && e.agentId !== undefined && !off && !handback) {
-      const cap = helper.tier ? helperCap(helper.tier) : undefined
+      // With a spend limit the call cap is not used: it is the fallback for a helper with no estimate.
+      const cap = helper.tier && helper.limit === undefined ? helperCap(helper.tier) : undefined
+      const stop = helper.limit !== undefined ? await spendCheck($, e.agentId, helper) : undefined
+      if (stop) return { deny: stop }
       if (cap !== undefined && helper.calls >= cap) {
         helper.returned = true
         helper.stall = 'struggling'

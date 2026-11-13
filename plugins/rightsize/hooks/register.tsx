@@ -116,6 +116,7 @@ import {
 import { BRIEF_MAX, cutRequest, parseRating, ratingPrompt, ratingSystem } from './rate'
 import { isApprovalStep } from './approval'
 import { HANDBACK, LIMITS, type Signals, type Struggle, blockedError, callKey, hookFailed, isBookkeeping, isEditTool, helperCap, SPEND_ASK_AT, SPEND_AUTO_MAX, spendMultiple, isTestCommand, noMatchExit, noSignals, noteCall, oneUp, refusedByHook, refusedByPerson, struggle, testsOutcome } from './struggle'
+import { watchCheck, watchRange, type WatchCheck } from './check'
 import { type Change, type HelperLine, type Lifetime, type RunLine, type SwitchLine, type Windows, SESSION_TOTAL, SESSION_TOTAL_FROM, bandShareText, buildReport, costTag, foldLifetime, parseLifetime, parseLines, ratedInSession, sessionTotal, shareMessage, shareOf, usedTag, windowCostText, windowRates } from './report'
 import { isTracked, parseChanges, type ChangeLine } from './results'
 import { type TrimSavings, isTrim, readTrimSavings } from './trim'
@@ -1215,6 +1216,8 @@ type BandWhy =
   | { kind: 'billing' }
   | { kind: 'workflow' }
   | { kind: 'output' }
+  | { kind: 'watchTrial' }
+  | { kind: 'watchSummary' }
   | { kind: 'stuck'; run: Run; cur: Level; to: Level; sign: Struggle; step: number }
   | { kind: 'helper'; id: string; w: Watch; cur: Level; to: Level; sign: Struggle }
   | { kind: 'spend'; id: string; w: Watch }
@@ -1287,6 +1290,10 @@ async function bandAnswered($: EngineInterface, why: BandWhy, v: unknown) {
       return
     case 'output':
       return answerOutput($, v)
+    case 'watchTrial':
+      return answerWatchTrial($, v)
+    case 'watchSummary':
+      return
     case 'stuck': {
       const { run, cur, to, sign, step } = why
       // The rule part of the answer stands, whether or not the turn still runs. A raise applies only while that turn runs, from its next request.
@@ -1319,6 +1326,10 @@ async function bandUnanswered($: EngineInterface, why: BandWhy) {
       return logUnanswered($, 'Workflow', 'rightsize paused for this workflow; not saved')
     case 'output':
       return logUnanswered($, 'Output', 'the output style is unchanged')
+    case 'watchTrial':
+      return logUnanswered($, 'Watch only', 'watch only stays on')
+    case 'watchSummary':
+      return
     case 'stuck':
       return logUnanswered($, 'Stuck', `kept ${why.cur}`)
     case 'helper':
@@ -1402,6 +1413,7 @@ async function putConfig($: EngineInterface, key: SettingKey, value: string) {
   yours = mark(yours, key, !unset)
   if (!unset) await forgetReset($, key)
   applyOption(key)
+  if (key === 'mode') await watchTransition($)
   await writeSetting($, key, value).catch(() => undefined)
   return true
 }
@@ -4487,6 +4499,7 @@ async function resetSettings($: EngineInterface, keys: readonly SettingKey[], al
     cfg = { ...cfg, [key]: dflt }
     yours = mark(yours, key, false)
     applyOption(key)
+    if (key === 'mode') await watchTransition($)
     const rule = RULE_IDS.find(r => RULE_KEYS[r] === key)
     if (rule) await followRuleRow($, rule, dflt)
     else if (changes) await followRow($, key, dflt)
@@ -4604,6 +4617,132 @@ async function stopStartTips($: EngineInterface) {
   await putConfig($, 'startTips', 'off')
   await setBand($, null)
   $.ui.toast('Rightsize: no more starting-model suggestions. Start suggestions in /config turns them back on.')
+}
+
+// ---- Watch only: the trial-end row and the turn-off summary (ADR 0058) ---------------------------------------------
+//
+// Rightsize saves when a watch-only period starts (`$.store`, like measureFrom). Seven days later, at a turn end, one band
+// row shows what the Saving check says rightsize would have saved, with three answers. When watch only is turned off, one
+// summary row shows the same range at the next turn end, unless the person chose Turn on in the trial-end row. Neither row holds a prompt.
+
+const WATCH_STORE = 'watchPeriod'
+const WATCH_HEADER = 'Watch only'
+/** Full days of watch only before the trial-end row shows. */
+const WATCH_TRIAL_DAYS = 7
+
+type WatchAnswer = 'on' | 'ask' | 'keep'
+/** One watch-only period: when it started (ISO, UTC) and ended, whether the trial-end row showed, how it was answered, whether the summary showed. */
+type WatchPeriod = { since: string; until?: string; trialShown?: true; answer?: WatchAnswer; summaryShown?: true }
+
+function parseWatchPeriod(v: unknown): WatchPeriod | undefined {
+  if (!v || typeof v !== 'object') return undefined
+  const o = v as Record<string, unknown>
+  const iso = (x: unknown): x is string => typeof x === 'string' && Number.isFinite(Date.parse(x))
+  if (!iso(o.since)) return undefined
+  return {
+    since: o.since,
+    ...(iso(o.until) ? { until: o.until } : {}),
+    ...(o.trialShown === true ? { trialShown: true as const } : {}),
+    ...(o.answer === 'on' || o.answer === 'ask' || o.answer === 'keep' ? { answer: o.answer } : {}),
+    ...(o.summaryShown === true ? { summaryShown: true as const } : {}),
+  }
+}
+
+async function readWatchPeriod($: EngineInterface) {
+  return parseWatchPeriod(await $.store.get(WATCH_STORE).catch(() => undefined))
+}
+
+async function writeWatchPeriod($: EngineInterface, p: WatchPeriod) {
+  await $.store.set(WATCH_STORE, p).catch(() => undefined)
+}
+
+/**
+ * Brings the stored period in line with Mode: watch only on with no open period starts one now (a new period, or the first load);
+ * watch only off ends the open one. Runs wherever Mode can change, at session start and at each turn end. Safe to repeat.
+ */
+async function watchTransition($: EngineInterface) {
+  try {
+    const p = await readWatchPeriod($)
+    const now = new Date(await $.clock.now()).toISOString()
+    if (watching && (!p || p.until)) {
+      await writeWatchPeriod($, { since: now })
+      await log($, 'watch only: a new period starts')
+    } else if (!watching && p && !p.until) {
+      await writeWatchPeriod($, { ...p, until: now })
+      await log($, 'watch only: the period ended')
+    }
+  } catch {
+    // The period is not tracked this time; the next change tries again.
+  }
+}
+
+const daysText = (ms: number) => {
+  const n = Math.floor(ms / DAY_MS)
+  return n < 1 ? 'less than a day' : `${n} day${n === 1 ? '' : 's'}`
+}
+
+/** The run lines of one period. */
+const inPeriod = (lines: readonly RunLine[], from: number, to: number) => lines.filter(l => Date.parse(l.at) >= from && Date.parse(l.at) <= to)
+
+/** The sentence about the period's saving: the range, or `none` when it rounds to nothing. */
+function watchFigure(c: Extract<WatchCheck, { ok: true }>, range: (r: string) => string, none: string) {
+  const r = watchRange(c)
+  return r ? range(r) : none
+}
+
+/** At a main turn end: the trial-end row, or the turn-off summary, when one is due and the band can show it. Never throws. */
+async function watchRows($: EngineInterface) {
+  try {
+    await watchTransition($)
+    if (off || onBand(WATCH_HEADER) || !(await bandCanAsk($))) return
+    const p = await readWatchPeriod($)
+    if (!p) return
+    const now = await $.clock.now()
+    const from = Date.parse(p.since)
+    if (watching && !p.until) {
+      if (p.trialShown || now - from < WATCH_TRIAL_DAYS * DAY_MS) return
+      const c = watchCheck(inPeriod(await readRuns($), from, now))
+      // Shown once: marked before it shows, so a closed or ignored row does not come back.
+      await writeWatchPeriod($, { ...p, trialShown: true })
+      const figure = c.ok
+        ? watchFigure(c, r => `rightsize would have cut your cost by about ${r}.`, 'rightsize would not have saved anything on these prompts.')
+        : 'Not enough turns yet to estimate.'
+      await log($, `watch only: trial-end row shown after ${daysText(now - from)} (${c.ok ? `range ${watchRange(c) ?? 'none'}, ${c.rated} rated prompts` : `${c.rated} rated prompts, not enough`})`)
+      const q: Question<WatchAnswer> = {
+        header: WATCH_HEADER,
+        question: `Watch only has run for ${daysText(now - from)}. ${figure} Turn rightsize on?`,
+        options: [['Turn on', 'on'], ['Ask before changing', 'ask'], ['Keep watching', 'keep']],
+        ifNone: 'watch only stays on',
+      }
+      await askBand($, q, 'prompt', true, { kind: 'watchTrial' })
+      return
+    }
+    if (!watching && p.until && !p.summaryShown && p.answer !== 'on') {
+      const to = Date.parse(p.until)
+      const c = watchCheck(inPeriod(await readRuns($), from, to))
+      await writeWatchPeriod($, { ...p, summaryShown: true })
+      const span = `In ${daysText(to - from)} of watch only`
+      const text = c.ok
+        ? watchFigure(c, r => `${span}, rightsize would have saved about ${r}.`, `${span}, rightsize would not have saved anything.`)
+        : `${span}, rightsize rated ${c.rated} prompt${c.rated === 1 ? '' : 's'}. Not enough turns yet to estimate.`
+      await log($, `watch only: turn-off summary shown (${text})`)
+      await askBand($, { header: WATCH_HEADER, question: text, options: [['OK', 'ok']] }, 'prompt', true, { kind: 'watchSummary' })
+    }
+  } catch (err) {
+    await log($, `watch only rows failed: ${err instanceof Error ? err.message : String(err)}`).catch(() => undefined)
+  }
+}
+
+/** The answer on the trial-end row. Turn on and Ask before changing set Mode to act; Keep watching changes nothing. */
+async function answerWatchTrial($: EngineInterface, v: unknown) {
+  if (v !== 'on' && v !== 'ask' && v !== 'keep') return
+  const p = await readWatchPeriod($)
+  if (p && !p.until) await writeWatchPeriod($, { ...p, answer: v })
+  await log($, `watch only: trial-end row answered: ${v === 'on' ? 'Turn on' : v === 'ask' ? 'Ask before changing' : 'Keep watching'}`)
+  if (v === 'keep') return
+  if (v === 'ask') await changeRow($, 'askFirst', 'on')
+  await changeRow($, 'mode', 'act')
+  $.ui.toast(v === 'ask' ? 'Rightsize is on, and asks before changing.' : 'Rightsize is on.')
 }
 
 // ---- Welcome, tips and the star ask (ADR 0039) ------------------------------------
@@ -5200,6 +5339,7 @@ export const register: Register = (on, options) => {
     yours = afterSet(yours, e.key, result.value, e.origin)
     if (yours.has(key)) await forgetReset($, key)
     applyOption(key)
+    if (key === 'mode') await watchTransition($)
     await followRow($, key, result.value)
     await bumpMenu($)
     return result
@@ -5293,6 +5433,7 @@ export const register: Register = (on, options) => {
     if (resetFields.size !== resetBefore.length) await $.store.set('resetFields', [...resetFields]).catch(() => undefined)
     const from = await $.store.get('measureFrom').catch(() => undefined)
     measureFrom = typeof from === 'string' && Number.isFinite(Date.parse(from)) ? Date.parse(from) : 0
+    await watchTransition($)
     const gaps = manifestGaps(declared, yours)
     if (gaps.length) await log($, `settings: plugin.json and the settings table disagree: ${gaps.join('; ')}`)
     await setBandMode($, bandMode)
@@ -6193,6 +6334,7 @@ export const register: Register = (on, options) => {
     if (e.agentId === undefined && !e.isAborted) await coldCheck($).catch(err => log($, `before the cache goes cold failed: ${err instanceof Error ? err.message : String(err)}`))
     if (e.agentId === undefined && !e.isAborted) await limitCheck($)
     if (e.agentId === undefined && !e.isAborted) await sizeCheck($)
+    if (e.agentId === undefined && !e.isAborted) await watchRows($)
     if (e.agentId === undefined && !e.isAborted) await tipCheck($).catch(() => undefined)
     if (e.agentId === undefined && !e.isAborted) await outputCheck($)
     // whatsnext's wrap-up before a compaction ended: the compaction follows (after coldCheck, which cancels timers), from a timer (the hook does not wait for it). An interrupted wrap-up stops it.

@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { checkRows, savingCheck } from './check'
+import { checkRows, savingCheck, watchCheck, watchRange, WATCH_MIN } from './check'
 import type { RunLine } from './report'
 
 const at = '2026-11-10T12:00:00.000Z'
@@ -84,4 +84,50 @@ test('check: when the correction removes the saving, it says so', () => {
   expect(rows.table.join('\n')).toMatch(/Saved\s+~\$\S+\s+(~\$.* more|about even)/)
   expect(rows.lead[0]).toMatch(/^After checking against real costs, rightsize did not save/)
   expect(rows.lead[1]).toContain('API prices')
+})
+
+// ---- Watch only: the same method on a period where nothing was applied (ADR 0058) ----
+
+test('watchCheck: the saving is the would-have-saved share of what all the prompts cost, matched by kind of work', () => {
+  // 30 prompts predicted $1 and costing $0.80; 10 of them would have gone to a route estimated at $0.40.
+  const lines = [...many(20, { actual: 0.8 }), ...many(10, { actual: 0.8, would: 'lower', wouldTaken: 0.4 })]
+  const c = watchCheck(lines)
+  expect(c.ok).toBe(true)
+  if (!c.ok) return
+  expect(c.rated).toBe(30)
+  expect(c.changed).toBe(10)
+  // Saved 10 x (1 - 0.4) x 0.8 = 4.8 of 30 x 0.8 = 24: 20%.
+  expect(Math.round(c.lo * 1000) / 1000).toBe(0.2)
+  expect(Math.round(c.hi * 1000) / 1000).toBe(0.2)
+  expect(watchRange(c)).toBe('20%')
+})
+
+test('watchCheck: the range runs between the per-kind rates and the overall rate', () => {
+  // feature: 20 prompts cost what was predicted. search: 10 prompts cost half. 5 of the search prompts would have gone to a $0.50 route.
+  const lines = [...many(20, { type: 'feature', actual: 1 }), ...many(5, { type: 'search', actual: 0.5 }), ...many(5, { type: 'search', actual: 0.5, would: 'delegate-down', wouldTaken: 0.5 })]
+  const c = watchCheck(lines)
+  expect(c.ok).toBe(true)
+  if (!c.ok) return
+  // Per kind: saved 5 x 0.5 x 0.5 = 1.25 of 20 + 5 = 25: 5%. Overall (0.8333): saved 2.083 of 25: 8.33%.
+  expect(Math.round(c.lo * 10000) / 10000).toBe(0.05)
+  expect(Math.round(c.hi * 10000) / 10000).toBe(0.0833)
+  expect(watchRange(c)).toBe('5–8%')
+})
+
+test('watchCheck: under 20 rated prompts gives no range; aborted and unpriced prompts are not rated', () => {
+  expect(WATCH_MIN).toBe(20)
+  const c = watchCheck([...many(19, { would: 'lower', wouldTaken: 0.4 }), run({ aborted: true }), run({ stay: 0 }), run({ actual: 0 }), run({ kind: 'subagent' })])
+  expect(c).toEqual({ ok: false, rated: 19 })
+  expect(watchCheck(many(20, { would: 'lower', wouldTaken: 0.4 })).ok).toBe(true)
+  expect(watchCheck([])).toEqual({ ok: false, rated: 0 })
+})
+
+test('watchCheck: prompts that stepped up claim no saving, a raise is no saving', () => {
+  const lines = [...many(20, { actual: 1 }), ...many(5, { steppedUp: true, would: 'lower', wouldTaken: 0.1 }), ...many(5, { would: 'raise', wouldTaken: 2 })]
+  const c = watchCheck(lines)
+  expect(c.ok).toBe(true)
+  if (!c.ok) return
+  expect(c.changed).toBe(0)
+  expect(c.lo).toBe(0)
+  expect(watchRange(c), 'nothing to say').toBeUndefined()
 })

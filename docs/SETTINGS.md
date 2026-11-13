@@ -30,7 +30,7 @@ An "ask" answer opens its own timed dialog (see **Question wait**); every other 
 - Key: `mode`
 - Options: act · watch only
 - Default: act
-- act (default): rightsize changes effort, switches reviews to Opus and hands work to helpers as your rules say. watch only: it rates and plans every prompt, applies nothing, and the band says what it would have done; /rightsize report sums what that would have saved. Use it for a week to see rightsize's calls on your own work before turning it on.
+- act (default): rightsize changes effort, switches reviews to Opus and hands work to helpers as your rules say. watch only: it rates and plans every prompt, applies nothing, and the band says what it would have done; /rightsize report sums what that would have saved. Use it for a week to see rightsize's calls on your own work before turning it on. rightsize saves the date (UTC) watch only was turned on. Seven full days later, at a turn end, one band row shows what the Saving check says rightsize would have saved, with three answers: **Turn on** (Mode becomes act), **Ask before changing** (Mode becomes act and Ask before changing goes on) and **Keep watching** (nothing changes). It shows once per watch-only period and never holds a prompt. With fewer than 20 rated prompts it says "Not enough turns yet to estimate" instead of a range. When you turn watch only off, the next turn end shows one summary row with the same range for the days it ran, unless you chose Turn on in that row. Turning watch only on again starts a new period.
 
 ### Routing
 

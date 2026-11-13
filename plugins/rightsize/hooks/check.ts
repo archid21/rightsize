@@ -111,6 +111,70 @@ export function savingCheck(lines: readonly RunLine[]): Check {
   }
 }
 
+/** Rated prompts a watch-only period needs before the Saving check gives a range (starting value, tunable). */
+export const WATCH_MIN = 20
+
+export type WatchCheck =
+  | { ok: false; rated: number }
+  | {
+      ok: true
+      /** Rated prompts in the period, and how many of them rightsize would have lowered or handed to a cheaper model. */
+      rated: number
+      changed: number
+      /** The saving as a share (0 to 1) of what all the period's prompts cost: the smaller and the larger end of the range. */
+      lo: number
+      hi: number
+    }
+
+/**
+ * The Saving check for a watch-only period (ADR 0058). Nothing was applied there, so every prompt ran as staying, and its real cost
+ * against its `stay` prediction gives the factor, per kind of work (overall for a kind under TYPE_MIN prompts), as savingCheck does.
+ * A prompt rightsize would have lowered or handed down is re-priced: corrected `stay` minus corrected `wouldTaken`. The saving is
+ * taken once with the per-kind factors and once with the overall one: the range runs between them. The share is of all the period's
+ * prompts, corrected the same way. Pass the period's run lines.
+ */
+export function watchCheck(lines: readonly RunLine[]): WatchCheck {
+  const runs = lines.filter(l => usable(l) && (l.change ?? 'none') === 'none')
+  if (runs.length < WATCH_MIN) return { ok: false, rated: runs.length }
+  const all = empty()
+  const byType = new Map<string, Group>()
+  for (const l of runs) {
+    if (unclaimed(l)) continue
+    const g = byType.get(l.type ?? '') ?? empty()
+    byType.set(l.type ?? '', g)
+    add(g, num(l.stay), num(l.actual))
+    add(all, num(l.stay), num(l.actual))
+  }
+  const overall = all.n ? all.actual / all.stay : 1
+  const share = (perKind: boolean) => {
+    let total = 0
+    let saved = 0
+    for (const l of runs) {
+      // A prompt that stepped up or ran after a workflow claims no saving, and counts at what it cost.
+      if (unclaimed(l)) {
+        total += num(l.actual)
+        continue
+      }
+      const g = byType.get(l.type ?? '')
+      const f = perKind && g && g.n >= TYPE_MIN ? g.actual / g.stay : overall
+      total += num(l.stay) * f
+      if (l.would && SAVING.includes(l.would)) saved += (num(l.stay) - num(l.wouldTaken)) * f
+    }
+    return total > 0 ? saved / total : 0
+  }
+  const a = share(true)
+  const b = share(false)
+  return { ok: true, rated: runs.length, changed: runs.filter(l => !unclaimed(l) && l.would && SAVING.includes(l.would)).length, lo: Math.min(a, b), hi: Math.max(a, b) }
+}
+
+/** "12–18%", or "15%" when both ends round the same; undefined when the saving rounds to nothing. */
+export function watchRange(c: Extract<WatchCheck, { ok: true }>): string | undefined {
+  const lo = Math.max(0, Math.round(c.lo * 100))
+  const hi = Math.max(0, Math.round(c.hi * 100))
+  if (hi === 0) return undefined
+  return lo === hi ? `${hi}%` : `${lo}–${hi}%`
+}
+
 const tilde = (usd: number) => (money(usd).startsWith('under') ? money(usd) : `~${money(usd)}`)
 
 const pct = (part: number, whole: number) => Math.round((part / whole) * 100)

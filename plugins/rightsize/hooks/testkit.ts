@@ -616,6 +616,8 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
     if (during) await during()
     return { text: e.text } as never
   })
+  // The settings hook beneath the plugins: nothing to say.
+  reg('classic.UserPromptSubmit', async () => ({}) as never)
   reg('turn.start', async ($, e) => ({ turnId: e.turnId }) as never)
   reg('turn.step', async function* ($, e) {
     h.sent.push({ effort: e.effort, model: e.model, agentId: e.agentId, turnId: e.turnId })

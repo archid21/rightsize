@@ -666,6 +666,15 @@ let spending: Promise<unknown> = Promise.resolve()
 let pluginRoot = ''
 
 const fromPerson = (e: PromptSubmitInput) => e.origin.kind === 'composer' || e.origin.kind === 'bridge'
+
+// P-25 (ADR 0065): a turn the person did not type logs one 'auto' line with its prompt origin, so P-17 rests on logged origins.
+// It is not a rated run: nothing rates it, routes it or counts it in a total.
+type Auto = { origin: string; text: string; turnId?: string; ledgerStart?: number }
+/** Non-typed prompts whose turn has not started, oldest first. A turn takes the first one with its text (turn.start). */
+let autoPending: Auto[] = []
+const autoTurns = new Map<string, Auto>()
+/** The `source` the UserPromptSubmit hook carried, by prompt text (`loop_wakeup`, `schedule_wakeup`): the last few. */
+let promptSources: { text: string; source: string }[] = []
 const names = (tiers: readonly Tier[]) => tiers.map(t => TIER_NAME[t]).join(' or ')
 
 // ---- Files -----------------------------------------------------------------
@@ -2287,6 +2296,27 @@ function addOutput(run: Run, split: OutputSplit, requestCost: number) {
   o.thinkingCost += split.thinkingCost
   o.codeCost += split.codeCost
   o.requestCost += requestCost
+}
+
+/** The 'auto' line of a turn the person did not type: its prompt origin (and, for a scheduled trigger, the hook's source), its size and cost. */
+async function finishAuto($: EngineInterface, turnId: string, aborted: boolean) {
+  const a = autoTurns.get(turnId)
+  if (!a) return
+  autoTurns.delete(turnId)
+  const end = (await usageNow($))?.cost?.usd
+  const cost = end === undefined || a.ledgerStart === undefined ? 0 : end - a.ledgerStart
+  const source = a.origin === 'scheduled-trigger' ? [...promptSources].reverse().find(x => x.text === a.text)?.source : undefined
+  await appendRun($, {
+    at: new Date().toISOString(),
+    kind: 'auto',
+    session: sessionId,
+    turnId,
+    origin: a.origin,
+    ...(source ? { source } : {}),
+    context: lastContext,
+    ...(cost > 0 ? { cost: round(cost) } : {}),
+    aborted,
+  } as RunLine).catch(err => log($, `auto line failed: ${err instanceof Error ? err.message : String(err)}`))
 }
 
 async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs: number) {
@@ -5771,6 +5801,8 @@ export const register: Register = (on, options) => {
       coldPrompt = null
       return next(e)
     }
+    // A prompt the person did not type, entering as a turn of its own: its origin is logged when its turn ends.
+    if (!off && !fromPerson(e) && e.turnId === undefined) autoPending.push({ origin: e.origin.kind, text: e.text.trim() })
     // The person is back: keep-warm requests, a waiting handoff and a waiting offer stop, and the next big turn's end starts afresh.
     if (!off && fromPerson(e) && !e.command && !e.isMeta) {
       coldDone = false
@@ -5996,6 +6028,12 @@ export const register: Register = (on, options) => {
 
   // A turn starting is how a prompt finds its turn. Prompts typed while a turn runs wait in line, and the turn
   // that starts for one carries its text, so each run is bound to its own turn, not to whichever starts next.
+  // The settings hook's `source` says which kind of scheduled trigger a prompt was: only the origin kind is on prompt.submit.
+  on('classic.UserPromptSubmit', async ($, e, next) => {
+    if (e.source === 'loop_wakeup' || e.source === 'schedule_wakeup') promptSources = [...promptSources.slice(-9), { text: e.prompt.trim(), source: e.source }]
+    return next(e)
+  }).catch((_, e, next) => next(e))
+
   on('turn.start', async ($, e, next) => {
     if (e.agentId !== undefined) return next(e)
     mainBusy = true
@@ -6013,6 +6051,15 @@ export const register: Register = (on, options) => {
     const gone = passed.filter(r => r !== mine && r.during !== undefined && completed.has(r.during) && !r.entering)
     pending = pending.filter(r => r !== mine && !gone.includes(r))
     if (mine) await bind($, mine, e.turnId)
+    else {
+      const a = autoPending.find(x => x.text === text)
+      if (a) {
+        autoPending = autoPending.filter(x => x !== a)
+        a.turnId = e.turnId
+        a.ledgerStart = (await usageNow($))?.cost?.usd
+        autoTurns.set(e.turnId, a)
+      }
+    }
     for (const r of gone) await unbind($, r, 'delivered into the running turn')
     return next(e)
   }).catch((_, e, next) => next(e))
@@ -6534,6 +6581,7 @@ export const register: Register = (on, options) => {
       await knowBilling($, false)
       await refreshTtl($)
       await rememberTurn($)
+      await finishAuto($, e.turnId, e.isAborted)
     }
     if (e.agentId === undefined && active && active.turnId === e.turnId) {
       const run = active

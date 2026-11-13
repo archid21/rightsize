@@ -778,7 +778,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(runLines(h).some(l => l.kind === 'check')).toBe(true)
   })
 
-  test(`Rater set to haiku rates with Haiku, retries a timeout once on Haiku, and never calls Sonnet to rate (${surface})`, { timeoutMs: 30000, options: { rater: 'haiku' } }, async ($, on) => {
+  test(`Rater set to haiku rates with Haiku, retries a timeout once on Haiku, and never calls Sonnet to rate (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', stored: { rater: 'haiku' } })
     const d = drive($, h)
     await d.start(surface)
@@ -790,7 +790,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.ratingQueue = ['unavailable']
     await d.submit(LOOKUP)
     expect(h.completions, 'a refused rater is not asked again').toEqual(['haiku'])
-    expect((await d.command('status')).text ?? '').toContain('Rater: haiku')
+    expect((await d.command('status')).text ?? '', 'Rater is no setting to list: its stored value is used, not shown').not.toContain('Rater:')
   })
 
   test(`on a Sonnet session a debug rating at high does not raise effort, and stuck detection still can (${surface})`, { timeoutMs: 30000 }, async ($, on) => {

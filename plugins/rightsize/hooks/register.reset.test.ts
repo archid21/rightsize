@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import { CAL_STORE } from './cost'
-import { KEYS, SETTINGS, type SettingKey, plainTitle } from './settings'
+import { FIXED_ROWS, KEYS, PANE_KEYS, SETTINGS, type SettingKey, plainTitle } from './settings'
 import { RUNS_FILE, LOG_PATH, LEGACY_RUNS, LOOKUP, DEBUG, NO_ONE, SEARCH, NO_CHANGE, FREE_SWITCHES, cellsOf, engine, drive, settle, DAY, last, bandText, LOWER } from './testkit'
 
 declare const setTimeout: (fn: (...a: unknown[]) => void, ms: number) => unknown
@@ -278,7 +278,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.start(surface)
     const out = (await d.command('reset hand off threshhold')).text ?? ''
     expect(out).toContain('No setting called "hand off threshhold".')
-    for (const key of KEYS) expect(out, key).toContain(key)
+    for (const key of PANE_KEYS) expect(out, key).toContain(key)
+    for (const key of FIXED_ROWS) expect(out, `${key} is not a setting to reset`).not.toContain(key)
     expect(h.asked).toEqual([])
   })
 
@@ -304,7 +305,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
       expect(report, 'what went wrong reads the whole history').toMatch(/Haiku's judgement +wrong on 3 of 6 checked prompts \(50%\)/)
       expect(report, 'but nothing is paused any more').not.toContain('Hand-downs paused')
       // Settings stay unless Both.
-      expect(await settingsText(d)).toContain(choice === 'Both' ? `All ${KEYS.length} settings are at their defaults` : 'Lowering: lower automatically')
+      expect(await settingsText(d)).toContain(choice === 'Both' ? `All ${PANE_KEYS.length} settings are at their defaults` : 'Lowering: lower automatically')
     })
   }
 

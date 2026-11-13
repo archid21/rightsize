@@ -86,9 +86,11 @@ import { confidence, missCounts, missMap, ownTasks, pauseRates } from './misses'
 import { START_CHECK_DAYS, START_MIN_PROMPTS, START_SNOOZE_DAYS, adviseStart, startBlock, startKey, startTip } from './start'
 import {
   ADVANCED,
+  FIXED_ROWS,
   KEYS,
   NOT_SET,
   FIXED,
+  PANE_KEYS,
   RULE_KEYS,
   SETTINGS,
   type SettingKey,
@@ -98,6 +100,7 @@ import {
   askFirstOn,
   defaults,
   fieldsSet,
+  fixedValueOf,
   inOptions,
   inUse,
   legacyAskFirst,
@@ -4299,7 +4302,7 @@ async function summary($: EngineInterface) {
   // Only the settings you set in /config or answered: the rest are defaults, and /config shows them.
   const changed: string[] = []
   const cur = inUse(cfg, yours, askFirst)
-  for (const key of KEYS) {
+  for (const key of PANE_KEYS) {
     const rule = RULE_IDS.find(r => RULE_KEYS[r] === key)
     if (rule) {
       if (c[rule] !== undefined) changed.push(`  ${plainTitle(SETTINGS[key].title)}: ${ruleLabel(rule, c[rule])}`)
@@ -4312,8 +4315,8 @@ async function summary($: EngineInterface) {
     off ? 'Off. Turn it on with /mods.' : 'On.',
     '',
     n
-      ? `You changed ${n} setting${n === 1 ? '' : 's'}. The other ${KEYS.length - n} are defaults (list them with claude plugin configure rightsize@archid21).`
-      : `All ${KEYS.length} settings are at their defaults (list them with claude plugin configure rightsize@archid21).`,
+      ? `You changed ${n} setting${n === 1 ? '' : 's'}. The other ${PANE_KEYS.length - n} are defaults (list them with claude plugin configure rightsize@archid21).`
+      : `All ${PANE_KEYS.length} settings are at their defaults (list them with claude plugin configure rightsize@archid21).`,
     ...changed,
     '',
     'Now',
@@ -4381,7 +4384,7 @@ async function openSettings($: EngineInterface) {
 async function askSettings($: EngineInterface) {
   const changed: string[] = []
   for (;;) {
-    const asking: Question<SettingKey | 'done'> = { header: 'Setting', question: 'Which setting? A change takes effect at once.', options: [['Done', 'done'], ...KEYS.map(k => [`${plainTitle(SETTINGS[k].title)}: ${cfg[k]}`, k] as const)] }
+    const asking: Question<SettingKey | 'done'> = { header: 'Setting', question: 'Which setting? A change takes effect at once.', options: [['Done', 'done'], ...PANE_KEYS.map(k => [`${plainTitle(SETTINGS[k].title)}: ${cfg[k]}`, k] as const)] }
     const rows = await pickFrom($, asking, 'Setting', 'More rows')
     if (rows === undefined || rows === 'done') break
     const key = rows
@@ -4539,7 +4542,7 @@ async function runReset($: EngineInterface, name: string): Promise<string> {
   name = name.trim()
   if (name) {
     const key = settingNamed(name)
-    if (!key) return `No setting called "${name}". Settings: ${KEYS.join(', ')}. /rightsize reset with no name resets all settings, the cost measurement, or both.`
+    if (!key) return `No setting called "${name}". Settings: ${PANE_KEYS.join(', ')}. /rightsize reset with no name resets all settings, the cost measurement, or both.`
     what = key
   } else {
     const a = await pick($, qReset)
@@ -4548,7 +4551,7 @@ async function runReset($: EngineInterface, name: string): Promise<string> {
   }
   if ((await pick($, qConfirm(confirmText(what)))) !== true) return 'Nothing was reset.'
   const out: string[] = []
-  if (what === 'settings' || what === 'both') out.push(await resetSettings($, KEYS, true))
+  if (what === 'settings' || what === 'both') out.push(await resetSettings($, PANE_KEYS, true))
   else if (what !== 'measurement') out.push(await resetSettings($, [what], false))
   if (what === 'measurement' || what === 'both') out.push(await resetMeasurement($))
   return out.join(' ')
@@ -5329,7 +5332,7 @@ export const register: Register = (on, options) => {
   // One hook for all rows: it passes on every event that is not one of rightsize's own rows.
   on('config.set', async ($, e, next) => {
     const name = e.key.startsWith('rightsize.') ? e.key.slice('rightsize.'.length) : ''
-    const key = KEYS.find(k => k === name)
+    const key = PANE_KEYS.find(k => k === name)
     if (key === undefined) return next(e)
     const result = await next(e)
     if (result.deny !== undefined || !inOptions(key, result.value)) return result
@@ -5426,6 +5429,11 @@ export const register: Register = (on, options) => {
     const configs = await $.settings.read({ key: 'pluginConfigs' }).catch(() => undefined)
     const resetBefore = resetKeys(await $.store.get('resetFields').catch(() => undefined))
     yours = fieldsSet(configs, declared, resetBefore)
+    // The fixed rows have no pane row. A value settings.json still holds for one is kept and used; none stored, the fixed value.
+    for (const key of FIXED_ROWS) {
+      cfg = { ...cfg, [key]: fixedValueOf(key, configs) }
+      applyOption(key)
+    }
     legacyQuality = legacyAskFirst(configs)
     // What the fixed values govern depends on which rows are yours, now known.
     applyFixed()
@@ -6277,8 +6285,8 @@ export const register: Register = (on, options) => {
     // Read while drawing: a change in the pane (or in /config) writes it, and the pane draws again.
     await $.state.get(MENU).catch(() => undefined)
     const line = (key: SettingKey) => `${rowLabel(key)}: ${cfg[key]}`
-    const plain = KEYS.filter(k => !SETTINGS[k].title.startsWith(ADVANCED))
-    const advanced = KEYS.filter(k => SETTINGS[k].title.startsWith(ADVANCED))
+    const plain = PANE_KEYS.filter(k => !SETTINGS[k].title.startsWith(ADVANCED))
+    const advanced = PANE_KEYS.filter(k => SETTINGS[k].title.startsWith(ADVANCED))
     if (e.surface === 'mobile') {
       const { Box, Button, Text } = $.ui.resolve(e)
       return (
@@ -6294,7 +6302,7 @@ export const register: Register = (on, options) => {
     // The keys come first: Tab moving between rows is the engine's, and nothing else says so.
     // The first row takes the keys when the pane opens focused.
     const row = (key: SettingKey) => (
-      <Select key={`row-${key}`} label={rowLabel(key)} options={SETTINGS[key].options.map(value => ({ value }))} value={cfg[key]} {...(key === KEYS[0] ? { autoFocus: true as const } : {})} onSelect={value => void setFromMenu($, key, value)} />
+      <Select key={`row-${key}`} label={rowLabel(key)} options={SETTINGS[key].options.map(value => ({ value }))} value={cfg[key]} {...(key === PANE_KEYS[0] ? { autoFocus: true as const } : {})} onSelect={value => void setFromMenu($, key, value)} />
     )
     return (
       <Box flexDirection="column">

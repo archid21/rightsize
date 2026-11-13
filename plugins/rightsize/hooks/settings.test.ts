@@ -1,9 +1,11 @@
 import { expect, test } from 'claude-code/testing'
 import {
   ADVANCED,
+  FIXED_ROWS,
   KEYS,
   NOT_SET,
   FIXED,
+  PANE_KEYS,
   RULE_KEYS,
   RULE_LABELS,
   SETTINGS,
@@ -11,6 +13,7 @@ import {
   afterSet,
   defaults,
   fieldsSet,
+  fixedValueOf,
   inOptions,
   inUse,
   isKey,
@@ -148,11 +151,14 @@ test('plugin.json is checked against the table: a missing or unlisted field, or 
   const { ceiling: _, ...short } = defaults()
   expect(manifestGaps(short, set())).toEqual(['ceiling is not declared'])
   expect(manifestGaps({ ...defaults(), extra: 'x' }, set())).toEqual(['extra is not in the table'])
-  expect(manifestGaps(undefined, set()).length, 'nothing declared').toBe(KEYS.length)
+  expect(manifestGaps(undefined, set()).length, 'nothing declared').toBe(PANE_KEYS.length)
+  // The three fixed rows have no pane row: plugin.json need not declare them, and one that reaches the options is not a gap.
+  expect(manifestGaps(Object.fromEntries(PANE_KEYS.map(k => [k, SETTINGS[k].default])), set())).toEqual([])
+  expect(manifestGaps({ ...Object.fromEntries(PANE_KEYS.map(k => [k, SETTINGS[k].default])), rater: 'haiku' }, set())).toEqual([])
 })
 
 
-test('Workflows asks by default, and Price check is monthly or off', async () => {
+test('Workflows asks by default, and Price check stored as "check now" counts as unset', async () => {
   expect(SETTINGS.workflows.title).toBe('Advanced · Workflows')
   expect([...SETTINGS.workflows.options]).toEqual(['ask', 'pause rightsize', 'follow my rules', 'right-size every agent'])
   expect(SETTINGS.workflows.default).toBe('ask')
@@ -160,6 +166,33 @@ test('Workflows asks by default, and Price check is monthly or off', async () =>
   // "check now" was a row value once: it is outside the options now, so it counts as unset and monthly applies.
   expect(valueOf('priceCheck', 'check now')).toBe('monthly')
   expect(fieldsSet({ rightsize: { options: { priceCheck: 'check now' } } }), 'a stored check now is not yours').toEqual(set())
+})
+
+test('Question wait, Price check and Rater are fixed: no pane row, the fixed value, and a stored value is kept and used', async () => {
+  expect([...FIXED_ROWS]).toEqual(['questionWait', 'priceCheck', 'rater'])
+  expect(PANE_KEYS.length).toBe(KEYS.length - 3)
+  for (const k of FIXED_ROWS) expect(PANE_KEYS.includes(k), `${k} is not a pane row`).toBe(false)
+  // The fixed values are the rows' defaults.
+  expect({ questionWait: SETTINGS.questionWait.default, priceCheck: SETTINGS.priceCheck.default, rater: SETTINGS.rater.default }).toEqual({ questionWait: '30 seconds', priceCheck: 'monthly', rater: 'sonnet' })
+  // Nothing stored: the fixed value.
+  expect(fixedValueOf('questionWait', undefined)).toBe('30 seconds')
+  expect(fixedValueOf('priceCheck', { rightsize: { options: {} } })).toBe('monthly')
+  expect(fixedValueOf('rater', undefined)).toBe('sonnet')
+  // A stored value is kept and used, under either plugin key.
+  expect(fixedValueOf('questionWait', { rightsize: { options: { questionWait: '2 minutes' } } })).toBe('2 minutes')
+  expect(fixedValueOf('priceCheck', { 'rightsize@archid21': { options: { priceCheck: 'off' } } })).toBe('off')
+  expect(fixedValueOf('rater', { rightsize: { options: { rater: 'haiku' } } })).toBe('haiku')
+  // A stored value that is not an option counts as unset: the fixed value applies.
+  expect(fixedValueOf('questionWait', { rightsize: { options: { questionWait: '5 minutes' } } })).toBe('30 seconds')
+  expect(fixedValueOf('priceCheck', { rightsize: { options: { priceCheck: 'check now' } } })).toBe('monthly')
+  // The options Claude Code passes do not set a fixed row: only settings.json does (valuesOf reads the default).
+  expect(valuesOf({ rater: 'haiku', questionWait: '2 minutes', priceCheck: 'off' })).toMatchObject({ rater: 'sonnet', questionWait: '30 seconds', priceCheck: 'monthly' })
+  // Not rows of /rightsize reset or of its settings list, and not named by a reset.
+  expect(settingNamed('rater')).toBeUndefined()
+  expect(settingNamed('Question wait')).toBeUndefined()
+  expect(settingNamed('priceCheck')).toBeUndefined()
+  // The pane declares every row but these three, each at its default: no gap.
+  expect(manifestGaps(Object.fromEntries(PANE_KEYS.map(k => [k, SETTINGS[k].default])), set())).toEqual([])
 })
 
 test('a setting is named by its key or its title, in any case', async () => {
@@ -177,9 +210,9 @@ test('a setting is named by its key or its title, in any case', async () => {
   expect(settingNamed('nope')).toBeUndefined()
   expect(settingNamed('')).toBeUndefined()
   expect(settingNamed('   ')).toBeUndefined()
-  for (const k of KEYS) expect(settingNamed(k), `${k} by key`).toBe(k)
-  for (const k of KEYS) expect(settingNamed(SETTINGS[k].title), `${k} by title`).toBe(k)
-  for (const k of KEYS) expect(settingNamed(plainTitle(SETTINGS[k].title)), `${k} by its title without the prefix`).toBe(k)
+  for (const k of PANE_KEYS) expect(settingNamed(k), `${k} by key`).toBe(k)
+  for (const k of PANE_KEYS) expect(settingNamed(SETTINGS[k].title), `${k} by title`).toBe(k)
+  for (const k of PANE_KEYS) expect(settingNamed(plainTitle(SETTINGS[k].title)), `${k} by its title without the prefix`).toBe(k)
   expect(settingNamed('advanced · idle warning'), 'the title as /config shows it, in any case').toBe('idleWarning')
 })
 
@@ -239,7 +272,7 @@ test('Mode is the first row: act or watch only, act by default, a plain row with
 })
 
 test('Routing, Hand-offs and Cache are rows 2, 3 and 5: on or off, on by default, plain rows without the Advanced prefix', async () => {
-  expect(KEYS.slice(0, 5)).toEqual(['mode', 'routing', 'handOffs', 'askFirst', 'cache'])
+  expect(KEYS.slice(0, 6)).toEqual(['mode', 'routing', 'handOffs', 'askFirst', 'cache', 'band'])
   const titles = { routing: 'Routing', handOffs: 'Hand-offs', cache: 'Cache' } as const
   for (const [k, title] of Object.entries(titles) as [keyof typeof titles, string][]) {
     expect(SETTINGS[k].title).toBe(title)
@@ -253,9 +286,12 @@ test('Routing, Hand-offs and Cache are rows 2, 3 and 5: on or off, on by default
   expect(settingNamed('lowering'), 'the Lowering rule row, by its title').toBe('lowerRule')
 })
 
-test('every other row is titled Advanced, so /config lists the five plain rows first and the rest as advanced', async () => {
+test('Band is a plain row: the six plain rows are Mode, Routing, Hand-offs, Ask before changing, Cache and Band; every other row is titled Advanced', async () => {
   expect(ADVANCED).toBe('Advanced · ')
-  for (const k of KEYS.filter(k => !['mode', 'routing', 'handOffs', 'askFirst', 'cache'].includes(k))) {
+  expect(SETTINGS.band.title).toBe('Band')
+  expect(plainTitle(SETTINGS.band.title)).toBe('Band')
+  expect(PANE_KEYS.filter(k => !SETTINGS[k].title.startsWith(ADVANCED))).toEqual(['mode', 'routing', 'handOffs', 'askFirst', 'cache', 'band'])
+  for (const k of KEYS.filter(k => !['mode', 'routing', 'handOffs', 'askFirst', 'cache', 'band'].includes(k))) {
     expect(SETTINGS[k].title.startsWith(ADVANCED), k).toBe(true)
     expect(plainTitle(SETTINGS[k].title).length, `${k} has a title after the prefix`).toBeGreaterThan(0)
   }

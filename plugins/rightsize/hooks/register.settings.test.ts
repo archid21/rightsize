@@ -1,6 +1,6 @@
 import { type TestBody, expect, test } from 'claude-code/testing'
 import { CAL_FULL, CAL_STORE, DEFAULT_PRICES, type Calibration, type Rating, type Situation, delegateCost, delegateKeys } from './cost'
-import { KEYS, SETTINGS, type SettingKey, inOptions, plainTitle } from './settings'
+import { FIXED_ROWS, KEYS, PANE_KEYS, SETTINGS, type SettingKey, inOptions, plainTitle } from './settings'
 import { RUNS_FILE, LOG_PATH, LEGACY_RUNS, LOOKUP, DEBUG, NO_ONE, SEARCH, REVIEW, NO_CHANGE, FREE_SWITCHES, NO_COLD, BIG_TURN, engine, drive, flush, settle, untilAsked, DAY, PAGE, OLD_PRICES, last, mount, bandText, LOWER, WHATSNEXT_CMDS, installWhatsnext } from './testkit'
 
 for (const surface of ['desktop', 'terminal'] as const) {
@@ -229,18 +229,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
       def: 'high',
     },
     {
-      key: 'rater',
-      value: 'haiku',
-      start: OPUS,
-      see: async c => {
-        c.h.rating = NO_CHANGE
-        await c.d.submit(LOOKUP)
-        return c.h.completions[0]
-      },
-      set: 'haiku',
-      def: 'sonnet',
-    },
-    {
       key: 'startTips',
       value: 'monthly',
       start: { ...OPUS, store: { startCheckedAt: 1_800_000_000_000 - 10 * DAY } },
@@ -315,41 +303,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
       def: '',
     },
     {
-      key: 'questionWait',
-      value: '2 minutes',
-      start: { model: 'claude-opus-5-5', effort: 'medium', store: { remember: true, choices: { raise: 'ask' } } },
-      see: async c => {
-        c.h.rating = RAISE_HIGH
-        c.h.answers = { Effort: NO_ONE }
-        c.h.sleepEnds = true
-        await c.d.submit(DEBUG)
-        const t = c.turn()
-        await c.d.step(t)
-        await c.d.complete(t)
-        // What the question says, and how long rightsize waited for it.
-        return [c.h.asked.find(a => a.header === 'Effort')?.question.match(/No answer in ([^:]+):/)?.[1], c.h.sleeps.includes(120_000)]
-      },
-      set: ['2 minutes', true],
-      def: ['30 seconds', false],
-    },
-    {
-      key: 'priceCheck',
-      value: 'off',
-      start: { ...OPUS, store: { pricesCheckedAt: 1_800_000_000_000 - 31 * DAY } },
-      setup: h => {
-        h.page = PAGE
-        h.pricesFile = OLD_PRICES
-      },
-      early: true,
-      see: async c => {
-        await c.d.start(c.surface)
-        await flush()
-        return c.h.fetches
-      },
-      set: 0,
-      def: 1,
-    },
-    {
       key: 'longHelpers',
       value: 'stop at the limit',
       start: { model: 'claude-fable-5-2', effort: 'high', store: { remember: true, choices: { raise: 'auto', down: 'auto' } } },
@@ -398,8 +351,9 @@ for (const surface of ['desktop', 'terminal'] as const) {
   ]
 
   test(`every setting has a scenario here, and every scenario's value is one of its options (${surface})`, async () => {
-    expect(CASES.map(c => c.key).sort()).toEqual([...KEYS].sort())
-    for (const c of CASES) {
+    expect(CASES.map(c => c.key).sort()).toEqual([...PANE_KEYS].sort())
+    expect(FIXED_CASES.map(c => c.key).sort()).toEqual([...FIXED_ROWS].sort())
+    for (const c of [...CASES, ...FIXED_CASES]) {
       expect(inOptions(c.key, c.value), `${c.key}: ${c.value}`).toBe(true)
       expect(c.value, `${c.key}: a value other than the default`).not.toBe(SETTINGS[c.key].default)
     }
@@ -418,6 +372,57 @@ for (const surface of ['desktop', 'terminal'] as const) {
     }
     return s
   }
+
+  // Question wait, Price check and Rater have no pane row. Each one's fixed value applies; a value settings.json holds for it is kept and used.
+  const FIXED_CASES: Case[] = [
+    {
+      key: 'rater',
+      value: 'haiku',
+      start: OPUS,
+      see: async c => {
+        c.h.rating = NO_CHANGE
+        await c.d.submit(LOOKUP)
+        return c.h.completions[0]
+      },
+      set: 'haiku',
+      def: 'sonnet',
+    },
+    {
+      key: 'questionWait',
+      value: '2 minutes',
+      start: { model: 'claude-opus-5-5', effort: 'medium', store: { remember: true, choices: { raise: 'ask' } } },
+      see: async c => {
+        c.h.rating = RAISE_HIGH
+        c.h.answers = { Effort: NO_ONE }
+        c.h.sleepEnds = true
+        await c.d.submit(DEBUG)
+        const t = c.turn()
+        await c.d.step(t)
+        await c.d.complete(t)
+        // What the question says, and how long rightsize waited for it.
+        return [c.h.asked.find(a => a.header === 'Effort')?.question.match(/No answer in ([^:]+):/)?.[1], c.h.sleeps.includes(120_000)]
+      },
+      set: ['2 minutes', true],
+      def: ['30 seconds', false],
+    },
+    {
+      key: 'priceCheck',
+      value: 'off',
+      start: { ...OPUS, store: { pricesCheckedAt: 1_800_000_000_000 - 31 * DAY } },
+      setup: h => {
+        h.page = PAGE
+        h.pricesFile = OLD_PRICES
+      },
+      early: true,
+      see: async c => {
+        await c.d.start(c.surface)
+        await flush()
+        return c.h.fetches
+      },
+      set: 0,
+      def: 1,
+    },
+  ]
 
   for (const c of CASES) {
     const title = SETTINGS[c.key].title
@@ -705,10 +710,31 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(text).toContain('Cache: off')
   })
 
+  for (const c of FIXED_CASES) {
+    const title = plainTitle(SETTINGS[c.key].title)
+    test(`${title} (${c.key}): not a pane row, and with nothing stored its fixed value applies (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+      const h = engine(on, c.start)
+      c.setup?.(h)
+      const s = await scene($, h, c)
+      expect(await c.see(s)).toEqual(c.def)
+      expect(listed(await settingsText(s.d), title), 'not a pane row').toBe(false)
+      expect(disagree(h)).toBe(false)
+    })
+    test(`${title} (${c.key}): a value settings.json holds is kept and used, and is not a pane row (${surface})`, { timeoutMs: 30000, options: { [c.key]: c.value } }, async ($, on) => {
+      const h = engine(on, { ...c.start, stored: { [c.key]: c.value } })
+      c.setup?.(h)
+      const s = await scene($, h, c)
+      expect(await c.see(s)).toEqual(c.set)
+      expect(listed(await settingsText(s.d), title), 'not a pane row').toBe(false)
+      expect(h.stored[c.key], 'the stored value is not erased').toBe(c.value)
+      expect(disagree(h)).toBe(false)
+    })
+  }
+
   // The row exists as plugin.json declares it: its default, and each of its options. Claude Code fills the
   // default in and drops a stored value that is not an option, so rightsize reading a value back is the
   // proof that plugin.json declares it. (A test cannot read plugin.json; scripts/check-settings.mjs does.)
-  for (const key of KEYS) {
+  for (const key of PANE_KEYS) {
     const row = SETTINGS[key]
     test(`${row.title} (${key}): a picker whose default is "${row.default}" (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
       const h = engine(on, { ...OPUS })
@@ -722,9 +748,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
         const h = engine(on, { ...OPUS, stored: { [key]: option } })
         const d = drive($, h)
         await d.start(surface)
-        // "check now" is an action, not a state: it checks once and the row goes back to monthly.
-        const shown = key === 'priceCheck' && option === 'check now' ? 'monthly' : option
-        expect(await settingsText(d)).toContain(`${plainTitle(row.title)}: ${shown}`)
+        expect(await settingsText(d)).toContain(`${plainTitle(row.title)}: ${option}`)
         expect(disagree(h)).toBe(false)
       })
     }
@@ -735,7 +759,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const d = drive($, h)
     await d.start(surface)
     const text = await settingsText(d)
-    for (const key of KEYS) expect(listed(text, plainTitle(SETTINGS[key].title)), key).toBe(false)
+    for (const key of PANE_KEYS) expect(listed(text, plainTitle(SETTINGS[key].title)), key).toBe(false)
     expect(text).toContain('are at their defaults')
     expect(disagree(h)).toBe(false)
   })
@@ -761,13 +785,13 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const d = drive($, h)
     await d.start(surface)
     const text = await settingsText(d)
-    for (const key of KEYS) {
+    for (const key of PANE_KEYS) {
       const row = SETTINGS[key]
       expect(listed(text, plainTitle(row.title)), key).toBe(key in set)
       if (key in set) expect(text, key).toContain(`${plainTitle(row.title)}: ${(set as Record<string, string>)[key]}\n`)
     }
     expect(changedCount(text)).toBe(6)
-    expect(text).toContain(`The other ${KEYS.length - 6} are defaults`)
+    expect(text).toContain(`The other ${PANE_KEYS.length - 6} are defaults`)
   })
 
   test(`on a subscription the hand-off question and its result say what the usage is compared with: "vs staying on" (${surface})`, { timeoutMs: 30000, options: { billing: 'subscription' } }, async ($, on) => {

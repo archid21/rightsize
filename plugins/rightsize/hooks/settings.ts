@@ -7,9 +7,10 @@ import type { RightsizeChoices as Choices, RightsizeLevel as Level } from '../ty
 // values are yours. Claude Code hands the module every value with defaults filled
 // in, so it cannot tell them apart; it reads them off settings.json instead, and
 // follows the changes made in /config. Mode, the three feature switches (Routing, Hand-offs, Cache) and Ask before
-// changing are plain rows; the rest are Advanced, as their titles say, since /config has no groups. The values a
-// profile used to supply (ADR 0021 removed the Profile row) are fixed (FIXED); only Before the cache goes cold has a row.
-// Pure functions, no engine calls.
+// changing and Band are plain rows; the rest are Advanced, as their titles say, since /config has no groups. Question
+// wait, Price check and Rater have no row (FIXED_ROWS): their values are fixed, unless settings.json still holds one.
+// The values a profile used to supply (ADR 0021 removed the Profile row) are fixed (FIXED); only Before the cache goes
+// cold has a row. Pure functions, no engine calls.
 
 type Spec = { title: string; options: readonly string[]; default: string }
 
@@ -34,6 +35,7 @@ export const SETTINGS = {
   handOffs: { title: 'Hand-offs', options: ['on', 'off'], default: 'on' },
   askFirst: { title: 'Ask before changing', options: ['off', 'on'], default: 'off' },
   cache: { title: 'Cache', options: ['on', 'off'], default: 'on' },
+  band: { title: 'Band', options: ['when it acts', 'always', 'off'], default: 'when it acts' },
   floor: { title: 'Advanced · Lowest effort', options: ['low', 'medium', 'high'], default: 'low' },
   ceiling: { title: 'Advanced · Highest effort', options: ['high', 'xhigh', 'max'], default: 'max' },
   lowerRule: { title: 'Advanced · Lowering', options: ruleOptions('lower'), default: NOT_SET },
@@ -51,14 +53,13 @@ export const SETTINGS = {
   idleWarning: { title: 'Advanced · Idle warning', options: ['over $0.10', 'over $0.50', 'over $1', 'off'], default: 'over $0.50' },
   beforeCold: { title: 'Advanced · Before the cache goes cold', options: ['ask', 'keep warm 2 h', 'keep warm 8 h', 'keep warm until my usual start', 'save a handoff', 'compact', 'off'], default: 'ask' },
   billing: { title: 'Advanced · Reports', options: ['api', 'subscription'], default: 'api' },
-  band: { title: 'Advanced · Band', options: ['when it acts', 'always', 'off'], default: 'when it acts' },
   questionWait: { title: 'Advanced · Question wait', options: ['30 seconds', '1 minute', '2 minutes'], default: '30 seconds' },
   priceCheck: { title: 'Advanced · Price check', options: ['monthly', 'off'], default: 'monthly' },
   longHelpers: { title: 'Advanced · Long helpers', options: ['ask', 'continue while making progress', 'stop at the limit'], default: 'ask' },
   outputAdvice: { title: 'Advanced · Output suggestion', options: ['on', 'off'], default: 'on' },
 } as const satisfies Record<string, Spec>
 
-/** Every row but the first five (Mode, Routing, Hand-offs, Ask before changing, Cache) is titled with this prefix, so /config lists those first and the rest as Advanced. */
+/** Every row but the first six (Mode, Routing, Hand-offs, Ask before changing, Cache, Band) is titled with this prefix, so /config lists those first and the rest as Advanced. */
 export const ADVANCED = 'Advanced · '
 /** The row's title without the prefix: what /rightsize and its messages call it. */
 export const plainTitle = (title: string) => (title.startsWith(ADVANCED) ? title.slice(ADVANCED.length) : title)
@@ -67,6 +68,17 @@ export type SettingKey = keyof typeof SETTINGS
 export type Values = Record<SettingKey, string>
 
 export const KEYS = Object.keys(SETTINGS) as SettingKey[]
+
+/**
+ * The rows with no pane row (no /config row, none in the settings pane, none reset by /rightsize reset): Question wait,
+ * Price check and Rater. Their value is the fixed value, which is the row's default. A value settings.json still holds
+ * for one is kept and used, so nothing stored is erased; a value that is not an option counts as unset.
+ */
+export const FIXED_ROWS = ['questionWait', 'priceCheck', 'rater'] as const
+export type FixedKey = (typeof FIXED_ROWS)[number]
+export const isFixedRow = (k: SettingKey): k is FixedKey => (FIXED_ROWS as readonly string[]).includes(k)
+/** The rows the pane shows, in table order: every row but the fixed ones. */
+export const PANE_KEYS = KEYS.filter(k => !isFixedRow(k))
 export const isKey = (k: unknown): k is SettingKey => typeof k === 'string' && Object.hasOwn(SETTINGS, k)
 
 /** True when `v` is one of the row's options: anything else counts as unset, and the default applies. */
@@ -79,7 +91,7 @@ export const defaults = (): Values => Object.fromEntries(KEYS.map(k => [k, SETTI
 
 /** Every row's value from the options Claude Code passes the module. */
 export const valuesOf = (options: Readonly<Record<string, unknown>> | undefined): Values =>
-  Object.fromEntries(KEYS.map(k => [k, valueOf(k, options?.[k])])) as Values
+  Object.fromEntries(KEYS.map(k => [k, valueOf(k, isFixedRow(k) ? undefined : options?.[k])])) as Values
 
 // ---- Whose value it is ---------------------------------------------------------
 
@@ -131,14 +143,17 @@ export function stillReset(configs: unknown, options: Readonly<Record<string, un
  * key in any case ("uprule").
  */
 export function settingNamed(name: string): SettingKey | undefined {
-  const exact = KEYS.find(k => k === name.trim())
+  const exact = PANE_KEYS.find(k => k === name.trim())
   if (exact) return exact
   const want = name.trim().toLowerCase().replace(/\s+/g, ' ')
   if (!want) return undefined
   // The title as /config shows it ("advanced · hand-off threshold") or without the prefix ("hand-off threshold").
   const titled = (k: SettingKey) => [SETTINGS[k].title, plainTitle(SETTINGS[k].title)].some(t => t.toLowerCase() === want)
-  return KEYS.find(titled) ?? KEYS.find(k => k.toLowerCase() === want)
+  return PANE_KEYS.find(titled) ?? PANE_KEYS.find(k => k.toLowerCase() === want)
 }
+
+/** The value a fixed row uses: the one settings.json holds for it when that is an option, else the fixed value. */
+export const fixedValueOf = (key: FixedKey, configs: unknown): string => valueOf(key, storedOptions(configs)?.[key])
 
 /** A change made in /config by the person: the menu (`composer`) or a `/config key=value` from their phone (`bridge`). */
 const byPerson = (origin: { kind: string } | undefined) => origin?.kind === 'composer' || origin?.kind === 'bridge'
@@ -169,10 +184,11 @@ export function mark(yours: ReadonlySet<SettingKey>, key: SettingKey, set: boole
  */
 export function manifestGaps(options: Readonly<Record<string, unknown>> | undefined, yours: ReadonlySet<SettingKey>): string[] {
   const out: string[] = []
-  for (const k of KEYS) {
+  for (const k of PANE_KEYS) {
     if (options?.[k] === undefined) out.push(`${k} is not declared`)
     else if (!yours.has(k) && options[k] !== SETTINGS[k].default) out.push(`${k} defaults to ${JSON.stringify(options[k])}, not ${JSON.stringify(SETTINGS[k].default)}`)
   }
+  // A fixed row is neither required nor an error: plugin.json no longer declares it, and a value settings.json holds for it may reach the options.
   for (const k of Object.keys(options ?? {})) if (!isKey(k)) out.push(`${k} is not in the table`)
   return out
 }

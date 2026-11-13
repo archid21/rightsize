@@ -25,6 +25,7 @@ import {
   type Rules,
   type Situation,
   type Tie,
+  type Ttl,
   atPrompt,
   TTL_MS,
   fileTtl,
@@ -124,7 +125,8 @@ import { isApprovalStep } from './approval'
 import { HANDBACK, LIMITS, type Signals, type Struggle, blockedError, callKey, hookFailed, isBookkeeping, isEditTool, helperCap, SPEND_ASK_AT, SPEND_AUTO_MAX, spendMultiple, isTestCommand, noMatchExit, noSignals, noteCall, oneUp, refusedByHook, refusedByPerson, struggle, testsOutcome } from './struggle'
 import { watchCheck, watchRange, type WatchCheck } from './check'
 import { type Change, type HelperLine, type Lifetime, type RunLine, type SwitchLine, type Windows, SESSION_TOTAL, SESSION_TOTAL_FROM, bandShareText, buildReport, costTag, foldLifetime, parseLifetime, parseLines, ratedInSession, sessionTotal, shareMessage, shareOf, usedTag, windowCostText, windowRates } from './report'
-import { isTracked, parseChanges, type ChangeLine } from './results'
+import { CACHE_LIFE_KEY, isTracked, parseChanges, type ChangeLine } from './results'
+import { LIFE_DAYS, LIFE_HEADER, LIFE_NO, LIFE_YES, PROBE_RESPONSES, type Provider, adviseLife, lifeEligible, lifeOffer, lifeQuestion, lifeRefusedText, lifeRevertedText, lifeSetText, lifeStuckText, lifeYes, probeRead, providerOf, settingDecides } from './cachelife'
 import { type TrimSavings, isTrim, readTrimSavings } from './trim'
 import { LIMIT_BUTTON, LIMIT_COMPACT, LIMIT_HIDE, LIMIT_MORE, LIMIT_WHY, LIMIT_WHY_ID, isLimitId, limitDue, limitText } from './limit'
 import { SIZE_BUTTON, SIZE_COMPACT, SIZE_FRESH, SIZE_FRESH_BUTTON, SIZE_FRESH_COMPACT, SIZE_FRESH_COPY, SIZE_FRESH_COPY_FAILED, SIZE_FRESH_NOT_NOW, SIZE_FRESH_PASTE_BUTTONS, SIZE_FRESH_SAVING, SIZE_HIDE, SIZE_MORE, SIZE_WHY, SIZE_WHY_FRESH, SIZE_WHY_ID, isSizeId, sizeFreshNotWritten, sizeFreshNotice, sizeFreshPaste, sizeStep, sizeText } from './size'
@@ -410,6 +412,10 @@ let longHelpers: 'ask' | 'continue while making progress' | 'stop at the limit' 
 let spend: SessionSpend = { output: 0, total: 0, requests: 0 }
 /** True once the Output question was asked this session, whatever the answer. */
 let outputAsked = false
+/** True once this session looked at the cache-life check (P-16): at most one look a session, so the runs are read once. */
+let lifeTried = false
+/** A switch to a 1-hour cache on a cloud provider or gateway whose cache writes are still being checked; `seen` counts responses that wrote no 1-hour entries. */
+let lifeProbe: { from: Ttl; provider: Provider; seen: number } | null = null
 /** What this session's rate limits showed, even when Reports is yours and they change nothing. */
 let detectedBilling: Billing | undefined
 let priceCheck: 'monthly' | 'off' = 'monthly'
@@ -1114,7 +1120,7 @@ async function refreshTtl($: EngineInterface) {
   const u = await usageNow($)
   // The rate limits are the fact; the person's own Reports answer stands in for them until they show.
   const seen = detectedBilling ?? (billingYours() ? billing : undefined)
-  const main = resolveTtl({ force5m, env: mainEnv, setting: mainSetting, enable1h, file: fileTtl(priceFile), billing: seen, onCredits: onCredits(u?.rateLimits) })
+  const main = resolveTtl({ force5m, env: mainEnv, setting: mainSetting, enable1h, file: fileTtl(priceFile), billing: seen, onCredits: onCredits(u?.rateLimits), cloud: (await providerNow($)) !== 'anthropic' })
   const helper = resolveHelperTtl({ force5m, env: subEnv, setting: subSetting, enable1h })
   const changed = TTL_MS[main.ttl] !== cacheTtl || TTL_MS[helper.ttl] !== helperTtl || main.by !== ttlBy || helper.by !== helperTtlBy
   cacheTtl = TTL_MS[main.ttl]
@@ -1227,6 +1233,7 @@ type BandWhy =
   | { kind: 'billing' }
   | { kind: 'workflow' }
   | { kind: 'output' }
+  | { kind: 'cacheLife'; to: Ttl; from: Ttl; provider: Provider }
   | { kind: 'watchTrial' }
   | { kind: 'watchSummary' }
   | { kind: 'stuck'; run: Run; cur: Level; to: Level; sign: Struggle; step: number }
@@ -1301,6 +1308,8 @@ async function bandAnswered($: EngineInterface, why: BandWhy, v: unknown) {
       return
     case 'output':
       return answerOutput($, v)
+    case 'cacheLife':
+      return answerLife($, why, v)
     case 'watchTrial':
       return answerWatchTrial($, v)
     case 'watchSummary':
@@ -1337,6 +1346,8 @@ async function bandUnanswered($: EngineInterface, why: BandWhy) {
       return logUnanswered($, 'Workflow', 'rightsize paused for this workflow; not saved')
     case 'output':
       return logUnanswered($, 'Output', 'the output style is unchanged')
+    case 'cacheLife':
+      return logUnanswered($, LIFE_HEADER, 'the cache life is unchanged')
     case 'watchTrial':
       return logUnanswered($, 'Watch only', 'watch only stays on')
     case 'watchSummary':
@@ -2346,6 +2357,8 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
       // The session's own level and size: what the starting-point check replays from.
       normal: run.normal,
       context: run.context,
+      // The conversation's size at the turn's end: with `context`, what the turn added to the cache (the cache-life check, P-16).
+      ...(lastContext > 0 ? { contextEnd: lastContext } : {}),
       fit: r.fit,
       // The rater's guesses behind the estimate, to tell a bad guess from a bad cost model.
       read: r.read,
@@ -3120,6 +3133,131 @@ async function restoreOutput($: EngineInterface, why: string, start: boolean) {
     await $.store.set(OUTPUT_RESTORE, null).catch(() => undefined)
   } catch (err) {
     await log($, `output style restore failed: ${err instanceof Error ? err.message : String(err)}`).catch(() => undefined)
+  }
+}
+
+// ---- Cache-life advice (P-16, ADR 0063) -------------------------------------------------------------------------------
+
+// Once a month (the store's `cacheLifeCheckedAt`), at a main turn's end, the last 30 days are priced on a 5-minute cache with keep
+// warm and on a 1-hour cache (cachelife.ts). When the cheaper one is not the life Claude Code reads now, one band question asks
+// whether to set Claude Code's `promptCacheTtl` to it. It never holds a prompt: with no band to ask on, nothing is asked and the
+// check is tried again next session. The setting is written on the answer only, and recorded in changes.jsonl so Did it work?
+// measures it. On Bedrock, Vertex or a gateway a switch to 1 hour is then checked against the next responses' cache writes.
+
+const LIFE_CHECKED = 'cacheLifeCheckedAt'
+const LIFE_PROBE = 'cacheLifeProbe'
+const LIFE_DAY = 24 * 60 * 60 * 1000
+
+/** Where the requests go, from the environment variables Claude Code reads (cachelife.ts `providerOf`). */
+async function providerNow($: EngineInterface): Promise<Provider> {
+  // Each name is a literal at its call: the directory lists the variables a module reads from them.
+  const bedrock = await $.env.get('CLAUDE_CODE_USE_BEDROCK').catch(() => undefined)
+  const vertex = await $.env.get('CLAUDE_CODE_USE_VERTEX').catch(() => undefined)
+  const baseUrl = await $.env.get('ANTHROPIC_BASE_URL').catch(() => undefined)
+  return providerOf({ bedrock, vertex, baseUrl })
+}
+
+/** The main chat's cache life as rightsize reads it now. */
+const lifeNow = (): Ttl => (cacheTtl >= TTL_MS['1h'] ? '1h' : '5m')
+
+/** Writes promptCacheTtl, then reads it back: a policy or flag setting can override the write. True when the setting holds `value`. */
+async function setCacheLife($: EngineInterface, value: Ttl): Promise<boolean> {
+  const r = await $.config.set({ key: CACHE_LIFE_KEY, value }).catch((err: unknown) => ({ deny: err instanceof Error ? err.message : String(err) }))
+  if (r.deny !== undefined) {
+    await log($, `cache life: Claude Code refused to write ${CACHE_LIFE_KEY}: ${r.deny}`)
+    return false
+  }
+  if ((await $.settings.read({ key: CACHE_LIFE_KEY }).catch(() => undefined)) !== value) {
+    await log($, `cache life ${value}: not applied (another source sets it)`)
+    return false
+  }
+  return true
+}
+
+/** The turn ended: asks when the month's check is due, the billing is one that pays per token, and the lives differ in price. Never throws. */
+async function lifeCheck($: EngineInterface) {
+  try {
+    if (off || lifeTried || lifeProbe) return
+    const now = await $.clock.now()
+    const last = await $.store.get(LIFE_CHECKED).catch(() => undefined)
+    if (typeof last === 'number' && now - last < LIFE_DAYS * LIFE_DAY) return
+    // The setting is not what decides the life while FORCE_PROMPT_CACHING_5M or CLAUDE_CODE_PROMPT_CACHE_TTL is set: a write would change nothing.
+    if (!settingDecides(ttlBy)) return
+    const provider = await providerNow($)
+    const u = await usageNow($)
+    const seen = detectedBilling ?? (billingYours() ? billing : undefined)
+    if (!lifeEligible({ provider, billing: seen, onCredits: onCredits(u?.rateLimits) })) return
+    if (!(await bandCanAsk($))) return
+    lifeTried = true
+    if (watching) return void (await log($, 'watch only: would check the cache life'))
+    const advice = adviseLife(await readRuns($), now, forModel(parsePrices(priceFile, '5m'), mainModel), forModel(parsePrices(priceFile, '1h'), mainModel))
+    if (!advice.ok) return void (await log($, `cache-life check: not enough turns yet (${advice.turns} turns in ${advice.days} days)`))
+    await $.store.set(LIFE_CHECKED, now).catch(() => undefined)
+    const current = lifeNow()
+    const to = lifeOffer(advice, current)
+    const c = advice.cost
+    await log($, `cache-life check: 5 minutes with keep warm ${money(c.fiveMin)}, 1 hour ${money(c.oneHour)} over ${c.turns} turns in ${c.days} days (${provider}); reads ${current}; ${to ? `asked about ${to}` : advice.cheaper ? 'already the cheaper one' : 'a tie, nothing asked'}`)
+    if (!to) return
+    const q: Question<string> = { header: LIFE_HEADER, question: lifeQuestion(to, advice), options: [[lifeYes(to), LIFE_YES], ['Not now', LIFE_NO]] }
+    await askBand($, withNextPrompt(q, 'the cache life is unchanged'), 'prompt', true, { kind: 'cacheLife', to, from: current, provider })
+  } catch (err) {
+    await log($, `cache-life check failed: ${err instanceof Error ? err.message : String(err)}`).catch(() => undefined)
+  }
+}
+
+/** The answer to the Cache life question: Yes writes the setting, records the change and, behind a cloud provider or gateway, starts checking the writes; anything else writes nothing. */
+async function answerLife($: EngineInterface, why: Extract<BandWhy, { kind: 'cacheLife' }>, v: unknown) {
+  if (v !== LIFE_YES) return log($, `cache life: ${v === LIFE_NO ? 'not now' : 'no answer'}; the cache life is unchanged`)
+  const { to, from, provider } = why
+  if (!(await setCacheLife($, to))) return setBand($, { text: lifeRefusedText(to), acted: true })
+  await recordChange($, CACHE_LIFE_KEY, from, to)
+  await refreshTtl($)
+  await log($, `cache life: set to ${to} (was ${from})`)
+  if (to === '1h' && provider !== 'anthropic') {
+    lifeProbe = { from, provider, seen: 0 }
+    await $.store.set(LIFE_PROBE, lifeProbe).catch(() => undefined)
+    await log($, `cache life: checking that the next ${PROBE_RESPONSES} responses with cache writes write 1-hour entries (${provider})`)
+  }
+  await setBand($, { text: lifeSetText(to), acted: true })
+}
+
+/** A main response came in while a switch to 1 hour is being checked: one that wrote 1-hour entries ends the check; PROBE_RESPONSES that did not set the setting back. */
+async function lifeProbeStep($: EngineInterface, u: { cache_creation_input_tokens: number }) {
+  const probe = lifeProbe
+  if (!probe || !(u.cache_creation_input_tokens > 0)) return
+  try {
+    const read = probeRead(u)
+    if (read !== 'short' || ++probe.seen >= PROBE_RESPONSES) {
+      lifeProbe = null
+      await $.store.set(LIFE_PROBE, null).catch(() => undefined)
+    } else {
+      await $.store.set(LIFE_PROBE, probe).catch(() => undefined)
+      return
+    }
+    if (read === 'one-hour') return void (await log($, 'cache life: the cache writes are 1-hour writes; the setting stays'))
+    // The usage says nothing of the writes' life: nothing shows that the setting failed, so it stays and the person is told in the log only.
+    if (read === 'unknown') return void (await log($, 'cache life: the usage has no 1-hour field, so the writes cannot be checked; the setting stays'))
+    await log($, `cache life: ${PROBE_RESPONSES} responses with cache writes wrote no 1-hour entries (${probe.provider}); setting it back to ${probe.from}`)
+    if (await setCacheLife($, probe.from)) {
+      await recordChange($, CACHE_LIFE_KEY, '1h', probe.from)
+      await refreshTtl($)
+      await setBand($, { text: lifeRevertedText(probe.provider, probe.from), acted: true })
+    } else await setBand($, { text: lifeStuckText(probe.from), acted: true })
+  } catch (err) {
+    await log($, `cache life check of the writes failed: ${err instanceof Error ? err.message : String(err)}`).catch(() => undefined)
+  }
+}
+
+/** At a session start: a switch to 1 hour that was still being checked goes on, when the setting still reads 1 hour. */
+async function restoreLifeProbe($: EngineInterface) {
+  try {
+    const held = (await $.store.get(LIFE_PROBE).catch(() => undefined)) as { from?: unknown; provider?: unknown; seen?: unknown } | null | undefined
+    if (!held) return
+    const ok = (held.from === '5m' || held.from === '1h') && typeof held.provider === 'string' && held.provider !== 'anthropic' && typeof held.seen === 'number'
+    if (ok && (await $.settings.read({ key: CACHE_LIFE_KEY }).catch(() => undefined)) === '1h') lifeProbe = { from: held.from as Ttl, provider: held.provider as Provider, seen: held.seen as number }
+    else await $.store.set(LIFE_PROBE, null).catch(() => undefined)
+  } catch {
+    // Not checked this session.
   }
 }
 
@@ -5496,6 +5634,8 @@ export const register: Register = (on, options) => {
     billingAsked = false
     spend = { output: 0, total: 0, requests: 0 }
     outputAsked = false
+    lifeTried = false
+    lifeProbe = null
     billingBy = null
     detectedBilling = undefined
     billing = cfg.billing === 'subscription' ? 'subscription' : 'api'
@@ -5510,6 +5650,7 @@ export const register: Register = (on, options) => {
     }
     priceFile = await readText($, `${pluginRoot}/prices.json`)
     await refreshTtl($)
+    await restoreLifeProbe($)
     if (priceCheck === 'monthly') {
       const lastChecked = await $.store.get('pricesCheckedAt').catch(() => undefined)
       const now = await $.clock.now()
@@ -5994,6 +6135,7 @@ export const register: Register = (on, options) => {
         if (!gone.shown) await setBand($, { text: compactedText({ before: gone.before, after: gone.after ?? contextOf(u), ...(gone.handoff ? { handoff: gone.handoff } : {}) }), acted: true })
       }
       lastContext = contextOf(u)
+      await lifeProbeStep($, u)
       turnRequests += 1
       lastRequestAt = await $.clock.now()
       await $.state.set({ plugin: 'rightsize', key: 'context' }, lastContext)
@@ -6393,6 +6535,7 @@ export const register: Register = (on, options) => {
     if (e.agentId === undefined && !e.isAborted) await watchRows($)
     if (e.agentId === undefined && !e.isAborted) await tipCheck($).catch(() => undefined)
     if (e.agentId === undefined && !e.isAborted) await outputCheck($)
+    if (e.agentId === undefined && !e.isAborted) await lifeCheck($)
     // whatsnext's wrap-up before a compaction ended: the compaction follows (after coldCheck, which cancels timers), from a timer (the hook does not wait for it). An interrupted wrap-up stops it.
     if (e.agentId === undefined && wrapThenCompact) {
       const w = wrapThenCompact

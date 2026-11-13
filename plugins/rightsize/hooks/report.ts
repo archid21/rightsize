@@ -148,6 +148,8 @@ export type RunLine = {
   /** The session's own level, before rightsize's change, and the conversation's size: from 0.7. */
   normal?: string
   context?: number
+  /** A run line (from 0.13): the conversation's size when the turn ended, in tokens. With `context` it gives what the turn added to the cache, for the cache-life check. */
+  contextEnd?: number
   /** Each model's lowest level for the work, or null where it would struggle: the rater's judgement. */
   fit?: Record<string, string | null>
   /** A check line: the second opinion, and who gave it. `fit` is then the first rater's. */

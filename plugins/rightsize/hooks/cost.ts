@@ -203,7 +203,7 @@ export function forModel(prices: Prices, model: string | null | undefined): Pric
 // else (subagents, forks, compaction). Its precedence (docs, "How Claude Code uses prompt caching", v2.1.242+):
 // FORCE_PROMPT_CACHING_5M=1; the bucket's environment variable; the bucket's setting; ENABLE_PROMPT_CACHING_1H=1; the
 // bucket's default. The main conversation's default is 1 hour on a Claude subscription within its plan, 5 minutes on an API
-// key, a cloud provider, or a subscription drawing on usage credits. Everything else defaults to 5 minutes. A cacheTtl in
+// key, a cloud provider or gateway, or a subscription drawing on usage credits. Everything else defaults to 5 minutes. A cacheTtl in
 // prices.json is the person's own word, kept for a gateway rightsize cannot read; it ranks just above the default.
 
 export type Ttl = '5m' | '1h'
@@ -236,6 +236,8 @@ export type TtlInputs = {
   billing?: 'api' | 'subscription'
   /** True when a subscription window reads 100% or more: the session is on usage credits, billed per token */
   onCredits?: boolean
+  /** True on Bedrock, Vertex or a gateway (a base URL that is not Anthropic's): per-token billing, whatever rate limits show or do not show (P-16) */
+  cloud?: boolean
 }
 
 /** The main conversation's cache life and what decided it. Before the first response (`billing` unknown) it is 1 hour, as before. */
@@ -245,6 +247,8 @@ export function resolveTtl(i: TtlInputs): { ttl: Ttl; by: string } {
   if (isTtl(i.setting)) return { ttl: i.setting, by: 'the promptCacheTtl setting' }
   if (on(i.enable1h)) return { ttl: '1h', by: 'ENABLE_PROMPT_CACHING_1H' }
   if (i.file) return { ttl: i.file, by: 'prices.json' }
+  // A cloud provider or gateway has no plan to be inside: 5 minutes, even before (or without) rate limits that say the billing.
+  if (i.cloud && i.billing !== 'subscription') return { ttl: '5m', by: 'a cloud provider or gateway' }
   if (i.billing === 'api') return { ttl: '5m', by: 'API billing' }
   if (i.billing === 'subscription') return i.onCredits ? { ttl: '5m', by: 'a subscription on usage credits' } : { ttl: '1h', by: 'a subscription within its plan' }
   return { ttl: '1h', by: 'default, billing not seen yet' }

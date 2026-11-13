@@ -179,6 +179,9 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
     outputPinned: undefined as string | undefined,
     /** Other top-level settings a read of one key returns (`idleCompaction`, `autoCompactEnabled`). */
     settings: {} as Record<string, unknown>,
+    /** promptCacheTtl, Claude Code's own setting: a reason makes its write be refused; `cacheTtlPinned` true makes a write land nowhere a read sees it (a policy sets it). */
+    cacheTtlRefuse: undefined as string | undefined,
+    cacheTtlPinned: false,
     /** What reached the engine, in order: each question asked (`ask:<header>`) and each workflow started (`workflow`). */
     events: [] as string[],
     // A gateway's spend limit by default: billed per token, so reports show dollars.
@@ -452,6 +455,12 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
       if (typeof value !== 'string' || !h.outputStyle.options.includes(value)) return { deny: `${String(value)} does not fit` } as never
       h.sets.push({ key, value, ...(origin ? { origin } : {}) })
       if (h.outputPinned === undefined) h.outputStyle.value = value
+      return { value } as never
+    }
+    if (key === 'promptCacheTtl') {
+      if (h.cacheTtlRefuse !== undefined) return { deny: h.cacheTtlRefuse } as never
+      h.sets.push({ key, value, ...(origin ? { origin } : {}) })
+      if (!h.cacheTtlPinned) h.settings.promptCacheTtl = value
       return { value } as never
     }
     const field = key.startsWith('rightsize.') ? key.slice('rightsize.'.length) : ''

@@ -1,6 +1,6 @@
 # What rightsize touches
 
-rightsize is a mod: it runs inside Claude Code and hooks some of its events. This is everything it does outside the chat. rightsize writes no file in your project itself (only Claude Code does, for the Output style row below), and none of its files is opened by rightsize: whatsnext's script answers instead.
+rightsize is a mod: it runs inside Claude Code and hooks some of its events. This is everything it does outside the chat. rightsize writes no file in your project itself (only Claude Code does, for the Output style row and the cache-life setting below), and none of its files is opened by rightsize: whatsnext's script answers instead.
 
 ## Hooks
 
@@ -23,7 +23,7 @@ The **Routing**, **Hand-offs** and **Cache** rows turn off the matching actions 
 
 ## Settings it writes
 
-Its own `rightsize.*` rows in `/config`: when you answer one of its questions, pick a rule in the band's ⋯ menu, choose "Don't keep warm again", or run `/rightsize reset`. The one other row is Claude Code's Output style: set to Concise, in the project's local settings, when you answer **This session** or **This project** to the Concise question; **This session** sets it back when the session ends. It never writes the permission mode or any other setting, and it sets no environment variables.
+Its own `rightsize.*` rows in `/config`: when you answer one of its questions, pick a rule in the band's ⋯ menu, choose "Don't keep warm again", or run `/rightsize reset`. Two other settings of Claude Code's: its Output style, set to Concise, in the project's local settings, when you answer **This session** or **This project** to the Concise question (**This session** sets it back when the session ends); and `promptCacheTtl`, set to `1h` or `5m` only when you answer yes to the monthly cache-life question, and set back to `5m` if, behind Bedrock, Vertex or a gateway, the next cache writes are not 1-hour writes. It never writes the permission mode or any other setting, and it sets no environment variables.
 
 ## Programs it runs
 
@@ -49,11 +49,11 @@ One, and only one fixed text: `wrap up`, submitted once before a big session's c
 - `prices.json` in its own plugin folder, keeping the old file as `prices.json.bak` (the monthly price check).
 - `~/.config/archid21/stars.json`, shared with whatsnext: which of the two plugins are installed, which repos you starred, when you answered the star ask, and which plugin is asking now. No prompt text, no usage.
 
-These are all the places it writes. rightsize writes no file in your project itself (only Claude Code does, for the Output style row below), and none of its files is opened by rightsize: it only checks that `.whatsnext/config.json` exists, the sign that whatsnext was started there.
+These are all the places it writes. rightsize writes no file in your project itself (only Claude Code does, for the Output style row and the cache-life setting below), and none of its files is opened by rightsize: it only checks that `.whatsnext/config.json` exists, the sign that whatsnext was started there.
 
 ## What it reads
 
-Your prompt, the session's usage and rate limits, your `model` and `effortLevel` settings, its own `/config` rows, and three environment variables (the `HOME` variable, to place its logs, `CLAUDE_CONFIG_DIR` where Claude Code keeps its folder, and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`), to rate and price each turn. With whatsnext installed it also reads Claude Code's list of installed plugins (`installed_plugins.json` in Claude Code's folder) to find whatsnext's folder. With trim installed, `/rightsize report` also reads trim's two savings files, `savings.jsonl` and `savings-totals.json` in `~/.claude/trim` (or the folder `TRIM_HOME` names), read only: it never writes, prunes or creates them. For each tool call in a turn it reads the tool, its arguments and whether it failed, to spot a stuck turn, a blocked step or a failing test run. It reads no credentials (no API key, token, keychain or sign-in file): model calls go through Claude Code with your existing sign-in. From Claude Code's settings it reads `model`, `effortLevel` and its own `pluginConfigs` rows.
+Your prompt, the session's usage and rate limits, your `model` and `effortLevel` settings, its own `/config` rows, and its environment variables (the `HOME` variable, to place its logs, `CLAUDE_CONFIG_DIR` where Claude Code keeps its folder, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`, and the cache and provider variables that say the cache's life and where requests go: `FORCE_PROMPT_CACHING_5M`, `ENABLE_PROMPT_CACHING_1H`, `CLAUDE_CODE_PROMPT_CACHE_TTL`, `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL`, `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX` and `ANTHROPIC_BASE_URL`; a base URL is read only for its host and sent nowhere), to rate and price each turn. From Claude Code's settings it also reads `promptCacheTtl` and `subagentPromptCacheTtl`. With whatsnext installed it also reads Claude Code's list of installed plugins (`installed_plugins.json` in Claude Code's folder) to find whatsnext's folder. With trim installed, `/rightsize report` also reads trim's two savings files, `savings.jsonl` and `savings-totals.json` in `~/.claude/trim` (or the folder `TRIM_HOME` names), read only: it never writes, prunes or creates them. For each tool call in a turn it reads the tool, its arguments and whether it failed, to spot a stuck turn, a blocked step or a failing test run. It reads no credentials (no API key, token, keychain or sign-in file): model calls go through Claude Code with your existing sign-in. From Claude Code's settings it reads `model`, `effortLevel` and its own `pluginConfigs` rows.
 
 ## Network
 

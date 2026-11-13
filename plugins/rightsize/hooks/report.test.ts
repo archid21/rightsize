@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { SESSION_TOTAL, accuracyRows, addTotals, foldLifetime, parseLifetime, type Lifetime, type RunLine, bandShareText, FIXED_REVIEW_PCT, buildReport, costTag, counterfactual, fixedLine, keepWarmLine, parseLines, problems, sessionTotal, shareMessage, shareText, span, taskActual, taskEstimated, taskExtra, taskStay, tieCounts, totals, usedTag, watchLine, wholeTaskRows, wholeTasks, windowCostText, windowRates } from './report'
+import { SESSION_TOTAL, accuracyRows, addTotals, foldLifetime, parseLifetime, type Lifetime, type RunLine, bandShareText, FIXED_REVIEW_PCT, buildReport, costTag, counterfactual, fixedLine, keepWarmLine, outputShareLine, parseLines, problems, sessionTotal, shareMessage, shareText, span, taskActual, taskEstimated, taskExtra, taskStay, tieCounts, totals, usedTag, watchLine, wholeTaskRows, wholeTasks, windowCostText, windowRates } from './report'
 import { DEFAULT_PRICES } from './cost'
 import type { StartBlock } from './start'
 
@@ -1205,4 +1205,65 @@ test('trim section: tokens per feature, all time and 30 days, assumed marked; no
   expect(md).toContain('```')
   expect(md).toContain('12.3K')
   for (const none of [undefined, { allTime: {}, last30: {}, session: {} }]) expect(buildReport([run({})], [], { now: NOW, session: 's1', subscription: false, ...(none ? { trim: none } : {}) })).not.toContain('TRIM SAVINGS')
+})
+
+// P-22 (ADR 0060): output's share of cost, split into thinking, text and code written, from the run lines that measured it.
+const measuredRun = (x: Partial<RunLine> = {}) =>
+  run({ outputTokens: 1000, thinkingTokens: 600, toolInputTokens: 300, outputCost: 0.2, thinkingCost: 0.07, toolInputCost: 0.12, requestCost: 1, outputShare: 0.2, ...x })
+
+test('output line: the share of cost and its split into thinking, text and code written', async () => {
+  // 0.2 + 0.2 of 2 dollars: output 20%, thinking 7%, code 12%, text the 1% left.
+  const line = outputShareLine([measuredRun(), measuredRun({ thinkingCost: 0.07 })], false)
+  expect(line).toBe('Output was 20% of cost: 7% thinking, 1% text, 12% code written.')
+  const spec = outputShareLine([measuredRun({ outputCost: 0.21, thinkingCost: 0.07, toolInputCost: 0.12 })], false)
+  expect(spec, 'text is what is left of output').toBe('Output was 21% of cost: 7% thinking, 2% text, 12% code written.')
+  expect(spec, 'thinking is not the largest part: no effort pointer').not.toContain('Thinking leads')
+  // Costs are summed over the runs, then shared: a small run weighs less than a big one.
+  const small = measuredRun({ outputCost: 0.01, thinkingCost: 0.01, toolInputCost: 0, requestCost: 0.01 })
+  const big = measuredRun({ outputCost: 0, thinkingCost: 0, toolInputCost: 0, requestCost: 9.99 })
+  expect(outputShareLine([small, big], false)).toContain('Output was under 1% of cost')
+})
+
+test('output line: the total is the sum of the rounded parts, so the line adds up', async () => {
+  // Output 73.5% of cost would round to 74%, but its parts round to 59, 7 and 7.
+  const line = outputShareLine([measuredRun({ outputCost: 0.735, thinkingCost: 0.588, toolInputCost: 0.0735 })], false)
+  expect(line).toContain('Output was 73% of cost: 59% thinking, 7% text, 7% code written.')
+})
+
+test('output line: when thinking is the largest part it points to the effort rows', async () => {
+  const think = measuredRun({ outputCost: 0.3, thinkingCost: 0.2, toolInputCost: 0.07 })
+  expect(outputShareLine([think], false)).toBe('Output was 30% of cost: 20% thinking, 3% text, 7% code written. Thinking leads: the Lowest effort and Highest effort rows control it.')
+  const code = measuredRun({ outputCost: 0.3, thinkingCost: 0.1, toolInputCost: 0.17 })
+  expect(outputShareLine([code], false), 'code leads').not.toContain('Thinking leads')
+  const text = measuredRun({ outputCost: 0.3, thinkingCost: 0.05, toolInputCost: 0.05 })
+  expect(outputShareLine([text], false), 'text leads').not.toContain('Thinking leads')
+})
+
+test('output line: nothing without data; a partly measured period says over how many turns; a subscription says API prices', async () => {
+  expect(outputShareLine([], false)).toBeUndefined()
+  expect(outputShareLine([run({}), run({})], false), 'runs from before 0.13 carry no split').toBeUndefined()
+  expect(outputShareLine([run({ outputTokens: 5, requestCost: 0 })], false), 'no cost to take a share of').toBeUndefined()
+  expect(outputShareLine([run({ kind: 'warm' }), measuredRun({ kind: 'overhead' })], false), 'only run lines count').toBeUndefined()
+  const part = outputShareLine([measuredRun(), measuredRun(), run({})], false)
+  expect(part).toContain('Output was 20% of cost over 2 turns measured: ')
+  expect(outputShareLine([measuredRun(), run({})], false), 'one turn').toContain('over 1 turn measured:')
+  expect(outputShareLine([measuredRun(), measuredRun()], false), 'whole period measured: no count').not.toContain('measured')
+  expect(outputShareLine([measuredRun()], true)).toBe('Output was 20% of cost (API prices): 7% thinking, 1% text, 12% code written.')
+  expect(outputShareLine([measuredRun(), run({})], true)).toContain('over 1 turn measured (API prices): ')
+})
+
+test('the report shows the output line after what rightsize did and before the recommendations; no line without data', async () => {
+  const lines = [measuredRun({ outputCost: 0.21, thinkingCost: 0.07, toolInputCost: 0.12 })]
+  const text = summary(lines)
+  expect(text).toContain('Output was 21% of cost: 7% thinking, 2% text, 12% code written.')
+  expect(details(lines), 'not in the details view').not.toContain('Output was')
+  const didAt = text.indexOf('WHAT RIGHTSIZE DID')
+  const at = text.indexOf('Output was')
+  expect(didAt).toBeGreaterThan(-1)
+  expect(at).toBeGreaterThan(didAt)
+  expect(at).toBeLessThan(text.indexOf('For the full context breakdown'))
+  expect(summary([run({}), run({})]), 'runs without the fields: no line').not.toContain('Output was')
+  expect(summary([measuredRun({ at: ago(40) })]), 'measured turns older than the period: no line').not.toContain('Output was')
+  expect(summary(lines, { subscription: true })).toContain('Output was 21% of cost (API prices): ')
+  expect(summary(lines, { markdown: true })).toContain('Output was 21% of cost: 7% thinking, 2% text, 12% code written.')
 })

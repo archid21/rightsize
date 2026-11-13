@@ -293,6 +293,35 @@ export function outputCost(prices: Prices, model: string, u: Usage) {
   return dollars(atPrompt(p, contextOf(u)), { output: u.output_tokens })
 }
 
+/** Characters per token for the text and tool input a response wrote: the rough ratio the rest of the mod uses to size text. */
+const OUTPUT_CHARS_PER_TOKEN = 4
+
+/** What one response's output was made of: tokens and list-price dollars, split into thinking, text and code written (tool input). */
+export type OutputSplit = { tokens: number; thinking: number; text: number; code: number; cost: number; thinkingCost: number; textCost: number; codeCost: number }
+
+/**
+ * Splits one response's output (its `output_tokens`, thinking included) into thinking, text and code written. The engine reports
+ * only the total, so the text and the tool calls are sized from what the response wrote (its visible text; each tool call's name and
+ * input as JSON, about 4 characters a token), and thinking is what is left. When the sizes come to more than the total, they are
+ * scaled down to it and thinking is 0. Costs are the response's output cost shared out by those tokens. An unknown model costs nothing.
+ */
+export function splitOutput(prices: Prices, model: string, u: Usage, answer: string, toolUses: readonly { name: string; input: unknown }[]): OutputSplit {
+  const tokens = Math.max(0, u.output_tokens)
+  const size = (chars: number) => Math.ceil(chars / OUTPUT_CHARS_PER_TOKEN)
+  const json = (v: unknown) => (typeof v === 'string' ? v : (JSON.stringify(v) ?? '')).length
+  let text = size(answer.length)
+  let code = toolUses.reduce((n, t) => n + size(t.name.length + json(t.input)), 0)
+  if (text + code > tokens) {
+    const k = tokens / (text + code)
+    text = Math.floor(text * k)
+    code = Math.floor(code * k)
+  }
+  const thinking = tokens - text - code
+  const cost = outputCost(prices, model, u)
+  const part = (n: number) => (tokens > 0 ? (cost * n) / tokens : 0)
+  return { tokens, thinking, text, code, cost, thinkingCost: part(thinking), textCost: part(text), codeCost: part(code) }
+}
+
 // ---- Output advice ----------------------------------------------------------
 
 /** When rightsize suggests the Concise output style: output at least 25% of the session's cost, 20 main-chat requests, $1.00 at list prices (ADR 0050). */

@@ -70,6 +70,8 @@ import {
   tierRank,
   usageCost,
   outputCost,
+  splitOutput,
+  type OutputSplit,
   outputAdviceDue,
   outputShareText,
   type SessionSpend,
@@ -333,6 +335,8 @@ type Run = {
   /** Token counts priced from prices.json: the fallback when there is no ledger. */
   mainCost: number
   subCost: number
+  /** What the turn's responses wrote, main chat and helpers: output tokens and cost split into thinking, text and code written (P-22), and what those requests cost. */
+  out: OutputTotals
   /** What effort-switch cache misses cost this turn. */
   missCost: number
   /** A rater check's cost that landed in the ledger while the turn ran: not the turn's own. */
@@ -1951,6 +1955,7 @@ function startRun(r: Rating, s: Situation, d: Decision, p: Plan, base: Level, ov
     resized: [],
     mainCost: 0,
     subCost: 0,
+    out: { tokens: 0, thinking: 0, code: 0, cost: 0, thinkingCost: 0, codeCost: 0, requestCost: 0 },
     missCost: 0,
     sideCost: 0,
     errors: 0,
@@ -2240,6 +2245,34 @@ async function fixedContext($: EngineInterface) {
   return { tokens: mcp + memory + agents + skills + (hooks ?? 0), mcp, memory, agents, skills, ...(hooks === undefined ? {} : { startHooks: hooks }), ...(big.length ? { files } : {}), servers }
 }
 
+/** A turn's output, summed over its responses (see `splitOutput`); text is what is left of the tokens and the cost. */
+type OutputTotals = { tokens: number; thinking: number; code: number; cost: number; thinkingCost: number; codeCost: number; requestCost: number }
+
+/** The run line's output fields: tokens as whole numbers, costs and the share to 5 places. */
+function outputFields(o: OutputTotals) {
+  return {
+    outputTokens: Math.round(o.tokens),
+    thinkingTokens: Math.round(o.thinking),
+    toolInputTokens: Math.round(o.code),
+    outputCost: round(o.cost),
+    thinkingCost: round(o.thinkingCost),
+    toolInputCost: round(o.codeCost),
+    requestCost: round(o.requestCost),
+    outputShare: round(o.cost / o.requestCost),
+  }
+}
+
+function addOutput(run: Run, split: OutputSplit, requestCost: number) {
+  const o = run.out
+  o.tokens += split.tokens
+  o.thinking += split.thinking
+  o.code += split.code
+  o.cost += split.cost
+  o.thinkingCost += split.thinkingCost
+  o.codeCost += split.codeCost
+  o.requestCost += requestCost
+}
+
 async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs: number) {
   const r = run.rating
   const delegated = run.delegate !== undefined && run.delegated
@@ -2348,6 +2381,8 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
       ...(helpers.length ? { helpers } : {}),
       ...(retries > 0 ? { retries } : {}),
       requests: run.requests,
+      // What the output was made of (P-22): only when the turn's responses reported usage, else the line carries no split.
+      ...(run.out.requestCost > 0 ? outputFields(run.out) : {}),
       // Each request reads the fixed context from the cache, at least.
       ...(fixed ? { fixed: { ...fixed, cost: round((run.requests * fixed.tokens * atPrompt(prices[run.switchTo?.tier ?? run.tier], run.context).cacheRead) / 1e6) } } : {}),
       ...(run.workflows ? { workflows: run.workflows } : {}),
@@ -5844,6 +5879,7 @@ export const register: Register = (on, options) => {
       if (out.usage) {
         const cost = usageCost(prices, out.usage.model, out.usage)
         if (run) run.subCost += cost
+        if (run) addOutput(run, splitOutput(prices, out.usage.model, out.usage, out.answer, out.toolUses), cost)
         if (sized) sized.spend += cost
         if (watch) watch.spend += cost
       }
@@ -5960,6 +5996,7 @@ export const register: Register = (on, options) => {
       if (run) {
         run.mainCost += requestCost
         run.requests += 1
+        addOutput(run, splitOutput(prices, u.model, u, out.answer, out.toolUses), requestCost)
       }
     }
     return out

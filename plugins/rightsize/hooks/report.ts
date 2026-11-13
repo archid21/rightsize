@@ -109,6 +109,22 @@ export type RunLine = {
   resized?: { tie?: Tie }[]
   /** Main-chat requests in the turn. */
   requests?: number
+  /**
+   * A run line (from 0.13): what the turn's output was made of, in the main chat and the helpers that answered in it. `outputTokens` is
+   * the output the API reported (thinking included); `thinkingTokens` and `toolInputTokens` (code written: the tool calls' names and
+   * input) are its parts, and the rest is text. The text and tool input are sized from what the responses wrote, and thinking is
+   * what is left. The `*Cost` fields are output cost at prices.json prices: `outputCost` in all, then thinking and tool input
+   * (text is the rest); `requestCost` is what all those requests cost, so `outputShare` is `outputCost` over `requestCost`.
+   * Lines from before 0.13 carry none of them, and the report's output line counts only lines that do.
+   */
+  outputTokens?: number
+  thinkingTokens?: number
+  toolInputTokens?: number
+  outputCost?: number
+  thinkingCost?: number
+  toolInputCost?: number
+  requestCost?: number
+  outputShare?: number
   /** A run line: each helper of the run that was watched (`agent` is its id, `kind` how it came to be one). */
   helpers?: (HelperLine & { agent: string; kind: 'handoff' | 'moved' })[]
   /** A run line: the task's retry budget used so far (helper raises and hand-off rework rounds); absent when none. */
@@ -1134,6 +1150,9 @@ export function buildReport(
   // Watch only: what rightsize would have done, and what that would have saved, against staying. Nothing was applied.
   const watched = watchLine(month, sub, opts.watching === true)
   if (watched) out.push('', ...para(watched))
+  // Where output cost goes, from the run lines that measured it (0.13 on): a share, so no dollar figure.
+  const output = outputShareLine(month, sub)
+  if (output) out.push('', ...para(output))
 
   // What to do, from the sections in details: the start, keep warm. Then what needs no action.
   const recs = [
@@ -1217,6 +1236,33 @@ export function watchLine(lines: readonly RunLine[], subscription: boolean, watc
   const saving = changed.reduce((s, l) => s + ((l.stay ?? 0) - (l.wouldTaken ?? 0)), 0)
   const what = `would have ${saving >= 0 ? 'saved' : 'spent'} ~${money(Math.abs(saving))}${subscription ? ' API-equivalent' : ''}`
   return `Watch only: ${plural(runs.length, 'prompt')} rated, ${changed.length} would have been changed, which ${what} against staying (estimates; nothing was applied).${watching ? ' Mode in /config turns rightsize on.' : ''}`
+}
+
+/** A share as a whole percent; a share above 0 that rounds to 0 reads "under 1%". */
+const percent = (x: number) => (x > 0 && Math.round(x * 100) === 0 ? 'under 1%' : `${Math.round(x * 100)}%`)
+
+/**
+ * The report's output line: output's share of cost over the lines, split into thinking, text and code written (P-22, ADR 0060).
+ * Only run lines that carry the output fields count (from 0.13); with none, there is no line. When only some of the runs carry them,
+ * the line says how many turns it was measured over. The total is the sum of the rounded parts. The shares are of cost at prices.json prices, so on a subscription it says
+ * "API prices". When thinking is the largest part, it points to the effort rows that control it.
+ */
+export function outputShareLine(lines: readonly RunLine[], subscription: boolean): string | undefined {
+  const runs = lines.filter(isRun)
+  const measured = runs.filter(l => typeof l.outputTokens === 'number' && num(l.requestCost) > 0)
+  const sum = (pick: (l: RunLine) => unknown) => measured.reduce((n, l) => n + num(pick(l)), 0)
+  const total = sum(l => l.requestCost)
+  if (!measured.length || total <= 0) return undefined
+  const output = sum(l => l.outputCost) / total
+  const thinking = sum(l => l.thinkingCost) / total
+  const code = sum(l => l.toolInputCost) / total
+  const text = Math.max(0, output - thinking - code)
+  const scope = measured.length < runs.length ? ` over ${plural(measured.length, 'turn')} measured` : ''
+  const label = subscription ? ' (API prices)' : ''
+  const lead = thinking > text && thinking > code ? ' Thinking leads: the Lowest effort and Highest effort rows control it.' : ''
+  // The whole is the sum of the rounded parts, so the line adds up as it reads.
+  const whole = [thinking, text, code].reduce((n, x) => n + Math.round(x * 100), 0)
+  return `Output was ${whole > 0 ? `${whole}%` : percent(output)} of cost${scope}${label}: ${percent(thinking)} thinking, ${percent(text)} text, ${percent(code)} code written.${lead}`
 }
 
 export const SHARE_MIN_RATED = 20

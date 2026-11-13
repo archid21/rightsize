@@ -244,6 +244,9 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
     answerGate: {} as Record<string, Promise<void>>,
     /** What a main request's usage says (stepUsage): the conversation's size is the sum of the input fields. */
     stepUsage: { input_tokens: 200, output_tokens: 400, cache_read_input_tokens: 20_000, cache_creation_input_tokens: 300 },
+    /** What a request's response wrote: its visible text and its tool calls (the output split reads them). */
+    stepAnswer: '',
+    stepToolUses: [] as { name: string; input: unknown }[],
     /** What $.command.list() answers: the commands other plugins add. */
     commands: [] as { name: string; description: string; source: string; plugin?: string }[],
     /** True: $.command.list() throws. */
@@ -610,7 +613,7 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
     if (h.ledger !== undefined) h.ledger += h.stepCost
     if (!e.agentId && h.windowStep) h.rateLimits = h.rateLimits.map(l => ({ ...l, percentUsed: l.percentUsed + h.windowStep }))
     const usage = h.stepUsage
-    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: { ...usage, model: e.agentId ? h.subModel : (e.model ?? h.model) } } as never
+    return { turnId: e.turnId, index: e.index, answer: h.stepAnswer, toolUses: h.stepToolUses, stopReason: 'end_turn', usage: { ...usage, model: e.agentId ? h.subModel : (e.model ?? h.model) } } as never
   })
   reg('turn.complete', async () => ({ text: '' }) as never)
   reg('command.run', async ($, e) => {

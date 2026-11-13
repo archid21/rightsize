@@ -203,7 +203,7 @@ export function forModel(prices: Prices, model: string | null | undefined): Pric
 // else (subagents, forks, compaction). Its precedence (docs, "How Claude Code uses prompt caching", v2.1.242+):
 // FORCE_PROMPT_CACHING_5M=1; the bucket's environment variable; the bucket's setting; ENABLE_PROMPT_CACHING_1H=1; the
 // bucket's default. The main conversation's default is 1 hour on a Claude subscription within its plan, 5 minutes on an API
-// key, a cloud provider, or a subscription drawing on usage credits. Everything else defaults to 5 minutes. A cacheTtl in
+// key, a cloud provider or gateway, or a subscription drawing on usage credits. Everything else defaults to 5 minutes. A cacheTtl in
 // prices.json is the person's own word, kept for a gateway rightsize cannot read; it ranks just above the default.
 
 export type Ttl = '5m' | '1h'
@@ -236,6 +236,8 @@ export type TtlInputs = {
   billing?: 'api' | 'subscription'
   /** True when a subscription window reads 100% or more: the session is on usage credits, billed per token */
   onCredits?: boolean
+  /** True on Bedrock, Vertex or a gateway (a base URL that is not Anthropic's): per-token billing, whatever rate limits show or do not show (P-16) */
+  cloud?: boolean
 }
 
 /** The main conversation's cache life and what decided it. Before the first response (`billing` unknown) it is 1 hour, as before. */
@@ -245,6 +247,8 @@ export function resolveTtl(i: TtlInputs): { ttl: Ttl; by: string } {
   if (isTtl(i.setting)) return { ttl: i.setting, by: 'the promptCacheTtl setting' }
   if (on(i.enable1h)) return { ttl: '1h', by: 'ENABLE_PROMPT_CACHING_1H' }
   if (i.file) return { ttl: i.file, by: 'prices.json' }
+  // A cloud provider or gateway has no plan to be inside: 5 minutes, even before (or without) rate limits that say the billing.
+  if (i.cloud && i.billing !== 'subscription') return { ttl: '5m', by: 'a cloud provider or gateway' }
   if (i.billing === 'api') return { ttl: '5m', by: 'API billing' }
   if (i.billing === 'subscription') return i.onCredits ? { ttl: '5m', by: 'a subscription on usage credits' } : { ttl: '1h', by: 'a subscription within its plan' }
   return { ttl: '1h', by: 'default, billing not seen yet' }
@@ -291,6 +295,35 @@ export function outputCost(prices: Prices, model: string, u: Usage) {
   const p = priceOf(prices, model)
   if (!p) return 0
   return dollars(atPrompt(p, contextOf(u)), { output: u.output_tokens })
+}
+
+/** Characters per token for the text and tool input a response wrote: the rough ratio the rest of the mod uses to size text. */
+const OUTPUT_CHARS_PER_TOKEN = 4
+
+/** What one response's output was made of: tokens and list-price dollars, split into thinking, text and code written (tool input). */
+export type OutputSplit = { tokens: number; thinking: number; text: number; code: number; cost: number; thinkingCost: number; textCost: number; codeCost: number }
+
+/**
+ * Splits one response's output (its `output_tokens`, thinking included) into thinking, text and code written. The engine reports
+ * only the total, so the text and the tool calls are sized from what the response wrote (its visible text; each tool call's name and
+ * input as JSON, about 4 characters a token), and thinking is what is left. When the sizes come to more than the total, they are
+ * scaled down to it and thinking is 0. Costs are the response's output cost shared out by those tokens. An unknown model costs nothing.
+ */
+export function splitOutput(prices: Prices, model: string, u: Usage, answer: string, toolUses: readonly { name: string; input: unknown }[]): OutputSplit {
+  const tokens = Math.max(0, u.output_tokens)
+  const size = (chars: number) => Math.ceil(chars / OUTPUT_CHARS_PER_TOKEN)
+  const json = (v: unknown) => (typeof v === 'string' ? v : (JSON.stringify(v) ?? '')).length
+  let text = size(answer.length)
+  let code = toolUses.reduce((n, t) => n + size(t.name.length + json(t.input)), 0)
+  if (text + code > tokens) {
+    const k = tokens / (text + code)
+    text = Math.floor(text * k)
+    code = Math.floor(code * k)
+  }
+  const thinking = tokens - text - code
+  const cost = outputCost(prices, model, u)
+  const part = (n: number) => (tokens > 0 ? (cost * n) / tokens : 0)
+  return { tokens, thinking, text, code, cost, thinkingCost: part(thinking), textCost: part(text), codeCost: part(code) }
 }
 
 // ---- Output advice ----------------------------------------------------------
@@ -427,6 +460,8 @@ export function rebaseCal(cal: Calibration, factor: number): Calibration {
  * so the old key is ignored, never read, migrated or deleted.
  */
 export const CAL_STORE = 'calibration-v2'
+/** When calibration was last saved (ISO, UTC): the report's "last updated". Cleared with CAL_STORE. */
+export const CAL_AT_STORE = 'calibration-at'
 
 // Work a model does on the same task, as multiples of Sonnet's: `out` scales output tokens
 // (thinking is billed as output and grows with effort) and `steps` scales tool calls, which

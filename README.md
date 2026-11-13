@@ -9,7 +9,7 @@ claude plugin marketplace add archid21/rightsize
 claude plugin install rightsize@archid21 --scope user
 ```
 
-**Status: 0.12.0.** Start fresh beside Compact now, a Concise output suggestion, and trim's savings in the report. See [New in 0.12.0](#new-in-0120).
+**Status: 0.13.0.** A report that leads with a checked saving, a spend limit for helpers, and monthly cache-life advice. See [New in 0.13.0](#new-in-0130).
 
 MIT license · works with a Claude subscription (Pro, Max, Ultra) or an API key · [Open an issue](https://github.com/archid21/rightsize/issues)
 
@@ -132,14 +132,14 @@ On a subscription, a keep-warm request draws a small share of your usage window,
 
 *Benchmark: real tasks from open-source repositories, each graded by hidden tests the model never sees. Your results depend on your work and settings. Method: [docs/METHOD.md](docs/METHOD.md).*
 
-## New in 0.12.0
+## New in 0.13.0
 
-- **Start fresh, next to Compact now.** With whatsnext installed, a big conversation can end in a handoff note and a new session that starts small. The row gives the prompt to paste, with **Compact and continue here** if you would rather keep going.
-- **Compact now says what it did:** `Compacted. Each turn now costs less.`
-- **A Concise output suggestion.** When Claude's written output drives the cost, the band offers the Concise output style for this session or this project.
-- **trim's savings in the report.** With trim installed, `/rightsize report` shows the tokens trim saved, per feature.
-- **Model switches fit the session's window**, and **fewer false "stuck" raises** when another plugin's hook refuses a tool call.
-- **Asks give one reason and four answers:** once, for this session, keep, or always.
+- **The report leads with a checked saving:** the overall saving as a range, checked against what staying really costs, with prompts you overrode left out.
+- **A spend limit for helpers** instead of a flat call count, with a new **Long helpers** row. An unanswered question never loses a helper's work.
+- **Cache-life advice.** Once a month the band prices a 5-minute and a 1-hour cache for how you work and asks once whether to switch.
+- **Did it work?** The report measures each setting change against the days before it.
+- **Watch only** ends with a row after 7 days that shows what rightsize would have saved.
+- **Six plain rows in settings.** Question wait, Price check and Rater are fixed values now.
 
 Every change: [CHANGELOG.md](CHANGELOG.md). Every feature: [docs/FEATURES.md](docs/FEATURES.md).
 

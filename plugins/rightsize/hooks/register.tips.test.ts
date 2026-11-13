@@ -435,12 +435,20 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(report).toContain('The saving is after the cost of rating prompts')
     expect(report, 'the row text is the plain report on every surface').not.toContain('```')
     // The row draws the Markdown form off the terminal: the tables in fences, so their columns line up.
-    const text = (await d.command('report')).text ?? ''
-    const row = await ($ as unknown as { ui: { mount: (x: unknown) => Promise<{ find: (q: unknown) => Promise<{ props: unknown } | undefined>; unmount: () => Promise<void> }> } }).ui.mount({ plugin: 'rightsize', component: 'CommandOutput', surface, props: { command: 'rightsize', args: 'report', text, isErrored: false } })
-    const drawn = ((await row.find({ type: 'Markdown', key: 'report' }))?.props as { text?: string } | undefined)?.text
-    await row.unmount()
-    if (surface === 'desktop') expect(drawn?.split('\n').filter(l => l === '```').length, 'savings and summary fenced').toBeGreaterThanOrEqual(4)
-    else expect(drawn, 'the terminal draws the plain row').toBeUndefined()
+    // The raw estimates (YOUR SAVINGS, 30-DAY SUMMARY) moved to the details view (ADR 0058): their fences are counted there.
+    const drawnFor = async (args: string) => {
+      const text = (await d.command(args)).text ?? ''
+      const row = await ($ as unknown as { ui: { mount: (x: unknown) => Promise<{ find: (q: unknown) => Promise<{ props: unknown } | undefined>; unmount: () => Promise<void> }> } }).ui.mount({ plugin: 'rightsize', component: 'CommandOutput', surface, props: { command: 'rightsize', args, text, isErrored: false } })
+      const drawn = ((await row.find({ type: 'Markdown', key: 'report' }))?.props as { text?: string } | undefined)?.text
+      await row.unmount()
+      return drawn
+    }
+    const fences = (t: string | undefined) => t?.split('\n').filter(l => l === '```').length
+    const drawn = await drawnFor('report details')
+    if (surface === 'desktop') {
+      expect(fences(drawn), 'savings and summary fenced').toBeGreaterThanOrEqual(4)
+      expect(fences(await drawnFor('report')), 'what rightsize did fenced').toBeGreaterThanOrEqual(2)
+    } else expect(drawn, 'the terminal draws the plain row').toBeUndefined()
     expect(report).toContain('NOT COUNTED AS SAVINGS')
   })
 
@@ -770,7 +778,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(runLines(h).some(l => l.kind === 'check')).toBe(true)
   })
 
-  test(`Rater set to haiku rates with Haiku, retries a timeout once on Haiku, and never calls Sonnet to rate (${surface})`, { timeoutMs: 30000, options: { rater: 'haiku' } }, async ($, on) => {
+  test(`Rater set to haiku rates with Haiku, retries a timeout once on Haiku, and never calls Sonnet to rate (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', stored: { rater: 'haiku' } })
     const d = drive($, h)
     await d.start(surface)
@@ -782,7 +790,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.ratingQueue = ['unavailable']
     await d.submit(LOOKUP)
     expect(h.completions, 'a refused rater is not asked again').toEqual(['haiku'])
-    expect((await d.command('status')).text ?? '').toContain('Rater: haiku')
+    expect((await d.command('status')).text ?? '', 'Rater is no setting to list: its stored value is used, not shown').not.toContain('Rater:')
   })
 
   test(`on a Sonnet session a debug rating at high does not raise effort, and stuck detection still can (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -936,6 +944,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await ui.press({ key: 'stay' })
     expect(h.filled.at(-1), 'the prompt is back in the box').toBe(DEBUG)
     expect(last(h.toasts) ?? '').toContain('run it on Opus at medium')
+    const undone = (h.files[RUNS_FILE] ?? '').trim().split('\n').filter(Boolean).map(l => JSON.parse(l) as Record<string, unknown>).filter(l => l.kind === 'undone')
+    expect(undone, 'Run on Opus is logged as an undone route').toEqual([expect.objectContaining({ kind: 'undone', undone: 'route', ref: expect.any(String) })])
     await ui.unmount()
     expect(await bandText($, surface), 'the band closes').toBe('')
 

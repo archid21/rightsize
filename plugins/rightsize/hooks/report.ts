@@ -1,4 +1,4 @@
-import { MISS_BLOCK, TIER_NAME, isTier, money } from './cost'
+import { type Calibration, MISS_BLOCK, TASK_TYPES, TIER_NAME, calKey, factor, isTier, money } from './cost'
 import { STEP_PROVE } from './steps'
 import { MISS_MIN, checkTotals, missRates, missTotals } from './misses'
 import type { StartBlock } from './start'
@@ -29,10 +29,12 @@ export type RunLine = {
    * 'dropped' and 'unbound' are not rated runs: the report counts only their overhead.
    * 'warm': one keep-warm request that kept the prompt cache from expiring (Before the cache goes cold); `overhead` is what it cost, `tier` its model and `context` the conversation it re-read.
    * 'cold': how the person answered one offer before the cache goes cold; `choice` is the id they pressed, or 'ignored'. It carries no cost and is no part of any total.
+   * 'undone': the person pressed Retry at original effort or Run on the current model on a run's band (`ref` is the run's `id`, `undone` which one). The Saving check leaves that run out. Retries pressed before rightsize 0.13 were not logged. It carries no cost and is no part of any total.
    * 'warmSaved': the person came back to a kept-warm cache after the time it would have gone cold without keep warm, and the returning prompt's first request read the cache (at least ~80% of the kept conversation); `saved` is what coming back cold would have cost. It carries no `overhead`, and `totals` counts `saved` toward Total saved.
+   * 'auto': a turn the person did not type (P-25): `origin` is the prompt origin kind, `source` the hook's `loop_wakeup` or `schedule_wakeup` for a scheduled trigger, with `context` and `cost`. Not a rated run: no total or check reads it.
    * `totals` adds the `overhead` of every line, so these pings count as rightsize's own cost and lower Total saved.
    */
-  kind?: 'run' | 'overhead' | 'subagent' | 'check' | 'feedback' | 'corrected' | 'unrated' | 'dropped' | 'unbound' | 'warm' | 'warmSaved' | 'cold'
+  kind?: 'run' | 'overhead' | 'subagent' | 'check' | 'feedback' | 'corrected' | 'unrated' | 'dropped' | 'unbound' | 'warm' | 'warmSaved' | 'cold' | 'undone' | 'auto'
   /** A run line: how the turn's last test run ended (the main chat's, else a helper's): the objective outcome of the work. */
   tests?: 'passed' | 'failed'
   /** A run line in watch-only mode: the change rightsize would have made, and the estimate of the route it would have taken. Nothing was applied. */
@@ -69,6 +71,8 @@ export type RunLine = {
   /** Calibrated estimates: of the route taken, and of staying at the person's own level and model. */
   taken?: number
   stay?: number
+  /** `stay` before calibration (0.13 on), logged beside it. `estimate` is the same for the route taken; `taken` is its calibrated form. */
+  stayRaw?: number
   actual?: number
   /** The model that rated the prompt: sonnet, or haiku (chosen in Rater, or the fallback). */
   rater?: 'sonnet' | 'haiku'
@@ -108,6 +112,22 @@ export type RunLine = {
   resized?: { tie?: Tie }[]
   /** Main-chat requests in the turn. */
   requests?: number
+  /**
+   * A run line (from 0.13): what the turn's output was made of, in the main chat and the helpers that answered in it. `outputTokens` is
+   * the output the API reported (thinking included); `thinkingTokens` and `toolInputTokens` (code written: the tool calls' names and
+   * input) are its parts, and the rest is text. The text and tool input are sized from what the responses wrote, and thinking is
+   * what is left. The `*Cost` fields are output cost at prices.json prices: `outputCost` in all, then thinking and tool input
+   * (text is the rest); `requestCost` is what all those requests cost, so `outputShare` is `outputCost` over `requestCost`.
+   * Lines from before 0.13 carry none of them, and the report's output line counts only lines that do.
+   */
+  outputTokens?: number
+  thinkingTokens?: number
+  toolInputTokens?: number
+  outputCost?: number
+  thinkingCost?: number
+  toolInputCost?: number
+  requestCost?: number
+  outputShare?: number
   /** A run line: each helper of the run that was watched (`agent` is its id, `kind` how it came to be one). */
   helpers?: (HelperLine & { agent: string; kind: 'handoff' | 'moved' })[]
   /** A run line: the task's retry budget used so far (helper raises and hand-off rework rounds); absent when none. */
@@ -129,12 +149,16 @@ export type RunLine = {
   /** The session's own level, before rightsize's change, and the conversation's size: from 0.7. */
   normal?: string
   context?: number
+  /** A run line (from 0.13): the conversation's size when the turn ended, in tokens. With `context` it gives what the turn added to the cache, for the cache-life check. */
+  contextEnd?: number
   /** Each model's lowest level for the work, or null where it would struggle: the rater's judgement. */
   fit?: Record<string, string | null>
   /** A check line: the second opinion, and who gave it. `fit` is then the first rater's. */
   check?: { by: string; fit: Record<string, string | null> }
-  /** A feedback line: the run's `id` and the verdict. */
+  /** A feedback, corrected or undone line: the run's `id`. */
   ref?: string
+  /** An undone line: what the person undid, 'lower' (Retry at original effort) or 'route' (Run on the current model). */
+  undone?: 'lower' | 'route'
   value?: 'up' | 'down'
 }
 
@@ -163,6 +187,11 @@ export type HelperLine = {
   returned?: true
   /** The helper call cap it reached, when that is why it was sent back. */
   capped?: number
+  /** What it spent, and its spend limit now, in dollars (absent when it had no estimate and the call cap applied). */
+  spend?: number
+  limit?: number
+  /** The spend limit that sent it back, when that is why. */
+  limited?: number
 }
 
 export type SwitchLine = { at: string; kept?: boolean }
@@ -664,6 +693,29 @@ function savingsTable(cols: readonly Stats[], subscription: boolean) {
   return grid([['', 'Today', '7 days', '30 days', 'Lifetime'], ...rows.map(r => [r.label, ...cols.map(s => cell(r, s))])], [1, 2, 3, 4])
 }
 
+/**
+ * WHAT RIGHTSIZE DID: counts over the report period, from the run log (each run's `change`, and the keep-warm lines).
+ * Model changes: a switch to another model for one turn. Effort changes: lowered and raised. Hand-offs: work sent to a helper on
+ * another model. Keep warm: runs, and the returns that found the cache still warm. Nothing here is a cost.
+ */
+function didRows(s: Stats, warm: KeepWarm | undefined): string[][] {
+  const c = s.t.changed
+  const prompts = (n: number) => (n ? `${n.toLocaleString('en-US')} ${n === 1 ? 'prompt' : 'prompts'}` : 'none')
+  const rows: string[][] = []
+  if (s.t.rated) {
+    const effort = c.lower + c.raise
+    const handoffs = c['delegate-down'] + c['delegate-up']
+    const part = (n: number, what: string) => (n ? [`${n.toLocaleString('en-US')} ${what}`] : [])
+    rows.push(
+      ['Model changes', prompts(c['switch-up'])],
+      ['Effort changes', prompts(effort) + (effort ? ` (${[...part(c.lower, 'lowered'), ...part(c.raise, 'raised')].join(', ')})` : '')],
+      ['Hand-offs', prompts(handoffs) + (handoffs ? ` (${[...part(c['delegate-down'], 'to a cheaper model'), ...part(c['delegate-up'], 'to a stronger model')].join(', ')})` : '')],
+    )
+  }
+  if (warm) rows.push(['Keep warm', `${plural(warm.runs, 'run')}, ${plural(warm.returns, 'return')} to a warm cache`])
+  return rows
+}
+
 /** 30-DAY SUMMARY: what rightsize did, one row each. Effort and model changes always show once anything was rated. */
 function summaryRows(s: Stats, warm: KeepWarm | undefined, subscription: boolean): string[][] {
   const c = s.t.changed
@@ -726,6 +778,30 @@ function calibrationRow(runs: readonly RunLine[]) {
   const last = offBy(measuredRuns.slice(-n))
   const trend = last.toFixed(1) === first.toFixed(1) ? 'same as' : last < first ? 'down from' : 'up from'
   return ['Estimates', `${last.toFixed(1)}x off, ${trend} ${first.toFixed(1)}x in the first ${n} runs`]
+}
+
+/** Kinds of work named on the tuning line; the rest are counted. */
+const TUNED_SHOWN = 5
+
+/**
+ * The details view's line on how rightsize tunes its estimates (P-21). It reads the calibration (cost.ts), which moves the
+ * estimates toward what turns really cost after every rated turn: `last updated` is when it was last saved, the runs are
+ * those measured, and each factor is a kind of work's main-chat estimate multiplier (1.0x: the estimate matched the cost).
+ * Nothing until a run has been measured.
+ */
+export function calibrationLine(cal: Calibration, at?: string): string | undefined {
+  const routes = ['main', 'delegate', 'subagent'] as const
+  const runs = TASK_TYPES.reduce((sum, t) => sum + routes.reduce((n, r) => n + (cal[calKey(t, r)]?.n ?? 0), 0), 0)
+  if (runs <= 0) return undefined
+  const kinds = TASK_TYPES.flatMap(t => {
+    const e = cal[calKey(t, 'main')]
+    return e ? [{ t, n: e.n, f: factor(cal, calKey(t, 'main')) }] : []
+  }).sort((a, b) => b.n - a.n)
+  const shown = kinds.slice(0, TUNED_SHOWN).map(k => `${k.t === 'other' ? 'unclassified' : k.t} ${k.f.toFixed(2)}x`)
+  const more = kinds.length > TUNED_SHOWN ? `, and ${kinds.length - TUNED_SHOWN} more` : ''
+  const on = at && Number.isFinite(Date.parse(at)) ? new Date(Date.parse(at)).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'America/Los_Angeles' }) : 'not recorded'
+  const factors = shown.length ? ` Factor by kind of work, in the main chat (1.00x means the estimate matched the cost): ${shown.join(', ')}${more}.` : ''
+  return `Estimates tuned after each rated turn: last updated ${on}; ${plural(runs, 'run')} measured.${factors}`
 }
 
 /** How good the ratings and estimates were: Haiku's misses, Sonnet's checks, what is paused for them, and the estimate error. */
@@ -803,7 +879,7 @@ function problemRows(ps: readonly Problem[]) {
   ])
 }
 
-const k = (n: number) => (n >= 1000 ? `${Math.round(n / 1000)}K` : `${Math.round(n)}`)
+const k = (n: number) => (n >= 1_000_000 ? `${Number((n / 1_000_000).toFixed(1))}M` : n >= 1000 ? `${Math.round(n / 1000)}K` : `${Math.round(n)}`)
 
 /** A duration for people: seconds under a minute (one decimal under 10), then minutes and seconds, then hours and minutes. */
 export function span(ms: number) {
@@ -1024,78 +1100,23 @@ export function keepWarmLine(lines: readonly RunLine[], subscription: boolean): 
   return `Keep warm: ${plural(runs, 'run')} · ${gain} · cost ${tildeMoney(cost)} · ${result}${subscription ? ' (API-equivalent)' : ''}`
 }
 
-/** A part or memory file this large (tokens) is flagged in the fixed-context block. About the 40,000 characters at which Claude Code itself warns about a large CLAUDE.md. */
-export const LARGE_FIXED = 10_000
+/** Fixed context above this share of the context window gets the "review it" advice. Starting value (ADR 0058); can be tuned. */
+export const FIXED_REVIEW_PCT = 15
 
 /**
- * Names, largest first, as many as fit in `room` columns with the rest counted ("+N more"); the largest is always named.
- * Each name carries its size.
+ * The one fixed-context line: what every request carries (the latest measured turn's total, as `/usage` counts it) as a share of the
+ * context window Claude Code reports. The review advice comes only above FIXED_REVIEW_PCT, and names `/context` when trim is not installed.
+ * Undefined when no turn measured it or the window is not known.
  */
-function nameWithin(items: readonly (readonly [string, number])[], room: number) {
-  const named: string[] = []
-  for (const [n, t] of items) {
-    const rest = items.length - named.length - 1
-    const row = [...named, `${n} ${k(t)}`].join(', ') + (rest ? `, +${rest} more` : '')
-    if (named.length && row.length > room) break
-    named.push(`${n} ${k(t)}`)
-  }
-  return named.join(', ') + (named.length < items.length ? `, +${items.length - named.length} more` : '')
-}
-
-/** The context every request carried, by part (largest first), request-weighted, what re-reading it cost, and how to cut it. */
-export function fixedBlock(lines: readonly RunLine[], subscription = false) {
-  const runs = lines.filter(l => isRun(l) && l.fixed && num(l.requests) > 0)
-  const requests = runs.reduce((n, l) => n + num(l.requests), 0)
-  const cost = runs.reduce((n, l) => n + num(l.fixed?.cost), 0)
-  if (!requests || cost < 0.005) return undefined
-  const avg = (part: 'tokens' | 'mcp' | 'memory' | 'agents' | 'skills') => runs.reduce((n, l) => n + num(l.fixed?.[part]) * num(l.requests), 0) / requests
-  // SessionStart output, over the turns that measured it: undefined when none did (no line says it, or the messages could not be read).
-  const measured = runs.filter(l => typeof l.fixed?.startHooks === 'number')
-  const measuredRequests = measured.reduce((n, l) => n + num(l.requests), 0)
-  const hooks = measuredRequests ? measured.reduce((n, l) => n + num(l.fixed?.startHooks) * num(l.requests), 0) / measuredRequests : undefined
-  const last = runs[runs.length - 1]?.fixed
-  const byLargest = (r: Record<string, number> | undefined) => Object.entries(r ?? {}).sort((a, b) => b[1] - a[1])
-  const servers = byLargest(last?.servers)
-  const files = byLargest(last?.files)
-  const parts = [
-    [avg('mcp'), 'MCP tools', servers, "disconnect MCP servers you don't use (/mcp)"],
-    [avg('memory'), 'Memory', files, 'trim CLAUDE.md and MEMORY.md (/memory)'],
-    [avg('skills'), 'Skills', [], "turn off plugins and skills you don't use (/plugin)"],
-    [avg('agents'), 'Agents', [], "remove custom agents you don't use (/agents)"],
-    [hooks ?? 0, 'SessionStart hooks', [], "turn off plugins whose SessionStart hooks you don't use (/plugin), or trim your own hooks' output"],
-  ] as const
-  const big = parts.filter(([t]) => t >= 500).sort((a, b) => b[0] - a[0])
-  const labels = big.map(([, label], i) => `${i === big.length - 1 ? '└─' : '├─'} ${label}`)
-  // Servers and files are named largest first while the row stays within 80 columns (indent, label, size and gaps come first); the rest are counted. The largest is always named.
-  const room = 80 - (2 + Math.max(0, ...labels.map(l => l.length)) + 3 + Math.max(0, ...big.map(([t]) => k(t).length)) + 3)
-  const tree = big.map(([t, , names], i) => [labels[i] ?? '', k(t), ...(names.length ? [nameWithin(names, room)] : [])])
-  // The advice follows the biggest parts, so it names what would cut the most.
-  const how = big.slice(0, 2).map(([, , , fix]) => fix).join(', or ')
-  const spent = runs.reduce((n, l) => n + num(l.actual), 0)
-  // The share is of what those same turns cost (their actual spend), not of all spend.
-  const pct = spent > 0 ? `, ~${Math.round((cost / spent) * 100)}% of what those turns cost` : ''
-  // A memory file or the start hooks at LARGE_FIXED or more, largest first.
-  const large = [...files.map(([n, t]) => [n, t] as const), ['SessionStart hooks', hooks ?? 0] as const].filter(([, t]) => t >= LARGE_FIXED).sort((a, b) => b[1] - a[1])
-  return {
-    head: `~${k(avg('tokens'))} tokens sent with every request`,
-    notes: [
-      `Fixed context adds to your ${subscription ? 'usage' : 'cost'} in every session. Cutting it saves more.`,
-      `At least ~${money(cost)}${subscription ? ' API-equivalent' : ''} over ${plural(requests, 'request')}${pct}.`,
-      ...(large.length ? [`Large: ${large.map(([n, t]) => `${n} ${k(t)}`).join(', ')}.`] : []),
-      // Said, never shown as 0: the total above leaves it out.
-      ...(hooks === undefined ? ['SessionStart hooks: not measured.'] : []),
-    ],
-    tree,
-    ...(how ? { fix: `rightsize can't trim fixed context. To cut it: ${how}.` } : {}),
-    ...(how
-      ? {
-          rec: `Cut fixed context. ~${k(avg('tokens'))} tokens go with every request: at least ~${money(cost)}${subscription ? ' at API prices' : ''} in 30 days${pct}. Largest: ${big
-            .slice(0, 2)
-            .map(([t, label]) => `${label} ${k(t)}`)
-            .join(', ')}. To cut it: ${how}.`,
-        }
-      : {}),
-  }
+export function fixedLine(lines: readonly RunLine[], window: number | undefined, trimInstalled: boolean): string | undefined {
+  if (typeof window !== 'number' || !(window > 0)) return undefined
+  const last = lines.filter(l => isRun(l) && num(l.fixed?.tokens) > 0 && num(l.requests) > 0).pop()
+  const tokens = num(last?.fixed?.tokens)
+  if (!tokens) return undefined
+  const pct = (tokens / window) * 100
+  const share = pct < 1 ? 'under 1%' : `~${Math.round(pct)}%`
+  const advice = pct > FIXED_REVIEW_PCT ? ` Review it with \`${trimInstalled ? '/trim:context' : '/context'}\`.` : ''
+  return `Fixed context: ${share} of the context window (${k(tokens)} of ${k(window)} tokens).${advice}`
 }
 
 const TRIM_LABEL: Record<string, string> = { output_cap: 'Command output cut', tool_cleanup: 'Tool results cleaned', repeat_reads: 'Repeat reads', browser_scale: 'Browser screenshots' }
@@ -1116,7 +1137,7 @@ export function trimRows(trim: TrimSavings | undefined) {
 export function buildReport(
   lines: readonly RunLine[],
   switches: readonly SwitchLine[],
-  opts: { now: number; session: string; subscription: boolean; start?: StartBlock; pause?: number | null; measureFrom?: string; markdown?: boolean; watching?: boolean; lifetime?: Lifetime; details?: boolean; trim?: TrimSavings; changes?: readonly ChangeLine[] },
+  opts: { now: number; session: string; subscription: boolean; start?: StartBlock; pause?: number | null; measureFrom?: string; markdown?: boolean; watching?: boolean; lifetime?: Lifetime; details?: boolean; trim?: TrimSavings; changes?: readonly ChangeLine[]; contextWindow?: number; trimInstalled?: boolean; calibration?: { cal: Calibration; at?: string } },
 ) {
   const since = (days: number) => (l: { at: string }) => opts.now - Date.parse(l.at) <= days * DAY
   const month = lines.filter(since(30))
@@ -1132,38 +1153,38 @@ export function buildReport(
   const section = (t: string, rows: readonly string[]) => ['', t, ...indent(rows)]
   const from = opts.measureFrom ? Date.parse(opts.measureFrom) : 0
   const thirty = stats(month, sub, true)
-  const fixed = fixedBlock(month, sub)
+  const fixed = fixedLine(month, opts.contextWindow, opts.trimInstalled === true)
   const start = opts.start
   const accuracy = accuracyRows(month, opts.pause, from)
-  if (opts.details) return detailsReport()
-
   // Today (since local midnight), 7 days, 30 days and lifetime. All are estimates.
   const midnight = new Date(opts.now).setHours(0, 0, 0, 0)
   const cols = [stats(lines.filter(l => Date.parse(l.at) >= midnight), sub), stats(lines.filter(since(7)), sub), thirty, lifetimeStats(opts.lifetime, lines, sub)]
+  const warm = keepWarm(month)
+  if (opts.details) return detailsReport()
+
   const nothing = thirty.empty
   const out = ['rightsize report · last 30 days', ...(nothing ? [cols[3]?.empty ? 'Nothing rated yet.' : 'Nothing rated in the last 30 days.'] : headline(thirty, sub).flatMap(h => para(h)))]
   if (opts.measureFrom) out.push(`Cost measurement restarted on ${opts.measureFrom.slice(0, 10)}.`)
-  if (!cols.every(s => s.empty)) out.push(...section('YOUR SAVINGS', savingsTable(cols, sub)))
-
-  const warm = keepWarm(month)
-  const summary = summaryRows(thirty, warm, sub)
-  if (summary.length) out.push(...section('30-DAY SUMMARY', grid(summary)))
-  const trimmed = trimRows(opts.trim)
-  if (trimmed) out.push(...section('TRIM SAVINGS (tokens, estimated)', grid(trimmed)), ...para(TRIM_NOTE, md ? '' : '  '))
   // Saving check: prompts rightsize left alone show how far its "staying" prediction is off; the changed prompts are re-priced by it (ADR 0055).
+  // The headline is the overall saving over all prompts not overridden; the changed prompts alone are in details.
   const check = checkRows(savingCheck(month), sub)
   const checkTitle = `SAVING CHECK (last 30 days${sub ? ', API prices' : ''})`
   if (check.table.length || check.notes.length) out.push('', checkTitle, ...check.lead.flatMap(n => para(n, md ? '' : '  ')), ...indent(check.table), ...check.notes.flatMap(n => para(n, md ? '' : '  ')))
   // Did it work?: each setting you changed, your prompts after it against before it (ADR 0054). Measured, not estimated.
   const worked = resultRows(results(lines, opts.changes ?? [], opts.now))
   if (worked.length) out.push(...section('DID IT WORK? (measured on your prompts)', worked))
+  // What rightsize did: counts only, from the run log. No cost figure, so none can disagree with /usage.
+  const did = didRows(thirty, warm)
+  if (did.length) out.push(...section('WHAT RIGHTSIZE DID (last 30 days)', grid(did)))
   // Watch only: what rightsize would have done, and what that would have saved, against staying. Nothing was applied.
   const watched = watchLine(month, sub, opts.watching === true)
   if (watched) out.push('', ...para(watched))
+  // Where output cost goes, from the run lines that measured it (0.13 on): a share, so no dollar figure.
+  const output = outputShareLine(month, sub)
+  if (output) out.push('', ...para(output))
 
-  // What to do, from the sections in details: fixed context, the start, keep warm. Then what needs no action.
+  // What to do, from the sections in details: the start, keep warm. Then what needs no action.
   const recs = [
-    fixed?.rec,
     start?.tip,
     warm && warm.net <= -0.005 ? `Keep warm cost more than it saved (${tildeMoney(-warm.net)} more${sub ? ' at API prices' : ''}). Set Before the cache goes cold to a shorter keep warm, or to ask (/config).` : undefined,
   ].filter((n): n is string => !!n)
@@ -1177,6 +1198,8 @@ export function buildReport(
     for (const n of notes) out.push(...(md ? [`- ${n}`] : wrap(n, '  ', '  ', 78)))
   }
 
+  // One line on fixed context, then where the full breakdown is: trim owns it (ADR 0041, 0058).
+  out.push('', ...(fixed ? para(fixed) : []), ...para('For the full context breakdown, use `/usage` and `/trim:context`.'))
   const foot = [
     ...(nothing ? [] : ['Details: /rightsize report details']),
     `Estimates: actual cost against staying at your own model and effort, after the cost of rating prompts${month.some(l => l.kind === 'warm') ? ' and keeping the cache warm' : ''}.`,
@@ -1193,11 +1216,22 @@ export function buildReport(
   function detailsReport() {
     const out = ['rightsize report details · last 30 days']
     if (opts.measureFrom) out.push(`Cost measurement restarted on ${opts.measureFrom.slice(0, 10)}.`)
+    // Raw estimates: they can disagree with the checked saving, so the main view leaves them out (ADR 0058).
+    if (!cols.every(s => s.empty)) out.push(...section('YOUR SAVINGS', savingsTable(cols, sub)))
+    // The Saving check on the prompts rightsize changed alone: the headline in the main view counts all prompts.
+    const changedOnly = checkRows(savingCheck(month), sub).changed
+    if (changedOnly.table.length) out.push('', `SAVING CHECK: CHANGED PROMPTS ONLY (last 30 days${sub ? ', API prices' : ''})`, ...changedOnly.lead.flatMap(n => para(n, md ? '' : '  ')), ...indent(changedOnly.table))
+    const summaryList = summaryRows(thirty, warm, sub)
+    if (summaryList.length) out.push(...section('30-DAY SUMMARY', grid(summaryList)))
+    const trimmed = trimRows(opts.trim)
+    if (trimmed) out.push(...section('TRIM SAVINGS (tokens, estimated)', grid(trimmed)), ...para(TRIM_NOTE, md ? '' : '  '))
     if (start) out.push('', `STARTING POINT  ${start.head}`, ...indent(grid(start.rows)), ...(start.note ? para(start.note, '  ') : []))
-    if (fixed) out.push('', `FIXED CONTEXT  ${fixed.head}`, ...fixed.notes.flatMap(n => para(n, '  ')), ...indent(grid(fixed.tree, [1])))
+    if (fixed) out.push('', ...para(fixed))
     const ties = thirty.ties && thirty.ties.guided + thirty.ties.explored > 0 ? [['Close calls', `${thirty.ties.guided} guided, ${thirty.ties.explored} explored`]] : []
     const acc = [...accuracy.rows, ...ties]
     if (acc.length) out.push(...section('ACCURACY', grid(acc)))
+    const tuned = opts.calibration ? calibrationLine(opts.calibration.cal, opts.calibration.at) : undefined
+    if (tuned) out.push('', ...para(tuned))
     const problem = problems(month, switches.filter(since(30)), sub)
     out.push(...(problem.length ? section('NOT COUNTED AS SAVINGS', grid(problemRows(problem))) : ['', 'NOT COUNTED AS SAVINGS', md ? 'Nothing yet.' : '  Nothing yet.']))
     // Time is measured and reported here; it never chooses a route.
@@ -1233,6 +1267,33 @@ export function watchLine(lines: readonly RunLine[], subscription: boolean, watc
   const saving = changed.reduce((s, l) => s + ((l.stay ?? 0) - (l.wouldTaken ?? 0)), 0)
   const what = `would have ${saving >= 0 ? 'saved' : 'spent'} ~${money(Math.abs(saving))}${subscription ? ' API-equivalent' : ''}`
   return `Watch only: ${plural(runs.length, 'prompt')} rated, ${changed.length} would have been changed, which ${what} against staying (estimates; nothing was applied).${watching ? ' Mode in /config turns rightsize on.' : ''}`
+}
+
+/** A share as a whole percent; a share above 0 that rounds to 0 reads "under 1%". */
+const percent = (x: number) => (x > 0 && Math.round(x * 100) === 0 ? 'under 1%' : `${Math.round(x * 100)}%`)
+
+/**
+ * The report's output line: output's share of cost over the lines, split into thinking, text and code written (P-22, ADR 0060).
+ * Only run lines that carry the output fields count (from 0.13); with none, there is no line. When only some of the runs carry them,
+ * the line says how many turns it was measured over. The total is the sum of the rounded parts. The shares are of cost at prices.json prices, so on a subscription it says
+ * "API prices". When thinking is the largest part, it points to the effort rows that control it.
+ */
+export function outputShareLine(lines: readonly RunLine[], subscription: boolean): string | undefined {
+  const runs = lines.filter(isRun)
+  const measured = runs.filter(l => typeof l.outputTokens === 'number' && num(l.requestCost) > 0)
+  const sum = (pick: (l: RunLine) => unknown) => measured.reduce((n, l) => n + num(pick(l)), 0)
+  const total = sum(l => l.requestCost)
+  if (!measured.length || total <= 0) return undefined
+  const output = sum(l => l.outputCost) / total
+  const thinking = sum(l => l.thinkingCost) / total
+  const code = sum(l => l.toolInputCost) / total
+  const text = Math.max(0, output - thinking - code)
+  const scope = measured.length < runs.length ? ` over ${plural(measured.length, 'turn')} measured` : ''
+  const label = subscription ? ' (API prices)' : ''
+  const lead = thinking > text && thinking > code ? ' Thinking leads: the Lowest effort and Highest effort rows control it.' : ''
+  // The whole is the sum of the rounded parts, so the line adds up as it reads.
+  const whole = [thinking, text, code].reduce((n, x) => n + Math.round(x * 100), 0)
+  return `Output was ${whole > 0 ? `${whole}%` : percent(output)} of cost${scope}${label}: ${percent(thinking)} thinking, ${percent(text)} text, ${percent(code)} code written.${lead}`
 }
 
 export const SHARE_MIN_RATED = 20

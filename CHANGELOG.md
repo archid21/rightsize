@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.13.0 (2026-11-13)
+
+- **The report leads with a checked saving.** `/rightsize report` opens with the overall saving as a range and a share of your cost. It counts the prompts rightsize left alone too, and checks the saving against what staying really costs. Prompts you overrode (advice you declined, or a change you undid with Retry at original effort or Run on your model) are left out.
+- **A saving check on the prompts rightsize left alone.** The details show how far its "what staying would cost" prediction is off, per kind of work, with Estimated and Checked columns.
+- **A shorter report.** Fixed context is one line that points to `/usage` and `/trim:context`. The raw savings estimate and the 30-day summary moved to `/rightsize report details`.
+- **Where output cost goes.** One line in the report gives output's share of cost, split into thinking, text and code written. When thinking is the largest part, it says the Lowest effort and Highest effort rows control it.
+- **How rightsize tunes its estimates.** `/rightsize report details` has one line with when the calibration was last saved, how many runs it has measured and a factor per kind of work.
+- **Did it work?** Each time you change a setting that alters what rightsize does, `/rightsize report` shows your prompts after the change against the days before it: cost, requests, tool errors, failed tests and time per prompt.
+- **Cache-life advice.** Once a month, at a turn end, the band prices your last 30 days on a 5-minute cache with keep warm and on a 1-hour cache. When the cheaper one is not the life Claude Code uses now, it asks once whether to switch. It shows only on an API key, a cloud provider or gateway, or usage credits, and writes only on your answer.
+- **Watch only: a row after 7 days and a summary.** After 7 full days of watch only, one band row shows what the Saving check says rightsize would have saved, with **Turn on**, **Ask before changing** and **Keep watching**. When you turn watch only off, one row sums up the same range.
+- **A helper has a spend limit, not a call count.** A cheaper helper may spend 1.5, 2 or 3 times what its task is estimated to cost on your model. At 80% of the limit, while it is still finding new things, the new **Advanced · Long helpers** row decides: ask (the default), continue while making progress, or stop at the limit. A helper that was stopped cannot be resumed; the main chat starts a new one with the list of what is left.
+- **An unanswered helper question never loses the work.** With no answer, the helper goes on while it makes progress, up to 10 times the estimate, then stops and sends its report back.
+- **A stopped helper can hand back its report.** The last call a stopped helper makes is allowed, so its report reaches the main chat and the work is not redone.
+- **Six plain rows in settings.** Mode, Routing, Hand-offs, Ask before changing, Cache and Band come first. Question wait, Price check and Rater are now fixed values (30 seconds, monthly, Sonnet) with no row; a value an earlier release stored is kept and used.
+
 ## 0.12.0 (2026-11-11)
 
 - **Start fresh, next to Compact now.** With whatsnext installed, the context-size warning offers **Start fresh** beside **Compact now** when at least 40K tokens of the window are left. Start fresh has whatsnext save a handoff note (it skips that when the note is already fresh), then the row says `Handoff saved. Keep going here, or start a new session from it.` with the new-session prompt, and three buttons: **Compact and continue here**, **Copy for new session** and **Not now**. In the terminal, the row gives the `claude "..."` command to run in a new window instead of Copy. Typing your own prompt clears the row. A plugin cannot start a new session as you, so rightsize gives you the prompt to paste and starts nothing itself.

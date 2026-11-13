@@ -28,6 +28,7 @@ import {
   outputAdviceDue,
   outputCost,
   outputShareText,
+  splitOutput,
   parsePrices,
   fitsWindow,
   switchWindow,
@@ -145,6 +146,10 @@ test('the cache life follows Claude Code’s precedence, then the billing', asyn
   expect(resolveTtl({ billing: 'subscription' }).ttl, 'a subscription within its plan').toBe('1h')
   expect(resolveTtl({ billing: 'subscription', onCredits: true }).ttl, 'a subscription on usage credits').toBe('5m')
   expect(resolveTtl({ billing: 'api', file: '1h' }).by, 'prices.json beats the billing').toBe('prices.json')
+  expect(resolveTtl({ cloud: true }), 'a cloud provider or gateway with no billing read: 5 minutes, as Claude Code gives it').toEqual({ ttl: '5m', by: 'a cloud provider or gateway' })
+  expect(resolveTtl({ cloud: true, billing: 'subscription' }).ttl, 'rate limits of a subscription say it is not a cloud request').toBe('1h')
+  expect(resolveTtl({ cloud: true, setting: '1h' }).ttl, 'the setting beats it').toBe('1h')
+  expect(resolveTtl({ cloud: true, file: '1h' }).ttl, 'prices.json beats it').toBe('1h')
   expect(resolveTtl({ billing: 'api', enable1h: '1' }).ttl, 'ENABLE_PROMPT_CACHING_1H beats prices.json and billing').toBe('1h')
   expect(resolveTtl({ enable1h: '1', setting: '5m' }).ttl, 'the setting beats ENABLE').toBe('5m')
   expect(resolveTtl({ setting: '5m', env: '1h' }).ttl, 'the variable beats the setting').toBe('1h')
@@ -1235,4 +1240,31 @@ test('output advice: 25% of the cost, 20 requests and $1.00 at list prices, all 
   expect(outputAdviceDue({ ...met, total: 0.99, output: 0.5 }), 'under $1.00').toBe(false)
   expect(outputAdviceDue({ output: 0, total: 0, requests: 0 })).toBe(false)
   expect(outputShareText({ output: 0.38, total: 1, requests: 20 })).toBe("Output is about 38% of this session's cost.")
+})
+
+test('output split: text and tool input are sized from what was written, thinking is what is left, costs follow the tokens', async () => {
+  const u = { input_tokens: 200, output_tokens: 1000, cache_read_input_tokens: 20_000, cache_creation_input_tokens: 20_000 }
+  const model = 'claude-opus-5-5'
+  // 400 characters of text = 100 tokens. One tool call: 'Write' (5) + the input as JSON (395 characters) = 400 characters = 100 tokens.
+  const input = { c: 'x'.repeat(387) }
+  expect(JSON.stringify(input).length).toBe(395)
+  const s = splitOutput(DEFAULT_PRICES, model, u, 'y'.repeat(400), [{ name: 'Write', input }])
+  expect(s).toMatchObject({ tokens: 1000, text: 100, code: 100, thinking: 800 })
+  // Opus output is $20 per million: 1000 tokens = $0.02, shared out by tokens.
+  expect(near(s.cost, 0.02)).toBe(true)
+  expect(near(s.thinkingCost, 0.016)).toBe(true)
+  expect(near(s.textCost, 0.002)).toBe(true)
+  expect(near(s.codeCost, 0.002)).toBe(true)
+  expect(near(s.thinkingCost + s.textCost + s.codeCost, s.cost), 'the parts add up to the whole').toBe(true)
+  // A string input counts as it is; no text and no tool calls: all thinking.
+  expect(splitOutput(DEFAULT_PRICES, model, u, '', [{ name: 'Bash', input: 'x'.repeat(36) }]).code).toBe(10)
+  expect(splitOutput(DEFAULT_PRICES, model, u, '', [])).toMatchObject({ text: 0, code: 0, thinking: 1000 })
+  // More written than the API counted: scaled down to the total, no thinking, never negative.
+  const over = splitOutput(DEFAULT_PRICES, model, { ...u, output_tokens: 100 }, 'y'.repeat(400), [{ name: 'Write', input }])
+  expect(over.thinking).toBeGreaterThanOrEqual(0)
+  expect(over.text + over.code + over.thinking, 'tokens still add up').toBe(100)
+  expect(over.thinking).toBeLessThanOrEqual(2)
+  // No output: nothing, and no division by zero. An unknown model costs nothing.
+  expect(splitOutput(DEFAULT_PRICES, model, { ...u, output_tokens: 0 }, '', [])).toMatchObject({ tokens: 0, thinking: 0, cost: 0, thinkingCost: 0 })
+  expect(splitOutput(DEFAULT_PRICES, 'claude-unknown-9', u, 'hello', []).cost).toBe(0)
 })

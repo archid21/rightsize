@@ -37,6 +37,11 @@ export const TIPS: readonly Tip[] = [
     link: `${FEATURES}#seeing-and-controlling-it`,
   },
   {
+    id: 'helpers',
+    text: 'Helpers that run long ask before going past their spend limit; with no answer they go on while they make progress, up to a cap. Change this with Long helpers in /config: ask, continue while making progress, or stop at the limit.',
+    link: `${FEATURES}#routing`,
+  },
+  {
     // The band replaces this text with the repos still to star (./star.ts askText).
     id: 'star',
     text: 'Finding rightsize useful? Star it on GitHub so other people can find it.',

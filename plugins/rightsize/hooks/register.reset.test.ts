@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
-import { CAL_STORE } from './cost'
-import { KEYS, SETTINGS, type SettingKey, plainTitle } from './settings'
+import { CAL_AT_STORE, CAL_STORE } from './cost'
+import { FIXED_ROWS, KEYS, PANE_KEYS, SETTINGS, type SettingKey, plainTitle } from './settings'
 import { RUNS_FILE, LOG_PATH, LEGACY_RUNS, LOOKUP, DEBUG, NO_ONE, SEARCH, NO_CHANGE, FREE_SWITCHES, cellsOf, engine, drive, settle, DAY, last, bandText, LOWER } from './testkit'
 
 declare const setTimeout: (fn: (...a: unknown[]) => void, ms: number) => unknown
@@ -59,6 +59,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   }
   const MEASURE_STORE = {
     [CAL_STORE]: { ...FREE_SWITCHES, 'lookup:main': { n: 5, ratio: 1.5 } },
+    [CAL_AT_STORE]: '2026-11-01T00:00:00.000Z',
     ties: 7,
     spotChecks: 3,
     startCheckedAt: 1_800_000_000_000 - DAY,
@@ -278,7 +279,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.start(surface)
     const out = (await d.command('reset hand off threshhold')).text ?? ''
     expect(out).toContain('No setting called "hand off threshhold".')
-    for (const key of KEYS) expect(out, key).toContain(key)
+    for (const key of PANE_KEYS) expect(out, key).toContain(key)
+    for (const key of FIXED_ROWS) expect(out, `${key} is not a setting to reset`).not.toContain(key)
     expect(h.asked).toEqual([])
   })
 
@@ -293,7 +295,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
       h.answers = { Reset: choice, Confirm: 'Yes' }
       const out = (await d.command('reset')).text ?? ''
       expect(out).toContain('Cost measurement restarted: rightsize is back to its starting estimates and relearns from your next prompts.')
-      for (const key of [CAL_STORE, 'ties', 'spotChecks', 'startCheckedAt', 'startSnooze']) expect(h.store[key], key).toBeNull()
+      for (const key of [CAL_STORE, CAL_AT_STORE, 'ties', 'spotChecks', 'startCheckedAt', 'startSnooze']) expect(h.store[key], key).toBeNull()
       expect(h.store.measureFrom).toBe(new Date(h.now).toISOString())
       expect(await settingsText(d), 'in memory too').toContain('Measured runs: 0')
       expect(h.files[RUNS], 'the run log is kept, line for line').toBe(log)
@@ -304,7 +306,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
       expect(report, 'what went wrong reads the whole history').toMatch(/Haiku's judgement +wrong on 3 of 6 checked prompts \(50%\)/)
       expect(report, 'but nothing is paused any more').not.toContain('Hand-downs paused')
       // Settings stay unless Both.
-      expect(await settingsText(d)).toContain(choice === 'Both' ? `All ${KEYS.length} settings are at their defaults` : 'Lowering: lower automatically')
+      expect(await settingsText(d)).toContain(choice === 'Both' ? `All ${PANE_KEYS.length} settings are at their defaults` : 'Lowering: lower automatically')
     })
   }
 
@@ -575,7 +577,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t0')
     await d.complete('t0')
   }
-  type HelperEntry = { agent: string; kind: string; steps: number; ms: number; errors: number; blocked: number; stall?: string; raises?: { step: number; from: string; to: string; why: string }[]; returned?: boolean }
+  type HelperEntry = { agent: string; kind: string; steps: number; ms: number; errors: number; blocked: number; stall?: string; raises?: { step: number; from: string; to: string; why: string }[]; returned?: boolean; spend?: number; limit?: number }
 
   test(`a struggling hand-off helper is raised one level, and its later steps go out at it (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { model: 'claude-fable-5-2', effort: 'high', store: HELPERS })
@@ -599,8 +601,9 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.complete('t1')
     const run = readRuns(h).find(l => l.kind === 'run') as { helpers?: HelperEntry[]; retries?: number }
     expect(run.retries, 'one chance used').toBe(1)
-    expect(run.helpers).toEqual([
-      { agent: 'agent-helper', kind: 'handoff', steps: 4, calls: 2, ms: 0, errors: 2, blocked: 0, stall: 'struggling', raises: [{ step: 3, from: 'low', to: 'medium', why: 'the same tool call failed twice' }] },
+    // The helper line also keeps what it spent and its spend limit (dollars), which this test does not pin.
+    expect(run.helpers?.map(({ spend, limit, ...rest }) => ({ ...rest, hasLimit: spend !== undefined && limit !== undefined }))).toEqual([
+      { agent: 'agent-helper', kind: 'handoff', steps: 4, calls: 2, ms: 0, errors: 2, blocked: 0, stall: 'struggling', raises: [{ step: 3, from: 'low', to: 'medium', why: 'the same tool call failed twice' }], hasLimit: true },
     ])
   })
 

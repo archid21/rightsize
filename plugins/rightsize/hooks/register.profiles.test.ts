@@ -456,6 +456,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const h = engine(on, { ...OPUS, store: SEND })
     expect(await nearHandOff($, h, drive($, h), CHEAP)).toBe('haiku')
     expect(noteOf(h)).toContain('At most 2 rework rounds.')
+    expect(noteOf(h), 'a stopped helper cannot be resumed').toContain('cannot be resumed with SendMessage')
+    expect(noteOf(h)).toContain('That uses one rework.')
     expect(noteOf(h)).toContain('still fails after 2 rework')
   })
 

@@ -1,5 +1,5 @@
 import { type TestBody, expect, test } from 'claude-code/testing'
-import { KEYS, SETTINGS, type SettingKey, plainTitle } from './settings'
+import { FIXED_ROWS, PANE_KEYS, SETTINGS, type SettingKey, plainTitle } from './settings'
 import { LOG_PATH, LOOKUP, NO_CHANGE, BIG_TURN, engine, drive, last, type Mounted, mountPane, bandText, setBand } from './testkit'
 
 
@@ -32,18 +32,19 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.paneCloses).toEqual([])
     const status = (await d.command('status')).text ?? ''
     expect(status.startsWith('Ask before changing: off')).toBe(true)
-    expect(status).toContain(`All ${KEYS.length} settings are at their defaults`)
+    expect(status).toContain(`All ${PANE_KEYS.length} settings are at their defaults`)
     expect(status.endsWith('Commands: /rightsize help')).toBe(true)
     expect(h.paneOpens.length, 'status opens no pane').toBe(1)
   })
 
-  test(`the pane lists every row of the settings table in order, Profile, Mode, Routing, Hand-offs and Cache first, the Advanced ones under a heading, each with its value (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`the pane lists every pane row in order, Mode, Routing, Hand-offs, Ask before changing, Cache and Band first, the Advanced ones under a heading, each with its value (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const { d } = await start($, on)
     await d.command('')
     const ui = await mountPane($, surface)
     const selects = await ui.findAll({ type: 'Select' })
-    expect(selects.map(x => x.key), 'every row, in the table\'s order').toEqual(KEYS.map(k => `row-${k}`))
-    for (const key of KEYS) {
+    expect(selects.map(x => x.key), 'every pane row, in the table\'s order, and no fixed row').toEqual(PANE_KEYS.map(k => `row-${k}`))
+    for (const key of FIXED_ROWS) expect(await selectOf(ui, key), `${key} has no row`).toBeUndefined()
+    for (const key of PANE_KEYS) {
       const p = await selectOf(ui, key)
       expect(p?.value, key).toBe(SETTINGS[key].default)
       expect(p?.options?.map(o => o.value), key).toEqual([...SETTINGS[key].options])
@@ -52,10 +53,10 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const order = await drawn(ui)
     expect(order[0], 'the keys, above the rows').toContain('Tab: next setting · ↑↓: choose a value · Enter: set · Esc: close.')
     expect(order.indexOf('row-mode'), 'Mode first, above the heading: it is not an Advanced row').toBe(1)
-    expect(order.slice(2, 6), 'the three switches and Ask before changing follow, above the heading: they are not Advanced rows').toEqual(['row-routing', 'row-handOffs', 'row-askFirst', 'row-cache'])
-    expect(order[6], 'the heading').toBe('Advanced')
+    expect(order.slice(2, 7), 'the three switches, Ask before changing and Band follow, above the heading: they are not Advanced rows').toEqual(['row-routing', 'row-handOffs', 'row-askFirst', 'row-cache', 'row-band'])
+    expect(order[7], 'the heading').toBe('Advanced')
     expect(order.filter(x => x === 'Advanced').length).toBe(1)
-    expect(order.slice(7), 'the Advanced rows follow it, in order').toEqual(KEYS.slice(5).map(k => `row-${k}`))
+    expect(order.slice(8), 'the Advanced rows follow it, in order').toEqual(PANE_KEYS.slice(6).map(k => `row-${k}`))
     await ui.unmount()
   })
 
@@ -131,12 +132,12 @@ for (const surface of ['desktop', 'terminal'] as const) {
   test(`a change in /config while the pane is open draws it again (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const { d } = await start($, on)
     const ui = await mountPane($, surface)
-    await d.config('rater', 'haiku')
-    expect(await selectOf(ui, 'rater')).toMatchObject({ label: 'Rater (yours)', value: 'haiku' })
+    await d.config('useHaiku', 'off')
+    expect(await selectOf(ui, 'useHaiku')).toMatchObject({ label: 'Use Haiku (yours)', value: 'off' })
     await ui.unmount()
   })
 
-  const BAND_PAGE = [...Array<string>(6).fill('More…'), 'Band: when it acts']
+  const BAND_PAGE = ['More…', 'Band: when it acts']
   test(`with no pane placed it asks instead: pick a row shown as Row: value (paged), pick its value, back to the rows, until Done (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const { h, d } = await start($, on)
     h.panePlaced = false
@@ -145,7 +146,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.paneCloses, 'the unplaced pane is closed, not left open').toEqual([PANE_ID])
     expect(h.asked[0]?.options, 'Done first, then the rows as Row: value, three to a page').toEqual(['Done', 'Mode: act', 'Routing: on', 'More…'])
     expect(h.asked[1]?.options, 'the switches and Ask before changing fill the second page').toEqual(['Hand-offs: on', 'Ask before changing: off', 'Cache: on', 'More…'])
-    expect(h.asked[2]?.options).toEqual(['Lowest effort: low', 'Highest effort: max', 'Lowering: not set', 'More…'])
+    expect(h.asked[2]?.options, 'Band is the last plain row: it opens the third page').toEqual(['Band: when it acts', 'Lowest effort: low', 'Highest effort: max', 'More…'])
     const value = h.asked.find(a => a.options.includes('off (current)') || a.options.includes('when it acts (current)'))
     expect(value?.options, 'the values of the row, the current one marked').toEqual(['when it acts (current)', 'always', 'off'])
     expect(value?.question).toContain('Band: now when it acts (default)')

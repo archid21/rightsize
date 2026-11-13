@@ -25,6 +25,7 @@ import {
   type Rules,
   type Situation,
   type Tie,
+  type Ttl,
   atPrompt,
   TTL_MS,
   fileTtl,
@@ -70,11 +71,14 @@ import {
   tierRank,
   usageCost,
   outputCost,
+  splitOutput,
+  type OutputSplit,
   outputAdviceDue,
   outputShareText,
   type SessionSpend,
   type Usage,
   CAL_STORE,
+  CAL_AT_STORE,
   routeFactor,
   rebaseCal,
   lowerSwitches,
@@ -86,9 +90,11 @@ import { confidence, missCounts, missMap, ownTasks, pauseRates } from './misses'
 import { START_CHECK_DAYS, START_MIN_PROMPTS, START_SNOOZE_DAYS, adviseStart, startBlock, startKey, startTip } from './start'
 import {
   ADVANCED,
+  FIXED_ROWS,
   KEYS,
   NOT_SET,
   FIXED,
+  PANE_KEYS,
   RULE_KEYS,
   SETTINGS,
   type SettingKey,
@@ -98,6 +104,7 @@ import {
   askFirstOn,
   defaults,
   fieldsSet,
+  fixedValueOf,
   inOptions,
   inUse,
   legacyAskFirst,
@@ -115,10 +122,12 @@ import {
 } from './settings'
 import { BRIEF_MAX, cutRequest, parseRating, ratingPrompt, ratingSystem } from './rate'
 import { isApprovalStep } from './approval'
-import { LIMITS, type Signals, type Struggle, blockedError, callKey, hookFailed, isBookkeeping, isEditTool, helperCap, isTestCommand, noMatchExit, noSignals, noteCall, oneUp, refusedByHook, refusedByPerson, struggle, testsOutcome } from './struggle'
+import { HANDBACK, LIMITS, type Signals, type Struggle, blockedError, callKey, hookFailed, isBookkeeping, isEditTool, helperCap, SPEND_ASK_AT, SPEND_AUTO_MAX, spendMultiple, isTestCommand, noMatchExit, noSignals, noteCall, oneUp, refusedByHook, refusedByPerson, struggle, testsOutcome } from './struggle'
+import { watchCheck, watchRange, type WatchCheck } from './check'
 import { type Change, type HelperLine, type Lifetime, type RunLine, type SwitchLine, type Windows, SESSION_TOTAL, SESSION_TOTAL_FROM, bandShareText, buildReport, costTag, foldLifetime, parseLifetime, parseLines, ratedInSession, sessionTotal, shareMessage, shareOf, usedTag, windowCostText, windowRates } from './report'
-import { isTracked, parseChanges, type ChangeLine } from './results'
-import { type TrimSavings, readTrimSavings } from './trim'
+import { CACHE_LIFE_KEY, isTracked, parseChanges, type ChangeLine } from './results'
+import { LIFE_DAYS, LIFE_HEADER, LIFE_NO, LIFE_YES, PROBE_RESPONSES, type Provider, adviseLife, lifeEligible, lifeOffer, lifeQuestion, lifeRefusedText, lifeRevertedText, lifeSetText, lifeStuckText, lifeYes, probeRead, providerOf, settingDecides } from './cachelife'
+import { type TrimSavings, isTrim, readTrimSavings } from './trim'
 import { LIMIT_BUTTON, LIMIT_COMPACT, LIMIT_HIDE, LIMIT_MORE, LIMIT_WHY, LIMIT_WHY_ID, isLimitId, limitDue, limitText } from './limit'
 import { SIZE_BUTTON, SIZE_COMPACT, SIZE_FRESH, SIZE_FRESH_BUTTON, SIZE_FRESH_COMPACT, SIZE_FRESH_COPY, SIZE_FRESH_COPY_FAILED, SIZE_FRESH_NOT_NOW, SIZE_FRESH_PASTE_BUTTONS, SIZE_FRESH_SAVING, SIZE_HIDE, SIZE_MORE, SIZE_WHY, SIZE_WHY_FRESH, SIZE_WHY_ID, isSizeId, sizeFreshNotWritten, sizeFreshNotice, sizeFreshPaste, sizeStep, sizeText } from './size'
 import { COMPACT_BASE, NO_FRESH_HANDOFF, WRAP_HEADROOM, WRAP_TURNS, isWhatsnext } from './whatsnext'
@@ -324,11 +333,15 @@ type Run = {
   rawDelegate?: number
   /** Calibrated estimate of staying at the normal level, for the report. */
   stay: number
+  /** The same estimate before calibration: logged beside `stay` (P-21) so the log shows what calibration changed. */
+  rawStay: number
   /** The session's cost ledger (/cost) when the turn's first request went out; undefined where the host keeps none. */
   ledgerStart?: number
   /** Token counts priced from prices.json: the fallback when there is no ledger. */
   mainCost: number
   subCost: number
+  /** What the turn's responses wrote, main chat and helpers: output tokens and cost split into thinking, text and code written (P-22), and what those requests cost. */
+  out: OutputTotals
   /** What effort-switch cache misses cost this turn. */
   missCost: number
   /** A rater check's cost that landed in the ledger while the turn ran: not the turn's own. */
@@ -393,10 +406,16 @@ let billingBy: 'detected' | 'answered' | 'saved' | null = null
 let billingAsked = false
 /** Output suggestion in /config: whether rightsize may suggest the Concise output style. */
 let outputAdvice = true
+/** What a helper does at 80% of its spend limit while it is making progress (the Long helpers row). */
+let longHelpers: 'ask' | 'continue while making progress' | 'stop at the limit' = 'ask'
 /** The main chat's output cost, total cost and requests this session, at list prices (not subagents). Reset at session start and end. */
 let spend: SessionSpend = { output: 0, total: 0, requests: 0 }
 /** True once the Output question was asked this session, whatever the answer. */
 let outputAsked = false
+/** True once this session looked at the cache-life check (P-16): at most one look a session, so the runs are read once. */
+let lifeTried = false
+/** A switch to a 1-hour cache on a cloud provider or gateway whose cache writes are still being checked; `seen` counts responses that wrote no 1-hour entries. */
+let lifeProbe: { from: Ttl; provider: Provider; seen: number } | null = null
 /** What this session's rate limits showed, even when Reports is yours and they change nothing. */
 let detectedBilling: Billing | undefined
 let priceCheck: 'monthly' | 'off' = 'monthly'
@@ -430,7 +449,7 @@ let lastContext = 0
  * the current model). `back` finishes "run it ...": where the prompt runs once the override is pressed. One slot: a
  * prompt takes one route.
  */
-let lastAuto: { text: string; back: string; kind: 'lower'; level: Level; normal: Level } | { text: string; back: string; kind: 'route'; model: string } | null = null
+let lastAuto: { id: string; text: string; back: string; kind: 'lower'; level: Level; normal: Level } | { id: string; text: string; back: string; kind: 'route'; model: string } | null = null
 let skipOnce: string | null = null
 /**
  * A workflow ran in this session (ultracode, or asked for). Claude is then fanning
@@ -624,6 +643,20 @@ type Watch = {
   capped?: number
   /** The can't-tell and blocked cases are logged once. */
   said?: boolean
+  /** What its own requests cost so far, at list prices. */
+  spend: number
+  /** The spend limit: `limit` now, in blocks of `block` (the first limit), from `estimate` (the task's cost on the main model). Absent: no estimate, the call cap applies. */
+  limit?: number
+  block?: number
+  estimate?: number
+  /** Blocks added to the first limit. */
+  extended?: number
+  /** The question about going on past the limit was asked for the current block. */
+  asked?: true
+  /** The person chose Stop and report: the next call is refused. */
+  stopNow?: true
+  /** The spend limit that sent it back, when that is why. */
+  limited?: number
 }
 /** Every helper watched this session, by agent id. */
 const watches = new Map<string, Watch>()
@@ -633,6 +666,15 @@ let spending: Promise<unknown> = Promise.resolve()
 let pluginRoot = ''
 
 const fromPerson = (e: PromptSubmitInput) => e.origin.kind === 'composer' || e.origin.kind === 'bridge'
+
+// P-25 (ADR 0065): a turn the person did not type logs one 'auto' line with its prompt origin, so P-17 rests on logged origins.
+// It is not a rated run: nothing rates it, routes it or counts it in a total.
+type Auto = { origin: string; text: string; turnId?: string; ledgerStart?: number }
+/** Non-typed prompts whose turn has not started, oldest first. A turn takes the first one with its text (turn.start). */
+let autoPending: Auto[] = []
+const autoTurns = new Map<string, Auto>()
+/** The `source` the UserPromptSubmit hook carried, by prompt text (`loop_wakeup`, `schedule_wakeup`): the last few. */
+let promptSources: { text: string; source: string }[] = []
 const names = (tiers: readonly Tier[]) => tiers.map(t => TIER_NAME[t]).join(' or ')
 
 // ---- Files -----------------------------------------------------------------
@@ -742,10 +784,27 @@ async function readAll<T extends { at: string }>($: EngineInterface, name: strin
 async function readTrim($: EngineInterface, now: number): Promise<TrimSavings | undefined> {
   try {
     const dir = (await $.env.get('TRIM_HOME').catch(() => undefined)) || `${home}/.claude/trim`
-    const [log, totals] = await Promise.all([readText($, `${dir}/savings.jsonl`), readText($, `${dir}/savings-totals.json`)])
-    return readTrimSavings(log, totals, now, sessionId)
+    const [lines, totals] = await Promise.all([readText($, `${dir}/savings.jsonl`), readText($, `${dir}/savings-totals.json`)])
+    return readTrimSavings(lines, totals, now, sessionId)
   } catch {
     return undefined
+  }
+}
+
+/**
+ * True when trim is in Claude Code's list of installed plugins (`<config>/plugins/installed_plugins.json`), for this project or for
+ * the user. Same source as `whatsnextRoot`: a plugin loaded by `--plugin-dir` is not in the list. False when the list cannot be read.
+ */
+async function trimInstalled($: EngineInterface): Promise<boolean> {
+  try {
+    const plugins = (JSON.parse(await readText($, `${await claudeDir($)}/plugins/installed_plugins.json`)) as { plugins?: unknown }).plugins
+    if (!plugins || typeof plugins !== 'object') return false
+    const project = await projectFolder($)
+    return Object.entries(plugins as Record<string, unknown>).some(
+      ([key, list]) => isTrim(key) && Array.isArray(list) && (list as { projectPath?: unknown }[]).some(x => typeof x?.projectPath !== 'string' || x.projectPath === project),
+    )
+  } catch {
+    return false
   }
 }
 
@@ -1017,6 +1076,7 @@ async function mergeCal($: EngineInterface) {
     let stored = parseCalibration(await $.store.get(CAL_STORE))
     for (const s of batch) stored = learn(stored, s.key, s.sample)
     await $.store.set(CAL_STORE, stored)
+    await $.store.set(CAL_AT_STORE, new Date(await $.clock.now()).toISOString()).catch(() => undefined)
     // Samples learned while this save ran stay pending, on top of the merged copy.
     cal = unsaved.reduce((c, s) => learn(c, s.key, s.sample), stored)
   } catch {
@@ -1069,7 +1129,7 @@ async function refreshTtl($: EngineInterface) {
   const u = await usageNow($)
   // The rate limits are the fact; the person's own Reports answer stands in for them until they show.
   const seen = detectedBilling ?? (billingYours() ? billing : undefined)
-  const main = resolveTtl({ force5m, env: mainEnv, setting: mainSetting, enable1h, file: fileTtl(priceFile), billing: seen, onCredits: onCredits(u?.rateLimits) })
+  const main = resolveTtl({ force5m, env: mainEnv, setting: mainSetting, enable1h, file: fileTtl(priceFile), billing: seen, onCredits: onCredits(u?.rateLimits), cloud: (await providerNow($)) !== 'anthropic' })
   const helper = resolveHelperTtl({ force5m, env: subEnv, setting: subSetting, enable1h })
   const changed = TTL_MS[main.ttl] !== cacheTtl || TTL_MS[helper.ttl] !== helperTtl || main.by !== ttlBy || helper.by !== helperTtlBy
   cacheTtl = TTL_MS[main.ttl]
@@ -1182,8 +1242,12 @@ type BandWhy =
   | { kind: 'billing' }
   | { kind: 'workflow' }
   | { kind: 'output' }
+  | { kind: 'cacheLife'; to: Ttl; from: Ttl; provider: Provider }
+  | { kind: 'watchTrial' }
+  | { kind: 'watchSummary' }
   | { kind: 'stuck'; run: Run; cur: Level; to: Level; sign: Struggle; step: number }
   | { kind: 'helper'; id: string; w: Watch; cur: Level; to: Level; sign: Struggle }
+  | { kind: 'spend'; id: string; w: Watch }
 
 type BandAsk = {
   q: BandQuestion
@@ -1253,6 +1317,12 @@ async function bandAnswered($: EngineInterface, why: BandWhy, v: unknown) {
       return
     case 'output':
       return answerOutput($, v)
+    case 'cacheLife':
+      return answerLife($, why, v)
+    case 'watchTrial':
+      return answerWatchTrial($, v)
+    case 'watchSummary':
+      return
     case 'stuck': {
       const { run, cur, to, sign, step } = why
       // The rule part of the answer stands, whether or not the turn still runs. A raise applies only while that turn runs, from its next request.
@@ -1260,6 +1330,8 @@ async function bandAnswered($: EngineInterface, why: BandWhy, v: unknown) {
       if (!raises || active !== run || run.raisedTo === to) return
       return raiseRun($, run, cur, to, sign, step)
     }
+    case 'spend':
+      return answerSpend($, why.id, why.w, v)
     case 'helper': {
       const { id, w, cur, to, sign } = why
       const raises = await stuckAnswered($, v)
@@ -1283,10 +1355,18 @@ async function bandUnanswered($: EngineInterface, why: BandWhy) {
       return logUnanswered($, 'Workflow', 'rightsize paused for this workflow; not saved')
     case 'output':
       return logUnanswered($, 'Output', 'the output style is unchanged')
+    case 'cacheLife':
+      return logUnanswered($, LIFE_HEADER, 'the cache life is unchanged')
+    case 'watchTrial':
+      return logUnanswered($, 'Watch only', 'watch only stays on')
+    case 'watchSummary':
+      return
     case 'stuck':
       return logUnanswered($, 'Stuck', `kept ${why.cur}`)
     case 'helper':
       return logUnanswered($, 'Stuck', `helper ${why.id} kept at ${why.cur}`)
+    case 'spend':
+      return logUnanswered($, 'Long helper', canExtend(why.w, why.w.limit ?? 0) ? `helper ${why.id} goes on while it is making progress, up to ${money(SPEND_AUTO_MAX * (why.w.estimate ?? 0))}` : `helper ${why.id} stops at its ${money(why.w.limit ?? 0)} limit`)
   }
 }
 
@@ -1346,6 +1426,7 @@ function writeSetting($: EngineInterface, key: SettingKey, value: string): Promi
     case 'band': return $.config.set({ key: 'rightsize.band', value: value })
     case 'questionWait': return $.config.set({ key: 'rightsize.questionWait', value: value })
     case 'priceCheck': return $.config.set({ key: 'rightsize.priceCheck', value: value })
+    case 'longHelpers': return $.config.set({ key: 'rightsize.longHelpers', value: value })
   }
 }
 
@@ -1363,6 +1444,7 @@ async function putConfig($: EngineInterface, key: SettingKey, value: string) {
   yours = mark(yours, key, !unset)
   if (!unset) await forgetReset($, key)
   applyOption(key)
+  if (key === 'mode') await watchTransition($)
   await writeSetting($, key, value).catch(() => undefined)
   return true
 }
@@ -1806,6 +1888,7 @@ export function delegateNote(d: NonNullable<Run['delegate']>, rounds = FIXED.cha
     '   If the request includes steps only the person can approve (pushing, publishing, releasing, deploying, sending messages, acting in their accounts), the subagent prepares everything (edits, tests, notes) and stops before those steps. It cannot see the person\'s approval, so it would refuse them. You do those steps yourself after step 2.',
     '2. When it reports back, check its result against every Done-means item yourself. Use real proof where you can (run the tests, read the changed files), not its summary.',
     `3. If an item fails, send that subagent a specific fix-up note (continue it with SendMessage where you can; otherwise start it again with the note and its last result). At most ${rounds === 1 ? '1 rework round' : `${rounds} rework rounds`}.`,
+    '   A helper that rightsize stopped (its spend limit, or no retry left) cannot be resumed with SendMessage: its next call is refused. Start a new subagent on the same model with the "what is left" list from its report as the brief. That uses one rework.',
     d.dir === 'down'
       ? `4. If an item still fails after ${n}, finish the task yourself.`
       : `4. If an item still fails after ${n}, stop and say where it stands.`,
@@ -1885,6 +1968,7 @@ function startRun(r: Rating, s: Situation, d: Decision, p: Plan, base: Level, ov
     rawMain: rawMainCost(r, swOn ?? s, level),
     rawDelegate: d.delegate ? rawDelegateCost(r, s, d.delegate.tier, d.delegate.level) : undefined,
     stay: mainCost(r, s, base, 0),
+    rawStay: rawMainCost(r, s, base),
     change,
     offered: planChange(p),
     takenMain: sw ? swCost : mainCost(r, s, level, switches),
@@ -1896,6 +1980,7 @@ function startRun(r: Rating, s: Situation, d: Decision, p: Plan, base: Level, ov
     resized: [],
     mainCost: 0,
     subCost: 0,
+    out: { tokens: 0, thinking: 0, code: 0, cost: 0, thinkingCost: 0, codeCost: 0, requestCost: 0 },
     missCost: 0,
     sideCost: 0,
     errors: 0,
@@ -2046,12 +2131,15 @@ async function setRule($: EngineInterface, key: keyof Choices, value: string) {
 /**
  * Puts the last prompt back in the box and lets it run once as it would have without rightsize: not rated, not
  * changed. Retry at original effort does it for a lowering, "Run on <model>" for a hand-off or a switch-run.
+ * Either one logs an `undone` line naming the run.
  */
 async function runAsIs($: EngineInterface, kind: 'lower' | 'route', none: string) {
   if (lastAuto?.kind !== kind) return none
-  const { text, back } = lastAuto
+  const { id, text, back } = lastAuto
   lastAuto = null
   skipOnce = text.trim()
+  // The Saving check leaves this run out: the person undid the change. The id is kept on lastAuto, so this works while the turn still runs.
+  await appendRun($, { at: new Date().toISOString(), kind: 'undone', session: sessionId, ref: id, undone: kind })
   const filled = await $.prompt.fill({ text, mode: 'replace' }).catch(() => null)
   await setBand($, null)
   await showStatus($)
@@ -2182,6 +2270,55 @@ async function fixedContext($: EngineInterface) {
   return { tokens: mcp + memory + agents + skills + (hooks ?? 0), mcp, memory, agents, skills, ...(hooks === undefined ? {} : { startHooks: hooks }), ...(big.length ? { files } : {}), servers }
 }
 
+/** A turn's output, summed over its responses (see `splitOutput`); text is what is left of the tokens and the cost. */
+type OutputTotals = { tokens: number; thinking: number; code: number; cost: number; thinkingCost: number; codeCost: number; requestCost: number }
+
+/** The run line's output fields: tokens as whole numbers, costs and the share to 5 places. */
+function outputFields(o: OutputTotals) {
+  return {
+    outputTokens: Math.round(o.tokens),
+    thinkingTokens: Math.round(o.thinking),
+    toolInputTokens: Math.round(o.code),
+    outputCost: round(o.cost),
+    thinkingCost: round(o.thinkingCost),
+    toolInputCost: round(o.codeCost),
+    requestCost: round(o.requestCost),
+    outputShare: round(o.cost / o.requestCost),
+  }
+}
+
+function addOutput(run: Run, split: OutputSplit, requestCost: number) {
+  const o = run.out
+  o.tokens += split.tokens
+  o.thinking += split.thinking
+  o.code += split.code
+  o.cost += split.cost
+  o.thinkingCost += split.thinkingCost
+  o.codeCost += split.codeCost
+  o.requestCost += requestCost
+}
+
+/** The 'auto' line of a turn the person did not type: its prompt origin (and, for a scheduled trigger, the hook's source), its size and cost. */
+async function finishAuto($: EngineInterface, turnId: string, aborted: boolean) {
+  const a = autoTurns.get(turnId)
+  if (!a) return
+  autoTurns.delete(turnId)
+  const end = (await usageNow($))?.cost?.usd
+  const cost = end === undefined || a.ledgerStart === undefined ? 0 : end - a.ledgerStart
+  const source = a.origin === 'scheduled-trigger' ? [...promptSources].reverse().find(x => x.text === a.text)?.source : undefined
+  await appendRun($, {
+    at: new Date().toISOString(),
+    kind: 'auto',
+    session: sessionId,
+    turnId,
+    origin: a.origin,
+    ...(source ? { source } : {}),
+    context: lastContext,
+    ...(cost > 0 ? { cost: round(cost) } : {}),
+    aborted,
+  } as RunLine).catch(err => log($, `auto line failed: ${err instanceof Error ? err.message : String(err)}`))
+}
+
 async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs: number) {
   const r = run.rating
   const delegated = run.delegate !== undefined && run.delegated
@@ -2250,6 +2387,8 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
       // The session's own level and size: what the starting-point check replays from.
       normal: run.normal,
       context: run.context,
+      // The conversation's size at the turn's end: with `context`, what the turn added to the cache (the cache-life check, P-16).
+      ...(lastContext > 0 ? { contextEnd: lastContext } : {}),
       fit: r.fit,
       // The rater's guesses behind the estimate, to tell a bad guess from a bad cost model.
       read: r.read,
@@ -2271,6 +2410,8 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
       measured: ledger > 0 ? 'ledger' : 'tokens',
       tokens: round(tokens),
       stay: round(run.stay),
+      // Before calibration (P-21): `stay` and `taken` are calibrated, `estimate` is the raw estimate of the route taken.
+      stayRaw: round(run.rawStay),
       taken: round(delegated ? (run.takenDelegate ?? run.takenMain) : run.takenMain),
       change: run.change,
       offered: run.offered,
@@ -2290,6 +2431,8 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
       ...(helpers.length ? { helpers } : {}),
       ...(retries > 0 ? { retries } : {}),
       requests: run.requests,
+      // What the output was made of (P-22): only when the turn's responses reported usage, else the line carries no split.
+      ...(run.out.requestCost > 0 ? outputFields(run.out) : {}),
       // Each request reads the fixed context from the cache, at least.
       ...(fixed ? { fixed: { ...fixed, cost: round((run.requests * fixed.tokens * atPrompt(prices[run.switchTo?.tier ?? run.tier], run.context).cacheRead) / 1e6) } } : {}),
       ...(run.workflows ? { workflows: run.workflows } : {}),
@@ -3020,6 +3163,131 @@ async function restoreOutput($: EngineInterface, why: string, start: boolean) {
     await $.store.set(OUTPUT_RESTORE, null).catch(() => undefined)
   } catch (err) {
     await log($, `output style restore failed: ${err instanceof Error ? err.message : String(err)}`).catch(() => undefined)
+  }
+}
+
+// ---- Cache-life advice (P-16, ADR 0063) -------------------------------------------------------------------------------
+
+// Once a month (the store's `cacheLifeCheckedAt`), at a main turn's end, the last 30 days are priced on a 5-minute cache with keep
+// warm and on a 1-hour cache (cachelife.ts). When the cheaper one is not the life Claude Code reads now, one band question asks
+// whether to set Claude Code's `promptCacheTtl` to it. It never holds a prompt: with no band to ask on, nothing is asked and the
+// check is tried again next session. The setting is written on the answer only, and recorded in changes.jsonl so Did it work?
+// measures it. On Bedrock, Vertex or a gateway a switch to 1 hour is then checked against the next responses' cache writes.
+
+const LIFE_CHECKED = 'cacheLifeCheckedAt'
+const LIFE_PROBE = 'cacheLifeProbe'
+const LIFE_DAY = 24 * 60 * 60 * 1000
+
+/** Where the requests go, from the environment variables Claude Code reads (cachelife.ts `providerOf`). */
+async function providerNow($: EngineInterface): Promise<Provider> {
+  // Each name is a literal at its call: the directory lists the variables a module reads from them.
+  const bedrock = await $.env.get('CLAUDE_CODE_USE_BEDROCK').catch(() => undefined)
+  const vertex = await $.env.get('CLAUDE_CODE_USE_VERTEX').catch(() => undefined)
+  const baseUrl = await $.env.get('ANTHROPIC_BASE_URL').catch(() => undefined)
+  return providerOf({ bedrock, vertex, baseUrl })
+}
+
+/** The main chat's cache life as rightsize reads it now. */
+const lifeNow = (): Ttl => (cacheTtl >= TTL_MS['1h'] ? '1h' : '5m')
+
+/** Writes promptCacheTtl, then reads it back: a policy or flag setting can override the write. True when the setting holds `value`. */
+async function setCacheLife($: EngineInterface, value: Ttl): Promise<boolean> {
+  const r = await $.config.set({ key: CACHE_LIFE_KEY, value }).catch((err: unknown) => ({ deny: err instanceof Error ? err.message : String(err) }))
+  if (r.deny !== undefined) {
+    await log($, `cache life: Claude Code refused to write ${CACHE_LIFE_KEY}: ${r.deny}`)
+    return false
+  }
+  if ((await $.settings.read({ key: CACHE_LIFE_KEY }).catch(() => undefined)) !== value) {
+    await log($, `cache life ${value}: not applied (another source sets it)`)
+    return false
+  }
+  return true
+}
+
+/** The turn ended: asks when the month's check is due, the billing is one that pays per token, and the lives differ in price. Never throws. */
+async function lifeCheck($: EngineInterface) {
+  try {
+    if (off || lifeTried || lifeProbe) return
+    const now = await $.clock.now()
+    const last = await $.store.get(LIFE_CHECKED).catch(() => undefined)
+    if (typeof last === 'number' && now - last < LIFE_DAYS * LIFE_DAY) return
+    // The setting is not what decides the life while FORCE_PROMPT_CACHING_5M or CLAUDE_CODE_PROMPT_CACHE_TTL is set: a write would change nothing.
+    if (!settingDecides(ttlBy)) return
+    const provider = await providerNow($)
+    const u = await usageNow($)
+    const seen = detectedBilling ?? (billingYours() ? billing : undefined)
+    if (!lifeEligible({ provider, billing: seen, onCredits: onCredits(u?.rateLimits) })) return
+    if (!(await bandCanAsk($))) return
+    lifeTried = true
+    if (watching) return void (await log($, 'watch only: would check the cache life'))
+    const advice = adviseLife(await readRuns($), now, forModel(parsePrices(priceFile, '5m'), mainModel), forModel(parsePrices(priceFile, '1h'), mainModel))
+    if (!advice.ok) return void (await log($, `cache-life check: not enough turns yet (${advice.turns} turns in ${advice.days} days)`))
+    await $.store.set(LIFE_CHECKED, now).catch(() => undefined)
+    const current = lifeNow()
+    const to = lifeOffer(advice, current)
+    const c = advice.cost
+    await log($, `cache-life check: 5 minutes with keep warm ${money(c.fiveMin)}, 1 hour ${money(c.oneHour)} over ${c.turns} turns in ${c.days} days (${provider}); reads ${current}; ${to ? `asked about ${to}` : advice.cheaper ? 'already the cheaper one' : 'a tie, nothing asked'}`)
+    if (!to) return
+    const q: Question<string> = { header: LIFE_HEADER, question: lifeQuestion(to, advice), options: [[lifeYes(to), LIFE_YES], ['Not now', LIFE_NO]] }
+    await askBand($, withNextPrompt(q, 'the cache life is unchanged'), 'prompt', true, { kind: 'cacheLife', to, from: current, provider })
+  } catch (err) {
+    await log($, `cache-life check failed: ${err instanceof Error ? err.message : String(err)}`).catch(() => undefined)
+  }
+}
+
+/** The answer to the Cache life question: Yes writes the setting, records the change and, behind a cloud provider or gateway, starts checking the writes; anything else writes nothing. */
+async function answerLife($: EngineInterface, why: Extract<BandWhy, { kind: 'cacheLife' }>, v: unknown) {
+  if (v !== LIFE_YES) return log($, `cache life: ${v === LIFE_NO ? 'not now' : 'no answer'}; the cache life is unchanged`)
+  const { to, from, provider } = why
+  if (!(await setCacheLife($, to))) return setBand($, { text: lifeRefusedText(to), acted: true })
+  await recordChange($, CACHE_LIFE_KEY, from, to)
+  await refreshTtl($)
+  await log($, `cache life: set to ${to} (was ${from})`)
+  if (to === '1h' && provider !== 'anthropic') {
+    lifeProbe = { from, provider, seen: 0 }
+    await $.store.set(LIFE_PROBE, lifeProbe).catch(() => undefined)
+    await log($, `cache life: checking that the next ${PROBE_RESPONSES} responses with cache writes write 1-hour entries (${provider})`)
+  }
+  await setBand($, { text: lifeSetText(to), acted: true })
+}
+
+/** A main response came in while a switch to 1 hour is being checked: one that wrote 1-hour entries ends the check; PROBE_RESPONSES that did not set the setting back. */
+async function lifeProbeStep($: EngineInterface, u: { cache_creation_input_tokens: number }) {
+  const probe = lifeProbe
+  if (!probe || !(u.cache_creation_input_tokens > 0)) return
+  try {
+    const read = probeRead(u)
+    if (read !== 'short' || ++probe.seen >= PROBE_RESPONSES) {
+      lifeProbe = null
+      await $.store.set(LIFE_PROBE, null).catch(() => undefined)
+    } else {
+      await $.store.set(LIFE_PROBE, probe).catch(() => undefined)
+      return
+    }
+    if (read === 'one-hour') return void (await log($, 'cache life: the cache writes are 1-hour writes; the setting stays'))
+    // The usage says nothing of the writes' life: nothing shows that the setting failed, so it stays and the person is told in the log only.
+    if (read === 'unknown') return void (await log($, 'cache life: the usage has no 1-hour field, so the writes cannot be checked; the setting stays'))
+    await log($, `cache life: ${PROBE_RESPONSES} responses with cache writes wrote no 1-hour entries (${probe.provider}); setting it back to ${probe.from}`)
+    if (await setCacheLife($, probe.from)) {
+      await recordChange($, CACHE_LIFE_KEY, '1h', probe.from)
+      await refreshTtl($)
+      await setBand($, { text: lifeRevertedText(probe.provider, probe.from), acted: true })
+    } else await setBand($, { text: lifeStuckText(probe.from), acted: true })
+  } catch (err) {
+    await log($, `cache life check of the writes failed: ${err instanceof Error ? err.message : String(err)}`).catch(() => undefined)
+  }
+}
+
+/** At a session start: a switch to 1 hour that was still being checked goes on, when the setting still reads 1 hour. */
+async function restoreLifeProbe($: EngineInterface) {
+  try {
+    const held = (await $.store.get(LIFE_PROBE).catch(() => undefined)) as { from?: unknown; provider?: unknown; seen?: unknown } | null | undefined
+    if (!held) return
+    const ok = (held.from === '5m' || held.from === '1h') && typeof held.provider === 'string' && held.provider !== 'anthropic' && typeof held.seen === 'number'
+    if (ok && (await $.settings.read({ key: CACHE_LIFE_KEY }).catch(() => undefined)) === '1h') lifeProbe = { from: held.from as Ttl, provider: held.provider as Provider, seen: held.seen as number }
+    else await $.store.set(LIFE_PROBE, null).catch(() => undefined)
+  } catch {
+    // Not checked this session.
   }
 }
 
@@ -4001,10 +4269,13 @@ async function answerAsk($: EngineInterface, yes: boolean): Promise<void> {
 const APPROVAL_DENY =
   'rightsize: a hand-off subagent cannot push, publish, release, deploy or send, because a message from the main chat is not the person\'s approval. Stop before this step and report what is ready; the main chat does it.'
 
+// A stopped helper may still make one call: SubagentHandback, the only way its report reaches the main chat.
 const HELPER_RETURN =
-  'rightsize: stop now. You are stuck, and this task\'s retry budget is used up, so more effort or more tries will not help. Do not make more tool calls: report what you tried, what failed, and where you are stuck. The main chat takes it from here.'
+  'rightsize: stop now. You are stuck, and this task\'s retry budget is used up, so more effort or more tries will not help. Your next and only call must be SubagentHandback with what you tried, what failed, and where you are stuck; any other call is refused. The main chat takes it from here.'
+const limitReturn = (limit: number) =>
+  `rightsize: stop now. This helper reached its spend limit (${money(limit)}). Your next and only call must be SubagentHandback with what you found, what is left and where you stopped; any other call is refused. The main chat takes it from here.`
 const capReturn = (cap: number) =>
-  `rightsize: stop now. You have used the ${cap} tool calls this task allows a helper. Do not make more tool calls: report what you did, what is left and where you are. The main chat takes it from here.`
+  `rightsize: stop now. You have used the ${cap} tool calls this task allows a helper. Your next and only call must be SubagentHandback with what you found, what is left and where you stopped; any other call is refused. The main chat takes it from here.`
 // A helper's cache cannot be kept warm from outside, so a foreground wait longer than it lives is refused (ADR 0030).
 // 270 s is 30 s under the 5-minute life. Claude Code's Bash default of 120 s is allowed.
 const HELPER_WAIT_CAP_MS = 270_000
@@ -4052,6 +4323,15 @@ async function useChance($: EngineInterface, task: string): Promise<boolean> {
   }
 }
 
+/** The helper's first spend limit: the multiple for its rated calls times `estimate`. No estimate, or a tier with no call cap: none. */
+function setLimit(w: Watch, estimate: number | undefined) {
+  if (!w.tier || helperCap(w.tier) === undefined || !(typeof estimate === 'number' && estimate > 0)) return
+  const block = spendMultiple(w.rated) * estimate
+  w.estimate = estimate
+  w.block = block
+  w.limit = block
+}
+
 // The watch on a helper: the hand-off's subagent, or one rightsize moved to a cheaper
 // model. Any other agent is left alone. It starts at the helper's spawn or first step.
 async function helperWatch($: EngineInterface, id: string): Promise<Watch | undefined> {
@@ -4063,15 +4343,112 @@ async function helperWatch($: EngineInterface, id: string): Promise<Watch | unde
   const startedAt = await $.clock.now()
   let w: Watch | undefined
   if (run?.delegate && run.subAgents.includes(id)) {
-    w = { kind: 'handoff', run: run.id, task: run.task, level: run.delegate.level, rated: run.rating.steps, signals: noSignals(), steps: 0, startedAt, blocked: 0, raises: [], calls: 0, ...(run.delegate.dir === 'down' ? { tier: run.delegate.tier } : {}) }
+    w = { kind: 'handoff', run: run.id, task: run.task, level: run.delegate.level, rated: run.rating.steps, signals: noSignals(), steps: 0, startedAt, blocked: 0, raises: [], calls: 0, spend: 0, ...(run.delegate.dir === 'down' ? { tier: run.delegate.tier } : {}) }
+    setLimit(w, run.stay)
   } else if (sized) {
     const task = sized.task ?? (await currentTask($))?.id ?? sessionId
-    w = { kind: 'moved', ...(sized.run ? { run: sized.run } : {}), task, level: sized.level, rated: sized.steps ?? 5, signals: noSignals(), steps: 0, startedAt, blocked: 0, raises: [], calls: 0, tier: sized.tier }
+    w = { kind: 'moved', ...(sized.run ? { run: sized.run } : {}), task, level: sized.level, rated: sized.steps ?? 5, signals: noSignals(), steps: 0, startedAt, blocked: 0, raises: [], calls: 0, spend: 0, tier: sized.tier }
+    setLimit(w, sized.parentRaw)
   }
   const raced = watches.get(id)
   if (raced) return raced
   if (w) watches.set(id, w)
+  if (w?.limit !== undefined && w.estimate !== undefined) await log($, `helper ${id}: spend limit ${money(w.limit)}, ${Number((w.limit / w.estimate).toFixed(2))}x its ${money(w.estimate)} estimate on the main model (${w.rated} calls rated)`)
   return w
+}
+
+// ---- Helper spend limit ------------------------------------------------------
+
+const LONG_HELPER = 'Long helper'
+const HINT_SEEN = 'longHelpersHint'
+const LONG_HELPER_HINT = 'Default: ask. No answer means the helper goes on while it is making progress, up to 10 times its estimate, then stops and reports. To change it, use Long helpers in /config.'
+
+/** Whether one more block fits under the hard cap: SPEND_AUTO_MAX x the task's estimate. */
+const canExtend = (w: Watch, limit: number) => limit + (w.block ?? 0) <= SPEND_AUTO_MAX * (w.estimate ?? 0) + 1e-9
+
+/** The band question for a helper nearing its spend limit while it still finds new things. */
+const qSpend = (w: Watch, spend: number, limit: number, hint: boolean): Question<'continue' | 'stop' | 'always'> => {
+  const recent = (w.signals.recent ?? []).slice(-LIMITS.window)
+  const fresh = recent.filter(r => r.novel).length
+  const name = TIER_NAME[w.tier ?? 'sonnet']
+  return {
+    header: LONG_HELPER,
+    question: `${name} helper has spent ${money(spend)} of its ${money(limit)} limit and is still finding new things (${fresh} of its last ${recent.length} calls were new). Let it continue?${hint ? ` ${LONG_HELPER_HINT}` : ''}`,
+    options: [
+      ['Continue', 'continue'],
+      ['Stop and report', 'stop'],
+      ["Always while it's making progress", 'always'],
+    ],
+    // No answer: it goes on while it is making progress, up to the hard cap (SPEND_AUTO_MAX x the estimate), then stops and reports.
+    ifNone: canExtend(w, limit) ? `the helper goes on while it is making progress, up to ${money(SPEND_AUTO_MAX * (w.estimate ?? 0))}, then stops and reports` : `the helper stops at its ${money(limit)} limit and reports`,
+  }
+}
+
+/** One more block on the helper's limit; its question may be asked again at 80% of the new limit. Not a retry: no chance of the task is used. */
+function extendLimit($: EngineInterface, id: string, w: Watch, why: string) {
+  const from = w.limit ?? 0
+  w.limit = from + (w.block ?? 0)
+  w.extended = (w.extended ?? 0) + 1
+  delete w.asked
+  return log($, `extended helper ${id}'s spend limit ${money(from)} → ${money(w.limit)} (${why})`)
+}
+
+/** A Long helper answer. A helper that has gone back, or ended, is not extended. */
+async function answerSpend($: EngineInterface, id: string, w: Watch, v: unknown) {
+  if (v === 'always') await changeRow($, 'longHelpers', 'continue while making progress')
+  if (v === 'stop') {
+    if (!w.returned) w.stopNow = true
+    return log($, `helper ${id}: stop and report, as you chose`)
+  }
+  if (v !== 'continue' && v !== 'always') return
+  if (w.returned || watches.get(id) !== w) return log($, `helper ${id} had already gone back or finished: not extended`)
+  return extendLimit($, id, w, 'you chose to continue')
+}
+
+/**
+ * Before a helper's call: its spend against its limit. At the limit it goes back to the main chat (a returned helper makes only
+ * SubagentHandback). At 80% of the limit, while it is not stuck (the stuck detector decides that, unchanged, with no question),
+ * Long helpers decides: ask on the band without pausing the helper, extend by itself up to SPEND_AUTO_MAX x the estimate, or never.
+ * Returns the refusal when the call is not allowed.
+ */
+async function spendCheck($: EngineInterface, id: string, w: Watch): Promise<string | undefined> {
+  if (w.limit === undefined) return
+  // One block is not always enough: a long step can carry the spend past more than one.
+  while (w.spend >= w.limit && !w.stopNow && longHelpers !== 'stop at the limit' && canExtend(w, w.limit) && !struggle(w.signals, w.steps, w.rated, LIMITS, Infinity)) {
+    // The limit came and nobody said stop: no answer (the question is still open, went with the main chat's turn, never showed, or the
+    // band cannot ask) acts as "continue while making progress", so a helper that is still finding new things does not lose its work.
+    // The question, if it is still open, is stale: the next one comes at 80% of the new limit.
+    const gone = bandAsks.filter(x => x.why.kind === 'spend' && x.why.w === w)
+    for (const x of gone) bandAsks.splice(bandAsks.indexOf(x), 1)
+    if (gone.length) await showQuestion($)
+    await extendLimit($, id, w, longHelpers === 'ask' ? 'no answer, making progress' : 'making progress')
+  }
+  const limit = w.limit
+  if (w.spend >= limit || w.stopNow) {
+    w.returned = true
+    w.stall = 'struggling'
+    w.limited = limit
+    const gone = bandAsks.filter(x => x.why.kind === 'spend' && x.why.w === w)
+    for (const x of gone) bandAsks.splice(bandAsks.indexOf(x), 1)
+    if (gone.length) await showQuestion($)
+    await setBand($, { text: `Helper stopped and sent back to the main chat: it ${w.stopNow ? 'was stopped' : 'reached'} its ${money(limit)} spend limit (${money(w.spend)} spent).`, acted: true })
+    await log($, `returned helper ${id} to the main chat at step ${w.steps}: ${w.stopNow ? 'you chose stop' : 'it reached'} its ${money(limit)} spend limit, ${money(w.spend)} spent`)
+    return limitReturn(limit)
+  }
+  if (w.spend < SPEND_ASK_AT * limit || w.asked || longHelpers === 'stop at the limit') return
+  if (struggle(w.signals, w.steps, w.rated, LIMITS, Infinity)) return
+  const next = limit + (w.block ?? 0)
+  if (longHelpers === 'continue while making progress' && next <= SPEND_AUTO_MAX * (w.estimate ?? 0) + 1e-9) {
+    await extendLimit($, id, w, 'making progress')
+    return
+  }
+  // Nobody to ask on the band (Band "Never", or a surface that does not draw it): no answer, so it goes on at the limit, as above.
+  if (!(await bandCanAsk($))) return
+  w.asked = true
+  const hint = !(await $.store.get(HINT_SEEN).catch(() => undefined))
+  if (hint) await $.store.set(HINT_SEEN, true).catch(() => undefined)
+  await log($, `helper ${id} has spent ${money(w.spend)} of its ${money(limit)} limit while making progress: asked whether to continue`)
+  await askBand($, qSpend(w, w.spend, limit, hint), 'turn', true, { kind: 'spend', id, w })
 }
 
 /** What the log keeps of a watched helper. `ms` runs to its answer, or to now while it has not answered. */
@@ -4085,6 +4462,8 @@ const helperLine = (w: Watch, now: number): HelperLine => ({
   ...(w.raises.length ? { raises: w.raises } : {}),
   ...(w.returned ? { returned: true as const } : {}),
   ...(w.capped ? { capped: w.capped } : {}),
+  ...(w.limit !== undefined ? { spend: round(w.spend), limit: round(w.limit) } : {}),
+  ...(w.limited ? { limited: round(w.limited) } : {}),
 })
 
 // A helper's tool call, after it ran. An error from the environment is a Blocked stall: more effort
@@ -4153,7 +4532,7 @@ async function summary($: EngineInterface) {
   // Only the settings you set in /config or answered: the rest are defaults, and /config shows them.
   const changed: string[] = []
   const cur = inUse(cfg, yours, askFirst)
-  for (const key of KEYS) {
+  for (const key of PANE_KEYS) {
     const rule = RULE_IDS.find(r => RULE_KEYS[r] === key)
     if (rule) {
       if (c[rule] !== undefined) changed.push(`  ${plainTitle(SETTINGS[key].title)}: ${ruleLabel(rule, c[rule])}`)
@@ -4166,8 +4545,8 @@ async function summary($: EngineInterface) {
     off ? 'Off. Turn it on with /mods.' : 'On.',
     '',
     n
-      ? `You changed ${n} setting${n === 1 ? '' : 's'}. The other ${KEYS.length - n} are defaults (list them with claude plugin configure rightsize@archid21).`
-      : `All ${KEYS.length} settings are at their defaults (list them with claude plugin configure rightsize@archid21).`,
+      ? `You changed ${n} setting${n === 1 ? '' : 's'}. The other ${PANE_KEYS.length - n} are defaults (list them with claude plugin configure rightsize@archid21).`
+      : `All ${PANE_KEYS.length} settings are at their defaults (list them with claude plugin configure rightsize@archid21).`,
     ...changed,
     '',
     'Now',
@@ -4235,7 +4614,7 @@ async function openSettings($: EngineInterface) {
 async function askSettings($: EngineInterface) {
   const changed: string[] = []
   for (;;) {
-    const asking: Question<SettingKey | 'done'> = { header: 'Setting', question: 'Which setting? A change takes effect at once.', options: [['Done', 'done'], ...KEYS.map(k => [`${plainTitle(SETTINGS[k].title)}: ${cfg[k]}`, k] as const)] }
+    const asking: Question<SettingKey | 'done'> = { header: 'Setting', question: 'Which setting? A change takes effect at once.', options: [['Done', 'done'], ...PANE_KEYS.map(k => [`${plainTitle(SETTINGS[k].title)}: ${cfg[k]}`, k] as const)] }
     const rows = await pickFrom($, asking, 'Setting', 'More rows')
     if (rows === undefined || rows === 'done') break
     const key = rows
@@ -4353,6 +4732,7 @@ async function resetSettings($: EngineInterface, keys: readonly SettingKey[], al
     cfg = { ...cfg, [key]: dflt }
     yours = mark(yours, key, false)
     applyOption(key)
+    if (key === 'mode') await watchTransition($)
     const rule = RULE_IDS.find(r => RULE_KEYS[r] === key)
     if (rule) await followRuleRow($, rule, dflt)
     else if (changes) await followRow($, key, dflt)
@@ -4380,7 +4760,7 @@ async function resetMeasurement($: EngineInterface) {
   unsaved = []
   stepState = NO_STEPS
   unsavedSteps = []
-  for (const key of [CAL_STORE, STEP_STORE, 'ties', SPOT_STORE, 'startCheckedAt', 'startSnooze']) await $.store.set(key, null).catch(() => undefined)
+  for (const key of [CAL_STORE, CAL_AT_STORE, STEP_STORE, 'ties', SPOT_STORE, 'startCheckedAt', 'startSnooze']) await $.store.set(key, null).catch(() => undefined)
   measureFrom = await $.clock.now()
   await $.store.set('measureFrom', new Date(measureFrom).toISOString()).catch(() => undefined)
   await refreshMisses($)
@@ -4392,7 +4772,7 @@ async function runReset($: EngineInterface, name: string): Promise<string> {
   name = name.trim()
   if (name) {
     const key = settingNamed(name)
-    if (!key) return `No setting called "${name}". Settings: ${KEYS.join(', ')}. /rightsize reset with no name resets all settings, the cost measurement, or both.`
+    if (!key) return `No setting called "${name}". Settings: ${PANE_KEYS.join(', ')}. /rightsize reset with no name resets all settings, the cost measurement, or both.`
     what = key
   } else {
     const a = await pick($, qReset)
@@ -4401,7 +4781,7 @@ async function runReset($: EngineInterface, name: string): Promise<string> {
   }
   if ((await pick($, qConfirm(confirmText(what)))) !== true) return 'Nothing was reset.'
   const out: string[] = []
-  if (what === 'settings' || what === 'both') out.push(await resetSettings($, KEYS, true))
+  if (what === 'settings' || what === 'both') out.push(await resetSettings($, PANE_KEYS, true))
   else if (what !== 'measurement') out.push(await resetSettings($, [what], false))
   if (what === 'measurement' || what === 'both') out.push(await resetMeasurement($))
   return out.join(' ')
@@ -4470,6 +4850,132 @@ async function stopStartTips($: EngineInterface) {
   await putConfig($, 'startTips', 'off')
   await setBand($, null)
   $.ui.toast('Rightsize: no more starting-model suggestions. Start suggestions in /config turns them back on.')
+}
+
+// ---- Watch only: the trial-end row and the turn-off summary (ADR 0058) ---------------------------------------------
+//
+// Rightsize saves when a watch-only period starts (`$.store`, like measureFrom). Seven days later, at a turn end, one band
+// row shows what the Saving check says rightsize would have saved, with three answers. When watch only is turned off, one
+// summary row shows the same range at the next turn end, unless the person chose Turn on in the trial-end row. Neither row holds a prompt.
+
+const WATCH_STORE = 'watchPeriod'
+const WATCH_HEADER = 'Watch only'
+/** Full days of watch only before the trial-end row shows. */
+const WATCH_TRIAL_DAYS = 7
+
+type WatchAnswer = 'on' | 'ask' | 'keep'
+/** One watch-only period: when it started (ISO, UTC) and ended, whether the trial-end row showed, how it was answered, whether the summary showed. */
+type WatchPeriod = { since: string; until?: string; trialShown?: true; answer?: WatchAnswer; summaryShown?: true }
+
+function parseWatchPeriod(v: unknown): WatchPeriod | undefined {
+  if (!v || typeof v !== 'object') return undefined
+  const o = v as Record<string, unknown>
+  const iso = (x: unknown): x is string => typeof x === 'string' && Number.isFinite(Date.parse(x))
+  if (!iso(o.since)) return undefined
+  return {
+    since: o.since,
+    ...(iso(o.until) ? { until: o.until } : {}),
+    ...(o.trialShown === true ? { trialShown: true as const } : {}),
+    ...(o.answer === 'on' || o.answer === 'ask' || o.answer === 'keep' ? { answer: o.answer } : {}),
+    ...(o.summaryShown === true ? { summaryShown: true as const } : {}),
+  }
+}
+
+async function readWatchPeriod($: EngineInterface) {
+  return parseWatchPeriod(await $.store.get(WATCH_STORE).catch(() => undefined))
+}
+
+async function writeWatchPeriod($: EngineInterface, p: WatchPeriod) {
+  await $.store.set(WATCH_STORE, p).catch(() => undefined)
+}
+
+/**
+ * Brings the stored period in line with Mode: watch only on with no open period starts one now (a new period, or the first load);
+ * watch only off ends the open one. Runs wherever Mode can change, at session start and at each turn end. Safe to repeat.
+ */
+async function watchTransition($: EngineInterface) {
+  try {
+    const p = await readWatchPeriod($)
+    const now = new Date(await $.clock.now()).toISOString()
+    if (watching && (!p || p.until)) {
+      await writeWatchPeriod($, { since: now })
+      await log($, 'watch only: a new period starts')
+    } else if (!watching && p && !p.until) {
+      await writeWatchPeriod($, { ...p, until: now })
+      await log($, 'watch only: the period ended')
+    }
+  } catch {
+    // The period is not tracked this time; the next change tries again.
+  }
+}
+
+const daysText = (ms: number) => {
+  const n = Math.floor(ms / DAY_MS)
+  return n < 1 ? 'less than a day' : `${n} day${n === 1 ? '' : 's'}`
+}
+
+/** The run lines of one period. */
+const inPeriod = (lines: readonly RunLine[], from: number, to: number) => lines.filter(l => Date.parse(l.at) >= from && Date.parse(l.at) <= to)
+
+/** The sentence about the period's saving: the range, or `none` when it rounds to nothing. */
+function watchFigure(c: Extract<WatchCheck, { ok: true }>, range: (r: string) => string, none: string) {
+  const r = watchRange(c)
+  return r ? range(r) : none
+}
+
+/** At a main turn end: the trial-end row, or the turn-off summary, when one is due and the band can show it. Never throws. */
+async function watchRows($: EngineInterface) {
+  try {
+    await watchTransition($)
+    if (off || onBand(WATCH_HEADER) || !(await bandCanAsk($))) return
+    const p = await readWatchPeriod($)
+    if (!p) return
+    const now = await $.clock.now()
+    const from = Date.parse(p.since)
+    if (watching && !p.until) {
+      if (p.trialShown || now - from < WATCH_TRIAL_DAYS * DAY_MS) return
+      const c = watchCheck(inPeriod(await readRuns($), from, now))
+      // Shown once: marked before it shows, so a closed or ignored row does not come back.
+      await writeWatchPeriod($, { ...p, trialShown: true })
+      const figure = c.ok
+        ? watchFigure(c, r => `rightsize would have cut your cost by about ${r}.`, 'rightsize would not have saved anything on these prompts.')
+        : 'Not enough turns yet to estimate.'
+      await log($, `watch only: trial-end row shown after ${daysText(now - from)} (${c.ok ? `range ${watchRange(c) ?? 'none'}, ${c.rated} rated prompts` : `${c.rated} rated prompts, not enough`})`)
+      const q: Question<WatchAnswer> = {
+        header: WATCH_HEADER,
+        question: `Watch only has run for ${daysText(now - from)}. ${figure} Turn rightsize on?`,
+        options: [['Turn on', 'on'], ['Ask before changing', 'ask'], ['Keep watching', 'keep']],
+        ifNone: 'watch only stays on',
+      }
+      await askBand($, q, 'prompt', true, { kind: 'watchTrial' })
+      return
+    }
+    if (!watching && p.until && !p.summaryShown && p.answer !== 'on') {
+      const to = Date.parse(p.until)
+      const c = watchCheck(inPeriod(await readRuns($), from, to))
+      await writeWatchPeriod($, { ...p, summaryShown: true })
+      const span = `In ${daysText(to - from)} of watch only`
+      const text = c.ok
+        ? watchFigure(c, r => `${span}, rightsize would have saved about ${r}.`, `${span}, rightsize would not have saved anything.`)
+        : `${span}, rightsize rated ${c.rated} prompt${c.rated === 1 ? '' : 's'}. Not enough turns yet to estimate.`
+      await log($, `watch only: turn-off summary shown (${text})`)
+      await askBand($, { header: WATCH_HEADER, question: text, options: [['OK', 'ok']] }, 'prompt', true, { kind: 'watchSummary' })
+    }
+  } catch (err) {
+    await log($, `watch only rows failed: ${err instanceof Error ? err.message : String(err)}`).catch(() => undefined)
+  }
+}
+
+/** The answer on the trial-end row. Turn on and Ask before changing set Mode to act; Keep watching changes nothing. */
+async function answerWatchTrial($: EngineInterface, v: unknown) {
+  if (v !== 'on' && v !== 'ask' && v !== 'keep') return
+  const p = await readWatchPeriod($)
+  if (p && !p.until) await writeWatchPeriod($, { ...p, answer: v })
+  await log($, `watch only: trial-end row answered: ${v === 'on' ? 'Turn on' : v === 'ask' ? 'Ask before changing' : 'Keep watching'}`)
+  if (v === 'keep') return
+  if (v === 'ask') await changeRow($, 'askFirst', 'on')
+  await changeRow($, 'mode', 'act')
+  $.ui.toast(v === 'ask' ? 'Rightsize is on, and asks before changing.' : 'Rightsize is on.')
 }
 
 // ---- Welcome, tips and the star ask (ADR 0039) ------------------------------------
@@ -4790,6 +5296,9 @@ function applyOption(key: SettingKey) {
     case 'outputAdvice':
       outputAdvice = v !== 'off'
       return
+    case 'longHelpers':
+      longHelpers = v === 'continue while making progress' || v === 'stop at the limit' ? v : 'ask'
+      return
     case 'idleWarning':
       idleWarning = parseIdleWarning(v)
       return
@@ -5053,7 +5562,7 @@ export const register: Register = (on, options) => {
   // One hook for all rows: it passes on every event that is not one of rightsize's own rows.
   on('config.set', async ($, e, next) => {
     const name = e.key.startsWith('rightsize.') ? e.key.slice('rightsize.'.length) : ''
-    const key = KEYS.find(k => k === name)
+    const key = PANE_KEYS.find(k => k === name)
     if (key === undefined) return next(e)
     const result = await next(e)
     if (result.deny !== undefined || !inOptions(key, result.value)) return result
@@ -5063,6 +5572,7 @@ export const register: Register = (on, options) => {
     yours = afterSet(yours, e.key, result.value, e.origin)
     if (yours.has(key)) await forgetReset($, key)
     applyOption(key)
+    if (key === 'mode') await watchTransition($)
     await followRow($, key, result.value)
     await bumpMenu($)
     return result
@@ -5149,6 +5659,11 @@ export const register: Register = (on, options) => {
     const configs = await $.settings.read({ key: 'pluginConfigs' }).catch(() => undefined)
     const resetBefore = resetKeys(await $.store.get('resetFields').catch(() => undefined))
     yours = fieldsSet(configs, declared, resetBefore)
+    // The fixed rows have no pane row. A value settings.json still holds for one is kept and used; none stored, the fixed value.
+    for (const key of FIXED_ROWS) {
+      cfg = { ...cfg, [key]: fixedValueOf(key, configs) }
+      applyOption(key)
+    }
     legacyQuality = legacyAskFirst(configs)
     // What the fixed values govern depends on which rows are yours, now known.
     applyFixed()
@@ -5156,6 +5671,7 @@ export const register: Register = (on, options) => {
     if (resetFields.size !== resetBefore.length) await $.store.set('resetFields', [...resetFields]).catch(() => undefined)
     const from = await $.store.get('measureFrom').catch(() => undefined)
     measureFrom = typeof from === 'string' && Number.isFinite(Date.parse(from)) ? Date.parse(from) : 0
+    await watchTransition($)
     const gaps = manifestGaps(declared, yours)
     if (gaps.length) await log($, `settings: plugin.json and the settings table disagree: ${gaps.join('; ')}`)
     await setBandMode($, bandMode)
@@ -5165,6 +5681,8 @@ export const register: Register = (on, options) => {
     billingAsked = false
     spend = { output: 0, total: 0, requests: 0 }
     outputAsked = false
+    lifeTried = false
+    lifeProbe = null
     billingBy = null
     detectedBilling = undefined
     billing = cfg.billing === 'subscription' ? 'subscription' : 'api'
@@ -5179,6 +5697,7 @@ export const register: Register = (on, options) => {
     }
     priceFile = await readText($, `${pluginRoot}/prices.json`)
     await refreshTtl($)
+    await restoreLifeProbe($)
     if (priceCheck === 'monthly') {
       const lastChecked = await $.store.get('pricesCheckedAt').catch(() => undefined)
       const now = await $.clock.now()
@@ -5235,11 +5754,13 @@ export const register: Register = (on, options) => {
       const lifetime = await readLifetime($)
       const now = await $.clock.now()
       const trim = await readTrim($, now)
+      const window = (await usageNow($))?.context?.window
       const changes = await readChanges($)
+      const calAt = await $.store.get(CAL_AT_STORE).catch(() => undefined)
       const start = startBlock(adviseStart(runs, await startContext($), now), billing === 'subscription', money)
       // The row's text is the plain report (the terminal, -p, the SDK). Every other surface draws the Markdown form, chosen
       // per surface when the row draws (its CommandOutput hook): $.session.surfaces() here can miss the desktop app.
-      const opts = { now, session: sessionId, subscription: billing === 'subscription', start, pause: missBlock, watching, details: arg === 'report details', ...(trim ? { trim } : {}), changes, ...(lifetime ? { lifetime } : {}), ...(measureFrom ? { measureFrom: new Date(measureFrom).toISOString() } : {}) }
+      const opts = { now, session: sessionId, subscription: billing === 'subscription', start, pause: missBlock, watching, details: arg === 'report details', trimInstalled: await trimInstalled($), ...(typeof window === 'number' && window > 0 ? { contextWindow: window } : {}), ...(trim ? { trim } : {}), changes, calibration: { cal, ...(typeof calAt === 'string' ? { at: calAt } : {}) }, ...(lifetime ? { lifetime } : {}), ...(measureFrom ? { measureFrom: new Date(measureFrom).toISOString() } : {}) }
       const text = buildReport(runs, switches, opts)
       reportMarkdown.set(text, buildReport(runs, switches, { ...opts, markdown: true }))
       while (reportMarkdown.size > 20) reportMarkdown.delete(reportMarkdown.keys().next().value as string)
@@ -5283,6 +5804,8 @@ export const register: Register = (on, options) => {
       coldPrompt = null
       return next(e)
     }
+    // A prompt the person did not type, entering as a turn of its own: its origin is logged when its turn ends.
+    if (!off && !fromPerson(e) && e.turnId === undefined) autoPending.push({ origin: e.origin.kind, text: e.text.trim() })
     // The person is back: keep-warm requests, a waiting handoff and a waiting offer stop, and the next big turn's end starts afresh.
     if (!off && fromPerson(e) && !e.command && !e.isMeta) {
       coldDone = false
@@ -5481,9 +6004,9 @@ export const register: Register = (on, options) => {
     const auto: typeof lastAuto = !run
       ? null
       : run.auto && run.level
-      ? { kind: 'lower', text: e.text, level: run.level, normal: run.normal, back: `at ${run.normal}` }
+      ? { kind: 'lower', id: run.id, text: e.text, level: run.level, normal: run.normal, back: `at ${run.normal}` }
       : run.delegate || run.switchTo
-      ? { kind: 'route', text: e.text, model: TIER_NAME[run.tier], back: `on ${TIER_NAME[run.tier]} at ${run.normal}` }
+      ? { kind: 'route', id: run.id, text: e.text, model: TIER_NAME[run.tier], back: `on ${TIER_NAME[run.tier]} at ${run.normal}` }
       : null
     lastAuto = auto
     await showStatus($)
@@ -5508,6 +6031,12 @@ export const register: Register = (on, options) => {
 
   // A turn starting is how a prompt finds its turn. Prompts typed while a turn runs wait in line, and the turn
   // that starts for one carries its text, so each run is bound to its own turn, not to whichever starts next.
+  // The settings hook's `source` says which kind of scheduled trigger a prompt was: only the origin kind is on prompt.submit.
+  on('classic.UserPromptSubmit', async ($, e, next) => {
+    if (e.source === 'loop_wakeup' || e.source === 'schedule_wakeup') promptSources = [...promptSources.slice(-9), { text: e.prompt.trim(), source: e.source }]
+    return next(e)
+  }).catch((_, e, next) => next(e))
+
   on('turn.start', async ($, e, next) => {
     if (e.agentId !== undefined) return next(e)
     mainBusy = true
@@ -5525,6 +6054,15 @@ export const register: Register = (on, options) => {
     const gone = passed.filter(r => r !== mine && r.during !== undefined && completed.has(r.during) && !r.entering)
     pending = pending.filter(r => r !== mine && !gone.includes(r))
     if (mine) await bind($, mine, e.turnId)
+    else {
+      const a = autoPending.find(x => x.text === text)
+      if (a) {
+        autoPending = autoPending.filter(x => x !== a)
+        a.turnId = e.turnId
+        a.ledgerStart = (await usageNow($))?.cost?.usd
+        autoTurns.set(e.turnId, a)
+      }
+    }
     for (const r of gone) await unbind($, r, 'delivered into the running turn')
     return next(e)
   }).catch((_, e, next) => next(e))
@@ -5554,7 +6092,9 @@ export const register: Register = (on, options) => {
       if (out.usage) {
         const cost = usageCost(prices, out.usage.model, out.usage)
         if (run) run.subCost += cost
+        if (run) addOutput(run, splitOutput(prices, out.usage.model, out.usage, out.answer, out.toolUses), cost)
         if (sized) sized.spend += cost
+        if (watch) watch.spend += cost
       }
       return out
     }
@@ -5659,6 +6199,7 @@ export const register: Register = (on, options) => {
         if (!gone.shown) await setBand($, { text: compactedText({ before: gone.before, after: gone.after ?? contextOf(u), ...(gone.handoff ? { handoff: gone.handoff } : {}) }), acted: true })
       }
       lastContext = contextOf(u)
+      await lifeProbeStep($, u)
       turnRequests += 1
       lastRequestAt = await $.clock.now()
       await $.state.set({ plugin: 'rightsize', key: 'context' }, lastContext)
@@ -5669,6 +6210,7 @@ export const register: Register = (on, options) => {
       if (run) {
         run.mainCost += requestCost
         run.requests += 1
+        addOutput(run, splitOutput(prices, u.model, u, out.answer, out.toolUses), requestCost)
       }
     }
     return out
@@ -5699,7 +6241,9 @@ export const register: Register = (on, options) => {
     }
     // A helper that was sent back stays stopped, so that it reports instead of trying again.
     const helper = e.agentId === undefined ? undefined : await helperWatch($, e.agentId)
-    if (helper?.returned) return { deny: helper.capped ? capReturn(helper.capped) : HELPER_RETURN }
+    // Its report is the exception: SubagentHandback ends the run, and refusing it loses the report (ADR 0057).
+    const handback = String(e.tool) === HANDBACK
+    if (helper?.returned && !handback) return { deny: helper.limited ? limitReturn(helper.limited) : helper.capped ? capReturn(helper.capped) : HELPER_RETURN }
     // A helper's foreground Bash wait over HELPER_WAIT_CAP_MS outlasts its 5-minute cache. A refused call is not counted in helper.calls.
     const timeout = (e as unknown as { timeout?: unknown }).timeout
     const background = (e as unknown as { run_in_background?: unknown }).run_in_background
@@ -5707,8 +6251,11 @@ export const register: Register = (on, options) => {
       !off && e.agentId !== undefined && String(e.tool) === 'Bash' && background !== true && typeof timeout === 'number' && timeout > HELPER_WAIT_CAP_MS && helperTtl < 60 * 60_000
     // A helper on a cheaper tier gets a fixed number of tool calls, however well they go. At the cap it is struggling:
     // it goes back to the main chat, the way a helper with no retry left does.
-    if (helper && e.agentId !== undefined && !off) {
-      const cap = helper.tier ? helperCap(helper.tier) : undefined
+    if (helper && e.agentId !== undefined && !off && !handback) {
+      // With a spend limit the call cap is not used: it is the fallback for a helper with no estimate.
+      const cap = helper.tier && helper.limit === undefined ? helperCap(helper.tier) : undefined
+      const stop = helper.limit !== undefined ? await spendCheck($, e.agentId, helper) : undefined
+      if (stop) return { deny: stop }
       if (cap !== undefined && helper.calls >= cap) {
         helper.returned = true
         helper.stall = 'struggling'
@@ -5992,8 +6539,8 @@ export const register: Register = (on, options) => {
     // Read while drawing: a change in the pane (or in /config) writes it, and the pane draws again.
     await $.state.get(MENU).catch(() => undefined)
     const line = (key: SettingKey) => `${rowLabel(key)}: ${cfg[key]}`
-    const plain = KEYS.filter(k => !SETTINGS[k].title.startsWith(ADVANCED))
-    const advanced = KEYS.filter(k => SETTINGS[k].title.startsWith(ADVANCED))
+    const plain = PANE_KEYS.filter(k => !SETTINGS[k].title.startsWith(ADVANCED))
+    const advanced = PANE_KEYS.filter(k => SETTINGS[k].title.startsWith(ADVANCED))
     if (e.surface === 'mobile') {
       const { Box, Button, Text } = $.ui.resolve(e)
       return (
@@ -6009,7 +6556,7 @@ export const register: Register = (on, options) => {
     // The keys come first: Tab moving between rows is the engine's, and nothing else says so.
     // The first row takes the keys when the pane opens focused.
     const row = (key: SettingKey) => (
-      <Select key={`row-${key}`} label={rowLabel(key)} options={SETTINGS[key].options.map(value => ({ value }))} value={cfg[key]} {...(key === KEYS[0] ? { autoFocus: true as const } : {})} onSelect={value => void setFromMenu($, key, value)} />
+      <Select key={`row-${key}`} label={rowLabel(key)} options={SETTINGS[key].options.map(value => ({ value }))} value={cfg[key]} {...(key === PANE_KEYS[0] ? { autoFocus: true as const } : {})} onSelect={value => void setFromMenu($, key, value)} />
     )
     return (
       <Box flexDirection="column">
@@ -6037,6 +6584,7 @@ export const register: Register = (on, options) => {
       await knowBilling($, false)
       await refreshTtl($)
       await rememberTurn($)
+      await finishAuto($, e.turnId, e.isAborted)
     }
     if (e.agentId === undefined && active && active.turnId === e.turnId) {
       const run = active
@@ -6049,8 +6597,10 @@ export const register: Register = (on, options) => {
     if (e.agentId === undefined && !e.isAborted) await coldCheck($).catch(err => log($, `before the cache goes cold failed: ${err instanceof Error ? err.message : String(err)}`))
     if (e.agentId === undefined && !e.isAborted) await limitCheck($)
     if (e.agentId === undefined && !e.isAborted) await sizeCheck($)
+    if (e.agentId === undefined && !e.isAborted) await watchRows($)
     if (e.agentId === undefined && !e.isAborted) await tipCheck($).catch(() => undefined)
     if (e.agentId === undefined && !e.isAborted) await outputCheck($)
+    if (e.agentId === undefined && !e.isAborted) await lifeCheck($)
     // whatsnext's wrap-up before a compaction ended: the compaction follows (after coldCheck, which cancels timers), from a timer (the hook does not wait for it). An interrupted wrap-up stops it.
     if (e.agentId === undefined && wrapThenCompact) {
       const w = wrapThenCompact

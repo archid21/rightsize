@@ -3,11 +3,11 @@
 //   node scripts/check-settings.mjs
 //
 // Plugin tests cannot read files (they run with no fs), so this is the check that can:
-//   - plugin.json: each row is a string picker with a title, a description, a default and options. Mode is first, then Routing, Hand-offs, Ask before changing and Cache; the others are titled "Advanced · ...".
+//   - plugin.json: each row is a string picker with a title, a description, a default and options. Mode is first, then Routing, Hand-offs, Ask before changing, Cache and Band; the others are titled "Advanced · ...".
 //   - hooks/settings.ts: each row has an entry with the same title, default and (when written out) options.
 //   - hooks/register.tsx: each row has a `case '<key>'` in applyOption, the parse that applies it.
 //   - docs/SETTINGS.md: each row has a `### <name>` heading (the title without "Advanced · ") whose first lines give its `Key:`. The root README.md links to this page and no longer lists the settings.
-//     Every row but the five plain ones (Mode, Routing, Hand-offs, Ask before changing, Cache) is titled "Advanced · <name>" in /config; the page gives the name.
+//     Every row but the six plain ones (Mode, Routing, Hand-offs, Ask before changing, Cache, Band) is titled "Advanced · <name>" in /config; the page gives the name.
 //   - plugins/rightsize/README.md: each row's title is in the `/config` list under "Commands and settings" (a bullet that opens with a bold title).
 //   - hooks/register.*.test.ts: each row has a scenario that names its key.
 //   - hooks/register.tsx: the web address written out at the $.http.fetch call (the directory wants a fixed address there) equal PRICING_URL (prices.ts), and is the only $.http.fetch call.
@@ -52,9 +52,11 @@ const problems = []
 const fail = (key, what) => problems.push(`${key}: ${what}`)
 const rows = Object.entries(manifest.userConfig ?? {})
 if (rows.length === 0) problems.push('plugin.json declares no userConfig rows')
-// /config has no row groups: the five plain rows come first, in this order (0.10.0 removed Profile and added Ask before
-// changing), and every other row is titled "Advanced · ...".
-const PLAIN = ['mode', 'routing', 'handOffs', 'askFirst', 'cache']
+// /config has no row groups: the six plain rows come first, in this order (0.10.0 removed Profile and added Ask before
+// changing; 0.13 moved Band up), and every other row is titled "Advanced · ...".
+const PLAIN = ['mode', 'routing', 'handOffs', 'askFirst', 'cache', 'band']
+// Question wait, Price check and Rater have no row (FIXED_ROWS in hooks/settings.ts): in the table, not in plugin.json.
+const FIXED_ROWS = ['questionWait', 'priceCheck', 'rater']
 PLAIN.forEach((key, i) => {
   if (rows[i]?.[0] !== key) problems.push(`${key}: not row ${i + 1} of plugin.json (it is ${rows[i]?.[0]})`)
 })
@@ -103,7 +105,11 @@ if (fetches !== 1) problems.push(`hooks/register.tsx calls $.http.fetch ${fetche
 // The other direction: a row in settings.ts that plugin.json does not declare.
 const from = settings.indexOf('export const SETTINGS = {')
 const table = settings.slice(from, settings.indexOf('} as const satisfies', from))
-for (const m of table.matchAll(/^  (\w+): \{/gm)) if (!(m[1] in (manifest.userConfig ?? {}))) fail(m[1], 'in hooks/settings.ts but not in plugin.json')
+for (const m of table.matchAll(/^  (\w+): \{/gm)) if (!(m[1] in (manifest.userConfig ?? {})) && !FIXED_ROWS.includes(m[1])) fail(m[1], 'in hooks/settings.ts but not in plugin.json')
+for (const key of FIXED_ROWS) {
+  if (key in (manifest.userConfig ?? {})) fail(key, 'a fixed row, but plugin.json declares it')
+  if (settingsDocRow(key) !== undefined) fail(key, 'a fixed row, but docs/SETTINGS.md has a section for it')
+}
 
 if (problems.length) {
   console.error(`${problems.length} problem(s) with the settings:\n${problems.map(p => `  - ${p}`).join('\n')}`)

@@ -233,7 +233,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
   // ---- Raise when stuck: follow Raising, ask me, raise automatically, off ----
 
-  for (const row of [
+  const rows: { name: string; stored: Record<string, string>; answer: string | undefined; asked: string[]; effort: string }[] = [
     { name: 'a stored "on" (from an older release) reads as follow Raising: Raising "ask me" asks', stored: { escalation: 'on', raiseRule: 'ask me' }, answer: 'Keep medium', asked: ['Stuck'], effort: 'medium' },
     { name: 'a stored "on" reads as follow Raising: Raising at its default (automatic) raises with no question', stored: { escalation: 'on' }, answer: undefined, asked: [], effort: 'high' },
     { name: 'follow Raising, Raising "never raise": no raise, no question', stored: { escalation: 'follow Raising', raiseRule: 'never raise' }, answer: undefined, asked: [], effort: 'medium' },
@@ -242,7 +242,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     { name: 'raise automatically raises with no question even when Raising is "ask me"', stored: { escalation: 'raise automatically', raiseRule: 'ask me' }, answer: undefined, asked: [], effort: 'high' },
     { name: 'raise automatically raises even when Raising is "never raise"', stored: { escalation: 'raise automatically', raiseRule: 'never raise' }, answer: undefined, asked: [], effort: 'high' },
     { name: 'off never raises, whatever Raising says', stored: { escalation: 'off', raiseRule: 'raise automatically' }, answer: undefined, asked: [], effort: 'medium' },
-  ]) {
+  ]
+  for (const row of rows) {
     test(`Raise when stuck: ${row.name} (${surface})`, { timeoutMs: 30000, options: row.stored }, async ($, on) => {
       const { h, d } = await start($, on, row.stored)
       expect(await stuckTurn(d, h, 't1', row.answer)).toBe(row.effort)

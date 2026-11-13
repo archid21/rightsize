@@ -1,6 +1,6 @@
 import { type TestBody, expect, test } from 'claude-code/testing'
 import { CAL_STORE } from './cost'
-import { RUNS_FILE, SWITCHES_FILE, LOG_PATH, LEGACY_RUNS, LOOKUP, DEBUG, SEARCH, REVIEW, NO_CHANGE, FREE_SWITCHES, NO_COLD, BIG_TURN, cellsOf, engine, drive, flush, settle, untilAsked, last, mount, bandText, LOWER, NO_ONE } from './testkit'
+import { RUNS_FILE, SWITCHES_FILE, LOG_PATH, LEGACY_RUNS, LOOKUP, DEBUG, SEARCH, REVIEW, NO_CHANGE, FREE_SWITCHES, NO_COLD, BIG_TURN, cellsOf, engine, drive, flush, settle, untilAsked, last, mount, bandText, LOWER, NO_ONE, installTrim } from './testkit'
 
 for (const surface of ['desktop', 'terminal'] as const) {
   test(`Q1 by default: it lowers on its own with no question, says so on the band once, stays low for the whole turn, and retries at the original effort (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -38,6 +38,11 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const undo = await d.command('retry')
     expect(undo.text ?? '').toContain('run it at medium')
     expect(h.filled[0]).toBe(LOOKUP)
+    // Retry is logged: one `undone` line names the last lowered run, so the Saving check leaves it out.
+    const logged = (h.files[RUNS_FILE] ?? '').trim().split('\n').map(l => JSON.parse(l) as Record<string, unknown>)
+    const undone = logged.filter(l => l.kind === 'undone')
+    expect(undone.length, 'one line for one Retry').toBe(1)
+    expect(undone[0]).toMatchObject({ kind: 'undone', undone: 'lower', session: 'sess-1', ref: logged.filter(l => l.kind === 'run').at(-1)?.id })
     const rated = h.ratings
     await d.submit(LOOKUP)
     expect(h.ratings, 'the re-run is not rated').toBe(rated)
@@ -1122,11 +1127,38 @@ for (const surface of ['desktop', 'terminal'] as const) {
     // Deferred MCP tools are not in the context: 20K MCP, 6K memory, 1K agents, 3K skills and commands.
     expect(line.fixed).toEqual({ tokens: 30000, mcp: 20000, memory: 6000, agents: 1000, skills: 3000, startHooks: 0, files: { 'CLAUDE.md': 6000 }, servers: { linear: 12000, github: 8000 }, cost: 0.012 })
     h.now = Date.now()
+    // 30K of the 200K window is 15%: the share is shown, the review advice only comes above it. The list of parts is gone.
     const fixed = await d.report()
-    expect(fixed).toContain('FIXED CONTEXT  ~30K tokens sent with every request')
-    // Largest first, the last part closing the tree.
-    expect(fixed).toMatch(/├─ MCP tools +20K +linear 12K, github 8K\n +├─ Memory +6K +CLAUDE\.md 6K\n +├─ Skills +3K\n +└─ Agents +1K\n/)
+    expect(fixed).toContain('Fixed context: ~15% of the context window (30K of 200K tokens).\n')
+    expect(fixed).not.toMatch(/Review it with|FIXED CONTEXT|├─ MCP tools/)
   })
+
+  // One engine per test: each case is its own test.
+  const ADVICE: [string, boolean | 'other project', number, string][] = [
+    ['trim installed, above 15%: points to /trim:context', true, 100_000, 'Fixed context: ~30% of the context window (30K of 100K tokens). Review it with `/trim:context`.'],
+    ['trim not installed, above 15%: points to /context', false, 100_000, 'Fixed context: ~30% of the context window (30K of 100K tokens). Review it with `/context`.'],
+    ['trim installed for another project only: points to /context', 'other project', 100_000, 'Fixed context: ~30% of the context window (30K of 100K tokens). Review it with `/context`.'],
+    ['trim installed, under 15%: no advice', true, 1_000_000, 'Fixed context: ~3% of the context window (30K of 1M tokens).'],
+    ['trim not installed, under 15%: no advice', false, 1_000_000, 'Fixed context: ~3% of the context window (30K of 1M tokens).'],
+  ]
+  for (const [name, installed, window, want] of ADVICE) {
+    test(`the fixed context line, ${name} (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+      const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+      h.contextWindow = window
+      if (installed === true) installTrim(h)
+      if (installed === 'other project') installTrim(h, { projectPath: '/somewhere/else' })
+      h.breakdown = { mcpTools: [], memoryFiles: [{ path: '/home/test/.claude/CLAUDE.md', type: 'User', tokens: 30000 }], agents: [], skills: { totalSkills: 0, includedSkills: 0, tokens: 0, skillFrontmatter: [] }, slashCommands: { totalCommands: 0, includedCommands: 0, tokens: 0 } }
+      const d = drive($, h)
+      await d.start(surface)
+      h.rating = NO_CHANGE
+      await d.submit(LOOKUP)
+      await d.step('t1', 0)
+      await d.complete('t1')
+      h.now = Date.now()
+      // The line wraps in the plain report: read it back as one line.
+      expect((await d.command('report')).text?.replace(/\n/g, ' ').match(/Fixed context: [^.]*\)\.(?: Review it with `[^`]+`\.)?/)?.[0]).toBe(want)
+    })
+  }
 
   test(`counts what SessionStart hooks add from the messages: once per text, the main chat's only; not measured when the messages can't be read (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
@@ -1350,6 +1382,9 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await ui.press({ key: 'retry' })
     expect(h.filled[0]).toBe(LOOKUP)
     expect(last(h.toasts) ?? '').toContain('run it at medium')
+    // The turn has not ended, so the run has no line yet: the `undone` line still names it, by the id kept with the band.
+    const undone = (h.files[RUNS_FILE] ?? '').trim().split('\n').filter(Boolean).map(l => JSON.parse(l) as Record<string, unknown>).filter(l => l.kind === 'undone')
+    expect(undone).toEqual([expect.objectContaining({ kind: 'undone', undone: 'lower', ref: expect.any(String) })])
     await ui.unmount()
     expect(await bandText($, surface)).toBe('')
   })

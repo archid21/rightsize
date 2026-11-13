@@ -60,6 +60,13 @@ export function installWhatsnext(h: { commands: { name: string; description: str
   // Whether the folder is a whatsnext project is whatsnext's answer (`project` in compact-instructions --json), not a file rightsize reads.
   if (over.initialized === false) h.wnReply = { exitCode: 0, stdout: wnAnswer(false, false) }
 }
+/** Makes trim installed: its entry in installed_plugins.json, kept beside any other plugin's. `projectPath`: installed for that project only. */
+export function installTrim(h: { files: Record<string, string> }, over: { projectPath?: string } = {}) {
+  const file = '/home/test/.claude/plugins/installed_plugins.json'
+  const have = h.files[file] ? (JSON.parse(h.files[file]) as { version?: number; plugins?: Record<string, unknown> }) : { version: 2, plugins: {} }
+  have.plugins = { ...have.plugins, 'trim@trim': [{ scope: over.projectPath ? 'project' : 'user', ...(over.projectPath ? { projectPath: over.projectPath } : {}), installPath: '/home/test/.claude/plugins/cache/trim/trim/0.0.1', version: '0.0.1', lastUpdated: '2026-11-01T00:00:00.000Z' }] }
+  h.files[file] = JSON.stringify(have)
+}
 /** What core returns when the person says no at the permission prompt. */
 export const REJECTED = "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed."
 /** The shared files of 0.7 and before: still read, never written. */
@@ -172,6 +179,9 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
     outputPinned: undefined as string | undefined,
     /** Other top-level settings a read of one key returns (`idleCompaction`, `autoCompactEnabled`). */
     settings: {} as Record<string, unknown>,
+    /** promptCacheTtl, Claude Code's own setting: a reason makes its write be refused; `cacheTtlPinned` true makes a write land nowhere a read sees it (a policy sets it). */
+    cacheTtlRefuse: undefined as string | undefined,
+    cacheTtlPinned: false,
     /** What reached the engine, in order: each question asked (`ask:<header>`) and each workflow started (`workflow`). */
     events: [] as string[],
     // A gateway's spend limit by default: billed per token, so reports show dollars.
@@ -237,6 +247,9 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
     answerGate: {} as Record<string, Promise<void>>,
     /** What a main request's usage says (stepUsage): the conversation's size is the sum of the input fields. */
     stepUsage: { input_tokens: 200, output_tokens: 400, cache_read_input_tokens: 20_000, cache_creation_input_tokens: 300 },
+    /** What a request's response wrote: its visible text and its tool calls (the output split reads them). */
+    stepAnswer: '',
+    stepToolUses: [] as { name: string; input: unknown }[],
     /** What $.command.list() answers: the commands other plugins add. */
     commands: [] as { name: string; description: string; source: string; plugin?: string }[],
     /** True: $.command.list() throws. */
@@ -444,6 +457,12 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
       if (h.outputPinned === undefined) h.outputStyle.value = value
       return { value } as never
     }
+    if (key === 'promptCacheTtl') {
+      if (h.cacheTtlRefuse !== undefined) return { deny: h.cacheTtlRefuse } as never
+      h.sets.push({ key, value, ...(origin ? { origin } : {}) })
+      if (!h.cacheTtlPinned) h.settings.promptCacheTtl = value
+      return { value } as never
+    }
     const field = key.startsWith('rightsize.') ? key.slice('rightsize.'.length) : ''
     const known = KEYS.find(k => k === field)
     if (known && !inOptions(known, value)) return { deny: `${String(value)} is not one of ${known}'s options` } as never
@@ -552,6 +571,7 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
   })
   reg('tool.call', { tool: 'Agent' }, async () => ({ result: { content: 'done' } }))
   reg('tool.call', { tool: 'SendMessage' }, async () => ({ result: { content: 'sent' } }))
+  reg('tool.call', { tool: 'SubagentHandback' }, async () => ({ result: { content: 'delivered' } }))
   reg('tool.call', { tool: 'mcp__ccd_turn__update_plan' }, async () => ({ result: { content: 'Plan shown.' } }))
   reg('tool.call', { tool: 'Workflow' }, async () => {
     h.events.push('workflow')
@@ -596,13 +616,15 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
     if (during) await during()
     return { text: e.text } as never
   })
+  // The settings hook beneath the plugins: nothing to say.
+  reg('classic.UserPromptSubmit', async () => ({}) as never)
   reg('turn.start', async ($, e) => ({ turnId: e.turnId }) as never)
   reg('turn.step', async function* ($, e) {
     h.sent.push({ effort: e.effort, model: e.model, agentId: e.agentId, turnId: e.turnId })
     if (h.ledger !== undefined) h.ledger += h.stepCost
     if (!e.agentId && h.windowStep) h.rateLimits = h.rateLimits.map(l => ({ ...l, percentUsed: l.percentUsed + h.windowStep }))
     const usage = h.stepUsage
-    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: { ...usage, model: e.agentId ? h.subModel : (e.model ?? h.model) } } as never
+    return { turnId: e.turnId, index: e.index, answer: h.stepAnswer, toolUses: h.stepToolUses, stopReason: 'end_turn', usage: { ...usage, model: e.agentId ? h.subModel : (e.model ?? h.model) } } as never
   })
   reg('turn.complete', async () => ({ text: '' }) as never)
   reg('command.run', async ($, e) => {
@@ -683,6 +705,8 @@ export const drive = (api: unknown, h: ReturnType<typeof engine>) => {
     /** The app's task list moving to its next step: the same call every time. */
     advance: () => e.tool.call({ tool: 'mcp__ccd_turn__update_plan', advance: true }),
     workflow: (id?: string) => e.tool.call({ tool: 'Workflow', script: 'export const meta = {}', ...(id ? { tool_use_id: id } : {}) }),
+    /** A subagent delivering its report: the call that ends its run. */
+    handback: (agentId: string) => e.tool.call({ tool: 'SubagentHandback', message: 'report', agentId }),
     /** `extra`: more of the Bash input, such as `timeout` (ms) and `run_in_background`. */
     bash: (command: string, agentId?: string, extra: Record<string, unknown> = {}) => e.tool.call({ tool: 'Bash', command, description: `try ${command} ${h.sent.length}`, ...(agentId ? { agentId } : {}), ...extra }),
     // The engine starting a subagent from the main chat's Agent call; its steps carry `agent-<description>`.

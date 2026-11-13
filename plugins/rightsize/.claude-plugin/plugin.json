@@ -1,7 +1,7 @@
 {
   "name": "rightsize",
   "displayName": "rightsize",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "description": "Make every Claude token count. rightsize sends each Claude Code prompt to the cheapest model and effort that does the job, raises effort only when Claude is actually stuck, and keeps your cache and context from costing more than they should: routine work stays on Sonnet or goes to a Haiku helper, reviews switch to Opus for one turn, and it learns from your own outcomes which routes to trust. No profiles, no tuning. A band shows what it did and what it cost, and watch-only mode lets you see its calls before it changes anything.",
   "author": {
     "name": "Archi Dubey",
@@ -55,6 +55,17 @@
       "default": "on",
       "options": [
         "on",
+        "off"
+      ]
+    },
+    "band": {
+      "type": "string",
+      "title": "Band",
+      "description": "The row above the prompt that shows what rightsize did, with buttons to retry it at the original effort or run it on your model, and a ⋯ menu to change the rule, mark a hand-off or lowering 👍 or 👎 (kept on this machine), or change cache choices. when it acts: only when it changes something. always: on every rated prompt, no change included. off: status line only.",
+      "default": "when it acts",
+      "options": [
+        "when it acts",
+        "always",
         "off"
       ]
     },
@@ -194,16 +205,6 @@
         "off"
       ]
     },
-    "rater": {
-      "type": "string",
-      "title": "Advanced · Rater",
-      "description": "sonnet or haiku: the model that rates each prompt (and each subagent brief), at low effort. sonnet (default) reads prompts more reliably; haiku costs less per rating. With sonnet, a rating that times out, is refused or comes back unreadable is tried once more on Haiku; with haiku, a timeout or an unreadable answer is tried once more on Haiku.",
-      "default": "sonnet",
-      "options": [
-        "sonnet",
-        "haiku"
-      ]
-    },
     "startTips": {
       "type": "string",
       "title": "Advanced · Start suggestions",
@@ -252,36 +253,15 @@
         "subscription"
       ]
     },
-    "band": {
+    "longHelpers": {
       "type": "string",
-      "title": "Advanced · Band",
-      "description": "The row above the prompt that shows what rightsize did, with buttons to retry it at the original effort or run it on your model, and a ⋯ menu to change the rule, mark a hand-off or lowering 👍 or 👎 (kept on this machine), or change cache choices. when it acts: only when it changes something. always: on every rated prompt, no change included. off: status line only.",
-      "default": "when it acts",
+      "title": "Advanced · Long helpers",
+      "description": "What happens when a helper on a cheaper model nears its spend limit (a multiple of the main-model estimate for its task) and is still finding new things. ask: ask on the band whether to let it continue; no answer means it goes on while it is making progress, up to 10x the estimate, then stops and reports. continue while making progress: extend its limit automatically, one block at a time, up to 10x the estimate, then ask (no answer stops it). stop at the limit: never extend. A helper that is stuck is stopped with no question.",
+      "default": "ask",
       "options": [
-        "when it acts",
-        "always",
-        "off"
-      ]
-    },
-    "questionWait": {
-      "type": "string",
-      "title": "Advanced · Question wait",
-      "description": "How long a question that must be answered before your prompt runs waits for your answer: Effort, Stronger and Subagent when a rule is ask (with Band set to off, or on the mobile app, every question). With no answer, rightsize takes the choice that changes nothing and costs nothing. Questions on the band do not hold up the work and have no wait.",
-      "default": "30 seconds",
-      "options": [
-        "30 seconds",
-        "1 minute",
-        "2 minutes"
-      ]
-    },
-    "priceCheck": {
-      "type": "string",
-      "title": "Advanced · Price check",
-      "description": "monthly: compare prices.json with Anthropic's pricing page every 30 days and update it. off: never check. /rightsize prices checks right away, whatever this says.",
-      "default": "monthly",
-      "options": [
-        "monthly",
-        "off"
+        "ask",
+        "continue while making progress",
+        "stop at the limit"
       ]
     },
     "outputAdvice": {

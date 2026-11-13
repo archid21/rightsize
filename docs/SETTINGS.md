@@ -2,11 +2,11 @@
 
 Every row is a picker in `/config` (rightsize section). In a terminal session a change applies at once. In the desktop app there is no `/config` menu: change values from a terminal (`claude plugin configure rightsize@archid21 --values-stdin <<< '{"floor":"medium"}'`), then quit the app and reopen it. `/rightsize` opens the same list as a pane, and `/rightsize reset <key>` resets one row by its key.
 
-**Mode** is the first row, **Routing**, **Hand-offs** and **Cache** turn one feature each on or off, and **Ask before changing** makes every automatic move ask first. Every other row is titled "Advanced · ..." in `/config`; the names below leave that off. **Your setting wins:** a row you set always beats rightsize's own value for it. Budget pacing moves only the fixed bars, never a rule you set. Rows marked "not set" mean Ask before changing decides: off acts, on asks.
+**Mode** is the first row, **Routing**, **Hand-offs** and **Cache** turn one feature each on or off, **Ask before changing** makes every automatic move ask first, and **Band** says when the band shows. These six are the plain rows; `/rightsize` shows them above the rest. Every other row is titled "Advanced · ..." in `/config`; the names below leave that off. **Your setting wins:** a row you set always beats rightsize's own value for it. Budget pacing moves only the fixed bars, never a rule you set. Rows marked "not set" mean Ask before changing decides: off acts, on asks.
 
 ## One rule set
 
-rightsize has one rule set and no profiles (the Quality, Balanced and Economy profiles of releases before 0.9 are gone; a stored Quality reads as Ask before changing on). These values are fixed; a value stored for a row an earlier release had (Hand-off threshold, Lowering threshold, Explore close calls, Pause after misses, Helper call cap, Rater check) is ignored:
+rightsize has one rule set and no profiles (the Quality, Balanced and Economy profiles of releases before 0.9 are gone; a stored Quality reads as Ask before changing on). These values are fixed; a value stored for a row an earlier release had (Hand-off threshold, Lowering threshold, Explore close calls, Pause after misses, Helper call cap, Rater check) is ignored. Question wait, Price check and Rater have no row in `/config` or in the pane and are not reset by `/rightsize reset`; their values are fixed too. A value an earlier release stored for one of them in `settings.json` is kept and used:
 
 | | Fixed value | Row |
 |---|---|---|
@@ -16,12 +16,15 @@ rightsize has one rule set and no profiles (the Quality, Balanced and Economy pr
 | Close calls between two models that fit | The task-type guide decides; never explored | none |
 | Helper call cap: the most tool calls a helper on a cheaper model may make for one task | 25 for Haiku, 40 for Sonnet; none for Opus and Fable | none |
 | Rater check: Sonnet checks every Nth Haiku rating | every 20 | none |
+| Rater: the model that rates each prompt (and each subagent brief), at low effort. A rating that times out, is refused or comes back unreadable is tried once more on Haiku | Sonnet (a stored haiku rates with Haiku, with a retry on Haiku) | none |
+| Question wait: how long a question that must be answered before your prompt runs waits for you (Effort, Stronger and Subagent when a rule is ask; with Band set to off, or on the mobile app, every question). With no answer, rightsize takes the choice that changes nothing and costs nothing | 30 seconds (a stored 1 minute or 2 minutes is used) | none |
+| Price check: compare prices.json with Anthropic's pricing page and update it. `/rightsize prices` checks right away | monthly, every 30 days (a stored off never checks) | none |
 | Chances per task for a struggling helper | 2 | none |
 | Before the cache goes cold, while the row is not set | Keep warm until your usual start (at most 8 hours; 9:00 until 5 days of data) | Before the cache goes cold |
 | A review switched to Opus runs at most at | Highest effort | Highest effort |
 | Lowering, Raising, Stronger model, Cheaper model, while not set | act without asking; with Ask before changing on, ask first | the four rule rows |
 
-An "ask" answer opens its own timed dialog (see **Question wait**); every other answer acts without asking, and the band says what decided the first time each case comes up in a session. Every rating starts from rightsize's research priors (see [HOW-IT-DECIDES.md](HOW-IT-DECIDES.md)).
+An "ask" answer opens its own timed dialog (it waits 30 seconds); every other answer acts without asking, and the band says what decided the first time each case comes up in a session. Every rating starts from rightsize's research priors (see [HOW-IT-DECIDES.md](HOW-IT-DECIDES.md)).
 
 ## Rows
 
@@ -30,7 +33,7 @@ An "ask" answer opens its own timed dialog (see **Question wait**); every other 
 - Key: `mode`
 - Options: act · watch only
 - Default: act
-- act (default): rightsize changes effort, switches reviews to Opus and hands work to helpers as your rules say. watch only: it rates and plans every prompt, applies nothing, and the band says what it would have done; /rightsize report sums what that would have saved. Use it for a week to see rightsize's calls on your own work before turning it on.
+- act (default): rightsize changes effort, switches reviews to Opus and hands work to helpers as your rules say. watch only: it rates and plans every prompt, applies nothing, and the band says what it would have done; /rightsize report sums what that would have saved. Use it for a week to see rightsize's calls on your own work before turning it on. rightsize saves the date (UTC) watch only was turned on. Seven full days later, at a turn end, one band row shows what the Saving check says rightsize would have saved, with three answers: **Turn on** (Mode becomes act), **Ask before changing** (Mode becomes act and Ask before changing goes on) and **Keep watching** (nothing changes). It shows once per watch-only period and never holds a prompt. With fewer than 20 rated prompts it says "Not enough turns yet to estimate" instead of a range. When you turn watch only off, the next turn end shows one summary row with the same range for the days it ran, unless you chose Turn on in that row. Turning watch only on again starts a new period.
 
 ### Routing
 
@@ -51,7 +54,7 @@ An "ask" answer opens its own timed dialog (see **Question wait**); every other 
 - Key: `askFirst`
 - Options: off · on
 - Default: off
-- off (default): rightsize lowers or raises effort, switches a review to Opus and hands work to a helper without asking, and the band says what it did. on: every move rightsize would make on its own asks first, in a timed dialog (see **Question wait**), and nothing changes until you answer. Either way an Advanced rule row you set (Lowering, Raising, Stronger model, Cheaper model) wins for its case. A Quality profile saved by an older release reads as on until you set this row.
+- off (default): rightsize lowers or raises effort, switches a review to Opus and hands work to a helper without asking, and the band says what it did. on: every move rightsize would make on its own asks first, in a timed dialog (it waits 30 seconds), and nothing changes until you answer. Either way an Advanced rule row you set (Lowering, Raising, Stronger model, Cheaper model) wins for its case. A Quality profile saved by an older release reads as on until you set this row.
 
 ### Cache
 
@@ -59,6 +62,13 @@ An "ask" answer opens its own timed dialog (see **Question wait**); every other 
 - Options: on · off
 - Default: on
 - on (default): rightsize keeps an eye on the prompt cache: the offer to keep it warm, keep warm itself, a handoff or a compaction before it goes cold, and the idle warning when you return to a cold cache. off: none of those; a keep-warm run in progress stops at once. The rows Idle warning and Before the cache goes cold fine-tune it while Cache is on, and are not used while it is off.
+
+### Band
+
+- Key: `band`
+- Options: when it acts · always · off
+- Default: when it acts
+- The row above the prompt that shows what rightsize did, with buttons to retry it at the original effort or run it on your model, and a ⋯ menu to change the rule, mark a hand-off or lowering 👍 or 👎 (kept on this machine), or change cache choices. when it acts: only when it changes something. always: on every rated prompt, no change included. off: status line only.
 
 ### Lowest effort
 
@@ -102,13 +112,6 @@ An "ask" answer opens its own timed dialog (see **Question wait**); every other 
 - Default: not set. Left at not set, Ask before changing decides.
 - When a task could run on a cheaper model than yours. ask first: ask before sending it to a subagent on that model. always send: send it without asking. stay, lower effort only: stay on your model and lower effort. ask each time: ask what to do each time. not set (the default): Ask before changing decides (off: done without asking; on: asked first), and the band says so the first time the case comes up in a session, with the other rules in its ⋯ menu. A rule set here is used as it is. The band's ⋯ menu and /rightsize settings set it too; set it back to not set to let Ask before changing decide again.
 
-### Remember choices
-
-- Key: `remember`
-- Options: ask · every session · this session
-- Default: ask
-- What happens to rules you set from the band's ⋯ menu or /rightsize settings. ask: after your first such rule, ask on the band whether to keep your rules in every session (the default). every session: keep every rule for later sessions, without asking. this session: never keep a rule and never ask; rules last until the session ends. A rule set in its row above is always kept.
-
 ### Use Haiku
 
 - Key: `useHaiku`
@@ -147,16 +150,9 @@ An "ask" answer opens its own timed dialog (see **Question wait**); every other 
 ### Raise when stuck
 
 - Key: `escalation`
-- Options: on · off
-- Default: on
-- on: when a turn shows Claude is stuck (the same tool call failing twice, 3 of the last 10 tool calls failing with none of the 10 making progress (a `grep`, `rg`, `diff` or `test` that exits 1 found nothing, and a line of read-only lookups that missed a file: neither is a failed call), the same call running 3 times, a turn passing 3x the rated steps (at least 15) with no progress, or 2 fixes in a row leaving the tests red), raise effort one level for the rest of the turn, at most twice, never above Highest effort and never to max. It follows your Raising rule: automatic raises without asking, otherwise it asks on the band while the turn goes on. off: never raise mid-turn.
-
-### Rater
-
-- Key: `rater`
-- Options: sonnet · haiku
-- Default: sonnet
-- sonnet or haiku: the model that rates each prompt (and each subagent brief), at low effort. sonnet (default) reads prompts more reliably; haiku costs less per rating. With sonnet, a rating that times out, is refused or comes back unreadable is tried once more on Haiku; with haiku, a timeout or an unreadable answer is tried once more on Haiku.
+- Options: follow Raising · ask me · raise automatically · off
+- Default: follow Raising
+- When a turn shows Claude is stuck (the same tool call failing twice, 3 of the last 10 tool calls failing with none of the 10 making progress (a `grep`, `rg`, `diff` or `test` that exits 1 found nothing, and a line of read-only lookups that missed a file: neither is a failed call), the same call running 3 times, a turn passing 3x the rated steps (at least 15) with no progress, or 2 fixes in a row leaving the tests red), raise effort one level for the rest of the turn, at most twice, never above Highest effort and never to max. follow Raising (the default): follows your Raising rule, so a raise is automatic when that rule is set to raise automatically, and otherwise asks on the band while the turn goes on. ask me: always asks on the band while the turn goes on (answer once, for this session, or always). raise automatically: raises without asking. off: never raise mid-turn.
 
 ### Start suggestions
 
@@ -186,26 +182,16 @@ An "ask" answer opens its own timed dialog (see **Question wait**); every other 
 - Default: api
 - api: subagent reports show dollars. subscription: they show the share of usage and of the 5-hour window, with API-equivalent dollars beside it. rightsize reads this off each response's rate limits when they show it. A value set here is your answer: the rate limits never change it, and /rightsize says when they disagree.
 
-### Band
+### Long helpers
 
-- Key: `band`
-- Options: when it acts · always · off
-- Default: when it acts
-- The row above the prompt that shows what rightsize did, with buttons to retry it at the original effort or run it on your model, and a ⋯ menu to change the rule, mark a hand-off or lowering 👍 or 👎 (kept on this machine), or change cache choices. when it acts: only when it changes something. always: on every rated prompt, no change included. off: status line only.
-
-### Question wait
-
-- Key: `questionWait`
-- Options: 30 seconds · 1 minute · 2 minutes
-- Default: 30 seconds
-- How long a question that must be answered before your prompt runs waits for your answer: Effort, Stronger and Subagent when a rule is ask (with Band set to off, or on the mobile app, every question). With no answer, rightsize takes the choice that changes nothing and costs nothing. Questions on the band do not hold up the work and have no wait.
-
-### Price check
-
-- Key: `priceCheck`
-- Options: monthly · off
-- Default: monthly
-- monthly: compare prices.json with Anthropic's pricing page every 30 days and update it. off: never check. /rightsize prices checks right away, whatever this says.
+- Key: `longHelpers`
+- Options: ask · continue while making progress · stop at the limit
+- Default: ask
+- A helper on a cheaper model (a hand-down, or a subagent rightsize moved) has a spend limit: 1.5, 2 or 3 times what the task is estimated to cost on your main model (1.5 for a task rated 10 tool calls or fewer, 2 for 11 to 30, 3 for more). This row says what happens at 80% of that limit when the helper is still finding new things.
+- ask: a question on the band, without pausing the helper: Continue (one more block, the size of the first limit), Stop and report, or Always while it's making progress. With no answer (the question is still open, it went when your turn ended, or the band cannot ask), the helper goes on while it is making progress, one block at a time, up to 10 times the estimate (the hard cap), then stops and reports. Stop and report stops it at its next call.
+- continue while making progress: rightsize adds a block by itself, one at a time, up to 10 times the estimate; past that it asks, as in ask, and with no answer it stops there.
+- stop at the limit: the helper is never extended.
+- A helper that is stuck is stopped with no question, whatever this says. An extension does not use a retry of the task. With no estimate for the task, a flat cap of tool calls (25 for Haiku, 40 for Sonnet) applies instead.
 
 ### Output suggestion
 

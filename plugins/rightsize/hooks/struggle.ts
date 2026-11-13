@@ -344,7 +344,12 @@ export function isTestCommand(tool: string, input: Record<string, unknown>): boo
  * task tools and a question to the person. Their calls repeat by design (`update_plan {"advance": true}` once
  * per finished step), so they are no sign of anything and do not join the signals at all.
  */
-const BOOKKEEPING = new Set(['TodoWrite', 'TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet', 'AskUserQuestion'])
+const BOOKKEEPING = new Set(['TodoWrite', 'TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet', 'AskUserQuestion', 'SubagentHandback'])
+/**
+ * The one tool a subagent delivers its report with. The call ends its run, so it can never be more work:
+ * a helper that was stopped must still be able to make it, or its report is lost and the work is redone.
+ */
+export const HANDBACK = 'SubagentHandback'
 export const isBookkeeping = (tool: string): boolean => BOOKKEEPING.has(tool) || tool.startsWith('mcp__ccd_turn__')
 
 /** Tools that change a file: a call to one that works is progress. */
@@ -423,6 +428,17 @@ export function struggle(s: Signals, step: number, ratedSteps: number, limits: L
 export const CAPS: Readonly<Partial<Record<string, number>>> = { haiku: 25, sonnet: 40 }
 /** The cap for a helper on `tier`; undefined when that tier has none. */
 export const helperCap = (tier: string): number | undefined => CAPS[tier]
+
+/**
+ * Helper spend limit: what a helper on a cheaper tier may spend on one task, as a multiple of what the task is estimated to cost on
+ * the main model. The multiple follows the rated tool calls: a long task gets more room. This replaces the flat call cap whenever
+ * there is an estimate; the cap stays as the fallback when there is none.
+ */
+export const spendMultiple = (rated: number): number => (rated <= 10 ? 1.5 : rated <= 30 ? 2 : 3)
+/** The question comes at this share of the current limit. */
+export const SPEND_ASK_AT = 0.8
+/** "Continue while making progress" extends on its own up to this multiple of the estimate. */
+export const SPEND_AUTO_MAX = 10
 
 /** One level up, at most CEILING and the Highest effort setting; undefined when already there. */
 export function oneUp(level: Level, ceiling: Level = 'max'): Level | undefined {

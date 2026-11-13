@@ -115,7 +115,7 @@ import {
 } from './settings'
 import { BRIEF_MAX, cutRequest, parseRating, ratingPrompt, ratingSystem } from './rate'
 import { isApprovalStep } from './approval'
-import { LIMITS, type Signals, type Struggle, blockedError, callKey, hookFailed, isBookkeeping, isEditTool, helperCap, isTestCommand, noMatchExit, noSignals, noteCall, oneUp, refusedByHook, refusedByPerson, struggle, testsOutcome } from './struggle'
+import { HANDBACK, LIMITS, type Signals, type Struggle, blockedError, callKey, hookFailed, isBookkeeping, isEditTool, helperCap, isTestCommand, noMatchExit, noSignals, noteCall, oneUp, refusedByHook, refusedByPerson, struggle, testsOutcome } from './struggle'
 import { type Change, type HelperLine, type Lifetime, type RunLine, type SwitchLine, type Windows, SESSION_TOTAL, SESSION_TOTAL_FROM, bandShareText, buildReport, costTag, foldLifetime, parseLifetime, parseLines, ratedInSession, sessionTotal, shareMessage, shareOf, usedTag, windowCostText, windowRates } from './report'
 import { isTracked, parseChanges, type ChangeLine } from './results'
 import { type TrimSavings, readTrimSavings } from './trim'
@@ -4001,10 +4001,11 @@ async function answerAsk($: EngineInterface, yes: boolean): Promise<void> {
 const APPROVAL_DENY =
   'rightsize: a hand-off subagent cannot push, publish, release, deploy or send, because a message from the main chat is not the person\'s approval. Stop before this step and report what is ready; the main chat does it.'
 
+// A stopped helper may still make one call: SubagentHandback, the only way its report reaches the main chat.
 const HELPER_RETURN =
-  'rightsize: stop now. You are stuck, and this task\'s retry budget is used up, so more effort or more tries will not help. Do not make more tool calls: report what you tried, what failed, and where you are stuck. The main chat takes it from here.'
+  'rightsize: stop now. You are stuck, and this task\'s retry budget is used up, so more effort or more tries will not help. Your next and only call must be SubagentHandback with what you tried, what failed, and where you are stuck; any other call is refused. The main chat takes it from here.'
 const capReturn = (cap: number) =>
-  `rightsize: stop now. You have used the ${cap} tool calls this task allows a helper. Do not make more tool calls: report what you did, what is left and where you are. The main chat takes it from here.`
+  `rightsize: stop now. You have used the ${cap} tool calls this task allows a helper. Your next and only call must be SubagentHandback with what you found, what is left and where you stopped; any other call is refused. The main chat takes it from here.`
 // A helper's cache cannot be kept warm from outside, so a foreground wait longer than it lives is refused (ADR 0030).
 // 270 s is 30 s under the 5-minute life. Claude Code's Bash default of 120 s is allowed.
 const HELPER_WAIT_CAP_MS = 270_000
@@ -5699,7 +5700,9 @@ export const register: Register = (on, options) => {
     }
     // A helper that was sent back stays stopped, so that it reports instead of trying again.
     const helper = e.agentId === undefined ? undefined : await helperWatch($, e.agentId)
-    if (helper?.returned) return { deny: helper.capped ? capReturn(helper.capped) : HELPER_RETURN }
+    // Its report is the exception: SubagentHandback ends the run, and refusing it loses the report (ADR 0057).
+    const handback = String(e.tool) === HANDBACK
+    if (helper?.returned && !handback) return { deny: helper.capped ? capReturn(helper.capped) : HELPER_RETURN }
     // A helper's foreground Bash wait over HELPER_WAIT_CAP_MS outlasts its 5-minute cache. A refused call is not counted in helper.calls.
     const timeout = (e as unknown as { timeout?: unknown }).timeout
     const background = (e as unknown as { run_in_background?: unknown }).run_in_background
@@ -5707,7 +5710,7 @@ export const register: Register = (on, options) => {
       !off && e.agentId !== undefined && String(e.tool) === 'Bash' && background !== true && typeof timeout === 'number' && timeout > HELPER_WAIT_CAP_MS && helperTtl < 60 * 60_000
     // A helper on a cheaper tier gets a fixed number of tool calls, however well they go. At the cap it is struggling:
     // it goes back to the main chat, the way a helper with no retry left does.
-    if (helper && e.agentId !== undefined && !off) {
+    if (helper && e.agentId !== undefined && !off && !handback) {
       const cap = helper.tier ? helperCap(helper.tier) : undefined
       if (cap !== undefined && helper.calls >= cap) {
         helper.returned = true

@@ -552,6 +552,7 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
   })
   reg('tool.call', { tool: 'Agent' }, async () => ({ result: { content: 'done' } }))
   reg('tool.call', { tool: 'SendMessage' }, async () => ({ result: { content: 'sent' } }))
+  reg('tool.call', { tool: 'SubagentHandback' }, async () => ({ result: { content: 'delivered' } }))
   reg('tool.call', { tool: 'mcp__ccd_turn__update_plan' }, async () => ({ result: { content: 'Plan shown.' } }))
   reg('tool.call', { tool: 'Workflow' }, async () => {
     h.events.push('workflow')
@@ -683,6 +684,8 @@ export const drive = (api: unknown, h: ReturnType<typeof engine>) => {
     /** The app's task list moving to its next step: the same call every time. */
     advance: () => e.tool.call({ tool: 'mcp__ccd_turn__update_plan', advance: true }),
     workflow: (id?: string) => e.tool.call({ tool: 'Workflow', script: 'export const meta = {}', ...(id ? { tool_use_id: id } : {}) }),
+    /** A subagent delivering its report: the call that ends its run. */
+    handback: (agentId: string) => e.tool.call({ tool: 'SubagentHandback', message: 'report', agentId }),
     /** `extra`: more of the Bash input, such as `timeout` (ms) and `run_in_background`. */
     bash: (command: string, agentId?: string, extra: Record<string, unknown> = {}) => e.tool.call({ tool: 'Bash', command, description: `try ${command} ${h.sent.length}`, ...(agentId ? { agentId } : {}), ...extra }),
     // The engine starting a subagent from the main chat's Agent call; its steps carry `agent-<description>`.

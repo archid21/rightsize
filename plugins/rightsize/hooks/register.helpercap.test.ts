@@ -67,6 +67,34 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(log(h)).toContain('it reached the 40-call cap for sonnet')
   })
 
+  test(`a helper sent back at the cap can still deliver its report: SubagentHandback goes through (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-fable-5-2', effort: 'high', store: HELPERS })
+    const d = drive($, h)
+    await d.start(surface)
+    await warm(d, h, 'claude-haiku-5-5')
+    h.rating = HAND_OFF
+    await startHelper(d, 'haiku')
+    await calls(d, 25)
+    const [over] = await calls(d, 1, 25)
+    expect(over?.deny, 'the refusal names the one call left').toContain('next and only call must be SubagentHandback')
+    for (let i = 0; i < 2; i++) expect(((await d.handback('agent-helper')) as { deny?: string }).deny, 'the report goes through, even when tried again').toBeUndefined()
+    expect(((await calls(d, 1, 26))[0] as { deny?: string }).deny, 'other work is still refused').toContain('25 tool calls')
+    await d.complete('t1')
+    expect(runLine(h)?.helpers?.map(x => x.calls), 'the report is not counted as a call').toEqual([25])
+  })
+
+  test(`a report made exactly at the cap goes through and does not send the helper back (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-fable-5-2', effort: 'high', store: HELPERS })
+    const d = drive($, h)
+    await d.start(surface)
+    await warm(d, h, 'claude-haiku-5-5')
+    h.rating = HAND_OFF
+    await startHelper(d, 'haiku')
+    await calls(d, 25)
+    expect(((await d.handback('agent-helper')) as { deny?: string }).deny).toBeUndefined()
+    expect(log(h)).not.toContain('reached the 25-call cap')
+  })
+
   test(`a refused call does not count: the denied approval steps of a helper leave its calls untouched (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { model: 'claude-fable-5-2', effort: 'high', store: HELPERS })
     const d = drive($, h)

@@ -344,7 +344,12 @@ export function isTestCommand(tool: string, input: Record<string, unknown>): boo
  * task tools and a question to the person. Their calls repeat by design (`update_plan {"advance": true}` once
  * per finished step), so they are no sign of anything and do not join the signals at all.
  */
-const BOOKKEEPING = new Set(['TodoWrite', 'TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet', 'AskUserQuestion'])
+const BOOKKEEPING = new Set(['TodoWrite', 'TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet', 'AskUserQuestion', 'SubagentHandback'])
+/**
+ * The one tool a subagent delivers its report with. The call ends its run, so it can never be more work:
+ * a helper that was stopped must still be able to make it, or its report is lost and the work is redone.
+ */
+export const HANDBACK = 'SubagentHandback'
 export const isBookkeeping = (tool: string): boolean => BOOKKEEPING.has(tool) || tool.startsWith('mcp__ccd_turn__')
 
 /** Tools that change a file: a call to one that works is progress. */

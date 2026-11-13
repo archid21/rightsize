@@ -256,7 +256,7 @@
     "longHelpers": {
       "type": "string",
       "title": "Advanced · Long helpers",
-      "description": "What happens when a helper on a cheaper model nears its spend limit (a multiple of the main-model estimate for its task) and is still finding new things. ask: ask on the band whether to let it continue; no answer means it stops at the limit and reports. continue while making progress: extend its limit automatically, one block at a time, up to 10x the estimate, then ask. stop at the limit: never extend. A helper that is stuck is stopped with no question.",
+      "description": "What happens when a helper on a cheaper model nears its spend limit (a multiple of the main-model estimate for its task) and is still finding new things. ask: ask on the band whether to let it continue; no answer means it goes on while it is making progress, up to 10x the estimate, then stops and reports. continue while making progress: extend its limit automatically, one block at a time, up to 10x the estimate, then ask (no answer stops it). stop at the limit: never extend. A helper that is stuck is stopped with no question.",
       "default": "ask",
       "options": [
         "ask",

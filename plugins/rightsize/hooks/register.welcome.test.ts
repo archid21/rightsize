@@ -35,7 +35,7 @@ test('tips: an old or damaged state reads as tips on, nothing seen; the walk ski
   expect(nextTip([], 'helpers')?.id).toBe('star')
   expect(nextTip([], 'helpers', ['star'])).toBeUndefined()
   expect(last(TIPS)?.id, 'the star tip is last').toBe('star')
-  expect(TIPS.find(t => t.id === 'helpers')?.text, 'the Long helpers tip').toBe('Helpers that run long ask before going past their spend limit. Change this with Long helpers in /config: ask, continue while making progress, or stop at the limit.')
+  expect(TIPS.find(t => t.id === 'helpers')?.text, 'the Long helpers tip').toBe('Helpers that run long ask before going past their spend limit; with no answer they go on while they make progress, up to a cap. Change this with Long helpers in /config: ask, continue while making progress, or stop at the limit.')
   expect(askText([RS, WN])).toBe('Finding rightsize and whatsnext useful? Star them on GitHub so other people can find them.')
 })
 

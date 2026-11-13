@@ -1357,7 +1357,7 @@ async function bandUnanswered($: EngineInterface, why: BandWhy) {
     case 'helper':
       return logUnanswered($, 'Stuck', `helper ${why.id} kept at ${why.cur}`)
     case 'spend':
-      return logUnanswered($, 'Long helper', `helper ${why.id} stops at its ${money(why.w.limit ?? 0)} limit`)
+      return logUnanswered($, 'Long helper', canExtend(why.w, why.w.limit ?? 0) ? `helper ${why.id} goes on while it is making progress, up to ${money(SPEND_AUTO_MAX * (why.w.estimate ?? 0))}` : `helper ${why.id} stops at its ${money(why.w.limit ?? 0)} limit`)
   }
 }
 
@@ -4331,7 +4331,10 @@ async function helperWatch($: EngineInterface, id: string): Promise<Watch | unde
 
 const LONG_HELPER = 'Long helper'
 const HINT_SEEN = 'longHelpersHint'
-const LONG_HELPER_HINT = 'Default: ask. No answer means the helper stops and reports. To change it, use Long helpers in /config.'
+const LONG_HELPER_HINT = 'Default: ask. No answer means the helper goes on while it is making progress, up to 10 times its estimate, then stops and reports. To change it, use Long helpers in /config.'
+
+/** Whether one more block fits under the hard cap: SPEND_AUTO_MAX x the task's estimate. */
+const canExtend = (w: Watch, limit: number) => limit + (w.block ?? 0) <= SPEND_AUTO_MAX * (w.estimate ?? 0) + 1e-9
 
 /** The band question for a helper nearing its spend limit while it still finds new things. */
 const qSpend = (w: Watch, spend: number, limit: number, hint: boolean): Question<'continue' | 'stop' | 'always'> => {
@@ -4346,7 +4349,8 @@ const qSpend = (w: Watch, spend: number, limit: number, hint: boolean): Question
       ['Stop and report', 'stop'],
       ["Always while it's making progress", 'always'],
     ],
-    ifNone: `the helper stops at its ${money(limit)} limit and reports`,
+    // No answer: it goes on while it is making progress, up to the hard cap (SPEND_AUTO_MAX x the estimate), then stops and reports.
+    ifNone: canExtend(w, limit) ? `the helper goes on while it is making progress, up to ${money(SPEND_AUTO_MAX * (w.estimate ?? 0))}, then stops and reports` : `the helper stops at its ${money(limit)} limit and reports`,
   }
 }
 
@@ -4378,8 +4382,18 @@ async function answerSpend($: EngineInterface, id: string, w: Watch, v: unknown)
  * Returns the refusal when the call is not allowed.
  */
 async function spendCheck($: EngineInterface, id: string, w: Watch): Promise<string | undefined> {
+  if (w.limit === undefined) return
+  // One block is not always enough: a long step can carry the spend past more than one.
+  while (w.spend >= w.limit && !w.stopNow && longHelpers !== 'stop at the limit' && canExtend(w, w.limit) && !struggle(w.signals, w.steps, w.rated, LIMITS, Infinity)) {
+    // The limit came and nobody said stop: no answer (the question is still open, went with the main chat's turn, never showed, or the
+    // band cannot ask) acts as "continue while making progress", so a helper that is still finding new things does not lose its work.
+    // The question, if it is still open, is stale: the next one comes at 80% of the new limit.
+    const gone = bandAsks.filter(x => x.why.kind === 'spend' && x.why.w === w)
+    for (const x of gone) bandAsks.splice(bandAsks.indexOf(x), 1)
+    if (gone.length) await showQuestion($)
+    await extendLimit($, id, w, longHelpers === 'ask' ? 'no answer, making progress' : 'making progress')
+  }
   const limit = w.limit
-  if (limit === undefined) return
   if (w.spend >= limit || w.stopNow) {
     w.returned = true
     w.stall = 'struggling'
@@ -4395,7 +4409,7 @@ async function spendCheck($: EngineInterface, id: string, w: Watch): Promise<str
   if (struggle(w.signals, w.steps, w.rated, LIMITS, Infinity)) return
   const next = limit + (w.block ?? 0)
   if (longHelpers === 'continue while making progress' && next <= SPEND_AUTO_MAX * (w.estimate ?? 0) + 1e-9) return extendLimit($, id, w, 'making progress')
-  // Nobody to ask on the band (Band "Never", or a surface that does not draw it): it stops at the limit, as with no answer.
+  // Nobody to ask on the band (Band "Never", or a surface that does not draw it): no answer, so it goes on at the limit, as above.
   if (!(await bandCanAsk($))) return
   w.asked = true
   const hint = !(await $.store.get(HINT_SEEN).catch(() => undefined))

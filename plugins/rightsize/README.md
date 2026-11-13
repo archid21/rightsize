@@ -158,7 +158,7 @@ rightsize has one rule set and no profiles. The values a profile used to hold ar
   - **Idle warning** (over $0.10, over $0.50, over $1 or off, default over $0.50): the bar for the band's note on what a cold cache costs. It never holds the prompt.
   - **Before the cache goes cold** (ask, keep warm 2 h, keep warm 8 h, keep warm until my usual start, save a handoff, compact or off): what happens when a big session ends a turn. Not set, rightsize keeps warm until your usual start. Keeping warm never costs more than coming back cold.
   - **Reports** (api or subscription, default api): dollars, or a share of usage. A value you set is final.
-  - **Long helpers** (ask, continue while making progress or stop at the limit, default ask): what happens at 80% of a cheaper helper's spend limit when it is still finding new things. A stuck helper is stopped with no question.
+  - **Long helpers** (ask, continue while making progress or stop at the limit, default ask): what happens at 80% of a cheaper helper's spend limit when it is still finding new things. With no answer to ask, it goes on while it is making progress, up to 10 times the estimate, then stops and reports. A stuck helper is stopped with no question.
   - **Output suggestion** (on or off, default on): once a session, when output is a large share of the cost, rightsize asks whether to use the Concise output style. The row does not change your output style.
 
 Every row in full: [docs/SETTINGS.md](../../docs/SETTINGS.md).

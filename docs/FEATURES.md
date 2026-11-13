@@ -17,7 +17,7 @@ Current release: 0.12.0
 
 | Feature | How it works | Value | Since |
 |---|---|---|---|
-| Prompt rating | Before each prompt runs, a hook asks Sonnet at low effort what kind of work it is, how hard its hardest step is, and which models at which effort would do it well. A failed or unreadable rating is tried once on Haiku; a prompt that still has no rating is left alone. **Rater** picks Sonnet or Haiku. | Every routing choice starts from what the prompt needs, for about one second and a small call. | 0.4 (Sonnet rater: 0.8) |
+| Prompt rating | Before each prompt runs, a hook asks Sonnet at low effort what kind of work it is, how hard its hardest step is, and which models at which effort would do it well. A failed or unreadable rating is tried once on Haiku; a prompt that still has no rating is left alone. Sonnet rates; the model is fixed (a rater of haiku stored by an earlier release is kept). | Every routing choice starts from what the prompt needs, for about one second and a small call. | 0.4 (Sonnet rater: 0.8) |
 | Cost model | Prices each route from `prices.json`: input, output and thinking, cache reads and writes, the cost of an effort switch, and a helper's brief, check and rework. Estimates scale by the work each model does at each effort. | rightsize changes something only when its estimate says the change pays. | 0.4 |
 | Model and effort together | The rating gives each model its own level, and the cheapest model and level that fits wins. | Work that needs Opus at high can go to a cheaper model at high, not only to a higher level on Opus. | 0.5 |
 | Effort policy | On Opus or Fable every task but a review runs at low effort. On Sonnet a raise at prompt time needs a task rated high or more with 20 steps or more, and never for debugging. A lowered turn stays lowered for the whole turn. | Effort follows evidence: you stop paying for high effort that buys nothing. | 0.10 |
@@ -36,7 +36,7 @@ Current release: 0.12.0
 |---|---|---|---|
 | Calibration | Real token usage from each turn corrects the estimates per task type, per model and per model at each level. Sessions running at the same time are merged. | Estimates get closer to your own work over time. | 0.4 |
 | Outcome tracking | Rework, a failing test, a reply you correct and your 👍 or 👎 score each route per kind of work and model. A route that misses on 20% of a kind of work is paused for that kind. | A model that keeps missing on, for example, reviews stops getting them until your outcomes say otherwise. | 0.7 |
-| Rater check | Sonnet is the default rater and is not checked against itself. When Haiku rates (**Rater** set to haiku, or Haiku as the fallback after a failed Sonnet rating), Sonnet re-rates every 20th such prompt in the background, and Haiku's misses lower its trust per task type. | A cheaper rater is kept honest. | 0.7 |
+| Rater check | Sonnet is the default rater and is not checked against itself. When Haiku rates (a rater of haiku stored by an earlier release, or Haiku as the fallback after a failed Sonnet rating), Sonnet re-rates every 20th such prompt in the background, and Haiku's misses lower its trust per task type. | A cheaper rater is kept honest. | 0.7 |
 
 ## Cache and context
 

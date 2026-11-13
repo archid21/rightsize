@@ -5,7 +5,7 @@ rightsize sends nothing to its author. It keeps its logs on your machine. The on
 ## What rightsize sends
 
 - **Nothing to the author.** It has no analytics, no feedback upload and no account.
-- **One web request of its own:** a plain GET of Anthropic's pricing page, `https://platform.claude.com/docs/en/about-claude/pricing.md`, every 30 days, to keep `prices.json` current. It carries nothing of yours. **Price check** set to off stops it, and rightsize sends nothing while Claude Code's `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` is set.
+- **One web request of its own:** a plain GET of Anthropic's pricing page, `https://platform.claude.com/docs/en/about-claude/pricing.md`, every 30 days, to keep `prices.json` current. It carries nothing of yours. A Price check of off, stored by an earlier release (there is no setting for it now), stops it, and rightsize sends nothing while Claude Code's `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` is set.
 - **The GitHub star check (0.11).** Once rightsize has saved you something and tips are on, at most once a session it runs `gh api user/starred/archid21/rightsize` (and `archid21/whatsnext` when whatsnext is installed) with your own `gh` sign-in, to ask GitHub whether you starred it. GitHub sees that your account asked; nothing else of yours is sent. Without `gh`, signed out or offline, it asks nothing. It stops for good once you press **Star on GitHub** or **No thanks**, and never runs while `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` is set or after **Stop tips**. **Star on GitHub** stars the repos with `gh api -X PUT`; if that fails, it opens the repo page in your browser. The answer is kept in `~/.config/archid21/stars.json`, shared with whatsnext so you are asked once for both.
 - **Model calls go through Claude Code,** with your own sign-in, to Anthropic, as your prompts do anyway (see "What the rating sees"). rightsize reads no credential.
 
@@ -22,7 +22,7 @@ If whatsnext is installed, rightsize runs its script on your machine, found in C
 
 ## What the rating sees
 
-To rate each prompt, rightsize asks Claude Sonnet (or Haiku, if you set **Rater** to haiku, or if Sonnet fails) through Claude Code. The rating call carries your prompt (the whole prompt, or its first 4,000 and last 2,000 characters when it is over 6,000), the end of Claude's last reply (up to 1,500 characters) and, while a task is in progress, the first 600 characters of the prompt that started it. It goes to Anthropic, just as your prompts do when you use Claude Code. When Claude starts its own helper, rightsize rates the helper's brief the same way. A spot-check (**Rater check**) sends a Haiku-rated prompt to Sonnet as well. None of this goes to rightsize's author.
+To rate each prompt, rightsize asks Claude Sonnet (or Haiku, if an earlier release stored a rater of haiku, or if Sonnet fails) through Claude Code. The rating call carries your prompt (the whole prompt, or its first 4,000 and last 2,000 characters when it is over 6,000), the end of Claude's last reply (up to 1,500 characters) and, while a task is in progress, the first 600 characters of the prompt that started it. It goes to Anthropic, just as your prompts do when you use Claude Code. When Claude starts its own helper, rightsize rates the helper's brief the same way. A spot-check of Haiku's ratings sends a Haiku-rated prompt to Sonnet as well. None of this goes to rightsize's author.
 
 ## 👍 and 👎
 

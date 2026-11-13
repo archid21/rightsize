@@ -112,13 +112,6 @@ An "ask" answer opens its own timed dialog (it waits 30 seconds); every other an
 - Default: not set. Left at not set, Ask before changing decides.
 - When a task could run on a cheaper model than yours. ask first: ask before sending it to a subagent on that model. always send: send it without asking. stay, lower effort only: stay on your model and lower effort. ask each time: ask what to do each time. not set (the default): Ask before changing decides (off: done without asking; on: asked first), and the band says so the first time the case comes up in a session, with the other rules in its ⋯ menu. A rule set here is used as it is. The band's ⋯ menu and /rightsize settings set it too; set it back to not set to let Ask before changing decide again.
 
-### Remember choices
-
-- Key: `remember`
-- Options: ask · every session · this session
-- Default: ask
-- What happens to rules you set from the band's ⋯ menu or /rightsize settings. ask: after your first such rule, ask on the band whether to keep your rules in every session (the default). every session: keep every rule for later sessions, without asking. this session: never keep a rule and never ask; rules last until the session ends. A rule set in its row above is always kept.
-
 ### Use Haiku
 
 - Key: `useHaiku`
@@ -157,9 +150,9 @@ An "ask" answer opens its own timed dialog (it waits 30 seconds); every other an
 ### Raise when stuck
 
 - Key: `escalation`
-- Options: on · off
-- Default: on
-- on: when a turn shows Claude is stuck (the same tool call failing twice, 3 of the last 10 tool calls failing with none of the 10 making progress (a `grep`, `rg`, `diff` or `test` that exits 1 found nothing, and a line of read-only lookups that missed a file: neither is a failed call), the same call running 3 times, a turn passing 3x the rated steps (at least 15) with no progress, or 2 fixes in a row leaving the tests red), raise effort one level for the rest of the turn, at most twice, never above Highest effort and never to max. It follows your Raising rule: automatic raises without asking, otherwise it asks on the band while the turn goes on. off: never raise mid-turn.
+- Options: follow Raising · ask me · raise automatically · off
+- Default: follow Raising
+- When a turn shows Claude is stuck (the same tool call failing twice, 3 of the last 10 tool calls failing with none of the 10 making progress (a `grep`, `rg`, `diff` or `test` that exits 1 found nothing, and a line of read-only lookups that missed a file: neither is a failed call), the same call running 3 times, a turn passing 3x the rated steps (at least 15) with no progress, or 2 fixes in a row leaving the tests red), raise effort one level for the rest of the turn, at most twice, never above Highest effort and never to max. follow Raising (the default): follows your Raising rule, so a raise is automatic when that rule is set to raise automatically, and otherwise asks on the band while the turn goes on. ask me: always asks on the band while the turn goes on (answer once, for this session, or always). raise automatically: raises without asking. off: never raise mid-turn.
 
 ### Start suggestions
 

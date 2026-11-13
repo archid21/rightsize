@@ -171,7 +171,7 @@ test('Workflows asks by default, and Price check stored as "check now" counts as
 test('Question wait, Price check and Rater are fixed: no pane row, the fixed value, and a stored value is kept and used', async () => {
   expect([...FIXED_ROWS]).toEqual(['questionWait', 'priceCheck', 'rater'])
   expect(PANE_KEYS.length).toBe(KEYS.length - 3)
-  for (const k of FIXED_ROWS) expect(PANE_KEYS.includes(k), `${k} is not a pane row`).toBe(false)
+  for (const k of FIXED_ROWS) expect((PANE_KEYS as readonly string[]).includes(k), `${k} is not a pane row`).toBe(false)
   // The fixed values are the rows' defaults.
   expect({ questionWait: SETTINGS.questionWait.default, priceCheck: SETTINGS.priceCheck.default, rater: SETTINGS.rater.default }).toEqual({ questionWait: '30 seconds', priceCheck: 'monthly', rater: 'sonnet' })
   // Nothing stored: the fixed value.

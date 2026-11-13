@@ -784,8 +784,8 @@ async function readAll<T extends { at: string }>($: EngineInterface, name: strin
 async function readTrim($: EngineInterface, now: number): Promise<TrimSavings | undefined> {
   try {
     const dir = (await $.env.get('TRIM_HOME').catch(() => undefined)) || `${home}/.claude/trim`
-    const [log, totals] = await Promise.all([readText($, `${dir}/savings.jsonl`), readText($, `${dir}/savings-totals.json`)])
-    return readTrimSavings(log, totals, now, sessionId)
+    const [lines, totals] = await Promise.all([readText($, `${dir}/savings.jsonl`), readText($, `${dir}/savings-totals.json`)])
+    return readTrimSavings(lines, totals, now, sessionId)
   } catch {
     return undefined
   }
@@ -4438,7 +4438,10 @@ async function spendCheck($: EngineInterface, id: string, w: Watch): Promise<str
   if (w.spend < SPEND_ASK_AT * limit || w.asked || longHelpers === 'stop at the limit') return
   if (struggle(w.signals, w.steps, w.rated, LIMITS, Infinity)) return
   const next = limit + (w.block ?? 0)
-  if (longHelpers === 'continue while making progress' && next <= SPEND_AUTO_MAX * (w.estimate ?? 0) + 1e-9) return extendLimit($, id, w, 'making progress')
+  if (longHelpers === 'continue while making progress' && next <= SPEND_AUTO_MAX * (w.estimate ?? 0) + 1e-9) {
+    await extendLimit($, id, w, 'making progress')
+    return
+  }
   // Nobody to ask on the band (Band "Never", or a surface that does not draw it): no answer, so it goes on at the limit, as above.
   if (!(await bandCanAsk($))) return
   w.asked = true

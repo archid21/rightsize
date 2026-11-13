@@ -2,6 +2,8 @@ import { type TestBody, expect, test } from 'claude-code/testing'
 import { LOG_PATH, NO_CHANGE, NO_COLD, FRESH, WHATSNEXT_ARGS, WHATSNEXT_SCRIPT, engine, drive, freshAnswer, installWhatsnext, mount, rowText, untilAsked } from './testkit'
 import { SIZE_FRESH_COPY_FAILED, SIZE_FRESH_SAVING, SIZE_WHY, SIZE_WHY_FRESH, sizeFreshNotWritten, sizeFreshNotice, sizeFreshPaste } from './size'
 
+declare const setTimeout: (fn: (...a: unknown[]) => void, ms: number) => unknown
+
 // ---- Start fresh (ADR 0051; whatsnext ADR 0025) ----------------------------------------------------
 // The context-size warning also offers Start fresh when whatsnext's `fresh-instructions --json` says this is a
 // whatsnext project and the window has room for a wrap-up turn (WRAP_HEADROOM, 40,000 tokens). Every text comes from the

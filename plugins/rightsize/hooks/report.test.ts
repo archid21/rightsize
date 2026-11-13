@@ -116,7 +116,10 @@ test('the report is laid out: title and headline, saving check, what rightsize d
   expect(out.slice(-2).join(' '), 'the footer is last').toBe(SUB_FOOT)
   const more = details(month(), opts)
   expect(more.split('\n')[0]).toBe('rightsize report details · last 30 days')
-  expect(titles(more)).toEqual(['YOUR SAVINGS', '30-DAY SUMMARY', 'STARTING POINT', 'ACCURACY', 'NOT COUNTED AS SAVINGS'])
+  expect(titles(more)).toEqual(['YOUR SAVINGS', 'SAVING CHECK: CHANGED PROMPTS ONLY (last 30 days, API prices)', '30-DAY SUMMARY', 'STARTING POINT', 'ACCURACY', 'NOT COUNTED AS SAVINGS'])
+  expect(text, 'the main view has the overall saving').toMatch(/^ {2}Overall, rightsize cut the cost of your prompts by about /m)
+  expect(text, 'the changed prompts alone are not in the main view').not.toContain('the prompts it changed by')
+  expect(more, 'the changed prompts alone are in details').toMatch(/^ {2}rightsize cut the cost of the prompts it changed by /m)
   const foot = more.split('\n').indexOf('Estimated: actual cost vs staying at your own model and effort.')
   expect(more.split('\n').slice(foot + 1, foot + 3).join(' ')).toMatch(/^The saving is after the cost of rating prompts \(\$[\d.]+ API-equivalent in 30 days\)\./)
   for (const t of [text, more]) {
@@ -504,7 +507,7 @@ test('recommendations collect the actions, then what needs none; the block is le
   const lines = [...month(), handDown(true), handDown(true), handDown(false), handDown(false), handDown(false)]
   const text = summary(lines, { start })
   expect(titles(text)).toEqual(['SAVING CHECK (last 30 days)', 'WHAT RIGHTSIZE DID (last 30 days)', 'RECOMMENDATIONS'])
-  expect(titles(details(lines, { start }))).toEqual(['YOUR SAVINGS', '30-DAY SUMMARY', 'STARTING POINT', 'ACCURACY', 'NOT COUNTED AS SAVINGS'])
+  expect(titles(details(lines, { start }))).toEqual(['YOUR SAVINGS', 'SAVING CHECK: CHANGED PROMPTS ONLY (last 30 days)', '30-DAY SUMMARY', 'STARTING POINT', 'ACCURACY', 'NOT COUNTED AS SAVINGS'])
   expect(sectionOf(details(lines, { start }), 'STARTING POINT')[0]).toMatch(/^Opus at medium \(yours\) +~\$12.00 per 100 prompts$/)
   const recs = sectionOf(text, 'RECOMMENDATIONS')
   // The start, numbered (the fixed-context advice is a line of its own now, ADR 0058); then the pause; long ones wrap under their text.

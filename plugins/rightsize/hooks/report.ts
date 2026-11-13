@@ -29,10 +29,11 @@ export type RunLine = {
    * 'dropped' and 'unbound' are not rated runs: the report counts only their overhead.
    * 'warm': one keep-warm request that kept the prompt cache from expiring (Before the cache goes cold); `overhead` is what it cost, `tier` its model and `context` the conversation it re-read.
    * 'cold': how the person answered one offer before the cache goes cold; `choice` is the id they pressed, or 'ignored'. It carries no cost and is no part of any total.
+   * 'undone': the person pressed Retry at original effort or Run on the current model on a run's band (`ref` is the run's `id`, `undone` which one). The Saving check leaves that run out. Retries pressed before rightsize 0.13 were not logged. It carries no cost and is no part of any total.
    * 'warmSaved': the person came back to a kept-warm cache after the time it would have gone cold without keep warm, and the returning prompt's first request read the cache (at least ~80% of the kept conversation); `saved` is what coming back cold would have cost. It carries no `overhead`, and `totals` counts `saved` toward Total saved.
    * `totals` adds the `overhead` of every line, so these pings count as rightsize's own cost and lower Total saved.
    */
-  kind?: 'run' | 'overhead' | 'subagent' | 'check' | 'feedback' | 'corrected' | 'unrated' | 'dropped' | 'unbound' | 'warm' | 'warmSaved' | 'cold'
+  kind?: 'run' | 'overhead' | 'subagent' | 'check' | 'feedback' | 'corrected' | 'unrated' | 'dropped' | 'unbound' | 'warm' | 'warmSaved' | 'cold' | 'undone'
   /** A run line: how the turn's last test run ended (the main chat's, else a helper's): the objective outcome of the work. */
   tests?: 'passed' | 'failed'
   /** A run line in watch-only mode: the change rightsize would have made, and the estimate of the route it would have taken. Nothing was applied. */
@@ -133,8 +134,10 @@ export type RunLine = {
   fit?: Record<string, string | null>
   /** A check line: the second opinion, and who gave it. `fit` is then the first rater's. */
   check?: { by: string; fit: Record<string, string | null> }
-  /** A feedback line: the run's `id` and the verdict. */
+  /** A feedback, corrected or undone line: the run's `id`. */
   ref?: string
+  /** An undone line: what the person undid, 'lower' (Retry at original effort) or 'route' (Run on the current model). */
+  undone?: 'lower' | 'route'
   value?: 'up' | 'down'
 }
 
@@ -1118,6 +1121,7 @@ export function buildReport(
   const out = ['rightsize report · last 30 days', ...(nothing ? [cols[3]?.empty ? 'Nothing rated yet.' : 'Nothing rated in the last 30 days.'] : headline(thirty, sub).flatMap(h => para(h)))]
   if (opts.measureFrom) out.push(`Cost measurement restarted on ${opts.measureFrom.slice(0, 10)}.`)
   // Saving check: prompts rightsize left alone show how far its "staying" prediction is off; the changed prompts are re-priced by it (ADR 0055).
+  // The headline is the overall saving over all prompts not overridden; the changed prompts alone are in details.
   const check = checkRows(savingCheck(month), sub)
   const checkTitle = `SAVING CHECK (last 30 days${sub ? ', API prices' : ''})`
   if (check.table.length || check.notes.length) out.push('', checkTitle, ...check.lead.flatMap(n => para(n, md ? '' : '  ')), ...indent(check.table), ...check.notes.flatMap(n => para(n, md ? '' : '  ')))
@@ -1166,6 +1170,9 @@ export function buildReport(
     if (opts.measureFrom) out.push(`Cost measurement restarted on ${opts.measureFrom.slice(0, 10)}.`)
     // Raw estimates: they can disagree with the checked saving, so the main view leaves them out (ADR 0058).
     if (!cols.every(s => s.empty)) out.push(...section('YOUR SAVINGS', savingsTable(cols, sub)))
+    // The Saving check on the prompts rightsize changed alone: the headline in the main view counts all prompts.
+    const changedOnly = checkRows(savingCheck(month), sub).changed
+    if (changedOnly.table.length) out.push('', `SAVING CHECK: CHANGED PROMPTS ONLY (last 30 days${sub ? ', API prices' : ''})`, ...changedOnly.lead.flatMap(n => para(n, md ? '' : '  ')), ...indent(changedOnly.table))
     const summaryList = summaryRows(thirty, warm, sub)
     if (summaryList.length) out.push(...section('30-DAY SUMMARY', grid(summaryList)))
     const trimmed = trimRows(opts.trim)

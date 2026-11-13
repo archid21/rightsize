@@ -38,6 +38,11 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const undo = await d.command('retry')
     expect(undo.text ?? '').toContain('run it at medium')
     expect(h.filled[0]).toBe(LOOKUP)
+    // Retry is logged: one `undone` line names the last lowered run, so the Saving check leaves it out.
+    const logged = (h.files[RUNS_FILE] ?? '').trim().split('\n').map(l => JSON.parse(l) as Record<string, unknown>)
+    const undone = logged.filter(l => l.kind === 'undone')
+    expect(undone.length, 'one line for one Retry').toBe(1)
+    expect(undone[0]).toMatchObject({ kind: 'undone', undone: 'lower', session: 'sess-1', ref: logged.filter(l => l.kind === 'run').at(-1)?.id })
     const rated = h.ratings
     await d.submit(LOOKUP)
     expect(h.ratings, 'the re-run is not rated').toBe(rated)
@@ -1377,6 +1382,9 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await ui.press({ key: 'retry' })
     expect(h.filled[0]).toBe(LOOKUP)
     expect(last(h.toasts) ?? '').toContain('run it at medium')
+    // The turn has not ended, so the run has no line yet: the `undone` line still names it, by the id kept with the band.
+    const undone = (h.files[RUNS_FILE] ?? '').trim().split('\n').filter(Boolean).map(l => JSON.parse(l) as Record<string, unknown>).filter(l => l.kind === 'undone')
+    expect(undone).toEqual([expect.objectContaining({ kind: 'undone', undone: 'lower', ref: expect.any(String) })])
     await ui.unmount()
     expect(await bandText($, surface)).toBe('')
   })

@@ -167,7 +167,7 @@ A band above the prompt (CLI and desktop app; VS Code and the mobile app keep th
 `/rightsize report` is plain text in the terminal and Markdown in the desktop app. It leads with the checked saving, then what rightsize did and what to change. A section with nothing to show is left out.
 
 - **Headline** for the last 30 days. On a subscription, the hours of Claude's work the saving stands for, at your usual pace, as a range (usage comes in whole percents, so a total is never exact); then the 5-hour windows that is (under one window, the share of one) and its value at API prices. On the API, the dollars saved and the share of your cost.
-- **Saving check**: the saving re-priced by what the prompts rightsize left alone really cost, shown with the raw estimate beside it.
+- **Saving check**: the overall saving, as a range: the saving re-priced by what the prompts rightsize left alone really cost, as a share of the checked cost of all your prompts in the 30 days. Prompts you left alone add cost and no saving, so this is lower than the saving on the changed prompts alone. Prompts you overrode are left out: advice you declined, and changes you undid with Retry at original effort or Run on your model. rightsize logs an undo from 0.13; an undo from before that is not known, so that prompt still counts as changed. The estimate sits beside it. The saving on the changed prompts alone is in the details.
 - **Did it work?**: your prompts after each setting change against the days before it.
 - **What rightsize did**: counts only, for the last 30 days: model changes, effort changes, hand-offs to a helper on another model, and keep warm (runs and returns to a warm cache). No cost figure, so none can disagree with `/usage`.
 - **Watch only**: when Mode is watch only, how many prompts would have changed and what that was estimated to save.
@@ -177,6 +177,7 @@ A band above the prompt (CLI and desktop app; VS Code and the mobile app keep th
 
 `/rightsize report details` shows the sections behind the numbers, for the last 30 days:
 
+- **Saving check: changed prompts only**: the checked saving on the prompts rightsize moved to a cheaper model or lower effort (without the ones you undid), against what staying would have cost them.
 - **Your savings**: the raw estimate. One table with Today, 7 days, 30 days and Lifetime. On a subscription: extra work time, 5-hour windows and weekly limit, then the value at API prices. On both: the share of cost saved and the extra on hard prompts (what raising effort or a stronger model cost over staying, counting only the raises that cost more; not taken off the saving). Lifetime shows the window rows while every lifetime run is still in the logs; once older runs are folded into the lifetime roll-up, which keeps sums only, those rows are dashes. It can disagree with the Saving check, so the main view leaves it out.
 - **30-day summary**: prompts rated, left as they were, effort lowered, sent to a cheaper model, effort raised, sent to a stronger model, Claude's subagents moved, suggestions you declined, and keep warm (runs, what they saved, what they cost, the net).
 - **Trim savings**: with trim installed, the tokens trim saved per feature.

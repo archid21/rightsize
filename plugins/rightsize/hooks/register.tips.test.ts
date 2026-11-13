@@ -944,6 +944,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await ui.press({ key: 'stay' })
     expect(h.filled.at(-1), 'the prompt is back in the box').toBe(DEBUG)
     expect(last(h.toasts) ?? '').toContain('run it on Opus at medium')
+    const undone = (h.files[RUNS_FILE] ?? '').trim().split('\n').filter(Boolean).map(l => JSON.parse(l) as Record<string, unknown>).filter(l => l.kind === 'undone')
+    expect(undone, 'Run on Opus is logged as an undone route').toEqual([expect.objectContaining({ kind: 'undone', undone: 'route', ref: expect.any(String) })])
     await ui.unmount()
     expect(await bandText($, surface), 'the band closes').toBe('')
 

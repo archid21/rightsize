@@ -436,7 +436,7 @@ let lastContext = 0
  * the current model). `back` finishes "run it ...": where the prompt runs once the override is pressed. One slot: a
  * prompt takes one route.
  */
-let lastAuto: { text: string; back: string; kind: 'lower'; level: Level; normal: Level } | { text: string; back: string; kind: 'route'; model: string } | null = null
+let lastAuto: { id: string; text: string; back: string; kind: 'lower'; level: Level; normal: Level } | { id: string; text: string; back: string; kind: 'route'; model: string } | null = null
 let skipOnce: string | null = null
 /**
  * A workflow ran in this session (ultracode, or asked for). Claude is then fanning
@@ -2101,12 +2101,15 @@ async function setRule($: EngineInterface, key: keyof Choices, value: string) {
 /**
  * Puts the last prompt back in the box and lets it run once as it would have without rightsize: not rated, not
  * changed. Retry at original effort does it for a lowering, "Run on <model>" for a hand-off or a switch-run.
+ * Either one logs an `undone` line naming the run.
  */
 async function runAsIs($: EngineInterface, kind: 'lower' | 'route', none: string) {
   if (lastAuto?.kind !== kind) return none
-  const { text, back } = lastAuto
+  const { id, text, back } = lastAuto
   lastAuto = null
   skipOnce = text.trim()
+  // The Saving check leaves this run out: the person undid the change. The id is kept on lastAuto, so this works while the turn still runs.
+  await appendRun($, { at: new Date().toISOString(), kind: 'undone', session: sessionId, ref: id, undone: kind })
   const filled = await $.prompt.fill({ text, mode: 'replace' }).catch(() => null)
   await setBand($, null)
   await showStatus($)
@@ -5768,9 +5771,9 @@ export const register: Register = (on, options) => {
     const auto: typeof lastAuto = !run
       ? null
       : run.auto && run.level
-      ? { kind: 'lower', text: e.text, level: run.level, normal: run.normal, back: `at ${run.normal}` }
+      ? { kind: 'lower', id: run.id, text: e.text, level: run.level, normal: run.normal, back: `at ${run.normal}` }
       : run.delegate || run.switchTo
-      ? { kind: 'route', text: e.text, model: TIER_NAME[run.tier], back: `on ${TIER_NAME[run.tier]} at ${run.normal}` }
+      ? { kind: 'route', id: run.id, text: e.text, model: TIER_NAME[run.tier], back: `on ${TIER_NAME[run.tier]} at ${run.normal}` }
       : null
     lastAuto = auto
     await showStatus($)

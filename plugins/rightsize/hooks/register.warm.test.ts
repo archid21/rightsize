@@ -153,7 +153,9 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(warmLines(h)[0]?.overhead).toBe(0.01613)
     // The saving is in the totals: 0.6279 saved less 0.01613 of pings, and the band's session total says so.
     h.now = Date.now()
-    const text = await d.report()
+    // The money rows are raw estimates: they are in the details view (ADR 0058). The main view counts runs and returns only.
+    const text = (await d.command('report details')).text ?? ''
+    expect(cellsOf((await d.command('report')).text ?? '', 'Keep warm'), 'the main view counts, with no money').toEqual(['1 run, 1 return to a warm cache'])
     expect(cellsOf(text, 'Keep warm')).toEqual(['1 run: saved ~$0.63, cost ~$0.02, net ~$0.61 saved'])
     expect(cellsOf(text, 'Saved')?.[2]).toBe('~$0.61')
   })
@@ -166,7 +168,9 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(savedLines(h)).toEqual([])
     h.now = Date.now()
     const text = await d.report()
-    expect(cellsOf(text, 'Keep warm')).toEqual(['1 run: no returns, cost ~$0.13, net ~$0.13 more'])
+    // The money row is in the details view (ADR 0058); the main view counts the run and its returns.
+    expect(cellsOf((await d.command('report details')).text ?? '', 'Keep warm')).toEqual(['1 run: no returns, cost ~$0.13, net ~$0.13 more'])
+    expect(cellsOf((await d.command('report')).text ?? '', 'Keep warm')).toEqual(['1 run, 0 returns to a warm cache'])
     expect(text.split('\n')[1]).toBe('Cost ~$0.13 more than it saved.')
   })
 

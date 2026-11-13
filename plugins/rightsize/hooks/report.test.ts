@@ -1,15 +1,15 @@
 import { expect, test } from 'claude-code/testing'
-import { SESSION_TOTAL, accuracyRows, addTotals, foldLifetime, parseLifetime, type Lifetime, type RunLine, bandShareText, LARGE_FIXED, buildReport, costTag, counterfactual, fixedBlock, keepWarmLine, parseLines, problems, sessionTotal, shareMessage, shareText, span, taskActual, taskEstimated, taskExtra, taskStay, tieCounts, totals, usedTag, watchLine, wholeTaskRows, wholeTasks, windowCostText, windowRates } from './report'
+import { SESSION_TOTAL, accuracyRows, addTotals, foldLifetime, parseLifetime, type Lifetime, type RunLine, bandShareText, FIXED_REVIEW_PCT, buildReport, costTag, counterfactual, fixedLine, keepWarmLine, parseLines, problems, sessionTotal, shareMessage, shareText, span, taskActual, taskEstimated, taskExtra, taskStay, tieCounts, totals, usedTag, watchLine, wholeTaskRows, wholeTasks, windowCostText, windowRates } from './report'
 import { DEFAULT_PRICES } from './cost'
 import type { StartBlock } from './start'
 
 const NOW = Date.parse('2026-10-23T18:00:00.000Z')
 const ago = (days: number) => new Date(NOW - days * 24 * 60 * 60 * 1000).toISOString()
 const run = (x: Partial<RunLine>): RunLine => ({ at: ago(0), kind: 'run', session: 's1', change: 'none', offered: 'none', actual: 0.1, stay: 0.1, taken: 0.1, overhead: 0, ...x })
-type Opts = { subscription?: boolean; switches?: { at: string; kept?: boolean }[]; start?: StartBlock; pause?: number | null; measureFrom?: string; markdown?: boolean; lifetime?: Lifetime }
+type Opts = { contextWindow?: number; trimInstalled?: boolean; subscription?: boolean; switches?: { at: string; kept?: boolean }[]; start?: StartBlock; pause?: number | null; measureFrom?: string; markdown?: boolean; lifetime?: Lifetime }
 /** /rightsize report alone. */
 const summary = (lines: RunLine[], opts: Opts = {}, details = false) =>
-  buildReport(lines, opts.switches ?? [], { now: NOW, session: 's1', subscription: opts.subscription ?? false, markdown: opts.markdown === true, details, ...(opts.start ? { start: opts.start } : {}), ...(opts.pause !== undefined ? { pause: opts.pause } : {}), ...(opts.measureFrom ? { measureFrom: opts.measureFrom } : {}), ...(opts.lifetime ? { lifetime: opts.lifetime } : {}) })
+  buildReport(lines, opts.switches ?? [], { now: NOW, session: 's1', subscription: opts.subscription ?? false, markdown: opts.markdown === true, details, ...(opts.start ? { start: opts.start } : {}), ...(opts.pause !== undefined ? { pause: opts.pause } : {}), ...(opts.measureFrom ? { measureFrom: opts.measureFrom } : {}), ...(opts.lifetime ? { lifetime: opts.lifetime } : {}), ...(opts.contextWindow ? { contextWindow: opts.contextWindow } : {}), ...(opts.trimInstalled !== undefined ? { trimInstalled: opts.trimInstalled } : {}) })
 /** /rightsize report details alone. */
 const details = (lines: RunLine[], opts: Opts = {}) => summary(lines, opts, true)
 /** Both, the summary first: for checks that do not care which view a figure is in. */
@@ -98,20 +98,25 @@ function month(): RunLine[] {
   ]
 }
 
-test('the report is laid out: title and headline, savings, summary, recommendations, footer; details hold the rest', async () => {
-  const opts = { subscription: true, switches: [{ at: ago(0), kept: false }, { at: ago(0), kept: true }], measureFrom: ago(18) }
+test('the report is laid out: title and headline, saving check, what rightsize did, recommendations, pointer, footer; details hold the raw estimates', async () => {
+  // A start tip gives RECOMMENDATIONS something to say: the fixed-context advice that used to fill it is one line now.
+  const start: StartBlock = { head: 'Opus at medium, 60 rated prompts in 30 days', rows: [], tip: 'Switch with /model.' }
+  const opts = { subscription: true, switches: [{ at: ago(0), kept: false }, { at: ago(0), kept: true }], measureFrom: ago(18), start }
   const text = summary(month(), opts)
   const out = text.split('\n')
   expect(out[0]).toBe('rightsize report · last 30 days')
   expect(out[1]).toMatch(/^You got about \d+–\d+ more minutes of Claude's work from your plan\.$/)
   expect(out[2]).toMatch(/^That is ~[\d.]+–[\d.]+% of one 5-hour window, worth ~\$[\d.]+ at API prices\.$/)
   expect(out[3], 'the restart note is near the top').toMatch(/^Cost measurement restarted on 2026-10-0\d\.$/)
-  expect(titles(text)).toEqual(['YOUR SAVINGS', '30-DAY SUMMARY', 'SAVING CHECK (last 30 days, API prices)', 'RECOMMENDATIONS'])
-  expect(out.indexOf('Details: /rightsize report details'), 'the footer follows the last section').toBeGreaterThan(out.indexOf('RECOMMENDATIONS'))
+  expect(titles(text), 'ADR 0058 order: the checked saving first; the raw estimates are in details').toEqual(['SAVING CHECK (last 30 days, API prices)', 'WHAT RIGHTSIZE DID (last 30 days)', 'RECOMMENDATIONS'])
+  expect(text).not.toMatch(/YOUR SAVINGS|30-DAY SUMMARY|TRIM SAVINGS/)
+  const pointer = out.indexOf('For the full context breakdown, use `/usage` and `/trim:context`.')
+  expect(pointer, 'the pointer follows the recommendations').toBeGreaterThan(out.indexOf('RECOMMENDATIONS'))
+  expect(out.indexOf('Details: /rightsize report details'), 'the footer follows the pointer').toBeGreaterThan(pointer)
   expect(out.slice(-2).join(' '), 'the footer is last').toBe(SUB_FOOT)
   const more = details(month(), opts)
   expect(more.split('\n')[0]).toBe('rightsize report details · last 30 days')
-  expect(titles(more)).toEqual(['FIXED CONTEXT', 'ACCURACY', 'NOT COUNTED AS SAVINGS'])
+  expect(titles(more)).toEqual(['YOUR SAVINGS', '30-DAY SUMMARY', 'STARTING POINT', 'ACCURACY', 'NOT COUNTED AS SAVINGS'])
   const foot = more.split('\n').indexOf('Estimated: actual cost vs staying at your own model and effort.')
   expect(more.split('\n').slice(foot + 1, foot + 3).join(' ')).toMatch(/^The saving is after the cost of rating prompts \(\$[\d.]+ API-equivalent in 30 days\)\./)
   for (const t of [text, more]) {
@@ -122,7 +127,7 @@ test('the report is laid out: title and headline, savings, summary, recommendati
 })
 
 test('the savings table lines up: right edges match and every row has a cell per period', async () => {
-  const out = summary(month(), { subscription: true }).split('\n')
+  const out = details(month(), { subscription: true }).split('\n')
   const header = out.findIndex(l => l.trim().startsWith('Today'))
   expect(out[header]?.split(/ +/).filter(Boolean)).toEqual(['Today', '7', 'days', '30', 'days', 'Lifetime'])
   const table = out.slice(header, out.findIndex((l, i) => i > header && l === ''))
@@ -170,7 +175,8 @@ test('a window used more than staying would have shows as a negative share', asy
   const lines = [run({ change: 'raise', actual: 0.3, stay: 0.1, taken: 0.2, overhead: 0.5, durationMs: 60_000, before: { five_hour: 10 }, after: { five_hour: 12 } })]
   const text = summary(lines, { subscription: true })
   expect(text.split('\n').slice(1, 3).join(' ')).toBe('Used ~1.7–5.0% more of your 5-hour window than staying would have (~$0.50 more, API-equivalent).')
-  expect(cells(text, '5-hour windows')?.[0]).toBe('0 to -0.1')
+  // The table is a raw estimate: it is in the details view (ADR 0058).
+  expect(cells(details(lines, { subscription: true }), '5-hour windows')?.[0]).toBe('0 to -0.1')
 })
 
 test('nothing rated yet: says so, with no table and no empty sections', async () => {
@@ -204,24 +210,26 @@ test('rows with nothing to say are left out', async () => {
   expect(busy.replace(/\s+/g, ' '), 'the footer says what the extra is').toContain("It isn't taken off the saving.")
 })
 
-test('savings lead the table, before what rightsize did', async () => {
+test('in the details, savings lead the table, before the summary; the main view leads with the saving check', async () => {
   const labels = (text: string) => text.split('\n').filter(l => /^ {2}\S/.test(l)).map(l => l.trim().split(/ {2,}/)[0])
-  const all = labels(summary(month(), { subscription: true }))
+  expect(titles(summary(month(), { subscription: true }))[0], 'the checked saving comes first in the main view').toMatch(/^SAVING CHECK/)
+  const all = labels(details(month(), { subscription: true }))
   expect(all[0]).toBe('Extra work time')
   expect(all.indexOf('Prompts rated')).toBeGreaterThan(all.indexOf('Share of cost saved'))
   const windowed = [
     run({ change: 'lower', offered: 'lower', actual: 0.5, stay: 1, taken: 0.5, overhead: 0.01, durationMs: 60_000, before: { five_hour: 10 }, after: { five_hour: 11 } }),
     run({ change: 'none', actual: 0.5, durationMs: 60_000, before: { five_hour: 11 }, after: { five_hour: 12 } }),
   ]
-  expect(labels(summary(windowed, { subscription: true })).slice(0, 3)).toEqual(['Extra work time', '5-hour windows', 'Value (API prices)'])
+  expect(labels(details(windowed, { subscription: true })).slice(0, 3)).toEqual(['Extra work time', '5-hour windows', 'Value (API prices)'])
 })
 
 test('for the desktop app, the aligned blocks go in code fences and prose is not wrapped', async () => {
-  const plain = report(month(), { subscription: true })
-  const md = report(month(), { subscription: true, markdown: true })
+  const start: StartBlock = { head: 'Opus at medium, 60 rated prompts in 30 days', rows: [], tip: 'Starting on Sonnet at medium would have cost ~33% less than Opus at medium on your last 60 rated prompts. Switch with /model, or set a cheaper start in your settings file.' }
+  const plain = report(month(), { subscription: true, start })
+  const md = report(month(), { subscription: true, markdown: true, start })
   const fences = md.split('\n').filter(l => l === '```').length
   expect(fences % 2, 'every fence is closed').toBe(0)
-  expect(fences, 'savings, summary, fixed context, accuracy and problems').toBeGreaterThanOrEqual(10)
+  expect(fences, 'saving check, what rightsize did, savings, summary, starting point, accuracy and problems').toBeGreaterThanOrEqual(10)
   expect(md).toContain('  Value (API prices)')
   expect(md.split('\n').some(l => l.startsWith('1. ') && l.length > 80), 'recommendations are one line each').toBe(true)
   expect(plain, 'the terminal gets no fences').not.toContain('```')
@@ -326,108 +334,42 @@ test('reads the log, skipping a torn first line', async () => {
   expect(lines.length).toBe(1)
 })
 
-test('fixed context: request-weighted, the biggest parts first, nothing when it cost nothing', async () => {
-  const f = (tokens: number, requests: number, cost: number) => run({ requests, actual: 1, fixed: { tokens, mcp: tokens - 4000, memory: 4000, agents: 0, skills: 0, cost, servers: { linear: tokens - 4000 } } })
-  expect(fixedBlock([f(14000, 10, 0.5), f(24000, 30, 1.5)])).toEqual({
-    head: '~22K tokens sent with every request',
-    notes: ['Fixed context adds to your cost in every session. Cutting it saves more.', 'At least ~$2.00 over 40 requests, ~100% of what those turns cost.', 'SessionStart hooks: not measured.'],
-    tree: [
-      ['├─ MCP tools', '18K', 'linear 20K'],
-      ['└─ Memory', '4K'],
-    ],
-    fix: "rightsize can't trim fixed context. To cut it: disconnect MCP servers you don't use (/mcp), or trim CLAUDE.md and MEMORY.md (/memory).",
-    rec: "Cut fixed context. ~22K tokens go with every request: at least ~$2.00 in 30 days, ~100% of what those turns cost. Largest: MCP tools 18K, Memory 4K. To cut it: disconnect MCP servers you don't use (/mcp), or trim CLAUDE.md and MEMORY.md (/memory).",
-  })
-  const skills = run({ requests: 5, actual: 1, fixed: { tokens: 15000, mcp: 300, memory: 1000, agents: 2500, skills: 11200, cost: 0.03 } })
-  const block = fixedBlock([skills])
-  expect(block?.tree.map(r => r[0]), 'largest first, the last part closes the tree').toEqual(['├─ Skills', '├─ Agents', '└─ Memory'])
-  expect(block?.fix, 'the advice follows the biggest parts').toContain("To cut it: turn off plugins and skills you don't use (/plugin), or remove custom agents you don't use (/agents).")
-  expect(fixedBlock([f(14000, 10, 0.001)])).toBeUndefined()
-  expect(fixedBlock([run({})])).toBeUndefined()
-  const many = run({ requests: 5, actual: 1, fixed: { tokens: 30000, mcp: 20000, memory: 0, agents: 0, skills: 0, cost: 0.5, servers: { a: 1000, b: 9000, c: 2000, d: 8000, e: 500 } } })
-  expect(fixedBlock([many])?.tree[0]?.[2], 'short names all fit, largest first').toBe('b 9K, d 8K, c 2K, a 1K, e 500')
+test('fixed context is one line: its share of the context window, from the latest measured turn', async () => {
+  const f = (tokens: number, requests = 5) => run({ requests, actual: 1, fixed: { tokens, mcp: tokens, memory: 0, agents: 0, skills: 0, cost: 0.5 } })
+  const W = 200_000
+  expect(FIXED_REVIEW_PCT, 'the starting value').toBe(15)
+  expect(fixedLine([f(22_000)], W, true)).toBe('Fixed context: ~11% of the context window (22K of 200K tokens).')
+  expect(fixedLine([f(14_000), f(22_000)], W, true), 'the latest turn, not an average').toContain('(22K of 200K tokens)')
+  expect(fixedLine([f(22_000), run({})], W, true), 'a line without a measurement is passed over').toContain('(22K of 200K tokens)')
+  expect(fixedLine([f(1_500)], 1_000_000, true), 'under 1%').toBe('Fixed context: under 1% of the context window (2K of 1M tokens).')
+  expect(fixedLine([run({})], W, true), 'no measurement: no line').toBeUndefined()
+  expect(fixedLine([f(22_000)], undefined, true), 'no window reported: no line').toBeUndefined()
+  expect(fixedLine([f(22_000, 0)], W, true), 'a turn with no requests measured nothing').toBeUndefined()
 })
 
-test('fixed context names servers only while the row fits in 80 columns, ending with how many are left', async () => {
-  const servers = { Claude_Browser: 11000, ccd_turn: 4000, Claude_Code_iOS_Simulator: 3000, vercel_plugin_deploy: 2000, other: 1000 }
-  const long = run({ requests: 5, actual: 1, fixed: { tokens: 30000, mcp: 25000, memory: 1000, agents: 0, skills: 0, cost: 0.5, servers } })
-  const row = report([long]).split('\n').find(l => l.includes('├─ MCP tools')) ?? ''
-  expect(row.length).toBeLessThanOrEqual(80)
-  expect(row).toMatch(/^ {2}├─ MCP tools +25K +Claude_Browser 11K, ccd_turn 4K, .*\+\d+ more$/)
-  expect(row).not.toContain('Claude_Code_iOS_Simulator')
-  // The largest is named even when it alone runs long.
-  const huge = run({ requests: 5, actual: 1, fixed: { tokens: 30000, mcp: 25000, memory: 1000, agents: 0, skills: 0, cost: 0.5, servers: { [`${'x'.repeat(70)}`]: 9000, small: 1000 } } })
-  expect(fixedBlock([huge])?.tree[0]?.[2]).toBe(`${'x'.repeat(70)} 9K, +1 more`)
-})
-
-test('fixed context names the memory files on the Memory row, from the last run', async () => {
-  const f = (files: Record<string, number> | undefined) => run({ requests: 5, actual: 1, fixed: { tokens: 12000, mcp: 3000, memory: 9000, agents: 0, skills: 0, startHooks: 0, cost: 0.5, ...(files ? { files } : {}) } })
-  const block = fixedBlock([f({ 'CLAUDE.md': 1000 }), f({ 'MEMORY.md': 2000, 'CLAUDE.md': 6000 })])
-  expect(block?.tree).toEqual([['├─ Memory', '9K', 'CLAUDE.md 6K, MEMORY.md 2K'], ['└─ MCP tools', '3K']])
-  expect(block?.fix).toContain('trim CLAUDE.md and MEMORY.md (/memory)')
-  // An old line has no files: the row is as before.
-  expect(fixedBlock([f(undefined)])?.tree[0]).toEqual(['├─ Memory', '9K'])
-  // The row fits in 80 columns, the rest counted.
-  const wide = fixedBlock([f({ [`${'a'.repeat(40)}.md`]: 3000, [`${'b'.repeat(40)}.md`]: 2000 })])
-  expect(wide?.tree[0]?.[2]).toBe(`${'a'.repeat(40)}.md 3K, +1 more`)
-  const text = report([f({ 'CLAUDE.md': 6000, 'MEMORY.md (User)': 2000 })])
-  expect(text).toMatch(/ {2}├─ Memory +9K +CLAUDE\.md 6K, MEMORY\.md \(User\) 2K\n/)
-  expect(text.split('\n').filter(l => l.length > 80)).toEqual([])
-})
-
-test('fixed context counts SessionStart hooks over the turns that measured them, and advises on them when they are the biggest part', async () => {
-  const f = (startHooks: number | undefined, requests: number, old?: number) =>
-    run({ requests, actual: 1, fixed: { tokens: 6000 + (startHooks ?? 0), mcp: 0, memory: 3000, agents: 0, skills: 3000, ...(startHooks === undefined ? {} : { startHooks }), ...(old === undefined ? {} : { hooks: old }), cost: 0.5 } })
-  // Request-weighted over the measured turns only: a turn that could not measure them is left out, not counted as 0.
-  const block = fixedBlock([f(undefined, 10), f(6000, 10), f(8000, 30)])
-  expect(block?.tree).toEqual([['├─ SessionStart hooks', '8K'], ['├─ Memory', '3K'], ['└─ Skills', '3K']])
-  expect(block?.notes, 'some turns measured them: no "not measured"').not.toContain('SessionStart hooks: not measured.')
-  expect(block?.fix).toBe("rightsize can't trim fixed context. To cut it: turn off plugins whose SessionStart hooks you don't use (/plugin), or trim your own hooks' output, or trim CLAUDE.md and MEMORY.md (/memory).")
-  // Under 500 tokens a part is not listed; a measured 0 is not a "not measured".
-  expect(fixedBlock([f(400, 10)])?.tree.map(r => r[0])).toEqual(['├─ Memory', '└─ Skills'])
-  expect(fixedBlock([f(0, 10)])?.notes).not.toContain('SessionStart hooks: not measured.')
-  // No turn measured them: said, never shown as 0. The old `hooks` key (always 0 from 0.9 to 0.11) is not a measurement.
-  for (const lines of [[f(undefined, 10)], [f(undefined, 10, 0)], [f(undefined, 10, 5000)]]) {
-    const b = fixedBlock(lines)
-    expect(b?.tree.map(r => r[0])).toEqual(['├─ Memory', '└─ Skills'])
-    expect(b?.notes.at(-1)).toBe('SessionStart hooks: not measured.')
-  }
-  const text = report([f(8000, 10)])
-  expect(text).toMatch(/ {2}├─ SessionStart hooks +8K\n/)
-  expect(text.split('\n').filter(l => l.length > 80)).toEqual([])
-  expect(report([f(undefined, 10)])).toMatch(/ {2}SessionStart hooks: not measured\.\n {2}├─ Memory/)
-})
-
-test('fixed context flags a memory file or the SessionStart hooks of 10K tokens or more, largest first', async () => {
-  const f = (over: { hooks?: number; files?: Record<string, number> }, requests = 5) => run({ requests, actual: 1, fixed: { tokens: 30000, mcp: 5000, memory: 12000, agents: 0, skills: 0, startHooks: over.hooks ?? 0, cost: 0.5, ...(over.files ? { files: over.files } : {}) } })
-  const notes = (...lines: ReturnType<typeof f>[]) => fixedBlock(lines)?.notes ?? []
-  expect(LARGE_FIXED).toBe(10000)
-  expect(notes(f({ files: { 'CLAUDE.md': 12000 }, hooks: 24000 }))[2]).toBe('Large: SessionStart hooks 24K, CLAUDE.md 12K.')
-  expect(notes(f({ files: { 'CLAUDE.md': 12000, 'MEMORY.md': 10000 } }))[2], 'files only, at the line').toBe('Large: CLAUDE.md 12K, MEMORY.md 10K.')
-  expect(notes(f({ hooks: 10000 })), 'hooks at the line').toHaveLength(3)
-  expect(notes(f({ hooks: 9999, files: { 'CLAUDE.md': 9999 } })), 'below the line: no note').toHaveLength(2)
-  expect(notes(f({})), 'nothing large: no note').toHaveLength(2)
-  // The hooks are request-weighted: one big run among many small ones does not flag them.
-  expect(notes(f({ hooks: 40000 }, 1), f({ hooks: 0 }, 9))).toHaveLength(2)
-  // A file is judged on the last run.
-  expect(notes(f({ files: { 'CLAUDE.md': 12000 } }), f({ files: { 'CLAUDE.md': 3000 } }))).toHaveLength(2)
-  const text = report([f({ files: { 'CLAUDE.md': 12000 }, hooks: 24000 })])
-  expect(text).toMatch(/At least ~\$[\d.]+ over 5 requests[^\n]*\n {2}Large: SessionStart hooks 24K, CLAUDE\.md 12K\.\n/)
-})
-
-test('the fixed context tree and its tip in the report', async () => {
-  const text = report(month())
-  const [, , head, ...tree] = sectionOf(text, 'FIXED CONTEXT')
-  expect(text).toMatch(/^FIXED CONTEXT {2}~40K tokens sent with every request\n {2}Fixed context adds to your cost in every session\. Cutting it saves more\.\n {2}At least ~\$[\d.]+ over \d+ requests, ~\d+% of what those turns cost\.\n {2}├─ MCP tools/m)
-  expect(text.split('\n').filter(l => l.length > 80)).toEqual([])
-  const md = report(month(), { markdown: true })
-  expect(md).toMatch(/\nFIXED CONTEXT {2}~40K tokens sent with every request\nFixed context adds to your cost in every session\. Cutting it saves more\.\nAt least ~\$[\d.]+ over \d+ requests, ~\d+% of what those turns cost\.\n```\n {2}├─ MCP tools[^`]*└─ Memory +1K\n```\n/)
-  expect(md, 'no empty fence').not.toMatch(/```\n```/)
-  expect(head).toMatch(/^├─ MCP tools +25K +Claude_Browser 11K, claude-in-chrome 7K, \+2 more$/)
-  expect(tree).toEqual([expect.stringMatching(/^├─ Skills +11K$/), expect.stringMatching(/^├─ Agents +2K$/), expect.stringMatching(/^└─ Memory +1K$/)])
-  const recs = sectionOf(text, 'RECOMMENDATIONS').join(' ')
-  expect(recs).toMatch(/^1\. Cut fixed context\. ~40K tokens go with every request: at least ~\$[\d.]+ in 30 days, ~\d+% of what those turns cost\. Largest: MCP tools 25K, Skills 11K\./)
-  expect(recs).toContain("To cut it: disconnect MCP servers you don't use (/mcp), or turn off plugins and skills you don't use (/plugin).")
+test('the fixed context line advises a review only above 15% of the window', async () => {
+  const f = (tokens: number) => run({ requests: 5, actual: 1, fixed: { tokens, mcp: tokens, memory: 0, agents: 0, skills: 0, cost: 0.5 } })
+  const W = 200_000
+  const at = FIXED_REVIEW_PCT / 100
+  // Below, and exactly at the line: the share only.
+  expect(fixedLine([f(W * at - 1)], W, true), 'just below 15%').not.toContain('Review')
+  expect(fixedLine([f(W * at)], W, true), 'at 15% is not above it').not.toContain('Review')
+  // Above: the advice, naming trim's command when trim is installed and /context when it is not.
+  expect(fixedLine([f(W * at + 1)], W, true)).toBe('Fixed context: ~15% of the context window (30K of 200K tokens). Review it with `/trim:context`.')
+  expect(fixedLine([f(W * 0.4)], W, false)).toBe('Fixed context: ~40% of the context window (80K of 200K tokens). Review it with `/context`.')
+  expect(fixedLine([f(W * 0.4)], W, false)).not.toContain('/trim')
+  // In the report, in both views; the old list, its parts and its tips are gone.
+  const lines = [...month(), f(W * 0.4)]
+  const text = report(lines, { contextWindow: W, trimInstalled: true })
+  // The plain text wraps at 78 columns: read each line back as one.
+  expect(text.replace(/\n/g, ' ').match(/Fixed context: [^.]*\)\.(?: Review it with `[^`]+`\.)?/g)).toEqual(['Fixed context: ~40% of the context window (80K of 200K tokens). Review it with `/trim:context`.', 'Fixed context: ~40% of the context window (80K of 200K tokens). Review it with `/trim:context`.'])
+  expect(text).not.toMatch(/FIXED CONTEXT|├─|└─|\(\/memory\)|\(\/plugin\)|\(\/mcp\)|Cut fixed context|sent with every request/)
+  const low = report([...month(), f(W * 0.05)], { contextWindow: W, trimInstalled: true })
+  expect(low).toContain('Fixed context: ~5% of the context window (10K of 200K tokens).\n')
+  expect(low).not.toContain('Review it with')
+  // Without a window the line is left out; the pointer stays.
+  expect(summary(lines)).not.toContain('Fixed context:')
+  expect(summary(lines)).toContain('For the full context breakdown, use `/usage` and `/trim:context`.')
 })
 
 test("Claude's subagents moved to a cheaper model: counted, and their saving added", async () => {
@@ -561,12 +503,12 @@ test('recommendations collect the actions, then what needs none; the block is le
   }
   const lines = [...month(), handDown(true), handDown(true), handDown(false), handDown(false), handDown(false)]
   const text = summary(lines, { start })
-  expect(titles(text)).toEqual(['YOUR SAVINGS', '30-DAY SUMMARY', 'SAVING CHECK (last 30 days)', 'RECOMMENDATIONS'])
-  expect(titles(details(lines, { start }))).toEqual(['STARTING POINT', 'FIXED CONTEXT', 'ACCURACY', 'NOT COUNTED AS SAVINGS'])
+  expect(titles(text)).toEqual(['SAVING CHECK (last 30 days)', 'WHAT RIGHTSIZE DID (last 30 days)', 'RECOMMENDATIONS'])
+  expect(titles(details(lines, { start }))).toEqual(['YOUR SAVINGS', '30-DAY SUMMARY', 'STARTING POINT', 'ACCURACY', 'NOT COUNTED AS SAVINGS'])
   expect(sectionOf(details(lines, { start }), 'STARTING POINT')[0]).toMatch(/^Opus at medium \(yours\) +~\$12.00 per 100 prompts$/)
   const recs = sectionOf(text, 'RECOMMENDATIONS')
-  // Fixed context, then the start, numbered; then the pause; long ones wrap under their text.
-  expect(recs.filter(l => /^\d\. /.test(l)).map(l => l.slice(0, 23))).toEqual(['1. Cut fixed context. ~', '2. Starting on Sonnet a'])
+  // The start, numbered (the fixed-context advice is a line of its own now, ADR 0058); then the pause; long ones wrap under their text.
+  expect(recs.filter(l => /^\d\. /.test(l)).map(l => l.slice(0, 23))).toEqual(['1. Starting on Sonnet a'])
   expect(recs.find(l => l.startsWith('Paused: '))).toMatch(/^Paused: hand-downs of search work to Haiku/)
   expect(text.split('\n').filter(l => l.length > 80)).toEqual([])
   const none = report([run({})], { start: { head: 'Needs 50 rated prompts to compare (has 1).', rows: [] } })
@@ -845,10 +787,10 @@ test('on a subscription, every dollar figure in the report is labelled as API pr
   const text = report(month(), { subscription: true, markdown: true, switches: [{ at: ago(0), kept: false }, { at: ago(0), kept: true }] })
   const lines = text.split('\n')
   // The savings table's dollar rows say it in their label, and the footer says it for the whole table.
-  const table = new Set([...lines.slice(lines.indexOf('YOUR SAVINGS'), lines.indexOf('30-DAY SUMMARY')), ...lines.slice(lines.findIndex(l => l.startsWith('SAVING CHECK')), lines.indexOf('RECOMMENDATIONS'))])
+  const table = new Set([...lines.slice(lines.indexOf('YOUR SAVINGS'), lines.indexOf('30-DAY SUMMARY')), ...lines.slice(lines.findIndex(l => l.startsWith('SAVING CHECK')), lines.indexOf('WHAT RIGHTSIZE DID (last 30 days)'))])
   const dollars = lines.filter(l => l.includes('$') && !table.has(l))
-  // The headline, the recommendation, the problems, the details' footer.
-  expect(dollars.length).toBeGreaterThanOrEqual(4)
+  // The headline, the problems, the details' footer.
+  expect(dollars.length).toBeGreaterThanOrEqual(3)
   for (const l of dollars) expect(l, 'a dollar line without the label').toMatch(/API-equivalent|API prices/)
   expect(text).toContain('Value (API prices)')
   expect(text).toContain('Dollar figures are API prices: what the same use would cost on the API. You pay only your subscription.')
@@ -860,21 +802,20 @@ test('on a subscription, every dollar figure in the report is labelled as API pr
   expect(extra).not.toMatch(/Extra spent|spent/)
 })
 
-test('on a subscription, the problems and the fixed context label their dollars; on the API they stay plain', async () => {
+test('on a subscription, the problems label their dollars; on the API they stay plain', async () => {
   const lines = month()
   const switches = [{ at: ago(0), kept: false }]
   const sub = problems(lines, switches, true).map(p => p.reason).filter(r => r.includes('$'))
   expect(sub.length).toBeGreaterThanOrEqual(2)
   for (const r of sub) expect(r).toContain('API-equivalent')
   expect(problems(lines, switches).map(p => p.reason).join(' ')).not.toContain('API-equivalent')
-  expect(fixedBlock(lines, true)?.notes.join(' ')).toMatch(/^Fixed context adds to your usage in every session\. Cutting it saves more\. At least ~\$[\d.]+ API-equivalent over \d+ requests/)
-  expect(fixedBlock(lines)?.notes.join(' ')).toMatch(/^Fixed context adds to your cost in every session\. Cutting it saves more\. At least ~\$[\d.]+ over \d+ requests/)
 })
 
 test('on the API, dollars are real spending: no label, no window share', async () => {
   const win = { before: { five_hour: 10 }, after: { five_hour: 12 }, durationMs: 60_000 }
   const lines = [run({ change: 'lower', offered: 'lower', actual: 0.5, stay: 1, taken: 0.5, ...win }), run({ change: 'raise', offered: 'raise', actual: 0.3, stay: 0.1, taken: 0.2, ...win })]
-  const text = report(lines, { markdown: true })
+  // The pointer line names the `/usage` command: it is not a figure.
+  const text = report(lines, { markdown: true }).replace(/^For the full context breakdown.*$/m, '')
   expect(text).not.toMatch(/API-equivalent|window|usage/)
   expect(cells(report(lines), 'Extra on hard prompts')).toBeDefined()
   expect(text, 'API prices are only for a subscription').not.toContain('API prices')
@@ -1140,7 +1081,9 @@ test('the Keep warm line: runs, savings on returns, cost, and the net, in dollar
 test('the report shows the Keep warm row, and the saving and the session total include what it saved', async () => {
   const lines = [run({ change: 'lower', offered: 'lower', actual: 0.1, stay: 0.4, taken: 0.1 }), ping({ overhead: 0.1 }), kept(0.6)]
   const text = report(lines)
-  expect(cells(text, 'Keep warm')).toEqual(['1 run: saved ~$0.60, cost ~$0.10, net ~$0.50 saved'])
+  // The money row is in the details view (ADR 0058); the main view counts runs and returns.
+  expect(cells(summary(lines), 'Keep warm')).toEqual(['1 run, 1 return to a warm cache'])
+  expect(cells(details(lines), 'Keep warm')).toEqual(['1 run: saved ~$0.60, cost ~$0.10, net ~$0.50 saved'])
   // 0.3 from the lowering, 0.6 from the return, less 0.1 of pings.
   expect(cells(text, 'Saved')).toEqual(['~$0.80', '~$0.80', '~$0.80', '~$0.80'])
   expect(text.split('\n')[1]).toBe('You saved ~$0.80 (~80% of your cost).')
@@ -1149,7 +1092,7 @@ test('the report shows the Keep warm row, and the saving and the session total i
   expect(text.replace(/\s+/g, ' ')).toContain('The saving is after the cost of rating prompts and of keeping the cache warm ($0.10 in 30 days), and counts what keeping it warm saved when you came back to a warm cache.')
   expect(report([run({})]), 'no keep warm: no row and no note').not.toContain('Keep warm')
   expect(text.split('\n').filter(l => l.length > 80), 'no line past 80 characters').toEqual([])
-  expect(cells(report(lines, { subscription: true }), 'Keep warm')).toEqual(['1 run: saved ~$0.60, cost ~$0.10, net ~$0.50 saved (API prices)'])
+  expect(cells(details(lines, { subscription: true }), 'Keep warm')).toEqual(['1 run: saved ~$0.60, cost ~$0.10, net ~$0.50 saved (API prices)'])
   expect(keepWarmLine(lines, false), 'the one-line form stays for other callers').toBe('Keep warm: 1 run · saved ~$0.60 on 1 return · cost ~$0.10 · net ~$0.50 saved')
 })
 
@@ -1248,12 +1191,14 @@ test('a stored roll-up is read back as numbers only: a damaged one counts for no
 test('trim section: tokens per feature, all time and 30 days, assumed marked; none without data', () => {
   const trim = { allTime: { tool_cleanup: { saves: 3, tokens: 12345, assumed: false }, browser_scale: { saves: 2, tokens: 1010, assumed: true } }, last30: { tool_cleanup: { saves: 1, tokens: 400, assumed: false } }, session: {} }
   const opts = { now: NOW, session: 's1', subscription: false, trim }
-  const plain = buildReport([run({})], [], opts)
+  // Raw token counts are in the details view (ADR 0058).
+  const plain = buildReport([run({})], [], { ...opts, details: true })
   expect(plain).toContain('TRIM SAVINGS (tokens, estimated)')
+  expect(buildReport([run({})], [], opts), 'not in the main view').not.toContain('TRIM SAVINGS')
   expect(plain).toMatch(/Tool results cleaned\s+12\.3K\s+400/)
   expect(plain).toMatch(/Browser screenshots\s+1\.0K assumed\s+–/)
   expect(plain).toContain('"assumed" means a fixed estimate')
-  const md = buildReport([run({})], [], { ...opts, markdown: true })
+  const md = buildReport([run({})], [], { ...opts, markdown: true, details: true })
   expect(md).toContain('```')
   expect(md).toContain('12.3K')
   for (const none of [undefined, { allTime: {}, last30: {}, session: {} }]) expect(buildReport([run({})], [], { now: NOW, session: 's1', subscription: false, ...(none ? { trim: none } : {}) })).not.toContain('TRIM SAVINGS')

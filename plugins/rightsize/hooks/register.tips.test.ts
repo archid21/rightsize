@@ -435,12 +435,20 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(report).toContain('The saving is after the cost of rating prompts')
     expect(report, 'the row text is the plain report on every surface').not.toContain('```')
     // The row draws the Markdown form off the terminal: the tables in fences, so their columns line up.
-    const text = (await d.command('report')).text ?? ''
-    const row = await ($ as unknown as { ui: { mount: (x: unknown) => Promise<{ find: (q: unknown) => Promise<{ props: unknown } | undefined>; unmount: () => Promise<void> }> } }).ui.mount({ plugin: 'rightsize', component: 'CommandOutput', surface, props: { command: 'rightsize', args: 'report', text, isErrored: false } })
-    const drawn = ((await row.find({ type: 'Markdown', key: 'report' }))?.props as { text?: string } | undefined)?.text
-    await row.unmount()
-    if (surface === 'desktop') expect(drawn?.split('\n').filter(l => l === '```').length, 'savings and summary fenced').toBeGreaterThanOrEqual(4)
-    else expect(drawn, 'the terminal draws the plain row').toBeUndefined()
+    // The raw estimates (YOUR SAVINGS, 30-DAY SUMMARY) moved to the details view (ADR 0058): their fences are counted there.
+    const drawnFor = async (args: string) => {
+      const text = (await d.command(args)).text ?? ''
+      const row = await ($ as unknown as { ui: { mount: (x: unknown) => Promise<{ find: (q: unknown) => Promise<{ props: unknown } | undefined>; unmount: () => Promise<void> }> } }).ui.mount({ plugin: 'rightsize', component: 'CommandOutput', surface, props: { command: 'rightsize', args, text, isErrored: false } })
+      const drawn = ((await row.find({ type: 'Markdown', key: 'report' }))?.props as { text?: string } | undefined)?.text
+      await row.unmount()
+      return drawn
+    }
+    const fences = (t: string | undefined) => t?.split('\n').filter(l => l === '```').length
+    const drawn = await drawnFor('report details')
+    if (surface === 'desktop') {
+      expect(fences(drawn), 'savings and summary fenced').toBeGreaterThanOrEqual(4)
+      expect(fences(await drawnFor('report')), 'what rightsize did fenced').toBeGreaterThanOrEqual(2)
+    } else expect(drawn, 'the terminal draws the plain row').toBeUndefined()
     expect(report).toContain('NOT COUNTED AS SAVINGS')
   })
 

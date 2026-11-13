@@ -60,6 +60,13 @@ export function installWhatsnext(h: { commands: { name: string; description: str
   // Whether the folder is a whatsnext project is whatsnext's answer (`project` in compact-instructions --json), not a file rightsize reads.
   if (over.initialized === false) h.wnReply = { exitCode: 0, stdout: wnAnswer(false, false) }
 }
+/** Makes trim installed: its entry in installed_plugins.json, kept beside any other plugin's. `projectPath`: installed for that project only. */
+export function installTrim(h: { files: Record<string, string> }, over: { projectPath?: string } = {}) {
+  const file = '/home/test/.claude/plugins/installed_plugins.json'
+  const have = h.files[file] ? (JSON.parse(h.files[file]) as { version?: number; plugins?: Record<string, unknown> }) : { version: 2, plugins: {} }
+  have.plugins = { ...have.plugins, 'trim@trim': [{ scope: over.projectPath ? 'project' : 'user', ...(over.projectPath ? { projectPath: over.projectPath } : {}), installPath: '/home/test/.claude/plugins/cache/trim/trim/0.0.1', version: '0.0.1', lastUpdated: '2026-11-01T00:00:00.000Z' }] }
+  h.files[file] = JSON.stringify(have)
+}
 /** What core returns when the person says no at the permission prompt. */
 export const REJECTED = "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed."
 /** The shared files of 0.7 and before: still read, never written. */

@@ -118,7 +118,7 @@ import { isApprovalStep } from './approval'
 import { HANDBACK, LIMITS, type Signals, type Struggle, blockedError, callKey, hookFailed, isBookkeeping, isEditTool, helperCap, isTestCommand, noMatchExit, noSignals, noteCall, oneUp, refusedByHook, refusedByPerson, struggle, testsOutcome } from './struggle'
 import { type Change, type HelperLine, type Lifetime, type RunLine, type SwitchLine, type Windows, SESSION_TOTAL, SESSION_TOTAL_FROM, bandShareText, buildReport, costTag, foldLifetime, parseLifetime, parseLines, ratedInSession, sessionTotal, shareMessage, shareOf, usedTag, windowCostText, windowRates } from './report'
 import { isTracked, parseChanges, type ChangeLine } from './results'
-import { type TrimSavings, readTrimSavings } from './trim'
+import { type TrimSavings, isTrim, readTrimSavings } from './trim'
 import { LIMIT_BUTTON, LIMIT_COMPACT, LIMIT_HIDE, LIMIT_MORE, LIMIT_WHY, LIMIT_WHY_ID, isLimitId, limitDue, limitText } from './limit'
 import { SIZE_BUTTON, SIZE_COMPACT, SIZE_FRESH, SIZE_FRESH_BUTTON, SIZE_FRESH_COMPACT, SIZE_FRESH_COPY, SIZE_FRESH_COPY_FAILED, SIZE_FRESH_NOT_NOW, SIZE_FRESH_PASTE_BUTTONS, SIZE_FRESH_SAVING, SIZE_HIDE, SIZE_MORE, SIZE_WHY, SIZE_WHY_FRESH, SIZE_WHY_ID, isSizeId, sizeFreshNotWritten, sizeFreshNotice, sizeFreshPaste, sizeStep, sizeText } from './size'
 import { COMPACT_BASE, NO_FRESH_HANDOFF, WRAP_HEADROOM, WRAP_TURNS, isWhatsnext } from './whatsnext'
@@ -746,6 +746,23 @@ async function readTrim($: EngineInterface, now: number): Promise<TrimSavings | 
     return readTrimSavings(log, totals, now, sessionId)
   } catch {
     return undefined
+  }
+}
+
+/**
+ * True when trim is in Claude Code's list of installed plugins (`<config>/plugins/installed_plugins.json`), for this project or for
+ * the user. Same source as `whatsnextRoot`: a plugin loaded by `--plugin-dir` is not in the list. False when the list cannot be read.
+ */
+async function trimInstalled($: EngineInterface): Promise<boolean> {
+  try {
+    const plugins = (JSON.parse(await readText($, `${await claudeDir($)}/plugins/installed_plugins.json`)) as { plugins?: unknown }).plugins
+    if (!plugins || typeof plugins !== 'object') return false
+    const project = await projectFolder($)
+    return Object.entries(plugins as Record<string, unknown>).some(
+      ([key, list]) => isTrim(key) && Array.isArray(list) && (list as { projectPath?: unknown }[]).some(x => typeof x?.projectPath !== 'string' || x.projectPath === project),
+    )
+  } catch {
+    return false
   }
 }
 
@@ -5236,11 +5253,12 @@ export const register: Register = (on, options) => {
       const lifetime = await readLifetime($)
       const now = await $.clock.now()
       const trim = await readTrim($, now)
+      const window = (await usageNow($))?.context?.window
       const changes = await readChanges($)
       const start = startBlock(adviseStart(runs, await startContext($), now), billing === 'subscription', money)
       // The row's text is the plain report (the terminal, -p, the SDK). Every other surface draws the Markdown form, chosen
       // per surface when the row draws (its CommandOutput hook): $.session.surfaces() here can miss the desktop app.
-      const opts = { now, session: sessionId, subscription: billing === 'subscription', start, pause: missBlock, watching, details: arg === 'report details', ...(trim ? { trim } : {}), changes, ...(lifetime ? { lifetime } : {}), ...(measureFrom ? { measureFrom: new Date(measureFrom).toISOString() } : {}) }
+      const opts = { now, session: sessionId, subscription: billing === 'subscription', start, pause: missBlock, watching, details: arg === 'report details', trimInstalled: await trimInstalled($), ...(typeof window === 'number' && window > 0 ? { contextWindow: window } : {}), ...(trim ? { trim } : {}), changes, ...(lifetime ? { lifetime } : {}), ...(measureFrom ? { measureFrom: new Date(measureFrom).toISOString() } : {}) }
       const text = buildReport(runs, switches, opts)
       reportMarkdown.set(text, buildReport(runs, switches, { ...opts, markdown: true }))
       while (reportMarkdown.size > 20) reportMarkdown.delete(reportMarkdown.keys().next().value as string)

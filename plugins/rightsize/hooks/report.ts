@@ -664,6 +664,29 @@ function savingsTable(cols: readonly Stats[], subscription: boolean) {
   return grid([['', 'Today', '7 days', '30 days', 'Lifetime'], ...rows.map(r => [r.label, ...cols.map(s => cell(r, s))])], [1, 2, 3, 4])
 }
 
+/**
+ * WHAT RIGHTSIZE DID: counts over the report period, from the run log (each run's `change`, and the keep-warm lines).
+ * Model changes: a switch to another model for one turn. Effort changes: lowered and raised. Hand-offs: work sent to a helper on
+ * another model. Keep warm: runs, and the returns that found the cache still warm. Nothing here is a cost.
+ */
+function didRows(s: Stats, warm: KeepWarm | undefined): string[][] {
+  const c = s.t.changed
+  const prompts = (n: number) => (n ? `${n.toLocaleString('en-US')} ${n === 1 ? 'prompt' : 'prompts'}` : 'none')
+  const rows: string[][] = []
+  if (s.t.rated) {
+    const effort = c.lower + c.raise
+    const handoffs = c['delegate-down'] + c['delegate-up']
+    const part = (n: number, what: string) => (n ? [`${n.toLocaleString('en-US')} ${what}`] : [])
+    rows.push(
+      ['Model changes', prompts(c['switch-up'])],
+      ['Effort changes', prompts(effort) + (effort ? ` (${[...part(c.lower, 'lowered'), ...part(c.raise, 'raised')].join(', ')})` : '')],
+      ['Hand-offs', prompts(handoffs) + (handoffs ? ` (${[...part(c['delegate-down'], 'to a cheaper model'), ...part(c['delegate-up'], 'to a stronger model')].join(', ')})` : '')],
+    )
+  }
+  if (warm) rows.push(['Keep warm', `${plural(warm.runs, 'run')}, ${plural(warm.returns, 'return')} to a warm cache`])
+  return rows
+}
+
 /** 30-DAY SUMMARY: what rightsize did, one row each. Effort and model changes always show once anything was rated. */
 function summaryRows(s: Stats, warm: KeepWarm | undefined, subscription: boolean): string[][] {
   const c = s.t.changed
@@ -803,7 +826,7 @@ function problemRows(ps: readonly Problem[]) {
   ])
 }
 
-const k = (n: number) => (n >= 1000 ? `${Math.round(n / 1000)}K` : `${Math.round(n)}`)
+const k = (n: number) => (n >= 1_000_000 ? `${Number((n / 1_000_000).toFixed(1))}M` : n >= 1000 ? `${Math.round(n / 1000)}K` : `${Math.round(n)}`)
 
 /** A duration for people: seconds under a minute (one decimal under 10), then minutes and seconds, then hours and minutes. */
 export function span(ms: number) {
@@ -1024,78 +1047,23 @@ export function keepWarmLine(lines: readonly RunLine[], subscription: boolean): 
   return `Keep warm: ${plural(runs, 'run')} · ${gain} · cost ${tildeMoney(cost)} · ${result}${subscription ? ' (API-equivalent)' : ''}`
 }
 
-/** A part or memory file this large (tokens) is flagged in the fixed-context block. About the 40,000 characters at which Claude Code itself warns about a large CLAUDE.md. */
-export const LARGE_FIXED = 10_000
+/** Fixed context above this share of the context window gets the "review it" advice. Starting value (ADR 0058); can be tuned. */
+export const FIXED_REVIEW_PCT = 15
 
 /**
- * Names, largest first, as many as fit in `room` columns with the rest counted ("+N more"); the largest is always named.
- * Each name carries its size.
+ * The one fixed-context line: what every request carries (the latest measured turn's total, as `/usage` counts it) as a share of the
+ * context window Claude Code reports. The review advice comes only above FIXED_REVIEW_PCT, and names `/context` when trim is not installed.
+ * Undefined when no turn measured it or the window is not known.
  */
-function nameWithin(items: readonly (readonly [string, number])[], room: number) {
-  const named: string[] = []
-  for (const [n, t] of items) {
-    const rest = items.length - named.length - 1
-    const row = [...named, `${n} ${k(t)}`].join(', ') + (rest ? `, +${rest} more` : '')
-    if (named.length && row.length > room) break
-    named.push(`${n} ${k(t)}`)
-  }
-  return named.join(', ') + (named.length < items.length ? `, +${items.length - named.length} more` : '')
-}
-
-/** The context every request carried, by part (largest first), request-weighted, what re-reading it cost, and how to cut it. */
-export function fixedBlock(lines: readonly RunLine[], subscription = false) {
-  const runs = lines.filter(l => isRun(l) && l.fixed && num(l.requests) > 0)
-  const requests = runs.reduce((n, l) => n + num(l.requests), 0)
-  const cost = runs.reduce((n, l) => n + num(l.fixed?.cost), 0)
-  if (!requests || cost < 0.005) return undefined
-  const avg = (part: 'tokens' | 'mcp' | 'memory' | 'agents' | 'skills') => runs.reduce((n, l) => n + num(l.fixed?.[part]) * num(l.requests), 0) / requests
-  // SessionStart output, over the turns that measured it: undefined when none did (no line says it, or the messages could not be read).
-  const measured = runs.filter(l => typeof l.fixed?.startHooks === 'number')
-  const measuredRequests = measured.reduce((n, l) => n + num(l.requests), 0)
-  const hooks = measuredRequests ? measured.reduce((n, l) => n + num(l.fixed?.startHooks) * num(l.requests), 0) / measuredRequests : undefined
-  const last = runs[runs.length - 1]?.fixed
-  const byLargest = (r: Record<string, number> | undefined) => Object.entries(r ?? {}).sort((a, b) => b[1] - a[1])
-  const servers = byLargest(last?.servers)
-  const files = byLargest(last?.files)
-  const parts = [
-    [avg('mcp'), 'MCP tools', servers, "disconnect MCP servers you don't use (/mcp)"],
-    [avg('memory'), 'Memory', files, 'trim CLAUDE.md and MEMORY.md (/memory)'],
-    [avg('skills'), 'Skills', [], "turn off plugins and skills you don't use (/plugin)"],
-    [avg('agents'), 'Agents', [], "remove custom agents you don't use (/agents)"],
-    [hooks ?? 0, 'SessionStart hooks', [], "turn off plugins whose SessionStart hooks you don't use (/plugin), or trim your own hooks' output"],
-  ] as const
-  const big = parts.filter(([t]) => t >= 500).sort((a, b) => b[0] - a[0])
-  const labels = big.map(([, label], i) => `${i === big.length - 1 ? '└─' : '├─'} ${label}`)
-  // Servers and files are named largest first while the row stays within 80 columns (indent, label, size and gaps come first); the rest are counted. The largest is always named.
-  const room = 80 - (2 + Math.max(0, ...labels.map(l => l.length)) + 3 + Math.max(0, ...big.map(([t]) => k(t).length)) + 3)
-  const tree = big.map(([t, , names], i) => [labels[i] ?? '', k(t), ...(names.length ? [nameWithin(names, room)] : [])])
-  // The advice follows the biggest parts, so it names what would cut the most.
-  const how = big.slice(0, 2).map(([, , , fix]) => fix).join(', or ')
-  const spent = runs.reduce((n, l) => n + num(l.actual), 0)
-  // The share is of what those same turns cost (their actual spend), not of all spend.
-  const pct = spent > 0 ? `, ~${Math.round((cost / spent) * 100)}% of what those turns cost` : ''
-  // A memory file or the start hooks at LARGE_FIXED or more, largest first.
-  const large = [...files.map(([n, t]) => [n, t] as const), ['SessionStart hooks', hooks ?? 0] as const].filter(([, t]) => t >= LARGE_FIXED).sort((a, b) => b[1] - a[1])
-  return {
-    head: `~${k(avg('tokens'))} tokens sent with every request`,
-    notes: [
-      `Fixed context adds to your ${subscription ? 'usage' : 'cost'} in every session. Cutting it saves more.`,
-      `At least ~${money(cost)}${subscription ? ' API-equivalent' : ''} over ${plural(requests, 'request')}${pct}.`,
-      ...(large.length ? [`Large: ${large.map(([n, t]) => `${n} ${k(t)}`).join(', ')}.`] : []),
-      // Said, never shown as 0: the total above leaves it out.
-      ...(hooks === undefined ? ['SessionStart hooks: not measured.'] : []),
-    ],
-    tree,
-    ...(how ? { fix: `rightsize can't trim fixed context. To cut it: ${how}.` } : {}),
-    ...(how
-      ? {
-          rec: `Cut fixed context. ~${k(avg('tokens'))} tokens go with every request: at least ~${money(cost)}${subscription ? ' at API prices' : ''} in 30 days${pct}. Largest: ${big
-            .slice(0, 2)
-            .map(([t, label]) => `${label} ${k(t)}`)
-            .join(', ')}. To cut it: ${how}.`,
-        }
-      : {}),
-  }
+export function fixedLine(lines: readonly RunLine[], window: number | undefined, trimInstalled: boolean): string | undefined {
+  if (typeof window !== 'number' || !(window > 0)) return undefined
+  const last = lines.filter(l => isRun(l) && num(l.fixed?.tokens) > 0 && num(l.requests) > 0).pop()
+  const tokens = num(last?.fixed?.tokens)
+  if (!tokens) return undefined
+  const pct = (tokens / window) * 100
+  const share = pct < 1 ? 'under 1%' : `~${Math.round(pct)}%`
+  const advice = pct > FIXED_REVIEW_PCT ? ` Review it with \`${trimInstalled ? '/trim:context' : '/context'}\`.` : ''
+  return `Fixed context: ${share} of the context window (${k(tokens)} of ${k(window)} tokens).${advice}`
 }
 
 const TRIM_LABEL: Record<string, string> = { output_cap: 'Command output cut', tool_cleanup: 'Tool results cleaned', repeat_reads: 'Repeat reads', browser_scale: 'Browser screenshots' }
@@ -1116,7 +1084,7 @@ export function trimRows(trim: TrimSavings | undefined) {
 export function buildReport(
   lines: readonly RunLine[],
   switches: readonly SwitchLine[],
-  opts: { now: number; session: string; subscription: boolean; start?: StartBlock; pause?: number | null; measureFrom?: string; markdown?: boolean; watching?: boolean; lifetime?: Lifetime; details?: boolean; trim?: TrimSavings; changes?: readonly ChangeLine[] },
+  opts: { now: number; session: string; subscription: boolean; start?: StartBlock; pause?: number | null; measureFrom?: string; markdown?: boolean; watching?: boolean; lifetime?: Lifetime; details?: boolean; trim?: TrimSavings; changes?: readonly ChangeLine[]; contextWindow?: number; trimInstalled?: boolean },
 ) {
   const since = (days: number) => (l: { at: string }) => opts.now - Date.parse(l.at) <= days * DAY
   const month = lines.filter(since(30))
@@ -1132,24 +1100,18 @@ export function buildReport(
   const section = (t: string, rows: readonly string[]) => ['', t, ...indent(rows)]
   const from = opts.measureFrom ? Date.parse(opts.measureFrom) : 0
   const thirty = stats(month, sub, true)
-  const fixed = fixedBlock(month, sub)
+  const fixed = fixedLine(month, opts.contextWindow, opts.trimInstalled === true)
   const start = opts.start
   const accuracy = accuracyRows(month, opts.pause, from)
-  if (opts.details) return detailsReport()
-
   // Today (since local midnight), 7 days, 30 days and lifetime. All are estimates.
   const midnight = new Date(opts.now).setHours(0, 0, 0, 0)
   const cols = [stats(lines.filter(l => Date.parse(l.at) >= midnight), sub), stats(lines.filter(since(7)), sub), thirty, lifetimeStats(opts.lifetime, lines, sub)]
+  const warm = keepWarm(month)
+  if (opts.details) return detailsReport()
+
   const nothing = thirty.empty
   const out = ['rightsize report · last 30 days', ...(nothing ? [cols[3]?.empty ? 'Nothing rated yet.' : 'Nothing rated in the last 30 days.'] : headline(thirty, sub).flatMap(h => para(h)))]
   if (opts.measureFrom) out.push(`Cost measurement restarted on ${opts.measureFrom.slice(0, 10)}.`)
-  if (!cols.every(s => s.empty)) out.push(...section('YOUR SAVINGS', savingsTable(cols, sub)))
-
-  const warm = keepWarm(month)
-  const summary = summaryRows(thirty, warm, sub)
-  if (summary.length) out.push(...section('30-DAY SUMMARY', grid(summary)))
-  const trimmed = trimRows(opts.trim)
-  if (trimmed) out.push(...section('TRIM SAVINGS (tokens, estimated)', grid(trimmed)), ...para(TRIM_NOTE, md ? '' : '  '))
   // Saving check: prompts rightsize left alone show how far its "staying" prediction is off; the changed prompts are re-priced by it (ADR 0055).
   const check = checkRows(savingCheck(month), sub)
   const checkTitle = `SAVING CHECK (last 30 days${sub ? ', API prices' : ''})`
@@ -1157,13 +1119,15 @@ export function buildReport(
   // Did it work?: each setting you changed, your prompts after it against before it (ADR 0054). Measured, not estimated.
   const worked = resultRows(results(lines, opts.changes ?? [], opts.now))
   if (worked.length) out.push(...section('DID IT WORK? (measured on your prompts)', worked))
+  // What rightsize did: counts only, from the run log. No cost figure, so none can disagree with /usage.
+  const did = didRows(thirty, warm)
+  if (did.length) out.push(...section('WHAT RIGHTSIZE DID (last 30 days)', grid(did)))
   // Watch only: what rightsize would have done, and what that would have saved, against staying. Nothing was applied.
   const watched = watchLine(month, sub, opts.watching === true)
   if (watched) out.push('', ...para(watched))
 
-  // What to do, from the sections in details: fixed context, the start, keep warm. Then what needs no action.
+  // What to do, from the sections in details: the start, keep warm. Then what needs no action.
   const recs = [
-    fixed?.rec,
     start?.tip,
     warm && warm.net <= -0.005 ? `Keep warm cost more than it saved (${tildeMoney(-warm.net)} more${sub ? ' at API prices' : ''}). Set Before the cache goes cold to a shorter keep warm, or to ask (/config).` : undefined,
   ].filter((n): n is string => !!n)
@@ -1177,6 +1141,8 @@ export function buildReport(
     for (const n of notes) out.push(...(md ? [`- ${n}`] : wrap(n, '  ', '  ', 78)))
   }
 
+  // One line on fixed context, then where the full breakdown is: trim owns it (ADR 0041, 0058).
+  out.push('', ...(fixed ? para(fixed) : []), ...para('For the full context breakdown, use `/usage` and `/trim:context`.'))
   const foot = [
     ...(nothing ? [] : ['Details: /rightsize report details']),
     `Estimates: actual cost against staying at your own model and effort, after the cost of rating prompts${month.some(l => l.kind === 'warm') ? ' and keeping the cache warm' : ''}.`,
@@ -1193,8 +1159,14 @@ export function buildReport(
   function detailsReport() {
     const out = ['rightsize report details · last 30 days']
     if (opts.measureFrom) out.push(`Cost measurement restarted on ${opts.measureFrom.slice(0, 10)}.`)
+    // Raw estimates: they can disagree with the checked saving, so the main view leaves them out (ADR 0058).
+    if (!cols.every(s => s.empty)) out.push(...section('YOUR SAVINGS', savingsTable(cols, sub)))
+    const summaryList = summaryRows(thirty, warm, sub)
+    if (summaryList.length) out.push(...section('30-DAY SUMMARY', grid(summaryList)))
+    const trimmed = trimRows(opts.trim)
+    if (trimmed) out.push(...section('TRIM SAVINGS (tokens, estimated)', grid(trimmed)), ...para(TRIM_NOTE, md ? '' : '  '))
     if (start) out.push('', `STARTING POINT  ${start.head}`, ...indent(grid(start.rows)), ...(start.note ? para(start.note, '  ') : []))
-    if (fixed) out.push('', `FIXED CONTEXT  ${fixed.head}`, ...fixed.notes.flatMap(n => para(n, '  ')), ...indent(grid(fixed.tree, [1])))
+    if (fixed) out.push('', ...para(fixed))
     const ties = thirty.ties && thirty.ties.guided + thirty.ties.explored > 0 ? [['Close calls', `${thirty.ties.guided} guided, ${thirty.ties.explored} explored`]] : []
     const acc = [...accuracy.rows, ...ties]
     if (acc.length) out.push(...section('ACCURACY', grid(acc)))

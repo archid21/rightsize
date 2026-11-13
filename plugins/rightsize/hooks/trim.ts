@@ -1,6 +1,9 @@
 // Reads trim's savings files (trim ADR 0012, v1), read only. Pure: the text of the log and of the totals file in, sums out.
 // A missing or damaged file counts for nothing; a line whose version is not 1 is ignored.
 
+/** True for a plugin key of trim: `trim` or `trim@<marketplace>`. */
+export const isTrim = (plugin: string | undefined) => plugin === 'trim' || (plugin ?? '').startsWith('trim@')
+
 export const TRIM_FEATURES = ['output_cap', 'tool_cleanup', 'repeat_reads', 'browser_scale'] as const
 
 export type TrimSum = { saves: number; tokens: number; assumed: boolean }

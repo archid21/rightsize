@@ -350,6 +350,35 @@ for (const surface of ['desktop', 'terminal'] as const) {
       def: 1,
     },
     {
+      key: 'longHelpers',
+      value: 'stop at the limit',
+      start: { model: 'claude-fable-5-2', effort: 'high', store: { remember: true, choices: { raise: 'auto', down: 'auto' } } },
+      // A Sonnet helper at 90% of its spend limit while it still finds new things: the band asks with the row on ask, never with it on stop at the limit.
+      see: async c => {
+        c.h.subModel = 'claude-sonnet-5-5'
+        const t0 = c.turn()
+        await c.d.step(t0)
+        await c.d.complete(t0)
+        c.h.rating = '{"fit":{"haiku":"no","sonnet":"low","opus":"low","fable":"low"},"type":"search","read":150000,"write":3000,"steps":30,"continues":false,"reason":"repo-wide search"}'
+        const t = c.turn()
+        await c.d.submit(SEARCH)
+        await c.d.step(t, 0)
+        await c.d.agent('sonnet')
+        await c.d.spawn('helper', 'sonnet')
+        await c.d.step(t, 0, 'agent-helper')
+        const limit = Number(/spend limit \$([\d.]+)/.exec(c.h.files[LOG_PATH] ?? '')?.[1])
+        c.h.stepUsage = { input_tokens: 0, output_tokens: Math.round(((limit * 0.45) / 10) * 1e6), cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+        for (let i = 1; i <= 2; i++) {
+          await c.d.step(t, i, 'agent-helper')
+          await c.d.bash(`ls dir${i}`, 'agent-helper')
+        }
+        await settle()
+        return c.h.asked.filter(a => a.header === 'Long helper').length
+      },
+      set: 0,
+      def: 1,
+    },
+    {
       key: 'outputAdvice',
       value: 'off',
       start: { ...OPUS, stored: { ...NO_COLD } },

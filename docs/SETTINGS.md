@@ -207,6 +207,17 @@ An "ask" answer opens its own timed dialog (see **Question wait**); every other 
 - Default: monthly
 - monthly: compare prices.json with Anthropic's pricing page every 30 days and update it. off: never check. /rightsize prices checks right away, whatever this says.
 
+### Long helpers
+
+- Key: `longHelpers`
+- Options: ask · continue while making progress · stop at the limit
+- Default: ask
+- A helper on a cheaper model (a hand-down, or a subagent rightsize moved) has a spend limit: 1.5, 2 or 3 times what the task is estimated to cost on your main model (1.5 for a task rated 10 tool calls or fewer, 2 for 11 to 30, 3 for more). This row says what happens at 80% of that limit when the helper is still finding new things.
+- ask: a question on the band, without pausing the helper: Continue (one more block, the size of the first limit), Stop and report, or Always while it's making progress. With no answer by the limit, the helper stops and reports.
+- continue while making progress: rightsize adds a block by itself, one at a time, up to 10 times the estimate; past that it asks, as in ask.
+- stop at the limit: the helper is never extended.
+- A helper that is stuck is stopped with no question, whatever this says. An extension does not use a retry of the task. With no estimate for the task, a flat cap of tool calls (25 for Haiku, 40 for Sonnet) applies instead.
+
 ### Output suggestion
 
 - Key: `outputAdvice`

@@ -54,6 +54,7 @@ export const SETTINGS = {
   band: { title: 'Advanced · Band', options: ['when it acts', 'always', 'off'], default: 'when it acts' },
   questionWait: { title: 'Advanced · Question wait', options: ['30 seconds', '1 minute', '2 minutes'], default: '30 seconds' },
   priceCheck: { title: 'Advanced · Price check', options: ['monthly', 'off'], default: 'monthly' },
+  longHelpers: { title: 'Advanced · Long helpers', options: ['ask', 'continue while making progress', 'stop at the limit'], default: 'ask' },
   outputAdvice: { title: 'Advanced · Output suggestion', options: ['on', 'off'], default: 'on' },
 } as const satisfies Record<string, Spec>
 

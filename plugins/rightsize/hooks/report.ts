@@ -163,6 +163,11 @@ export type HelperLine = {
   returned?: true
   /** The helper call cap it reached, when that is why it was sent back. */
   capped?: number
+  /** What it spent, and its spend limit now, in dollars (absent when it had no estimate and the call cap applied). */
+  spend?: number
+  limit?: number
+  /** The spend limit that sent it back, when that is why. */
+  limited?: number
 }
 
 export type SwitchLine = { at: string; kept?: boolean }

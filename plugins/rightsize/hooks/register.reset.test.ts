@@ -575,7 +575,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t0')
     await d.complete('t0')
   }
-  type HelperEntry = { agent: string; kind: string; steps: number; ms: number; errors: number; blocked: number; stall?: string; raises?: { step: number; from: string; to: string; why: string }[]; returned?: boolean }
+  type HelperEntry = { agent: string; kind: string; steps: number; ms: number; errors: number; blocked: number; stall?: string; raises?: { step: number; from: string; to: string; why: string }[]; returned?: boolean; spend?: number; limit?: number }
 
   test(`a struggling hand-off helper is raised one level, and its later steps go out at it (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { model: 'claude-fable-5-2', effort: 'high', store: HELPERS })
@@ -599,8 +599,9 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.complete('t1')
     const run = readRuns(h).find(l => l.kind === 'run') as { helpers?: HelperEntry[]; retries?: number }
     expect(run.retries, 'one chance used').toBe(1)
-    expect(run.helpers).toEqual([
-      { agent: 'agent-helper', kind: 'handoff', steps: 4, calls: 2, ms: 0, errors: 2, blocked: 0, stall: 'struggling', raises: [{ step: 3, from: 'low', to: 'medium', why: 'the same tool call failed twice' }] },
+    // The helper line also keeps what it spent and its spend limit (dollars), which this test does not pin.
+    expect(run.helpers?.map(({ spend, limit, ...rest }) => ({ ...rest, hasLimit: spend !== undefined && limit !== undefined }))).toEqual([
+      { agent: 'agent-helper', kind: 'handoff', steps: 4, calls: 2, ms: 0, errors: 2, blocked: 0, stall: 'struggling', raises: [{ step: 3, from: 'low', to: 'medium', why: 'the same tool call failed twice' }], hasLimit: true },
     ])
   })
 

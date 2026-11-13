@@ -17,10 +17,12 @@ test('check: left-alone prompts correct the prediction of the changed ones', () 
   expect(Math.round((c.actual) * 1000) / 1000).toBe(Math.round((3.6) * 1000) / 1000)
   expect(Math.round((c.factor) * 1000) / 1000).toBe(Math.round((0.8) * 1000) / 1000)
   const rows = checkRows(c, false)
-  expect(rows.table.join('\n')).toMatch(/Saving, as predicted\s+~\$8\.40/)
-  expect(rows.table.join('\n')).toMatch(/Saving, corrected\s+~\$6\.00/)
-  expect(rows.notes[0]).toContain('80% of what was predicted')
-  expect(rows.notes[0]).toContain('still saved ~$6.00')
+  expect(rows.lead[0]).toBe('rightsize cut the cost of the prompts it changed by about 63% (~$6.00). It estimated 70% (~$8.40).')
+  expect(rows.table[0]).toBe('Real cost with rightsize  ~$3.60')
+  expect(rows.table.join('\n')).toMatch(/Cost without rightsize\s+~\$12\s+~\$9\.60/)
+  expect(rows.table.join('\n')).toMatch(/Saved\s+~\$8\.40\s+~\$6\.00/)
+  expect(rows.table.join('\n')).toMatch(/Saved \(%\)\s+~70%\s+~63%/)
+  expect(rows.notes[1]).toContain('Prompts left alone (40): cost 80% of the estimate')
 })
 
 test('check: a kind of work with 10 prompts uses its own rate; a thin one uses the overall rate', () => {
@@ -41,7 +43,7 @@ test('check: too few left-alone or changed prompts says what is missing, never a
   const noChange = savingCheck([...many(40, { actual: 0.8 }), ...many(3, { change: 'lower' })])
   expect(noChange.ok).toBe(false)
   expect(checkRows(noChange, false).notes[0]).toContain('3 of 10 prompts rightsize changed')
-  expect(checkRows(savingCheck([]), false)).toEqual({ table: [], notes: [] })
+  expect(checkRows(savingCheck([]), false)).toEqual({ lead: [], table: [], notes: [] })
 })
 
 test('check: stepped-up, raised, aborted and workflow prompts and ones without a prediction are left out', () => {
@@ -55,7 +57,23 @@ test('check: declined advice is counted with its cost and prediction', () => {
   expect(c.ok && c.declined.n).toBe(5)
   if (!c.ok) return
   expect(Math.round((c.declined.actual) * 1000) / 1000).toBe(Math.round((3) * 1000) / 1000)
-  expect(checkRows(c, false).notes.join(' ')).toContain('You declined 5 suggestions')
+  expect(c.byDeclined).toBeUndefined()
+  expect(checkRows(c, false).notes.join(' ')).toContain('Prompts you declined (5): cost 60% of the estimate. A range needs 30 of them.')
+})
+
+test('check: 30 declined prompts give the other end of a range, low end first', () => {
+  // Declined cost 50% of the estimate; left alone overall (40 at 80%, 30 at 50%) about 68%.
+  const c = savingCheck([...base(), ...many(30, { offered: 'lower', actual: 0.5 }), run({ change: 'none', aborted: true })])
+  expect(c.ok).toBe(true)
+  if (!c.ok) return
+  expect(Math.round(c.byDeclined! * 1000) / 1000).toBe(6)
+  expect(c.untouchedAll).toBe(71)
+  const rows = checkRows(c, true)
+  expect(rows.lead[0]).toMatch(/^rightsize cut the cost of the prompts it changed by about 40–\d\d% \(~\$2\.40–\$\d\.\d\d\)\. It estimated 70% \(~\$8\.40\)\.$/)
+  expect(rows.lead[1]).toContain('(API prices)')
+  expect(rows.table.join('\n')).toMatch(/Cost without rightsize\s+~\$12\s+~\$6\.00–\$8\.06/)
+  expect(rows.notes.join(' ')).toContain('Prompts left alone (70 of 71)')
+  expect(rows.notes.join(' ')).toContain('cost 50% of the estimate, the low end')
 })
 
 test('check: when the correction removes the saving, it says so', () => {
@@ -63,6 +81,7 @@ test('check: when the correction removes the saving, it says so', () => {
   expect(c.ok).toBe(true)
   if (!c.ok) return
   const rows = checkRows(c, true)
-  expect(rows.table.join('\n')).toMatch(/Saving, corrected\s+~\$.* more|about even/)
-  expect(rows.notes[0]).toContain('API prices')
+  expect(rows.table.join('\n')).toMatch(/Saved\s+~\$\S+\s+(~\$.* more|about even)/)
+  expect(rows.lead[0]).toMatch(/^After checking against real costs, rightsize did not save/)
+  expect(rows.lead[1]).toContain('API prices')
 })

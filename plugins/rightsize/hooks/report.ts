@@ -1125,7 +1125,7 @@ export function buildReport(
   // blocks go in code fences, and prose is left for it to wrap.
   const md = opts.markdown === true
   const indent = (rows: readonly string[]) => {
-    const out = rows.map(r => `  ${r}`)
+    const out = rows.map(r => (r ? `  ${r}` : r))
     return md && out.length ? ['```', ...out, '```'] : out
   }
   const para = (text: string, first = '', rest = '') => (md ? [text] : wrap(text, first, rest || first, 78))
@@ -1153,7 +1153,7 @@ export function buildReport(
   // Saving check: prompts rightsize left alone show how far its "staying" prediction is off; the changed prompts are re-priced by it (ADR 0055).
   const check = checkRows(savingCheck(month), sub)
   const checkTitle = `SAVING CHECK (last 30 days${sub ? ', API prices' : ''})`
-  if (check.table.length || check.notes.length) out.push(...(check.table.length ? section(checkTitle, check.table) : ['', checkTitle]), ...check.notes.flatMap(n => para(n, md ? '' : '  ')))
+  if (check.table.length || check.notes.length) out.push('', checkTitle, ...check.lead.flatMap(n => para(n, md ? '' : '  ')), ...indent(check.table), ...check.notes.flatMap(n => para(n, md ? '' : '  ')))
   // Did it work?: each setting you changed, your prompts after it against before it (ADR 0054). Measured, not estimated.
   const worked = resultRows(results(lines, opts.changes ?? [], opts.now))
   if (worked.length) out.push(...section('DID IT WORK? (measured on your prompts)', worked))

@@ -183,6 +183,7 @@ A band above the prompt (CLI and desktop app; VS Code and the mobile app keep th
 - **Trim savings**: with trim installed, the tokens trim saved per feature.
 - **Starting point**: what your last 30 days would have cost from Sonnet and Opus at medium and high.
 - **Accuracy**: how often Haiku's judgement was wrong, how the spot-checks went, hand-downs paused, how far the estimates were off, and close calls.
+- **Estimates tuned**: one line on the calibration above: when it was last saved, how many runs it has measured, and its factor for each kind of work in the main chat (the five kinds with the most runs, then a count). A factor of 1.00x means the estimates matched the cost; 1.20x means turns cost 20% more than the raw estimate. The Saving check reads each run line's logged `stay`, the calibrated estimate; the line also logs `stayRaw`, the same estimate before calibration, and `estimate`, the raw estimate of the route taken.
 - **Not counted as savings**: a count and a reason for each kind of turn that got no saving or went off course.
 - **Time**: per task: Claude's time (median and 90th percentile), time to done (from your first prompt to the last turn's end, including your own time), the rating's delay and how many prompts used up the 12-second budget, and Claude's time on tasks handed to a cheaper model against tasks that stayed. Time is reported and never used to choose a route.
 - **Whole tasks**: what finished tasks cost against what rightsize estimated for them, from 5 finished tasks.

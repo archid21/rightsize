@@ -1,6 +1,7 @@
 import { expect, test } from 'claude-code/testing'
-import { SESSION_TOTAL, accuracyRows, addTotals, foldLifetime, parseLifetime, type Lifetime, type RunLine, bandShareText, FIXED_REVIEW_PCT, buildReport, costTag, counterfactual, fixedLine, keepWarmLine, outputShareLine, parseLines, problems, sessionTotal, shareMessage, shareText, span, taskActual, taskEstimated, taskExtra, taskStay, tieCounts, totals, usedTag, watchLine, wholeTaskRows, wholeTasks, windowCostText, windowRates } from './report'
-import { DEFAULT_PRICES } from './cost'
+import { SESSION_TOTAL, accuracyRows, calibrationLine, addTotals, foldLifetime, parseLifetime, type Lifetime, type RunLine, bandShareText, FIXED_REVIEW_PCT, buildReport, costTag, counterfactual, fixedLine, keepWarmLine, outputShareLine, parseLines, problems, sessionTotal, shareMessage, shareText, span, taskActual, taskEstimated, taskExtra, taskStay, tieCounts, totals, usedTag, watchLine, wholeTaskRows, wholeTasks, windowCostText, windowRates } from './report'
+import { DEFAULT_PRICES, type Calibration } from './cost'
+import { savingCheck } from './check'
 import type { StartBlock } from './start'
 
 const NOW = Date.parse('2026-10-23T18:00:00.000Z')
@@ -1266,4 +1267,40 @@ test('the report shows the output line after what rightsize did and before the r
   expect(summary([measuredRun({ at: ago(40) })]), 'measured turns older than the period: no line').not.toContain('Output was')
   expect(summary(lines, { subscription: true })).toContain('Output was 21% of cost (API prices): ')
   expect(summary(lines, { markdown: true })).toContain('Output was 21% of cost: 7% thinking, 2% text, 12% code written.')
+})
+
+test('tuning line (P-21): last updated, runs measured, a factor per kind of work; none before a run is measured', () => {
+  expect(calibrationLine({}, ago(1))).toBeUndefined()
+  expect(calibrationLine({ 'cache:effort-switch': { n: 20, ratio: 0 } }, ago(1)), 'the switch share is no kind of work').toBeUndefined()
+  const cal: Calibration = {
+    'debug:main': { n: 40, ratio: 1.3 },
+    'debug:main:opus': { n: 5, ratio: 9 },
+    'lookup:main': { n: 10, ratio: 0.8 },
+    'lookup:delegate': { n: 4, ratio: 0.5 },
+    'other:main': { n: 20, ratio: 1 },
+  }
+  // Runs: 40 + 10 + 4 + 20 (the model keys repeat the same runs). Debug has the most main-chat runs, so it comes first; 10 runs blend halfway from 1.
+  expect(calibrationLine(cal, '2026-10-23T18:00:00.000Z')).toBe(
+    'Estimates tuned after each rated turn: last updated Oct 23; 74 runs measured. Factor by kind of work, in the main chat (1.00x means the estimate matched the cost): debug 1.30x, unclassified 1.00x, lookup 0.90x.',
+  )
+  expect(calibrationLine(cal), 'a save time that was never stored').toContain('last updated not recorded;')
+  expect(calibrationLine(cal, 'garbage')).toContain('last updated not recorded;')
+  const many: Calibration = Object.fromEntries(['lookup', 'search', 'bulk-edit', 'extract', 'summarize', 'feature', 'debug'].map((t, i) => [`${t}:main`, { n: 40 - i, ratio: 1.1 }]))
+  const line = calibrationLine(many, ago(0)) ?? ''
+  expect(line, 'five kinds are named, the rest counted').toContain('lookup 1.10x, search 1.10x, bulk-edit 1.10x, extract 1.10x, summarize 1.10x, and 2 more.')
+})
+
+test('tuning line is in the details view only', () => {
+  const calibration = { cal: { 'lookup:main': { n: 20, ratio: 1.2 } } as Calibration, at: ago(2) }
+  const opts = { now: NOW, session: 's1', subscription: false, calibration }
+  const lines = [run({})]
+  expect(buildReport(lines, [], { ...opts, details: true })).toContain('Estimates tuned after each rated turn: last updated Oct 21; 20 runs measured.')
+  expect(buildReport(lines, [], opts)).not.toContain('Estimates tuned')
+  expect(buildReport(lines, [], { now: NOW, session: 's1', subscription: false, details: true }), 'no calibration passed').not.toContain('Estimates tuned')
+})
+
+test('the Saving check reads the logged stay, and the raw stayRaw beside it changes nothing', () => {
+  const lines = Array.from({ length: 40 }, (_, i) => run({ at: ago(i % 20), type: 'lookup', actual: 0.1, stay: 0.1, stayRaw: 0.05 }))
+  const bare = lines.map(({ stayRaw: _raw, ...rest }) => rest)
+  expect(savingCheck(lines)).toEqual(savingCheck(bare))
 })

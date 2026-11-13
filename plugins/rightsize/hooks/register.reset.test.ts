@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { CAL_STORE } from './cost'
+import { CAL_AT_STORE, CAL_STORE } from './cost'
 import { FIXED_ROWS, KEYS, PANE_KEYS, SETTINGS, type SettingKey, plainTitle } from './settings'
 import { RUNS_FILE, LOG_PATH, LEGACY_RUNS, LOOKUP, DEBUG, NO_ONE, SEARCH, NO_CHANGE, FREE_SWITCHES, cellsOf, engine, drive, settle, DAY, last, bandText, LOWER } from './testkit'
 
@@ -59,6 +59,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   }
   const MEASURE_STORE = {
     [CAL_STORE]: { ...FREE_SWITCHES, 'lookup:main': { n: 5, ratio: 1.5 } },
+    [CAL_AT_STORE]: '2026-11-01T00:00:00.000Z',
     ties: 7,
     spotChecks: 3,
     startCheckedAt: 1_800_000_000_000 - DAY,
@@ -294,7 +295,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
       h.answers = { Reset: choice, Confirm: 'Yes' }
       const out = (await d.command('reset')).text ?? ''
       expect(out).toContain('Cost measurement restarted: rightsize is back to its starting estimates and relearns from your next prompts.')
-      for (const key of [CAL_STORE, 'ties', 'spotChecks', 'startCheckedAt', 'startSnooze']) expect(h.store[key], key).toBeNull()
+      for (const key of [CAL_STORE, CAL_AT_STORE, 'ties', 'spotChecks', 'startCheckedAt', 'startSnooze']) expect(h.store[key], key).toBeNull()
       expect(h.store.measureFrom).toBe(new Date(h.now).toISOString())
       expect(await settingsText(d), 'in memory too').toContain('Measured runs: 0')
       expect(h.files[RUNS], 'the run log is kept, line for line').toBe(log)

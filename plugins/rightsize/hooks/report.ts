@@ -1,4 +1,4 @@
-import { MISS_BLOCK, TIER_NAME, isTier, money } from './cost'
+import { type Calibration, MISS_BLOCK, TASK_TYPES, TIER_NAME, calKey, factor, isTier, money } from './cost'
 import { STEP_PROVE } from './steps'
 import { MISS_MIN, checkTotals, missRates, missTotals } from './misses'
 import type { StartBlock } from './start'
@@ -70,6 +70,8 @@ export type RunLine = {
   /** Calibrated estimates: of the route taken, and of staying at the person's own level and model. */
   taken?: number
   stay?: number
+  /** `stay` before calibration (0.13 on), logged beside it. `estimate` is the same for the route taken; `taken` is its calibrated form. */
+  stayRaw?: number
   actual?: number
   /** The model that rated the prompt: sonnet, or haiku (chosen in Rater, or the fallback). */
   rater?: 'sonnet' | 'haiku'
@@ -775,6 +777,30 @@ function calibrationRow(runs: readonly RunLine[]) {
   return ['Estimates', `${last.toFixed(1)}x off, ${trend} ${first.toFixed(1)}x in the first ${n} runs`]
 }
 
+/** Kinds of work named on the tuning line; the rest are counted. */
+const TUNED_SHOWN = 5
+
+/**
+ * The details view's line on how rightsize tunes its estimates (P-21). It reads the calibration (cost.ts), which moves the
+ * estimates toward what turns really cost after every rated turn: `last updated` is when it was last saved, the runs are
+ * those measured, and each factor is a kind of work's main-chat estimate multiplier (1.0x: the estimate matched the cost).
+ * Nothing until a run has been measured.
+ */
+export function calibrationLine(cal: Calibration, at?: string): string | undefined {
+  const routes = ['main', 'delegate', 'subagent'] as const
+  const runs = TASK_TYPES.reduce((sum, t) => sum + routes.reduce((n, r) => n + (cal[calKey(t, r)]?.n ?? 0), 0), 0)
+  if (runs <= 0) return undefined
+  const kinds = TASK_TYPES.flatMap(t => {
+    const e = cal[calKey(t, 'main')]
+    return e ? [{ t, n: e.n, f: factor(cal, calKey(t, 'main')) }] : []
+  }).sort((a, b) => b.n - a.n)
+  const shown = kinds.slice(0, TUNED_SHOWN).map(k => `${k.t === 'other' ? 'unclassified' : k.t} ${k.f.toFixed(2)}x`)
+  const more = kinds.length > TUNED_SHOWN ? `, and ${kinds.length - TUNED_SHOWN} more` : ''
+  const on = at && Number.isFinite(Date.parse(at)) ? new Date(Date.parse(at)).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'America/Los_Angeles' }) : 'not recorded'
+  const factors = shown.length ? ` Factor by kind of work, in the main chat (1.00x means the estimate matched the cost): ${shown.join(', ')}${more}.` : ''
+  return `Estimates tuned after each rated turn: last updated ${on}; ${plural(runs, 'run')} measured.${factors}`
+}
+
 /** How good the ratings and estimates were: Haiku's misses, Sonnet's checks, what is paused for them, and the estimate error. */
 export function accuracyRows(lines: readonly RunLine[], pause: number | null = MISS_BLOCK, from = 0) {
   const { rows, paused, note } = haikuRows(lines, pause, from)
@@ -1108,7 +1134,7 @@ export function trimRows(trim: TrimSavings | undefined) {
 export function buildReport(
   lines: readonly RunLine[],
   switches: readonly SwitchLine[],
-  opts: { now: number; session: string; subscription: boolean; start?: StartBlock; pause?: number | null; measureFrom?: string; markdown?: boolean; watching?: boolean; lifetime?: Lifetime; details?: boolean; trim?: TrimSavings; changes?: readonly ChangeLine[]; contextWindow?: number; trimInstalled?: boolean },
+  opts: { now: number; session: string; subscription: boolean; start?: StartBlock; pause?: number | null; measureFrom?: string; markdown?: boolean; watching?: boolean; lifetime?: Lifetime; details?: boolean; trim?: TrimSavings; changes?: readonly ChangeLine[]; contextWindow?: number; trimInstalled?: boolean; calibration?: { cal: Calibration; at?: string } },
 ) {
   const since = (days: number) => (l: { at: string }) => opts.now - Date.parse(l.at) <= days * DAY
   const month = lines.filter(since(30))
@@ -1201,6 +1227,8 @@ export function buildReport(
     const ties = thirty.ties && thirty.ties.guided + thirty.ties.explored > 0 ? [['Close calls', `${thirty.ties.guided} guided, ${thirty.ties.explored} explored`]] : []
     const acc = [...accuracy.rows, ...ties]
     if (acc.length) out.push(...section('ACCURACY', grid(acc)))
+    const tuned = opts.calibration ? calibrationLine(opts.calibration.cal, opts.calibration.at) : undefined
+    if (tuned) out.push('', ...para(tuned))
     const problem = problems(month, switches.filter(since(30)), sub)
     out.push(...(problem.length ? section('NOT COUNTED AS SAVINGS', grid(problemRows(problem))) : ['', 'NOT COUNTED AS SAVINGS', md ? 'Nothing yet.' : '  Nothing yet.']))
     // Time is measured and reported here; it never chooses a route.

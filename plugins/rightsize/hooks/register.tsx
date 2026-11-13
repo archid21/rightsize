@@ -77,6 +77,7 @@ import {
   type SessionSpend,
   type Usage,
   CAL_STORE,
+  CAL_AT_STORE,
   routeFactor,
   rebaseCal,
   lowerSwitches,
@@ -330,6 +331,8 @@ type Run = {
   rawDelegate?: number
   /** Calibrated estimate of staying at the normal level, for the report. */
   stay: number
+  /** The same estimate before calibration: logged beside `stay` (P-21) so the log shows what calibration changed. */
+  rawStay: number
   /** The session's cost ledger (/cost) when the turn's first request went out; undefined where the host keeps none. */
   ledgerStart?: number
   /** Token counts priced from prices.json: the fallback when there is no ledger. */
@@ -1058,6 +1061,7 @@ async function mergeCal($: EngineInterface) {
     let stored = parseCalibration(await $.store.get(CAL_STORE))
     for (const s of batch) stored = learn(stored, s.key, s.sample)
     await $.store.set(CAL_STORE, stored)
+    await $.store.set(CAL_AT_STORE, new Date(await $.clock.now()).toISOString()).catch(() => undefined)
     // Samples learned while this save ran stay pending, on top of the merged copy.
     cal = unsaved.reduce((c, s) => learn(c, s.key, s.sample), stored)
   } catch {
@@ -1944,6 +1948,7 @@ function startRun(r: Rating, s: Situation, d: Decision, p: Plan, base: Level, ov
     rawMain: rawMainCost(r, swOn ?? s, level),
     rawDelegate: d.delegate ? rawDelegateCost(r, s, d.delegate.tier, d.delegate.level) : undefined,
     stay: mainCost(r, s, base, 0),
+    rawStay: rawMainCost(r, s, base),
     change,
     offered: planChange(p),
     takenMain: sw ? swCost : mainCost(r, s, level, switches),
@@ -2362,6 +2367,8 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
       measured: ledger > 0 ? 'ledger' : 'tokens',
       tokens: round(tokens),
       stay: round(run.stay),
+      // Before calibration (P-21): `stay` and `taken` are calibrated, `estimate` is the raw estimate of the route taken.
+      stayRaw: round(run.rawStay),
       taken: round(delegated ? (run.takenDelegate ?? run.takenMain) : run.takenMain),
       change: run.change,
       offered: run.offered,
@@ -4568,7 +4575,7 @@ async function resetMeasurement($: EngineInterface) {
   unsaved = []
   stepState = NO_STEPS
   unsavedSteps = []
-  for (const key of [CAL_STORE, STEP_STORE, 'ties', SPOT_STORE, 'startCheckedAt', 'startSnooze']) await $.store.set(key, null).catch(() => undefined)
+  for (const key of [CAL_STORE, CAL_AT_STORE, STEP_STORE, 'ties', SPOT_STORE, 'startCheckedAt', 'startSnooze']) await $.store.set(key, null).catch(() => undefined)
   measureFrom = await $.clock.now()
   await $.store.set('measureFrom', new Date(measureFrom).toISOString()).catch(() => undefined)
   await refreshMisses($)
@@ -5561,10 +5568,11 @@ export const register: Register = (on, options) => {
       const trim = await readTrim($, now)
       const window = (await usageNow($))?.context?.window
       const changes = await readChanges($)
+      const calAt = await $.store.get(CAL_AT_STORE).catch(() => undefined)
       const start = startBlock(adviseStart(runs, await startContext($), now), billing === 'subscription', money)
       // The row's text is the plain report (the terminal, -p, the SDK). Every other surface draws the Markdown form, chosen
       // per surface when the row draws (its CommandOutput hook): $.session.surfaces() here can miss the desktop app.
-      const opts = { now, session: sessionId, subscription: billing === 'subscription', start, pause: missBlock, watching, details: arg === 'report details', trimInstalled: await trimInstalled($), ...(typeof window === 'number' && window > 0 ? { contextWindow: window } : {}), ...(trim ? { trim } : {}), changes, ...(lifetime ? { lifetime } : {}), ...(measureFrom ? { measureFrom: new Date(measureFrom).toISOString() } : {}) }
+      const opts = { now, session: sessionId, subscription: billing === 'subscription', start, pause: missBlock, watching, details: arg === 'report details', trimInstalled: await trimInstalled($), ...(typeof window === 'number' && window > 0 ? { contextWindow: window } : {}), ...(trim ? { trim } : {}), changes, calibration: { cal, ...(typeof calAt === 'string' ? { at: calAt } : {}) }, ...(lifetime ? { lifetime } : {}), ...(measureFrom ? { measureFrom: new Date(measureFrom).toISOString() } : {}) }
       const text = buildReport(runs, switches, opts)
       reportMarkdown.set(text, buildReport(runs, switches, { ...opts, markdown: true }))
       while (reportMarkdown.size > 20) reportMarkdown.delete(reportMarkdown.keys().next().value as string)

@@ -456,6 +456,8 @@ export function rebaseCal(cal: Calibration, factor: number): Calibration {
  * so the old key is ignored, never read, migrated or deleted.
  */
 export const CAL_STORE = 'calibration-v2'
+/** When calibration was last saved (ISO, UTC): the report's "last updated". Cleared with CAL_STORE. */
+export const CAL_AT_STORE = 'calibration-at'
 
 // Work a model does on the same task, as multiples of Sonnet's: `out` scales output tokens
 // (thinking is billed as output and grows with effort) and `steps` scales tool calls, which

@@ -339,6 +339,21 @@ export function isTestCommand(tool: string, input: Record<string, unknown>): boo
   return tool === 'Bash' && typeof input.command === 'string' && TEST_RUNNER.test(input.command)
 }
 
+/** A tool error's rough kind, for the log and the report's LOWERING table (P-39). It decides nothing. */
+export type ErrorKind = 'test failed' | 'file not found' | 'edit failed' | 'command failed' | 'other'
+
+/** What stepped a lowered turn back up: the tool whose error it was, and the error's kind (P-39). */
+export type StepUpCause = { tool: string; kind: ErrorKind }
+
+/** The kind of one counted tool error: a test run, a missing file, an edit tool's error, any other Bash error, else other. */
+export function errorKind(tool: string, input: Record<string, unknown>, text: string): ErrorKind {
+  if (isTestCommand(tool, input)) return 'test failed'
+  if (/no such file or directory|\bENOENT\b|file does not exist|file not found/i.test(text)) return 'file not found'
+  if (isEditTool(tool)) return 'edit failed'
+  if (tool === 'Bash') return 'command failed'
+  return 'other'
+}
+
 /**
  * Tools that only report where the work stands: the app's task list and next-step box, Claude Code's own
  * task tools and a question to the person. Their calls repeat by design (`update_plan {"advance": true}` once

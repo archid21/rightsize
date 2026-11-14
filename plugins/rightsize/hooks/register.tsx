@@ -124,7 +124,7 @@ import {
 } from './settings'
 import { BRIEF_MAX, cutRequest, parseRating, ratingPrompt, ratingSystem } from './rate'
 import { isApprovalStep } from './approval'
-import { HANDBACK, LIMITS, type Signals, type Struggle, blockedError, callKey, hookFailed, isBookkeeping, isEditTool, helperCap, SPEND_ASK_AT, SPEND_AUTO_MAX, spendMultiple, isTestCommand, noMatchExit, noSignals, noteCall, oneUp, refusedByHook, refusedByPerson, struggle, testsOutcome } from './struggle'
+import { HANDBACK, LIMITS, type Signals, type StepUpCause, type Struggle, blockedError, errorKind, callKey, hookFailed, isBookkeeping, isEditTool, helperCap, SPEND_ASK_AT, SPEND_AUTO_MAX, spendMultiple, isTestCommand, noMatchExit, noSignals, noteCall, oneUp, refusedByHook, refusedByPerson, struggle, testsOutcome } from './struggle'
 import { watchCheck, watchRange, type WatchCheck } from './check'
 import { type Change, type HelperLine, type Lifetime, type RunLine, type SwitchLine, type Windows, SESSION_TOTAL, SESSION_TOTAL_FROM, bandShareText, buildReport, costTag, foldLifetime, parseLifetime, parseLines, ratedInSession, sessionTotal, shareMessage, shareOf, usedTag, windowCostText, windowRates } from './report'
 import { CACHE_LIFE_KEY, isTracked, parseChanges, type ChangeLine } from './results'
@@ -360,6 +360,10 @@ type Run = {
   steppedUp: boolean
   /** Why the turn stepped back up: the 5-step rule alone ('steps'), or a tool error ('error', which counts as a miss). */
   steppedUpBy?: 'steps' | 'error'
+  /** The turn's first counted tool error: on a lowered turn it is what steps the turn back up (P-39). */
+  firstError?: StepUpCause
+  /** What stepped a lowered turn back up: the tool and the kind of its error (P-39). */
+  stepUpCause?: StepUpCause
   delegated: boolean
   change: Change
   offered: Change
@@ -2414,6 +2418,7 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
       auto: run.auto,
       steppedUp: run.steppedUp,
       ...(run.steppedUpBy ? { steppedUpBy: run.steppedUpBy } : {}),
+      ...(run.stepUpCause ? { stepUpCause: run.stepUpCause } : {}),
       ...(run.escalations.length ? { escalations: run.escalations } : {}),
       estimate: Number((delegated ? (run.rawDelegate ?? 0) : run.rawMain).toFixed(5)),
       actual: round(actual),
@@ -5830,7 +5835,7 @@ export const register: Register = (on, options) => {
       const start = startBlock(adviseStart(runs, await startContext($), now), billing === 'subscription', money)
       // The row's text is the plain report (the terminal, -p, the SDK). Every other surface draws the Markdown form, chosen
       // per surface when the row draws (its CommandOutput hook): $.session.surfaces() here can miss the desktop app.
-      const opts = { now, session: sessionId, subscription: billing === 'subscription', start, pause: missBlock, watching, details: arg === 'report details', trimInstalled: await trimInstalled($), ...(typeof window === 'number' && window > 0 ? { contextWindow: window } : {}), ...(trim ? { trim } : {}), changes, calibration: { cal, ...(typeof calAt === 'string' ? { at: calAt } : {}) }, ...(lifetime ? { lifetime } : {}), ...(measureFrom ? { measureFrom: new Date(measureFrom).toISOString() } : {}) }
+      const opts = { now, session: sessionId, subscription: billing === 'subscription', start, pause: missBlock, watching, details: arg === 'report details', trimInstalled: await trimInstalled($), ...(typeof window === 'number' && window > 0 ? { contextWindow: window } : {}), ...(trim ? { trim } : {}), changes, calibration: { cal, ...(typeof calAt === 'string' ? { at: calAt } : {}) }, lowering: { misses, pause: missBlock, minTasks, counts }, ...(lifetime ? { lifetime } : {}), ...(measureFrom ? { measureFrom: new Date(measureFrom).toISOString() } : {}) }
       const text = buildReport(runs, switches, opts)
       reportMarkdown.set(text, buildReport(runs, switches, { ...opts, markdown: true }))
       while (reportMarkdown.size > 20) reportMarkdown.delete(reportMarkdown.keys().next().value as string)
@@ -6210,6 +6215,8 @@ export const register: Register = (on, options) => {
       if (!run.steppedUp) {
         run.steppedUp = true
         run.steppedUpBy = 'error'
+        if (run.firstError) run.stepUpCause = run.firstError
+        await log($, `effort back to ${run.normal} on a lowered ${run.rating.type} turn: ${run.firstError ? `${run.firstError.tool} error (${run.firstError.kind})` : 'a tool error'}`)
         await setBand($, { text: `Effort back to ${run.normal}: the task got harder.`, acted: true, rule: 'lower' })
         await showStatus($)
       }
@@ -6397,7 +6404,10 @@ export const register: Register = (on, options) => {
       // A grep, diff or test that exits 1 found nothing: that is its answer, not a failure (ADR 0026).
       const noMatch = isError && !blocked && noMatchExit(String(e.tool), e as Record<string, unknown>, errorText(result))
       if (blocked) active.blocked += 1
-      else if (isError && !noMatch) active.errors += 1
+      else if (isError && !noMatch) {
+        active.errors += 1
+        active.firstError ??= { tool: String(e.tool), kind: errorKind(String(e.tool), e as Record<string, unknown>, errorText(result)) }
+      }
       if (!(result as { deny?: string }).deny && !refused && isApprovalStep(String(e.tool), e as Record<string, unknown>)) active.approvalSteps += 1
       // A refused call (a hook's deny, or the person's no) says nothing about the work, and neither does bookkeeping.
       if (!(result as { deny?: string }).deny && !refused && !blocked && !isBookkeeping(String(e.tool))) active.signals = noteCall(active.signals, callKey(String(e.tool), e as Record<string, unknown>), isError && !noMatch, !noMatch && isTestCommand(String(e.tool), e as Record<string, unknown>), isEditTool(String(e.tool)))

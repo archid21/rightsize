@@ -1,5 +1,6 @@
 import { type Calibration, MISS_BLOCK, TASK_TYPES, TIER_NAME, calKey, factor, isTier, money } from './cost'
 import { STEP_PROVE } from './steps'
+import type { StepUpCause } from './struggle'
 import { MISS_MIN, checkTotals, missRates, missTotals } from './misses'
 import type { StartBlock } from './start'
 import type { TrimSavings, TrimSum } from './trim'
@@ -67,6 +68,8 @@ export type RunLine = {
   steppedUp?: boolean
   /** Why it stepped up: the 5-step rule alone ('steps', not a miss) or a tool error ('error', a miss). Absent on older lines. */
   steppedUpBy?: 'steps' | 'error'
+  /** What stepped a lowered turn back up: the tool and the kind of its error (P-39). Absent on older lines. */
+  stepUpCause?: StepUpCause
   /** Raised mid-turn when the turn showed it was struggling. */
   escalations?: { step: number; from: string; to: string; why: string }[]
   aborted?: boolean
@@ -823,6 +826,47 @@ export function accuracyRows(lines: readonly RunLine[], pause: number | null = M
   return { rows: [...rows, ...(calibration ? [calibration] : [])], ...(paused ? { paused } : {}), ...(note ? { note } : {}) }
 }
 
+/** What the pause decision reads (P-39): the miss rate per `${type}:${tier}` it uses, its line (null: never pause), and the tasks each route needs logged first. */
+export type LoweringState = { misses: Readonly<Record<string, number>>; pause: number | null; minTasks: number; counts: Readonly<Record<string, number>> }
+
+/**
+ * The details view's LOWERING table (P-39): one row per task type and model that rightsize lowered, most lowered first. It shows
+ * the lowered turns, how many stepped back up after a tool error with the most common cause, the real failures (the person
+ * corrected, undid or 👎 the turn, or its last test run failed), the miss rate the pause decision uses (misses.ts: priors and the
+ * first-miss forgiveness included), and whether lowering that work on that model is paused. It changes nothing. Empty with no
+ * lowered turns.
+ */
+export function loweringRows(lines: readonly RunLine[], st: LoweringState): string[][] {
+  const lowered = lines.filter(l => isRun(l) && !l.aborted && l.change === 'lower' && typeof l.type === 'string' && isTier(l.tier))
+  if (!lowered.length) return []
+  const flagged = new Set<string>()
+  for (const l of lines) if ((l.kind === 'corrected' || l.kind === 'undone' || (l.kind === 'feedback' && l.value === 'down')) && l.ref) flagged.add(l.ref)
+  const routes = new Map<string, RunLine[]>()
+  for (const l of lowered) {
+    const key = `${l.type}:${l.tier}`
+    routes.set(key, [...(routes.get(key) ?? []), l])
+  }
+  const rows: string[][] = [['Work on model', 'Lowered', 'Stepped up (most common cause)', 'Failed', 'Miss rate', 'Lowering']]
+  const pct = (x: number) => `${Math.round(x * 100)}%`
+  for (const [key, ls] of [...routes].sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]))) {
+    const [type, tier] = key.split(':') as [string, string]
+    const up = ls.filter(l => l.steppedUp && l.steppedUpBy !== 'steps')
+    const causes = new Map<string, number>()
+    for (const l of up) {
+      const c = l.stepUpCause ? `${l.stepUpCause.tool} ${l.stepUpCause.kind}` : 'not logged'
+      causes.set(c, (causes.get(c) ?? 0) + 1)
+    }
+    const top = [...causes].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]
+    const failed = ls.filter(l => l.tests === 'failed' || (l.id !== undefined && flagged.has(l.id))).length
+    const rate = st.misses[key] ?? 0
+    const unproven = st.minTasks > (st.counts[key] ?? 0)
+    const status = unproven ? `waits: ${st.counts[key] ?? 0} of ${st.minTasks} tasks logged` : st.pause !== null && rate >= st.pause ? `paused (line ${pct(st.pause)})` : st.pause === null ? 'on (never pauses)' : `on (pauses at ${pct(st.pause)})`
+    const what = isTier(tier) ? `${type === 'other' ? 'unclassified' : type} on ${TIER_NAME[tier]}` : key
+    rows.push([what, String(ls.length), up.length ? `${up.length}${top ? ` (${top[0]})` : ''}` : '0', String(failed), pct(rate), status])
+  }
+  return rows
+}
+
 /** One thing that was off: `n` of `unit` (singular, plural), why, and any detail lines. */
 export type Problem = { n: number; unit: [string, string]; reason: string; detail?: string[] }
 
@@ -1149,7 +1193,7 @@ export function trimRows(trim: TrimSavings | undefined) {
 export function buildReport(
   lines: readonly RunLine[],
   switches: readonly SwitchLine[],
-  opts: { now: number; session: string; subscription: boolean; start?: StartBlock; pause?: number | null; measureFrom?: string; markdown?: boolean; watching?: boolean; lifetime?: Lifetime; details?: boolean; trim?: TrimSavings; changes?: readonly ChangeLine[]; contextWindow?: number; trimInstalled?: boolean; calibration?: { cal: Calibration; at?: string } },
+  opts: { now: number; session: string; subscription: boolean; start?: StartBlock; pause?: number | null; measureFrom?: string; markdown?: boolean; watching?: boolean; lifetime?: Lifetime; details?: boolean; trim?: TrimSavings; changes?: readonly ChangeLine[]; contextWindow?: number; trimInstalled?: boolean; calibration?: { cal: Calibration; at?: string }; lowering?: LoweringState },
 ) {
   const since = (days: number) => (l: { at: string }) => opts.now - Date.parse(l.at) <= days * DAY
   const month = lines.filter(since(30))
@@ -1242,6 +1286,9 @@ export function buildReport(
     const ties = thirty.ties && thirty.ties.guided + thirty.ties.explored > 0 ? [['Close calls', `${thirty.ties.guided} guided, ${thirty.ties.explored} explored`]] : []
     const acc = [...accuracy.rows, ...ties]
     if (acc.length) out.push(...section('ACCURACY', grid(acc)))
+    // Lowering evidence (P-39): per route, what lowering did and how close it is to pausing. Lines from before Cost measurement restarted are left out, as the pause leaves them out.
+    const low = opts.lowering ? loweringRows(month.filter(l => Date.parse(l.at) >= from), opts.lowering) : []
+    if (low.length) out.push(...section('LOWERING (last 30 days)', grid(low, [1, 3, 4])))
     const tuned = opts.calibration ? calibrationLine(opts.calibration.cal, opts.calibration.at) : undefined
     if (tuned) out.push('', ...para(tuned))
     const problem = problems(month, switches.filter(since(30)), sub)

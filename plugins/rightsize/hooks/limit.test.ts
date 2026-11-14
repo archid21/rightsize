@@ -47,7 +47,7 @@ test('the words and ids: Why? says what the compaction does, and the instruction
   expect(isLimitId('compact')).toBe(false)
   expect(COMPACT_TEXT.startsWith('Write the summary as a handoff')).toBe(true)
   const headings = ['Goal:', 'Next action:', 'State:', 'Files:', 'Decisions:', 'Instructions:', 'Open questions:', 'Dead ends:']
-  for (let i = 1; i < headings.length; i++) expect(COMPACT_TEXT.indexOf(headings[i]), headings[i]).toBeGreaterThan(COMPACT_TEXT.indexOf(headings[i - 1]))
+  headings.slice(1).forEach((h, i) => expect(COMPACT_TEXT.indexOf(h), h).toBeGreaterThan(COMPACT_TEXT.indexOf(headings[i] as string)))
   expect(COMPACT_TEXT.indexOf('Goal:')).toBeGreaterThan(0)
   expect(COMPACT_TEXT).toContain("Quote the user's words when they are unclear or are text to reuse, and do not turn an unclear phrase into a rule.")
   expect(COMPACT_TEXT).not.toContain('\n')

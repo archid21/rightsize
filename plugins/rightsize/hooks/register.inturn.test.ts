@@ -107,11 +107,23 @@ test('a call that ends inside the cache’s first life counts no saving', { time
 
 test('the requests stop where they have cost as much as the cold request they avoid', { timeoutMs: 30000 }, async ($, on) => {
   const { h, d } = await session($, on)
-  // A request that wrote the conversation again: the fork missed the cache.
-  h.forkUsage = { input_tokens: 12, output_tokens: 4, cache_read_input_tokens: 0, cache_creation_input_tokens: 150_000 }
+  // Each request read 83% of the 150,500-token conversation from the cache (a hit) and wrote the rest again: about $0.15 each.
+  h.forkUsage = { input_tokens: 12, output_tokens: 4, cache_read_input_tokens: 125_000, cache_creation_input_tokens: 25_500 }
+  const call = await slowCall(h, d, 2)
+  await h.advance(30 * MIN)
+  expect(call.sent(), 'five requests of about $0.15 pass the $0.72 cold request').toBe(5)
+  expect(logOf(h)).toContain('spent, as much as the cold request it avoids')
+  expect(logOf(h)).not.toContain('the cache missed')
+  await call.end()
+})
+
+test('a request that reads under 80% of the conversation from the cache stops the in-turn requests and logs the miss', { timeoutMs: 30000 }, async ($, on) => {
+  const { h, d } = await session($, on)
+  // 150,500 tokens in the conversation: 60,000 read from the cache is a miss.
+  h.forkUsage = { input_tokens: 12, output_tokens: 4, cache_read_input_tokens: 60_000, cache_creation_input_tokens: 90_000 }
   const call = await slowCall(h, d, 2)
   await h.advance(20 * MIN)
   expect(call.sent()).toBe(1)
-  expect(logOf(h)).toContain('in-turn keep warm stopped:')
+  expect(logOf(h)).toContain('in-turn keep warm stopped: the cache missed (the request read 60000 of 150500 tokens)')
   await call.end()
 })

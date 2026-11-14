@@ -3998,7 +3998,7 @@ function armPing($: EngineInterface, gen: number, c: ColdTurn, w: Warming, k: nu
   return armCold($, gen, c.endedAt + k * pingEvery(cacheTtl), () => sendPing($, gen, c, w, k, count))
 }
 
-// Ping `k` of `count`, when its timer fires. A turn running keeps the cache warm itself, and its end starts the next round.
+// Ping `k` of `count`, when its timer fires. A turn running keeps the cache warm itself, and its end starts the next round. The run stops at a failed request and at a cache miss.
 async function sendPing($: EngineInterface, gen: number, c: ColdTurn, w: Warming, k: number, count: number) {
   try {
     if (mainBusy) {
@@ -4019,6 +4019,12 @@ async function sendPing($: EngineInterface, gen: number, c: ColdTurn, w: Warming
       const why = 'status' in r ? `${r.reason}${r.status === null ? '' : ` ${r.status}`}, ${r.error}` : r.reason
       await log($, `keep warm stopped: the request failed (${why})`)
       await endWarm($, w, 'Stopped keeping warm: a request failed')
+      return
+    }
+    // A request that read under 80% of the conversation from the cache missed it: more requests would pay full price again.
+    if (usage && !cacheHeld(usage.cache_read_input_tokens, c.context)) {
+      await log($, `keep warm stopped: the cache missed (the request read ${usage.cache_read_input_tokens} of ${c.context} tokens)`)
+      await endWarm($, w, 'Stopped keeping warm: the cache missed')
       return
     }
     // The planned last request may end a little over: it is the end anyway. Before it, a run that costs more than planned stops.
@@ -4109,7 +4115,7 @@ async function armWait($: EngineInterface, gen: number, w: ToolWait) {
   })
 }
 
-// One in-turn request. It stops at a failed request, and where the requests have cost as much as the cold request they avoid.
+// One in-turn request. It stops at a failed request, at a cache miss, and where the requests have cost as much as the cold request they avoid.
 async function pingWait($: EngineInterface, gen: number, w: ToolWait) {
   const r = await $.model.fork({ prompt: PING_PROMPT }).catch((err: unknown) => ({ isAnswered: false as const, reason: `error: ${err instanceof Error ? err.message : String(err)}`, usage: undefined }))
   const usage = 'usage' in r ? r.usage : undefined
@@ -4122,6 +4128,10 @@ async function pingWait($: EngineInterface, gen: number, w: ToolWait) {
   if (!r.isAnswered) {
     const why = 'status' in r ? `${r.reason}${r.status === null ? '' : ` ${r.status}`}, ${r.error}` : r.reason
     await log($, `in-turn keep warm stopped: the request failed (${why})`)
+    return
+  }
+  if (usage && !cacheHeld(usage.cache_read_input_tokens, w.c.context)) {
+    await log($, `in-turn keep warm stopped: the cache missed (the request read ${usage.cache_read_input_tokens} of ${w.c.context} tokens)`)
     return
   }
   if (w.pings === 1) await log($, `in-turn keep warm: a tool call has run ${Math.round(pingEvery(cacheTtl) / 60_000)} min; keeping ${Math.round(w.c.context / 1000)}K tokens warm, at most ${pingsText(w.most)} (${money(w.c.cold)} cold)`)

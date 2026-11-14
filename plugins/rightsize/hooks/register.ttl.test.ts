@@ -35,6 +35,8 @@ const turn = async (d: ReturnType<typeof drive>, id: string) => {
 test('API billing: 5 minutes for the main conversation and for helpers, so keep warm pings every 4 minutes', { timeoutMs: 30000, options: KEEP_WARM }, async ($, on) => {
   // 150,500 tokens: on a 5-minute cache BIG_TURN's 80,500 cost less to come back cold than the row's size bar.
   const { h, d } = await session($, on, { usage: { ...BIG_TURN, cache_read_input_tokens: 150_000 } })
+  // A request that reads the conversation from the cache, as keep warm should: under 80% would end the run.
+  h.forkUsage = { input_tokens: 12, output_tokens: 4, cache_read_input_tokens: 150_000, cache_creation_input_tokens: 0 }
   await turn(d, 't1')
   expect(logOf(h), 'logged once the first response shows the gateway spend limit').toContain('cache life: 5 minutes (API billing); helpers and forks 5 minutes (default)')
   expect(await statusOf(d)).toContain('Cache life: 5 minutes (API billing) · helpers and forks 5 minutes (default)')

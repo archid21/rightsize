@@ -253,6 +253,19 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(warmLines(h), 'a request that cost nothing is no line').toEqual([])
   })
 
+  test(`keep warm stops when a request reads under 80% of the conversation from the cache, and logs the miss (${surface})`, { timeoutMs: 30000, options: WARM8.options }, async ($, on) => {
+    // 80,500 tokens in the conversation: 40,000 read from the cache is a miss.
+    const { h, d } = await coldSession($, on, { stored: WARM8.stored, fork: { input_tokens: 12, output_tokens: 4, cache_read_input_tokens: 40_000, cache_creation_input_tokens: 40_500 } })
+    await coldTurn(d, 't1')
+    await h.advance(57 * MIN)
+    expect(h.forks.length).toBe(1)
+    expect(coldLog(h)).toContain('keep warm stopped: the cache missed (the request read 40000 of 80500 tokens)')
+    expect(await bandText($, surface)).toMatch(/^Stopped keeping warm: the cache missed/)
+    expect(warmLines(h).length, 'the request that missed still cost money and is a line').toBe(1)
+    await h.advance(4 * HOUR)
+    expect(h.forks.length, 'no further request').toBe(1)
+  })
+
   test(`keep warm stops when there is nothing to fork, and prices a ping with no usage as a cache read of the conversation (${surface})`, { timeoutMs: 30000, options: WARM8.options }, async ($, on) => {
     const { h, d } = await coldSession($, on, { stored: WARM8.stored, fork: undefined })
     await coldTurn(d, 't1')
@@ -400,12 +413,12 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   test(`break-even: pings that cost more than planned stop the run before the cap (${surface})`, { timeoutMs: 30000, options: WARM8_5M.options }, async ($, on) => {
-    // Each ping really cost a third of a cold return (it wrote the conversation again).
-    const { h, d } = await coldSession($, on, { ...FIVE, stored: WARM8_5M.stored, fork: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 50_000 } })
+    // Each ping really cost a fifth of a cold return: it read 83% of the conversation from the cache (a hit) and wrote the rest again.
+    const { h, d } = await coldSession($, on, { ...FIVE, stored: WARM8_5M.stored, fork: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 125_000, cache_creation_input_tokens: 25_500 } })
     await coldTurn(d, 't1')
     await h.advance(HOUR)
-    expect(h.forks.length, 'three pings of $0.25 pass $0.72').toBe(3)
-    expect(coldLog(h)).toContain('keep warm stopped: $0.75 spent, as much as coming back cold')
+    expect(h.forks.length, 'five pings of about $0.15 pass $0.72').toBe(5)
+    expect(coldLog(h)).toContain('keep warm stopped: $0.76 spent, as much as coming back cold')
   })
 
   const HANDOFF = inProfile('Balanced', { beforeCold: 'save a handoff' })

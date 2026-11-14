@@ -1021,7 +1021,7 @@ test('Whole tasks shows with 5 finished tasks: the median ratio, the share over 
   expect(rows[3]).toMatch(/^Extra came from +retries\/rework 0%, helpers 0%, keep warm 14%, other 86%$/)
   // Staying would have cost 1.2 each (6 in all); the tasks cost 0.8+1+1.2+2.5+3 = 8.5: 2.5 more.
   expect(rows[4]).toMatch(/^Saved vs staying +-\$2\.50$/)
-  expect(rows.slice(5).map(r => r.replace(/^Median by type +/, ''))).toEqual(['debug: 1.9x over 2 tasks', 'feature: 0.9x over 2 tasks', 'review: 3.0x over 1 task'])
+  expect(rows.slice(5, rows.findIndex(r => r.startsWith('Outcomes'))).map(r => r.replace(/^Median by type +/, ''))).toEqual(['debug: 1.9x over 2 tasks', 'feature: 0.9x over 2 tasks', 'review: 3.0x over 1 task'])
   expect(titles(text)).toContain('WHOLE TASKS')
   expect(text.split('\n').filter(l => l.length > 80), 'no line past 80 characters').toEqual([])
   expect(rows.join('\n'), 'API billing carries no API-equivalent label here').not.toContain('API-equivalent')
@@ -1040,7 +1040,8 @@ test('Whole tasks on a subscription labels its dollar row API-equivalent, and th
   expect(md[md.indexOf('WHOLE TASKS') + 1]).toBe('```')
   // Only the five types with the most tasks show.
   const six = manyTasks([1, 1, 1, 1, 1, 1, 1], ['a', 'b', 'c', 'd', 'e', 'f', 'a'])
-  const types = sectionOf(report(six), 'WHOLE TASKS').slice(4).map(r => r.replace(/^Median by type +/, '').split(':')[0])
+  const sixRows = sectionOf(report(six), 'WHOLE TASKS')
+  const types = sixRows.slice(4, sixRows.findIndex(r => r.startsWith('Outcomes'))).map(r => r.replace(/^Median by type +/, '').split(':')[0])
   expect(types.length).toBe(5)
   expect(types[0], 'most tasks first').toBe('a')
 })

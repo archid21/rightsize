@@ -431,6 +431,8 @@ export type Rating = {
   continues?: boolean
   /** The prompt says the last reply was wrong or must be undone: an outcome for the route that made it. */
   corrects?: boolean
+  /** The rater said it was not sure how hard the work is: the prompt is left as it is (P-30, ADR 0071). */
+  unsure?: true
   reason: string
 }
 

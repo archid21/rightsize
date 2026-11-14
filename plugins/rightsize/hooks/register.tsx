@@ -276,7 +276,8 @@ const qWorkflow: Question<WorkflowMode> = {
   ],
 }
 /** Why the rater may have seen too little: the request was cut, or a task is in progress and Claude's last reply could not be read. */
-type Unsure = 'cut' | 'missing'
+/** Why the rating may be unreliable: the request was cut, the task's last reply was missing, or the rater said it was not sure (P-30). */
+type Unsure = 'cut' | 'missing' | 'rater'
 
 /** One rated prompt, from prompt.submit until its turn completes. */
 type Run = {
@@ -5989,7 +5990,9 @@ export const register: Register = (on, options) => {
         const noDowngrade = unsure !== undefined && downgrade
         // The task's last turn ended on a failing test run: the work is harder than it looked, so a prompt that continues it is not lowered or handed down either.
         const afterRed = follows && kept.tests === 'failed' && downgrade
-        const unfanned: Plan = noDowngrade ? { kind: 'none', why: 'the context was cut or missing, so no downgrade' } : afterRed ? { kind: 'none', why: 'the last turn of this task ended with a failing test run, so no downgrade' } : fanned
+        // The rater said it could not tell how hard the work is (P-30): the prompt is left as it is, whichever way the plan went.
+        const raterUnsure = r.unsure === true && fanned.kind !== 'none'
+        const unfanned: Plan = raterUnsure ? { kind: 'none', why: 'the rater was not sure how hard this is' } : noDowngrade ? { kind: 'none', why: 'the context was cut or missing, so no downgrade' } : afterRed ? { kind: 'none', why: 'the last turn of this task ended with a failing test run, so no downgrade' } : fanned
         // A window nearly used up: nothing that costs more than staying, unless the matching rule
         // (Raising for more effort, Stronger model for a stronger one) is yours: then it follows your rule.
         const costlier = (unfanned.kind === 'effort' && unfanned.dir === 'raise') || unfanned.kind === 'switch' || (unfanned.kind === 'delegate' && unfanned.dir === 'up')
@@ -6029,7 +6032,8 @@ export const register: Register = (on, options) => {
           await $.state.set({ plugin: 'rightsize', key: 'task' }, { id: run.task, type: r.type, brief: text.slice(0, BRIEF_MAX), prompts: 1 }).catch(() => undefined)
         }
         if (ratedType) run.ratedType = ratedType
-        if (unsure) run.unsure = unsure
+        if (r.unsure) run.unsure = 'rater'
+        else if (unsure) run.unsure = unsure
         run.rater = by
         run.ratingMs = ratingMs
         // A close call the guide broke: kept on the run for the log.
@@ -6039,6 +6043,8 @@ export const register: Register = (on, options) => {
         const note = paceText(skipped || moved, moved ? { from: was, to: movedRules } : undefined)
         const band = watching
           ? watchBand(run, p, s)
+          : raterUnsure
+          ? { text: `No change: the rater was not sure how hard this is, so rightsize left it on ${TIER_NAME[s.tier]} at ${s.level}.`, acted: false }
           : noDowngrade
           ? { text: 'No change: the context was cut or missing, so rightsize did not lower this or hand it to a cheaper model.', acted: false }
           : p !== unfanned
@@ -6054,6 +6060,8 @@ export const register: Register = (on, options) => {
         await setBand($, extras ? { ...band, text: `${band.text} ${extras}`, acted: band.acted || hadIdle } : band, true)
         const did = d.delegate ? `delegate ${d.delegate.tier}` : d.model ? `switch to ${d.model.tier} at ${d.model.level} for the turn` : d.level ? `${d.auto ? 'auto ' : ''}${d.level} for the prompt` : d.session ? `${d.session} for the session` : 'no change'
         const fit = TIERS.map(t => `${t[0]}:${r.fit[t] ?? (r.fit[t] === null ? 'no' : '?')}`).join(' ')
+        if (raterUnsure) await log($, `rater not sure: prompt left alone (the plan was ${fanned.kind}${'dir' in fanned ? ` ${fanned.dir}` : ''})`)
+        else if (r.unsure) await log($, 'rater not sure: no change was planned anyway')
         if (noDowngrade) await log($, `no downgrade: context ${unsure}`)
         if (afterWorkflow !== planned) await log($, `hand-off to ${planned.kind === 'delegate' ? planned.tier : '?'} skipped: a workflow ran this session`)
         if (gated.dropped) await log($, gated.dropped)

@@ -84,7 +84,7 @@ export type RunLine = {
   /** The rating call's cost. */
   overhead?: number
   /** A run line: why the rater may have seen too little. 'cut': the request was longer than the rater is shown, so its middle was cut. 'missing': a task was in progress but Claude's last reply could not be read. Neither lowers effort or hands work to a cheaper model. */
-  unsure?: 'cut' | 'missing'
+  unsure?: 'cut' | 'missing' | 'rater'
   /** An unrated line: why the rating did not come (timeout, unreadable answer, and so on). A dropped or unbound line: why the prompt did not run. */
   reason?: string
   /** What effort-switch cache misses cost. */
@@ -823,7 +823,11 @@ export function calibrationLine(cal: Calibration, at?: string): string | undefin
 export function accuracyRows(lines: readonly RunLine[], pause: number | null = MISS_BLOCK, from = 0) {
   const { rows, paused, note } = haikuRows(lines, pause, from)
   const calibration = calibrationRow(lines.filter(l => isRun(l) && !l.aborted))
-  return { rows: [...rows, ...(calibration ? [calibration] : [])], ...(paused ? { paused } : {}), ...(note ? { note } : {}) }
+  // The rater's "not sure" (P-30): those prompts were left as they were. A high share would cost savings, so it shows.
+  const rated = lines.filter(l => isRun(l) && Date.parse(l.at) >= from)
+  const notSure = rated.filter(l => l.unsure === 'rater').length
+  const unsureRow = notSure ? [['Rater not sure', `${notSure} of ${plural(rated.length, 'rated prompt')} (${Math.round((notSure / rated.length) * 100)}%), left as they were`]] : []
+  return { rows: [...rows, ...(calibration ? [calibration] : []), ...unsureRow], ...(paused ? { paused } : {}), ...(note ? { note } : {}) }
 }
 
 /** What the pause decision reads (P-39): the miss rate per `${type}:${tier}` it uses, its line (null: never pause), and the tasks each route needs logged first. */
@@ -1053,8 +1057,44 @@ export function taskExtra(lines: readonly RunLine[], task: string) {
   return { extra, ...parts, other: Math.max(0, extra - parts.retries - parts.helpers - parts.warm) }
 }
 
-/** One finished task with its three figures. */
-export type WholeTask = { task: string; type: string; estimated: number; stay: number; actual: number }
+/**
+ * How a task ended (P-30, ADR 0071). The person's signals rank first, the worst first: they undid a turn (Retry at original
+ * effort, Run on the current model), corrected a reply, or gave a 👎. Then the task's last test run: failed or passed. Then a 👍.
+ * With none of these the outcome is unknown, and unknown is never counted as success.
+ */
+export type TaskOutcome = 'undone' | 'corrected' | 'down' | 'tests failed' | 'tests passed' | 'up' | 'unknown'
+
+/** The outcomes that count as a clean task: its last test run passed, or the person gave it a 👍 with nothing against it. */
+export const CLEAN_OUTCOMES: ReadonlySet<TaskOutcome> = new Set<TaskOutcome>(['tests passed', 'up'])
+
+/** A task's outcome from its run lines and the lines that point at them (`ref`): the strongest signal wins. */
+export function taskOutcome(lines: readonly RunLine[], task: string): TaskOutcome {
+  const runs = ofTask(lines, task).filter(isRun)
+  const ids = new Set(runs.map(l => l.id).filter((id): id is string => typeof id === 'string'))
+  const about = lines.filter(l => l.ref !== undefined && ids.has(l.ref))
+  if (about.some(l => l.kind === 'undone')) return 'undone'
+  if (about.some(l => l.kind === 'corrected')) return 'corrected'
+  if (about.some(l => l.kind === 'feedback' && l.value === 'down')) return 'down'
+  const lastTest = [...runs].sort((a, b) => Date.parse(b.at) - Date.parse(a.at)).find(l => l.tests !== undefined)?.tests
+  if (lastTest === 'failed') return 'tests failed'
+  if (lastTest === 'passed') return 'tests passed'
+  if (about.some(l => l.kind === 'feedback' && l.value === 'up')) return 'up'
+  return 'unknown'
+}
+
+/** What rightsize did on a task's turns, the strongest change first: raised (more effort, or a stronger model), lowered, handed off, or unchanged. */
+export type TaskRoute = 'raised' | 'lowered' | 'handed off' | 'unchanged'
+
+export function taskRoute(lines: readonly RunLine[], task: string): TaskRoute {
+  const runs = counted(ofTask(lines, task))
+  if (runs.some(l => l.change === 'raise' || l.change === 'switch-up' || (l.escalations?.length ?? 0) > 0)) return 'raised'
+  if (runs.some(l => l.change === 'lower')) return 'lowered'
+  if (runs.some(l => l.change === 'delegate-down' || l.change === 'delegate-up')) return 'handed off'
+  return 'unchanged'
+}
+
+/** One finished task with its three figures, how it ended and what rightsize did on it. */
+export type WholeTask = { task: string; type: string; estimated: number; stay: number; actual: number; outcome: TaskOutcome; route: TaskRoute }
 
 /** A task with no line for this long is over, though the rater never said "new goal" after it. */
 const TASK_IDLE_MS = DAY
@@ -1079,7 +1119,7 @@ export function wholeTasks(lines: readonly RunLine[], now: number): WholeTask[] 
     const replaced = begun.some(o => o.session === session && o.g !== g && o.start > from)
     if (!replaced && now - last < TASK_IDLE_MS) continue
     const first = [...g].filter(isRun).sort((a, b) => Date.parse(a.submittedAt ?? a.at) - Date.parse(b.submittedAt ?? b.at))[0]
-    out.push({ task, type: first?.type ?? 'unknown', estimated: taskEstimated(g, task), stay: taskStay(g, task), actual: taskActual(g, task) })
+    out.push({ task, type: first?.type ?? 'unknown', estimated: taskEstimated(g, task), stay: taskStay(g, task), actual: taskActual(g, task), outcome: taskOutcome(lines, task), route: taskRoute(g, task) })
   }
   return out.filter(t => t.estimated > 0)
 }
@@ -1123,8 +1163,43 @@ export function wholeTaskRows(lines: readonly RunLine[], now: number, subscripti
     ...(over.length && came ? [['Extra came from', came]] : []),
     ['Saved vs staying', `${saved >= 0.005 ? `~${money(saved)}` : saved <= -0.005 ? `-${money(-saved)}` : 'even'}${subscription ? ' (API-equivalent)' : ''}`],
     ...top.map(([type, rs], i) => [i === 0 ? 'Median by type' : '', `${type}: ${x(median(rs))} over ${plural(rs.length, 'task')}`]),
+    ...outcomeRows(tasks, subscription),
   ]
   return { rows }
+}
+
+const OUTCOME_ORDER: readonly [TaskOutcome, string][] = [
+  ['tests passed', 'tests passed'],
+  ['up', '👍'],
+  ['corrected', 'corrected'],
+  ['undone', 'undone'],
+  ['down', '👎'],
+  ['tests failed', 'tests failed'],
+  ['unknown', 'unknown'],
+]
+const ROUTE_ORDER: readonly TaskRoute[] = ['unchanged', 'lowered', 'raised', 'handed off']
+
+/**
+ * The Whole tasks rows on how tasks ended (P-30): the outcomes counted, clean ones first and unknown last; then, per route that
+ * has tasks, how many were clean, how many unknown, and the median cost of a clean task. Unknown is never counted as clean.
+ */
+export function outcomeRows(tasks: readonly WholeTask[], subscription: boolean): string[][] {
+  if (!tasks.length) return []
+  const n = (o: TaskOutcome, ts = tasks) => ts.filter(t => t.outcome === o).length
+  const clean = tasks.filter(t => CLEAN_OUTCOMES.has(t.outcome)).length
+  const parts = OUTCOME_ORDER.filter(([o]) => n(o) > 0).map(([o, label]) => `${label} ${n(o)}`)
+  const rows: string[][] = [['Outcomes', `${clean} of ${plural(tasks.length, 'task')} clean · ${parts.join(' · ')}`]]
+  let first = true
+  for (const route of ROUTE_ORDER) {
+    const ts = tasks.filter(t => t.route === route)
+    if (!ts.length) continue
+    const cleanTs = ts.filter(t => CLEAN_OUTCOMES.has(t.outcome))
+    const unknown = n('unknown', ts)
+    const cost = cleanTs.length ? ` · ${money(median(cleanTs.map(t => t.actual)))} per clean task (median${subscription ? ', API-equivalent' : ''})` : ''
+    rows.push([first ? 'Clean by route' : '', `${route}: ${cleanTs.length} of ${ts.length} clean${unknown ? `, ${unknown} unknown` : ''}${cost}`])
+    first = false
+  }
+  return rows
 }
 
 // ---- Keep warm -----------------------------------------------------------------

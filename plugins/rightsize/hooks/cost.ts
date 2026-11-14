@@ -89,7 +89,41 @@ export type LongPrice = { input: number; output: number; cacheRead: number; cach
 export type Price = { input: number; output: number; cacheRead: number; cacheWrite: number; over100k?: LongPrice; window?: number }
 /** Each family's newest model, and (ADR 0031) older versions by `versionKey` where prices.json has them. `family` keeps the
  * families' own rows when a family's row stands in for the main chat's older version (`forModel`). */
-export type Prices = Record<Tier, Price> & { versions?: Record<string, Price>; family?: Record<Tier, Price> }
+export type Prices = Record<Tier, Price> & { versions?: Record<string, Price>; family?: Record<Tier, Price>; /** Fast mode's prices by version key (P-29, ADR 0069). */ fast?: Record<string, Price> }
+
+/** Fast mode's input and output prices for one version, as the pricing page lists them. Its cache prices follow from input. */
+export type FastRow = { input: number; output: number }
+
+/** Fast mode's prices from the pricing page, checked 2026-11-14 (P-29); prices.json's `fast` overrides them. */
+export const DEFAULT_FAST: Readonly<Record<string, FastRow>> = {
+  'claude-fable-5-2': { input: 16, output: 80 },
+  'claude-opus-5-5': { input: 8, output: 40 },
+  'claude-opus-5': { input: 10, output: 50 },
+  'claude-opus-4-8': { input: 10, output: 50 },
+}
+
+/** The version key a model ID runs on, for fast mode: its own version, or its family's newest when the ID names none (`opus`). */
+export function fastKey(model: string | null | undefined): string | undefined {
+  const mv = modelVersion(model)
+  if (mv) return versionKey(mv.tier, mv.v)
+  const t = tierOf(model)
+  return t ? versionKey(t, NEWEST[t]) : undefined
+}
+
+/**
+ * A version's fast-mode price from its standard price: fast input and output, and the cache prices at the same multiples of
+ * input as the standard row (the pricing page: caching multipliers apply on top of fast prices). Flat over the whole window.
+ */
+export function fastPrice(standard: Price, row: FastRow): Price {
+  const k = standard.input > 0 ? row.input / standard.input : 1
+  return { input: row.input, output: row.output, cacheRead: standard.cacheRead * k, cacheWrite: standard.cacheWrite * k, ...(standard.window ? { window: standard.window } : {}) }
+}
+
+/** True when the model has fast-mode prices: Claude Code can run it in fast mode. */
+export const fastSupported = (prices: Prices, model: string | null | undefined) => {
+  const k = fastKey(model)
+  return k !== undefined && prices.fast?.[k] !== undefined
+}
 
 // Anthropic first-party prices from the pricing page, checked 2026-11-09;
 // prices.json beside the mod overrides them. cacheWrite is the 1-hour TTL (2x input),
@@ -140,7 +174,8 @@ export function parsePrices(raw: string, ttl?: Ttl): Prices {
   try {
     json = JSON.parse(raw) as typeof json
   } catch {
-    return ttl === '5m' ? withTtl(DEFAULT_PRICES, '5m') : DEFAULT_PRICES
+    const base = ttl === '5m' ? withTtl(DEFAULT_PRICES, '5m') : DEFAULT_PRICES
+    return { ...base, fast: withFast(base, {}, {}) }
   }
   const writeKey = (ttl ?? (json.cacheTtl === '5m' ? '5m' : '1h')) === '5m' ? 'cacheWrite5m' : 'cacheWrite1h'
   const out = { ...DEFAULT_PRICES }
@@ -170,13 +205,42 @@ export function parsePrices(raw: string, ttl?: Ttl): Prices {
     const window = windowOf(m.window)
     versions[key] = { input, output, cacheRead, cacheWrite: num(m[writeKey], input * (writeKey === 'cacheWrite1h' ? 2 : 1.25)), ...(window ? { window } : {}) }
   }
-  return Object.keys(versions).length ? { ...out, versions } : out
+  const fileFast = (json as { fast?: Record<string, Record<string, unknown> | undefined> }).fast ?? {}
+  const fast = withFast(out, versions, fileFast)
+  return { ...out, ...(Object.keys(versions).length ? { versions } : {}), ...(Object.keys(fast).length ? { fast } : {}) }
 }
 
-/** One request's price: its version's own row when prices.json has one, else its family's; undefined for no family (ADR 0031). */
-export function priceOf(prices: Prices, model: string | null | undefined): Price | undefined {
+/**
+ * Fast mode's prices by version key: the defaults, with any row in prices.json's `fast` over them (a row needs both input and
+ * output). Each is priced from its version's standard row: the family's own for the newest version, else its `versions` row.
+ */
+function withFast(families: Record<Tier, Price>, versions: Record<string, Price>, file: Record<string, Record<string, unknown> | undefined>): Record<string, Price> {
+  const rows: Record<string, FastRow> = { ...DEFAULT_FAST }
+  for (const [key, m] of Object.entries(file)) {
+    const input = num(m?.input, Number.NaN)
+    const output = num(m?.output, Number.NaN)
+    if (Number.isFinite(input) && Number.isFinite(output) && input > 0) rows[key] = { input, output }
+  }
+  const out: Record<string, Price> = {}
+  for (const [key, row] of Object.entries(rows)) {
+    const mv = modelVersion(key)
+    if (!mv || versionKey(mv.tier, mv.v) !== key) continue
+    const newest = NEWEST[mv.tier]
+    const standard = mv.v[0] === newest[0] && mv.v[1] === newest[1] ? families[mv.tier] : versions[key]
+    if (standard) out[key] = fastPrice(standard, row)
+  }
+  return out
+}
+
+/**
+ * One request's price: its version's own row when prices.json has one, else its family's; undefined for no family (ADR 0031).
+ * `fast`: the request ran in fast mode, so its version's fast row prices it where there is one (P-29).
+ */
+export function priceOf(prices: Prices, model: string | null | undefined, fast = false): Price | undefined {
   const t = tierOf(model)
   if (!t) return undefined
+  const fk = fast ? fastKey(model) : undefined
+  if (fk && prices.fast?.[fk]) return prices.fast[fk]
   const key = olderKey(model)
   return (key && prices.versions?.[key]) || (prices.family ?? prices)[t]
 }
@@ -187,12 +251,16 @@ export const unpricedOlder = (prices: Prices, model: string | null | undefined):
   return key !== undefined && !prices.versions?.[key]
 }
 
-/** The prices the main chat plans with: on an older version with its own row, that row stands in for its family. */
-export function forModel(prices: Prices, model: string | null | undefined): Prices {
+/**
+ * The prices the main chat plans with: on an older version with its own row, that row stands in for its family. `fast`: the
+ * main chat runs in fast mode, so its version's fast row stands in instead, where there is one (P-29).
+ */
+export function forModel(prices: Prices, model: string | null | undefined, fast = false): Prices {
   const base: Prices = prices.family ? { ...prices, ...prices.family } : prices
   const key = olderKey(model)
   const t = tierOf(model)
-  const own = key ? base.versions?.[key] : undefined
+  const fk = fast ? fastKey(model) : undefined
+  const own = (fk ? base.fast?.[fk] : undefined) ?? (key ? base.versions?.[key] : undefined)
   if (!own || !t) return prices.family ? (({ family: _f, ...rest }) => rest as Prices)(base) : prices
   const family = Object.fromEntries(TIERS.map(x => [x, base[x]])) as Record<Tier, Price>
   return { ...base, [t]: own, family }
@@ -278,9 +346,9 @@ export type Usage = {
 }
 export const contextOf = (u: Usage) => u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens
 
-// What one API response cost. An unknown model costs nothing rather than a guess.
-export function usageCost(prices: Prices, model: string, u: Usage) {
-  const p = priceOf(prices, model)
+// What one API response cost. An unknown model costs nothing rather than a guess. `fast`: it ran in fast mode (P-29).
+export function usageCost(prices: Prices, model: string, u: Usage, fast = false) {
+  const p = priceOf(prices, model, fast)
   if (!p) return 0
   return dollars(atPrompt(p, contextOf(u)), {
     input: u.input_tokens,
@@ -291,8 +359,8 @@ export function usageCost(prices: Prices, model: string, u: Usage) {
 }
 
 /** What one response's output tokens cost (thinking tokens are output). An unknown model costs nothing rather than a guess. */
-export function outputCost(prices: Prices, model: string, u: Usage) {
-  const p = priceOf(prices, model)
+export function outputCost(prices: Prices, model: string, u: Usage, fast = false) {
+  const p = priceOf(prices, model, fast)
   if (!p) return 0
   return dollars(atPrompt(p, contextOf(u)), { output: u.output_tokens })
 }
@@ -309,7 +377,7 @@ export type OutputSplit = { tokens: number; thinking: number; text: number; code
  * input as JSON, about 4 characters a token), and thinking is what is left. When the sizes come to more than the total, they are
  * scaled down to it and thinking is 0. Costs are the response's output cost shared out by those tokens. An unknown model costs nothing.
  */
-export function splitOutput(prices: Prices, model: string, u: Usage, answer: string, toolUses: readonly { name: string; input: unknown }[]): OutputSplit {
+export function splitOutput(prices: Prices, model: string, u: Usage, answer: string, toolUses: readonly { name: string; input: unknown }[], fast = false): OutputSplit {
   const tokens = Math.max(0, u.output_tokens)
   const size = (chars: number) => Math.ceil(chars / OUTPUT_CHARS_PER_TOKEN)
   const json = (v: unknown) => (typeof v === 'string' ? v : (JSON.stringify(v) ?? '')).length
@@ -321,8 +389,8 @@ export function splitOutput(prices: Prices, model: string, u: Usage, answer: str
     code = Math.floor(code * k)
   }
   const thinking = tokens - text - code
-  const cost = outputCost(prices, model, u)
-  const part = (n: number) => (tokens > 0 ? (cost * n) / tokens : 0)
+  const cost = outputCost(prices, model, u, fast)
+  const part =(n: number) => (tokens > 0 ? (cost * n) / tokens : 0)
   return { tokens, thinking, text, code, cost, thinkingCost: part(thinking), textCost: part(text), codeCost: part(code) }
 }
 

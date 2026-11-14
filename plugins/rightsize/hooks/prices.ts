@@ -1,5 +1,5 @@
 import type { RightsizeTier as Tier } from '../types'
-import { NEWEST, TIERS, TIER_NAME, versionKey, versionName } from './cost'
+import { type FastRow, NEWEST, TIERS, TIER_NAME, versionKey, versionName } from './cost'
 
 // The price check: read Anthropic's pricing page, find the four models' rows,
 // and say what differs from prices.json. Pure functions, no engine calls.
@@ -10,7 +10,7 @@ export const CHECK_DAYS = 30
 
 export type PageRow = { input: number; cacheWrite5m: number; cacheWrite1h: number; cacheRead: number; output: number }
 /** `versions`: older versions' rows by `versionKey` (ADR 0031). */
-export type PageRows = Partial<Record<Tier, PageRow>> & { haikuOver100k?: PageRow; versions?: Record<string, PageRow> }
+export type PageRows = Partial<Record<Tier, PageRow>> & { haikuOver100k?: PageRow; versions?: Record<string, PageRow>; /** Fast mode's input and output by version key (P-29). */ fast?: Record<string, FastRow> }
 
 /** How many of the four families the page gave a row for. */
 export const familiesFound = (page: PageRows) => TIERS.filter(t => page[t]).length
@@ -32,9 +32,16 @@ const dollarsIn = (cell: string) => {
 // 1h cache writes, cache hits, output). Later tables (batch, fast mode) hold fewer.
 export function parsePricingPage(md: string): PageRows {
   const out: PageRows = {}
+  let inFast = false
   for (const line of md.split('\n')) {
+    // The fast mode table sits under its own heading, up to the next heading (P-29).
+    if (/^#{1,6}\s/.test(line)) inFast = /fast mode pricing/i.test(line)
     if (!line.trim().startsWith('|')) continue
     const cells = line.split('|').slice(1, -1).map(c => c.trim())
+    if (inFast) {
+      fastRow(out, cells)
+      continue
+    }
     if (cells.length !== 6) continue
     const tier = TIERS.find(t => cells[0] === ROW_NAME[t] || cells[0]?.startsWith(`${ROW_NAME[t]} (`))
     const older = tier ? undefined : VERSION_ROW.exec(cells[0] ?? '')
@@ -62,7 +69,27 @@ export function parsePricingPage(md: string): PageRows {
   return out
 }
 
-type FileJson = { source?: unknown; models?: Record<string, Record<string, unknown> | undefined>; versions?: Record<string, Record<string, unknown> | undefined>; [k: string]: unknown }
+/** "Claude Fable 5.2", "Claude Opus 5 / Claude Opus 4.8": the version keys one fast-mode row names. Other models (Mythos) are left out. */
+const fastKeys = (name: string) =>
+  name
+    .split('/')
+    .map(part => /^Claude (Haiku|Sonnet|Opus|Fable) (\d{1,2})(?:\.(\d{1,2}))?$/.exec(part.trim()))
+    .filter((m): m is RegExpExecArray => m !== null)
+    .map(m => versionKey((m[1] as string).toLowerCase() as Tier, [Number(m[2]), Number(m[3] ?? 0)]))
+
+/** One row of the fast mode table (model, input, output) into `out.fast`; a header, a divider or a misread is skipped. */
+function fastRow(out: PageRows, cells: string[]) {
+  if (cells.length !== 3) return
+  const input = dollarsIn(cells[1] ?? '')
+  const output = dollarsIn(cells[2] ?? '')
+  if (!Number.isFinite(input) || !Number.isFinite(output) || input <= 0 || output <= input) return
+  for (const key of fastKeys(cells[0] ?? '')) {
+    out.fast ??= {}
+    out.fast[key] ??= { input, output }
+  }
+}
+
+type FileJson = { source?: unknown; models?: Record<string, Record<string, unknown> | undefined>; versions?: Record<string, Record<string, unknown> | undefined>; fast?: Record<string, Record<string, unknown> | undefined>; [k: string]: unknown }
 
 /** "Opus 4.8" from `claude-opus-4-8`. */
 const keyName = (key: string) => {
@@ -112,6 +139,17 @@ export function diffPrices(fileText: string, page: PageRows): string[] {
     for (const f of FIELDS) if (have[f] !== row[f]) changes.push(`${keyName(key)} ${LABEL[f]}: ${fmt(have[f])} → $${row[f]}`)
   }
   if (added.length) changes.push(`prices for ${added.join(', ')} added`)
+  // Fast mode (P-29): input and output per version; a version the page no longer lists keeps its row.
+  const fastAdded: string[] = []
+  for (const [key, row] of Object.entries(page.fast ?? {}).sort(([a], [b]) => a.localeCompare(b))) {
+    const have = json.fast?.[key]
+    if (!have) {
+      fastAdded.push(keyName(key))
+      continue
+    }
+    for (const f of ['input', 'output'] as const) if (have[f] !== row[f]) changes.push(`${keyName(key)} fast mode ${f}: ${fmt(have[f])} → $${row[f]}`)
+  }
+  if (fastAdded.length) changes.push(`fast mode prices for ${fastAdded.join(', ')} added`)
   return changes
 }
 
@@ -132,6 +170,9 @@ export function applyPrices(fileText: string, page: PageRows, date: string): str
   const merged: Record<string, Record<string, unknown>> = { ...((json.versions ?? {}) as Record<string, Record<string, unknown>>) }
   for (const [key, row] of Object.entries(page.versions ?? {})) merged[key] = { ...(merged[key] ?? {}), ...row }
   const versions = Object.fromEntries(Object.entries(merged).sort(([a], [b]) => a.localeCompare(b)))
+  const fastMerged: Record<string, Record<string, unknown>> = { ...((json.fast ?? {}) as Record<string, Record<string, unknown>>) }
+  for (const [key, row] of Object.entries(page.fast ?? {})) fastMerged[key] = { ...(fastMerged[key] ?? {}), ...row }
+  const fast = Object.fromEntries(Object.entries(fastMerged).sort(([a], [b]) => a.localeCompare(b)))
   const next: FileJson = {
     ...json,
     source: `Anthropic Claude API first-party prices, checked against ${PRICING_URL.replace(/^https:\/\//, '').replace(/\.md$/, '')} on ${date}. rightsize checks them every ${CHECK_DAYS} days; run /rightsize prices to check sooner.`,
@@ -139,6 +180,7 @@ export function applyPrices(fileText: string, page: PageRows, date: string): str
     ...(json.cacheTtl === undefined ? {} : { cacheTtl: json.cacheTtl }),
     models,
     ...(Object.keys(versions).length ? { versions } : {}),
+    ...(Object.keys(fast).length ? { fast } : {}),
   }
   return `${JSON.stringify(next, null, 2)}\n`
 }

@@ -82,7 +82,9 @@ import {
   routeFactor,
   rebaseCal,
   lowerSwitches,
+  fastSupported,
 } from './cost'
+import { type FastState, fastGuess, nextFast, speedFromCost, speedSwitchCost, speedSwitchText } from './fast'
 import { type FreshRun, type HandedOff, NO_STEPS, type StepState, actingExp, mergeSteps, medians, parseStepState, STEP_PROVE, typicalShrink } from './steps'
 import { type LearningNote, learningNote } from './learning'
 import { applyPrices, diffPrices, familiesFound, isDue, parsePricingPage } from './prices'
@@ -340,6 +342,8 @@ type Run = {
   /** Token counts priced from prices.json: the fallback when there is no ledger. */
   mainCost: number
   subCost: number
+  /** The part of mainCost that ran in fast mode: on a subscription it is paid from usage credits, not the plan (P-29). */
+  fastCost?: number
   /** What the turn's responses wrote, main chat and helpers: output tokens and cost split into thinking, text and code written (P-22), and what those requests cost. */
   out: OutputTotals
   /** What effort-switch cache misses cost this turn. */
@@ -395,6 +399,12 @@ let switchedOff = false
 let olderPause: string | null = null
 /** Older models whose pause line this session already showed. */
 const olderShown = new Set<string>()
+/** Fast mode on the main chat, and what said so last: the settings' guess or a request's real cost (P-29, ADR 0069). */
+let fast: FastState = { on: false, by: 'setting' }
+/** The settings' last guess; undefined before the first read. A change is the person's /fast. */
+let fastGuessed: boolean | undefined
+/** The fast-mode line for the next prompt's band: fast mode turned on or off since the last prompt. */
+let speedNote = ''
 let floor: Level = 'low'
 let billing: Billing = 'api'
 /**
@@ -1137,7 +1147,7 @@ async function refreshTtl($: EngineInterface) {
   helperTtl = TTL_MS[helper.ttl]
   helperTtlBy = helper.by
   rawPrices = parsePrices(priceFile, main.ttl)
-  prices = forModel(rawPrices, mainModel)
+  prices = forModel(rawPrices, mainModel, fast.on)
   helperPrices = parsePrices(priceFile, helper.ttl)
   if (changed) await log($, `cache life: ${ttlText(cacheTtl)} (${main.by}); helpers and forks ${ttlText(helperTtl)} (${helper.by})`)
 }
@@ -2431,6 +2441,8 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
       ...(helpers.length ? { helpers } : {}),
       ...(retries > 0 ? { retries } : {}),
       requests: run.requests,
+      // Fast mode's part of the main chat's cost (P-29): on a subscription, paid from usage credits.
+      ...(run.fastCost ? { fast: round(run.fastCost) } : {}),
       // What the output was made of (P-22): only when the turn's responses reported usage, else the line carries no split.
       ...(run.out.requestCost > 0 ? outputFields(run.out) : {}),
       // Each request reads the fixed context from the cache, at least.
@@ -5493,18 +5505,66 @@ async function manualCheck($: EngineInterface): Promise<{ held: boolean; row: bo
 }
 
 /**
+ * Fast mode from Claude Code's settings (P-29, ADR 0069): the guess is taken when nothing measured has overruled it, or when the
+ * guess itself changed (the person ran /fast, or switched to a model with or without fast mode). A model with no fast prices runs
+ * at standard speed. When fast mode turns on or off between prompts, the next prompt's band says what re-reading the
+ * conversation at the new speed costs. Runs where checkOlder runs: at start and before each prompt.
+ */
+async function refreshFast($: EngineInterface, switchedTo?: string) {
+  const setting = await $.settings.read({ key: 'fastMode' }).catch(() => undefined)
+  const perSession = await $.settings.read({ key: 'fastModePerSessionOptIn' }).catch(() => undefined)
+  const disabled = await $.env.get('CLAUDE_CODE_DISABLE_FAST_MODE').catch(() => undefined)
+  const supported = fastSupported(rawPrices, mainModel)
+  const guess = fastGuess({ setting, perSession, disabled: typeof disabled === 'string' ? disabled : undefined, supported, firstParty: (await providerNow($)) === 'anthropic' })
+  const was = fast.on
+  const first = fastGuessed === undefined
+  if (!supported) fast = { on: false, by: 'setting' }
+  else if (fast.by === 'setting' || guess !== fastGuessed) fast = { on: guess, by: 'setting' }
+  fastGuessed = guess
+  if (fast.on === was || first) return
+  await log($, `fast mode ${fast.on ? 'on' : 'off'} (${supported ? 'the fastMode setting' : `${mainModel ?? 'this model'} has no fast mode`})`)
+  if (!lastContext) return
+  const t = tierOf(mainModel)
+  if (!t) return
+  const p = atPrompt(forModel(rawPrices, mainModel, fast.on)[t], lastContext)
+  const to = switchedTo ? (olderModel(switchedTo) ?? TIER_NAME[t]) : undefined
+  speedNote = speedSwitchText({ on: fast.on, cost: speedCostText(speedSwitchCost({ context: lastContext, write: p.cacheWrite })), ...(to ? { model: to } : {}) })
+}
+
+/**
+ * One main-chat request's ledger cost against its standard and fast prices (P-29): a reading that matches one of them updates the
+ * fast-mode state (fast.ts nextFast), and a change re-prices the main chat and is logged. A model with no fast mode is not read.
+ */
+async function measureSpeed($: EngineInterface, u: Usage & { model: string }, before: number) {
+  if (!fastSupported(rawPrices, u.model)) return
+  const after = (await usageNow($))?.cost?.usd
+  if (after === undefined) return
+  const reading = speedFromCost({ ledger: after - before, standard: usageCost(rawPrices, u.model, u), fast: usageCost(rawPrices, u.model, u, true) })
+  const was = fast.on
+  fast = nextFast(fast, reading)
+  if (fast.on === was) return
+  prices = forModel(rawPrices, mainModel, fast.on)
+  await log($, `fast mode ${fast.on ? 'on' : 'off'}: a request cost ${money(after - before)}, the ${fast.on ? 'fast' : 'standard'} price`)
+}
+
+/** A fast-mode cost on the band: dollars on the API; on a subscription, fast mode is paid from usage credits, so dollars of those (P-29). */
+const speedCostText = (d: number) => (billing === 'subscription' && fast.on ? `about ${money(d)} of usage credits` : billing === 'api' ? `about ${money(d)}` : `about ${money(d)} API-equivalent`)
+
+/**
  * ADR 0032, 0031: on an older main-chat model with no price row of its own in prices.json, rightsize is off, as if the
  * person turned it off. An older version with its own row runs, priced by that row. Sets `off` from the switch and the
  * model; shows the pause line once per model per session.
  */
 async function checkOlder($: EngineInterface): Promise<void> {
   const model = await $.session.model().catch(() => undefined)
+  const switchedTo = model !== mainModel && mainModel !== undefined ? model : undefined
   if (model !== mainModel) {
     mainModel = model
     const name = olderModel(model)
     if (name && !unpricedOlder(rawPrices, model)) await log($, `${name}: priced by its own row in prices.json`)
   }
-  prices = forModel(rawPrices, mainModel)
+  await refreshFast($, switchedTo)
+  prices = forModel(rawPrices, mainModel, fast.on)
   const older = unpricedOlder(rawPrices, model) ? (olderModel(model) ?? null) : null
   const was = olderPause
   olderPause = older
@@ -5840,6 +5900,12 @@ export const register: Register = (on, options) => {
     bandNote = null
     pauseRow = null
     await setBand($, null)
+    // Fast mode turned on or off since the last prompt: every band of this prompt says what the re-read costs (P-29).
+    if (speedNote) {
+      bandNote = speedNote
+      speedNote = ''
+      await setBand($, { text: bandNote, acted: true })
+    }
     const text = e.text.trim()
     if (skipOnce !== null && text === skipOnce) {
       skipOnce = null
@@ -6157,8 +6223,11 @@ export const register: Register = (on, options) => {
     const send = sw && level ? { ...e, model: sw.tier, effort: level } : level && e.effort !== undefined ? { ...e, effort: level } : e
     const applied = !held && isLevel(send.effort) ? send.effort : undefined
     if (held) lastApplied = undefined
+    // The ledger around the request: what it really cost says whether it ran in fast mode (P-29). A switched turn runs another model.
+    const ledgerBefore = sw ? undefined : (await usageNow($))?.cost?.usd
     const out = yield* next(send)
     const u = out.usage
+    if (u && ledgerBefore !== undefined) await measureSpeed($, u, ledgerBefore)
     if (u) {
       // An effort switch may make this request re-write the conversation: measure it.
       // A model rewritten on this step or the last one makes the cache miss the model's, not an effort switch's: not measured.
@@ -6215,12 +6284,15 @@ export const register: Register = (on, options) => {
       await $.state.set({ plugin: 'rightsize', key: 'context' }, lastContext)
       // The session's own model stays the one the next prompt is planned on.
       if (!sw) await $.state.set({ plugin: 'rightsize', key: 'seenModel' }, u.model)
-      const requestCost = usageCost(prices, u.model, u)
-      spend = { output: spend.output + outputCost(prices, u.model, u), total: spend.total + requestCost, requests: spend.requests + 1 }
+      // The session's own model in fast mode is priced at fast rates (P-29); a switched turn's model is not.
+      const fastReq = fast.on && !sw && fastSupported(prices, u.model)
+      const requestCost = usageCost(prices, u.model, u, fastReq)
+      spend = { output: spend.output + outputCost(prices, u.model, u, fastReq), total: spend.total + requestCost, requests: spend.requests + 1 }
       if (run) {
         run.mainCost += requestCost
         run.requests += 1
-        addOutput(run, splitOutput(prices, u.model, u, out.answer, out.toolUses), requestCost)
+        if (fastReq) run.fastCost = (run.fastCost ?? 0) + requestCost
+        addOutput(run, splitOutput(prices, u.model, u, out.answer, out.toolUses, fastReq), requestCost)
       }
     }
     return out

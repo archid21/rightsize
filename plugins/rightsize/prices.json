@@ -23,11 +23,18 @@
     "claude-sonnet-4-6": { "input": 3, "cacheWrite5m": 3.75, "cacheWrite1h": 6, "cacheRead": 0.3, "output": 15, "window": 1000000 },
     "claude-sonnet-5": { "input": 2, "cacheWrite5m": 2.5, "cacheWrite1h": 4, "cacheRead": 0.2, "output": 10, "window": 1000000 }
   },
+  "fast": {
+    "claude-fable-5-2": { "input": 16, "output": 80 },
+    "claude-opus-4-8": { "input": 10, "output": 50 },
+    "claude-opus-5": { "input": 10, "output": 50 },
+    "claude-opus-5-5": { "input": 8, "output": 40 }
+  },
   "notes": [
     "window = the model's context window in tokens, from the Claude API models table (checked 2026-11-10). rightsize does not switch the main chat for a turn to a model whose window is smaller than the conversation. The price check keeps this field; a row without it is never held back.",
     "haiku = Claude Haiku 5.5, sonnet = Claude Sonnet 5.5, opus = Claude Opus 5.5, fable = Claude Fable 5.2.",
     "versions = older models, by ID without a date (claude-opus-4-8). rightsize prices a session on an older model by its row here; with no row, rightsize pauses on that model. The price check adds a row for every version the pricing page lists and keeps a row the page drops.",
     "Cache writes are 1.25x input for the 5-minute cache and 2x for the 1-hour cache. rightsize reads which one a session writes from Claude Code's settings and environment and from the billing (1 hour on a subscription within its plan, 5 minutes otherwise; helpers always 5 minutes). Behind a gateway it cannot read, add \"cacheTtl\": \"5m\" or \"1h\" here to say so.",
-    "Haiku 5.5 is priced by prompt length. A request whose prompt (input, cache reads and cache writes together) is over 100K tokens pays the over100k prices: 0.50 input, 0.625 / 1.00 cache write (5m / 1h), 0.05 cache read, 2.50 output. Each request is priced on its own."
+    "Haiku 5.5 is priced by prompt length. A request whose prompt (input, cache reads and cache writes together) is over 100K tokens pays the over100k prices: 0.50 input, 0.625 / 1.00 cache write (5m / 1h), 0.05 cache read, 2.50 output. Each request is priced on its own.",
+    "fast = fast mode's input and output prices, by version (claude-opus-5-5). Cache writes and reads in fast mode cost the same multiples of input as the version's standard row. Fast mode prices are flat over the whole context window. The price check keeps these rows current from the pricing page's fast mode table."
   ]
 }

@@ -3,6 +3,7 @@
 ## Next (unreleased)
 
 - **rightsize's own compact writes a handoff.** When whatsnext is not installed or cannot compact, rightsize now asks Claude Code's compaction for a handoff under eight headings: goal, next action, state, files, decisions, your instructions, open questions and dead ends. It quotes your words where they are unclear and drops tool output and file contents. The text was chosen by testing it against the old one on saved sessions. With whatsnext, its own compact text is used as before.
+- **Fast mode is priced.** rightsize knows fast mode's prices and keeps them current with the price check. It reads Claude Code's `fastMode` setting and checks each request's real cost, so it sees fast mode even when the setting is not the whole story. Estimates, keep warm and the report use fast rates while fast mode is on. When you turn fast mode on or off, or a model switch does, the band says what reading the conversation again at the new speed costs. On a subscription, the report says fast mode spend is paid from your usage credits.
 - **Keep warm stops on a cache miss.** After each keep-warm request, rightsize checks that it read the conversation from the cache. If it read under 80%, the cache missed: keep warm ends, says why in the log, and sends no more requests.
 
 ## 0.13.0 (2026-11-13)

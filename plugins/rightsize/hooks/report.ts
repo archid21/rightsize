@@ -42,6 +42,8 @@ export type RunLine = {
   wouldTaken?: number
   /** A 'warmSaved' line: what coming back cold would have cost (the conversation written again, less a read), in dollars (API-equivalent on a subscription). */
   saved?: number
+  /** A run line: what its main-chat requests in fast mode cost, in dollars at fast prices (P-29). On a subscription this is paid from usage credits, not the plan. */
+  fast?: number
   /** A 'warm' line: the keep-warm run it belongs to, the ISO time of the turn that run kept warm. Lines of one run share it. */
   warmRun?: string
   /** A 'cold' line: the id of the choice pressed (`2h`, `8h`, `start`, `30m`, `1h`, `handoff`, `compact`, `let-go`, `off`), or `ignored` when the offer got no answer. */
@@ -414,6 +416,16 @@ export function windowRates(lines: readonly RunLine[], kind: string) {
 
 /** A window share in percent points as a range, signed (a loss is negative), `lo <= hi`. */
 export type Share = { lo: number; hi: number }
+
+/**
+ * A subscriber's last line: fast mode is paid from usage credits, never from the plan (P-29), so its spend is real money and is
+ * said apart. With none in the lines: "You only pay for your subscription."
+ */
+export function fastCreditsLines(lines: readonly RunLine[]): string[] {
+  const usd = lines.reduce((n, l) => n + (typeof l.fast === 'number' && l.fast > 0 ? l.fast : 0), 0)
+  if (usd < 0.005) return ['You only pay for your subscription.']
+  return [`Fast mode: ~${money(usd)} in these 30 days, paid from your usage credits. That is real money, on top of your subscription; the other amounts are API-equivalent.`]
+}
 
 /** The share of a window that `usd` API-equivalent dollars stand for, from the rates' `low` and `high` per dollar. */
 export const shareOf = (usd: number, r: { low: number; high: number }): Share => (usd >= 0 ? { lo: usd * r.low, hi: usd * r.high } : { lo: usd * r.high, hi: usd * r.low })
@@ -1248,7 +1260,8 @@ export function buildReport(
         ? [sub ? "Extra on hard prompts: what raising effort or using a stronger model would cost on the API, for better answers. It isn't taken off the saving." : "Extra on hard prompts: what raising effort or using a stronger model cost, for better answers. It isn't taken off the saving."]
         : []),
       ...(thirty.empty ? [] : [stepLine(lines, from)]),
-      ...(sub ? ['Dollar amounts are API-equivalent: what the same use would cost on the API.', 'You only pay for your subscription.'] : []),
+      ...(sub ? ['Dollar amounts are API-equivalent: what the same use would cost on the API.'] : []),
+      ...(sub ? fastCreditsLines(month) : []),
     ]
     out.push('', ...foot.flatMap(f => para(f)))
     return out.join('\n')

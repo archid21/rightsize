@@ -57,6 +57,9 @@ import {
   tierOf,
   tieBand,
   type Calibration,
+  fastKey,
+  fastSupported,
+  forModel,
 } from './cost'
 import { missCounts, missMap, missRates } from './misses'
 import { FIXED } from './settings'
@@ -133,11 +136,42 @@ test('reads prices.json, keeping defaults for what it lacks', async () => {
   expect(p.opus.cacheWrite, '1h write price chosen').toBe(8)
   expect(p.haiku.output, 'bad field keeps the default').toBe(DEFAULT_PRICES.haiku.output)
   expect(p.haiku.cacheWrite, '1h write falls back to 2x input').toBe(0.2)
-  expect(parsePrices('not json'), 'unreadable file: defaults').toEqual(DEFAULT_PRICES)
+  const { fast: _fast, ...unreadable } = parsePrices('not json')
+  expect(unreadable, 'unreadable file: defaults').toEqual(DEFAULT_PRICES)
   expect(parsePrices('{}').opus.cacheWrite, 'no TTL named: the 1-hour write').toBe(8)
   expect(parsePrices(JSON.stringify({ cacheTtl: '5m' })).opus.cacheWrite, '5m with no price: 1.25x input').toBe(5)
   expect(parsePrices(JSON.stringify({ cacheTtl: '1h' }), '5m').opus.cacheWrite, 'the resolved life beats the file').toBe(5)
   expect(parsePrices('not json', '5m').haiku.over100k?.cacheWrite, 'unreadable file at 5m: 1.25x the default input').toBe(0.625)
+})
+
+test('fast mode prices: input and output from the row, cache prices at the standard multiples of input, flat over the window (P-29)', async () => {
+  const p = parsePrices(JSON.stringify({ cacheTtl: '1h' }))
+  // Fable 5.2: standard $8 in, $0.20 read, $16 1-hour write; fast doubles input, so read and write double too.
+  expect(p.fast?.['claude-fable-5-2']).toEqual({ input: 16, output: 80, cacheRead: 0.4, cacheWrite: 32, window: 1_000_000 })
+  expect(p.fast?.['claude-opus-5-5']).toMatchObject({ input: 8, output: 40, cacheRead: 0.4, cacheWrite: 16 })
+  expect(parsePrices('{}', '5m').fast?.['claude-opus-5-5']?.cacheWrite, '5-minute write: 1.25x fast input').toBe(10)
+  // An older version is priced from its own versions row; with no row there is no fast price.
+  const older = parsePrices(JSON.stringify({ versions: { 'claude-opus-4-8': { input: 5, output: 25, cacheRead: 0.5, cacheWrite1h: 10 } } }))
+  expect(older.fast?.['claude-opus-4-8']).toMatchObject({ input: 10, output: 50, cacheRead: 1, cacheWrite: 20 })
+  expect(older.fast?.['claude-opus-5'], 'no versions row for Opus 5 here').toBeUndefined()
+  expect(parsePrices(JSON.stringify({ fast: { 'claude-opus-5-5': { input: 9, output: 45 } } })).fast?.['claude-opus-5-5']?.input, 'the file overrides a default').toBe(9)
+})
+
+test('fast mode prices a request and the main chat only where the model has fast prices (P-29)', async () => {
+  const p = parsePrices('{}')
+  const u = { input_tokens: 1000, output_tokens: 1000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+  expect(usageCost(p, 'claude-fable-5-2', u), 'standard: $8 in, $40 out').toBe(0.048)
+  expect(usageCost(p, 'claude-fable-5-2', u, true), 'fast: $16 in, $80 out').toBe(0.096)
+  expect(usageCost(p, 'opus', u, true), 'an alias is its family\'s newest version').toBe(0.048)
+  expect(usageCost(p, 'claude-sonnet-5-5', u, true), 'Sonnet has no fast mode').toBe(usageCost(p, 'claude-sonnet-5-5', u))
+  expect(outputCost(p, 'claude-opus-5-5', u, true)).toBe(0.04)
+  expect(fastSupported(p, 'claude-opus-5-5')).toBe(true)
+  expect(fastSupported(p, 'claude-haiku-5-5')).toBe(false)
+  expect(fastKey('claude-opus-4-8-v1:0')).toBe('claude-opus-4-8')
+  const main = forModel(p, 'claude-fable-5-2', true)
+  expect(main.fable.input, 'fast stands in for the family').toBe(16)
+  expect(main.family?.fable.input, 'the family row is kept for helpers').toBe(8)
+  expect(forModel(p, 'claude-fable-5-2').fable.input, 'standard speed').toBe(8)
 })
 
 test('the cache life follows Claude Code’s precedence, then the billing', async () => {

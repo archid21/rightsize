@@ -1,6 +1,6 @@
 import { type TestBody, expect, test } from 'claude-code/testing'
 import { LOG_PATH, NO_CHANGE, NO_COLD, engine, drive, mount, rowText } from './testkit'
-import { COMPACT_BASE } from './whatsnext'
+import { COMPACT_TEXT } from './whatsnext'
 
 // ---- The context-size warning (ADR 0013) ----------------------------------------------------------------------
 // At the end of a main turn, a conversation that reached the next 40/50/60/70/80/90% step of the window gets one cache row
@@ -84,7 +84,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const ui = await mount($, surface)
     await ui.press({ key: 'cold-size-compact' })
     await ui.unmount()
-    expect(h.compactCalls).toEqual([{ instructions: COMPACT_BASE }])
+    expect(h.compactCalls).toEqual([{ instructions: COMPACT_TEXT }])
     expect((await row($)).text).toBe('Compacted. Each turn now costs less.')
     expect(log(h)).toContain("context warning: compacted on the person's button")
   })
@@ -107,7 +107,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const ui = await mount($, surface)
     await ui.press({ key: 'cold-size-compact' })
     await ui.unmount()
-    expect(h.compactCalls).toEqual([{ instructions: COMPACT_BASE }])
+    expect(h.compactCalls).toEqual([{ instructions: COMPACT_TEXT }])
     expect(log(h)).toContain('keep warm stopped (Compact now pressed)')
     await h.advance(60 * 60_000)
     expect(h.forks.length, 'no keep-warm request after the compaction').toBe(0)

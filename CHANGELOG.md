@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **rightsize's own compact writes a handoff.** When whatsnext is not installed or cannot compact, rightsize now asks Claude Code's compaction for a handoff under eight headings: goal, next action, state, files, decisions, your instructions, open questions and dead ends. It quotes your words where they are unclear and drops tool output and file contents. The text was chosen by testing it against the old one on saved sessions. With whatsnext, its own compact text is used as before.
+
 ## 0.13.0 (2026-11-13)
 
 - **The report leads with a checked saving.** `/rightsize report` opens with the overall saving as a range and a share of your cost. It counts the prompts rightsize left alone too, and checks the saving against what staying really costs. Prompts you overrode (advice you declined, or a change you undid with Retry at original effort or Run on your model) are left out.

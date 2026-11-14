@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { COMPACT_BASE } from './whatsnext'
+import { COMPACT_TEXT } from './whatsnext'
 import { LIMIT_COMPACT, LIMIT_HIDE, LIMIT_MIN_CONTEXT, LIMIT_MORE, LIMIT_WHY, LIMIT_WHY_ID, isLimitId, limitDue, limitText } from './limit'
 import { clockText } from './warm'
 
@@ -45,5 +45,10 @@ test('the words and ids: Why? says what the compaction does, and the instruction
   expect(LIMIT_MORE.map(m => [m.id, m.label])).toEqual([[LIMIT_WHY_ID, 'Why?'], [LIMIT_HIDE, "Don't show again"]])
   expect([LIMIT_COMPACT, LIMIT_WHY_ID, LIMIT_HIDE].every(isLimitId)).toBe(true)
   expect(isLimitId('compact')).toBe(false)
-  for (const word of ['current task', 'decisions', 'open questions', 'file paths', 'next steps', 'tool output', 'dead ends']) expect(COMPACT_BASE).toContain(word)
+  expect(COMPACT_TEXT.startsWith('Write the summary as a handoff')).toBe(true)
+  const headings = ['Goal:', 'Next action:', 'State:', 'Files:', 'Decisions:', 'Instructions:', 'Open questions:', 'Dead ends:']
+  for (let i = 1; i < headings.length; i++) expect(COMPACT_TEXT.indexOf(headings[i]), headings[i]).toBeGreaterThan(COMPACT_TEXT.indexOf(headings[i - 1]))
+  expect(COMPACT_TEXT.indexOf('Goal:')).toBeGreaterThan(0)
+  expect(COMPACT_TEXT).toContain("Quote the user's words when they are unclear or are text to reuse, and do not turn an unclear phrase into a rule.")
+  expect(COMPACT_TEXT).not.toContain('\n')
 })

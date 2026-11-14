@@ -2,7 +2,7 @@ import { type TestBody, expect, test } from 'claude-code/testing'
 import { RUNS_FILE, LOG_PATH, NO_CHANGE, NO_COLD, WHATSNEXT_ARGS, WHATSNEXT_SCRIPT, engine, drive, installWhatsnext, untilAsked, mount, rowText, wnAnswer } from './testkit'
 import { clockText } from './warm'
 import { LIMIT_WHY } from './limit'
-import { COMPACT_BASE } from './whatsnext'
+import { COMPACT_TEXT } from './whatsnext'
 
 // ---- Compact before the usage limit --------------------------------------------------------------------------
 //
@@ -230,7 +230,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.compactions, 'the advice shown, nothing compacted').toBe(0)
     await press($, 'cold-limit-compact')
     expect(h.compactions).toBe(1)
-    expect(h.compactCalls).toEqual([{ instructions: COMPACT_BASE }])
+    expect(h.compactCalls).toEqual([{ instructions: COMPACT_TEXT }])
     expect((await advice($)).text).toBe('Compacted. After the reset a short summary is read, not the whole conversation.')
     expect(log(h)).toContain('usage-limit advice: compacted before the reset, on the person\'s button')
   })
@@ -344,7 +344,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
       if (f.reply) h.wnReply = f.reply
       await press($, 'cold-limit-compact')
       expect(h.wnRuns.length).toBe(f.runs)
-      expect(h.compactCalls).toEqual([{ instructions: COMPACT_BASE }])
+      expect(h.compactCalls).toEqual([{ instructions: COMPACT_TEXT }])
       expect(h.submitted.map(x => x.text), 'no whatsnext prompt').toEqual(['continue'])
       expect(h.commandRuns).toEqual([])
       expect(log(h)).toContain('usage-limit advice: whatsnext could not compact (')
@@ -362,7 +362,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.complete('t2')
     await h.advance(0)
     expect(h.submitted.map(x => x.text)).toEqual(['continue', 'wrap up'])
-    expect(h.compactCalls).toEqual([{ instructions: COMPACT_BASE }])
+    expect(h.compactCalls).toEqual([{ instructions: COMPACT_TEXT }])
     expect(log(h)).toContain('compact-instructions exited 1: boom')
   })
 
@@ -370,7 +370,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const { h } = await withWhatsnext($, on)
     h.commandRunFails = 'a hook refused it'
     await press($, 'cold-limit-compact')
-    expect(h.compactCalls).toEqual([{ instructions: COMPACT_BASE }])
+    expect(h.compactCalls).toEqual([{ instructions: COMPACT_TEXT }])
     expect(log(h)).toContain('"/compact" could not run:')
   })
 

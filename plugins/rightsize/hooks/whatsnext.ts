@@ -1,13 +1,14 @@
-// What rightsize knows about whatsnext, for Compact now and the handoff before the cache goes cold: whatsnext's compact
-// text (a copy), the wrap-up limits and whether a plugin is whatsnext. Pure: no engine calls. register.tsx finds out
+// What rightsize knows about whatsnext, for Compact now and the handoff before the cache goes cold: rightsize's own compact
+// text, the wrap-up limits and whether a plugin is whatsnext. Pure: no engine calls. register.tsx finds out
 // whether whatsnext is installed and runs it.
 
 /**
- * What rightsize's own compaction is told to keep and drop when whatsnext cannot compact. A copy of whatsnext's
- * `COMPACT_BASE` (`skills/whatsnext/scripts/wn/wrapup.py`): when whatsnext changes its text, change this one the same day.
+ * What rightsize's own compaction is told to write when whatsnext is not there or cannot compact: a handoff under eight
+ * headings. rightsize's own text, no longer a copy of whatsnext's compact text; whatsnext keeps its own text and
+ * appends its handoff note. The text was chosen by a test on saved sessions (ADR 0067).
  */
-export const COMPACT_BASE =
-  'Keep: the current task and its goal, the decisions made and why, the open questions, the file paths and commands that matter, and the next steps. Drop: tool output, file dumps and dead ends (approaches tried and abandoned), unless the reason one failed still matters.'
+export const COMPACT_TEXT =
+  "Write the summary as a handoff for someone resuming this work cold. Use these headings, in this order, and leave out any that are empty: Goal: the current task and what done looks like. Next action: the one next step, the command that verifies it, and what to do if it fails. State: what is finished, what is half done, and what is not yet verified. Files: each file changed or central to the task, as path:line, with one line on why. Decisions: each decision made and why. Instructions: what the user asked for or ruled out, in their words. Quote the user's words when they are unclear or are text to reuse, and do not turn an unclear phrase into a rule. Open questions: what is waiting on the user. Dead ends: each approach tried and abandoned, with the reason it failed. Drop tool output and file contents; keep exact paths, commands, error messages and numbers."
 
 /** Over this many tokens of room left in the window, a wrap-up turn is safe; under it rightsize compacts with the handoff it has. */
 export const WRAP_HEADROOM = 40_000

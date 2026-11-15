@@ -56,7 +56,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const d = drive($, h)
     await d.start(surface)
     expect(await bandText($)).toContain('rightsize is paused: prices.json has no price for Opus 4.8. Run /rightsize prices to fetch it')
-    expect(h.statuses.at(-1)).toBe('rightsize paused: Opus 4.8 is an older model')
+    expect(h.statuses.at(-1)).toBe('rightsize paused')
     h.rating = REVIEW
     const rated = h.completions.length
     await d.submit(LOOKUP)

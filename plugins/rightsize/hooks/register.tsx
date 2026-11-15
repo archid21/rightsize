@@ -2364,17 +2364,15 @@ function startRun(r: Rating, s: Situation, d: Decision, p: Plan, base: Level, ov
 // ---- Reporting -------------------------------------------------------------
 
 async function showStatus($: EngineInterface) {
-  if (olderPause) return $.ui.status(`rightsize paused: ${olderPause} is an older model`)
-  if (manualPause) return $.ui.status(pauseStatus(manualPause))
+  if (olderPause || manualPause) return $.ui.status('rightsize paused')
   const run = active ?? pending[0] ?? null
-  if (run?.delegate) return $.ui.status(`Handing this to a ${TIER_NAME[run.delegate.tier]} subagent`)
-  if (run?.switchTo) return $.ui.status(`Running this review on ${TIER_NAME[run.switchTo.tier]} at ${run.switchTo.level} effort`)
-  if (run?.raisedTo) return $.ui.status(`Effort: ${run.raisedTo} (raised mid-turn)`)
-  if (run?.steppedUp) return $.ui.status(`Effort: back to ${run.normal} (the task got harder)`)
-  if (run?.level) return $.ui.status(run.auto ? `Effort: ${run.level} (auto) · /rightsize retry` : `Effort: ${run.level} (this prompt)`)
-  if (!run && lastAuto?.kind === 'lower') return $.ui.status(`Last prompt ran at ${lastAuto.level} (auto) · /rightsize retry`)
+  if (run?.delegate) return $.ui.status(`${TIER_NAME[run.delegate.tier]} helper`)
+  if (run?.switchTo) return $.ui.status(`${TIER_NAME[run.switchTo.tier]} · ${run.switchTo.level}`)
+  if (run?.raisedTo) return $.ui.status(`${run.raisedTo} (raised)`)
+  if (run?.steppedUp) return $.ui.status(`${run.normal} (raised)`)
+  if (run?.level) return $.ui.status(run.auto ? `${run.level} (auto)` : `${run.level}`)
   const session = await sessionEffortInUse($)
-  $.ui.status(session ? `Effort: ${session} (this session)` : undefined)
+  $.ui.status(session ? `${session}` : undefined)
 }
 
 // ---- Band ------------------------------------------------------------------

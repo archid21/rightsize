@@ -65,7 +65,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const shown = await band($)
     expect(shown.text).toBe(PAUSED_MODEL)
     expect(shown.buttons).toContain('resume')
-    expect(last(h.statuses)).toBe('Rightsize paused (you picked Opus) · /rightsize resume')
+    expect(last(h.statuses)).toBe('rightsize paused')
     expect(log(h)).toContain('paused: the person switched to Opus from Sonnet')
     await d.complete('t1')
     expect(runs(h).filter(l => l.kind === 'run'), 'a paused turn claims nothing').toEqual([])
@@ -86,7 +86,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t2')
     await d.complete('t2')
     expect(h.completions.length, 'still no rating').toBe(rated)
-    expect(last(h.statuses)).toBe('Rightsize paused (you picked Opus) · /rightsize resume')
+    expect(last(h.statuses)).toBe('rightsize paused')
   })
 
   test(`a further step up while paused shows the row again, and the way back is still the first model (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -105,7 +105,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     // Opus is still above Sonnet, the model before the pause: no resume, and no row for a step down.
     pick(h, OPUS_ID)
     await d.submit(LOOKUP)
-    expect(last(h.statuses)).toBe('Rightsize paused (you picked Fable) · /rightsize resume')
+    expect(last(h.statuses)).toBe('rightsize paused')
   })
 
   test(`Opus to Sonnet does not pause: rightsize stays on and plans from Sonnet (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -149,7 +149,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.sent.filter(s => s.turnId === 't1').map(s => s.effort), 'neither step lowered').toEqual(['high', 'high'])
     expect((await band($)).text).toBe(PAUSED_EFFORT)
     expect((await band($)).buttons).toContain('resume')
-    expect(last(h.statuses)).toBe('Rightsize paused (you raised effort to high) · /rightsize resume')
+    expect(last(h.statuses)).toBe('rightsize paused')
     expect(log(h)).toContain('paused: the person raised effort from medium to high')
     await d.complete('t1')
     const lines = runs(h)
@@ -251,7 +251,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect((await band($)).text).toBe(PAUSED_MODEL)
     await press($, 'close')
     expect((await band($)).text).toBe('')
-    expect(last(h.statuses)).toBe('Rightsize paused (you picked Opus) · /rightsize resume')
+    expect(last(h.statuses)).toBe('rightsize paused')
     await d.step('t1')
     await d.complete('t1')
     const rated = h.completions.length
@@ -359,7 +359,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.submit(LOOKUP)
     await d.step('t1')
     await d.complete('t1')
-    expect(last(h.statuses)).toBe('Rightsize paused (you raised effort to high) · /rightsize resume')
+    expect(last(h.statuses)).toBe('rightsize paused')
     h.effort = 'medium'
     h.rating = NO_CHANGE
     await d.submit(LOOKUP)
@@ -386,7 +386,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.rating = NO_CHANGE
     await d.submit(LOOKUP)
     await d.step('t2')
-    expect(last(h.statuses)).toBe('Rightsize paused (you raised effort to high) · /rightsize resume')
+    expect(last(h.statuses)).toBe('rightsize paused')
   })
 
   test(`a fresh session starts unpaused (${surface})`, { timeoutMs: 30000 }, async ($, on) => {

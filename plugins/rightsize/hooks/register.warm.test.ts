@@ -830,9 +830,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
   test(`a cold line is no run: it is not shared, and it changes no report total (${surface})`, { timeoutMs: 30000, options: ASK }, async ($, on) => {
     const { h, d } = await coldSession($, on)
-    const saving = { at: new Date().toISOString(), kind: 'run', session: 'sess-1', change: 'lower', offered: 'lower', stay: 0.4, taken: 0.1, actual: 0.1, overhead: 0 }
+    const saving = { at: new Date(h.now).toISOString(), kind: 'run', session: 'sess-1', change: 'lower', offered: 'lower', stay: 0.4, taken: 0.1, actual: 0.1, overhead: 0 }
     h.files[LEGACY_RUNS] = `${JSON.stringify(saving)}\n`
-    h.now = Date.now()
     const before = (await d.report())
     await d.start(surface)
     await coldOffer(h, d, 't1')

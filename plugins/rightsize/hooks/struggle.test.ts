@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { type Signals, FAILED_TRIES, ERRORS, helperCap, isBookkeeping, LIMITS, LONG_MIN, LONG_X, LOOP, NOVEL, RECENT_MAX, REPEAT, WINDOW, blockedError, callKey, hookFailed, isEditTool, isTestCommand, noMatchExit, noSignals, noteCall, oneUp, refusedByHook, refusedByPerson, spendMultiple, SPEND_ASK_AT, SPEND_AUTO_MAX, struggle, testsOutcome } from './struggle'
+import { type Signals, CAP_HARD_X, capStop, FAILED_TRIES, ERRORS, helperCap, isBookkeeping, LIMITS, LONG_MIN, LONG_X, LOOP, NOVEL, RECENT_MAX, REPEAT, WINDOW, blockedError, callKey, hookFailed, isEditTool, isTestCommand, noMatchExit, noSignals, noteCall, oneUp, refusedByHook, refusedByPerson, spendMultiple, SPEND_ASK_AT, SPEND_AUTO_MAX, struggle, testsOutcome } from './struggle'
 
 // Claude labels each Bash call afresh, so the description differs between runs of one command.
 const bash = (command: string) => callKey('Bash', { tool: 'Bash', tool_use_id: Math.random().toString(), command, description: `run ${command} (${Math.random()})` })
@@ -447,4 +447,20 @@ test('the helper spend limit multiple follows the rated tool calls: 1.5 up to 10
   expect([11, 20, 30].map(spendMultiple)).toEqual([2, 2, 2])
   expect([31, 60, 200].map(spendMultiple)).toEqual([3, 3, 3])
   expect([SPEND_ASK_AT, SPEND_AUTO_MAX]).toEqual([0.8, 10])
+})
+
+// P-37 (ADR 0076): past its call count a helper with no spend limit stops only when it is not making progress.
+const reads = (s: Signals, from: number, n: number) => {
+  let out = s
+  for (let i = 0; i < n; i++) out = noteCall(out, bash(`cat file${(from + i) % 6}`), false)
+  return out
+}
+
+test('past its call count a helper stops only when its last calls made no progress, and always at the hard limit', async () => {
+  const idle = reads(noSignals(), 0, 12)
+  expect(capStop({ calls: 24, cap: 25, signals: idle }), 'under the count').toBe(false)
+  expect(capStop({ calls: 25, cap: 25, signals: idle }), 'at the count, no progress').toBe(true)
+  const busy = edit(reads(noSignals(), 0, 5))
+  expect(capStop({ calls: 60, cap: 25, signals: busy }), 'past the count but editing').toBe(false)
+  expect(capStop({ calls: 25 * CAP_HARD_X, cap: 25, signals: busy }), 'the hard limit').toBe(true)
 })

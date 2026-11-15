@@ -436,6 +436,19 @@ export function struggle(s: Signals, step: number, ratedSteps: number, limits: L
 }
 
 /**
+ * A helper with no spend limit (no estimate to set one from) at its tier's call count (P-37): it stops only when it is not making
+ * progress. Making progress means a file change or a passing test run among its last WINDOW calls. Past CAP_HARD_X times the
+ * count it stops whatever it does, the safety net for a helper that keeps busy and never finishes.
+ */
+export const CAP_HARD_X = 4
+export function capStop(o: { calls: number; cap: number; signals: Signals }): boolean {
+  if (o.calls < o.cap) return false
+  if (o.calls >= o.cap * CAP_HARD_X) return true
+  const last = (o.signals.recent ?? []).slice(-WINDOW)
+  return !last.some(r => r.progress)
+}
+
+/**
  * Helper call cap: the most tool calls a helper on a cheaper tier may make for one task, however well they go.
  * A stall is otherwise found by lack of progress; this is the hard limit for a helper that keeps busy and never finishes.
  * A tier with no entry (Opus, Fable) has no cap.

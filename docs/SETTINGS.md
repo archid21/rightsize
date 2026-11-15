@@ -14,7 +14,7 @@ rightsize has one rule set and no profiles (the Quality, Balanced and Economy pr
 | Hand-off threshold: a helper must cost under this share of staying | 70% (85% while a usage window runs hot, 95% when nearly used up: Budget pacing) | none |
 | Lowering threshold: a lower level must cost under this share of staying, counting the cache it may rewrite | 90% (97% hot, 100% nearly used up) | none |
 | Close calls between two models that fit | The task-type guide decides; never explored | none |
-| Helper call cap: the most tool calls a helper on a cheaper model may make for one task | 25 for Haiku, 40 for Sonnet; none for Opus and Fable | none |
+| Helper call count, with no estimate: past it a helper on a cheaper model stops when it is not making progress, and at 4 times it whatever it does | 25 for Haiku, 40 for Sonnet; none for Opus and Fable | none |
 | Rater check: Sonnet checks every Nth Haiku rating | every 20 | none |
 | Rater: the model that rates each prompt (and each subagent brief), at low effort. A rating that times out, is refused or comes back unreadable is tried once more on Haiku | Sonnet (a stored haiku rates with Haiku, with a retry on Haiku) | none |
 | Question wait: how long a question that must be answered before your prompt runs waits for you (Effort, Stronger and Subagent when a rule is ask; with Band set to off, or on the mobile app, every question). With no answer, rightsize takes the choice that changes nothing and costs nothing | 30 seconds (a stored 1 minute or 2 minutes is used) | none |
@@ -191,7 +191,7 @@ An "ask" answer opens its own timed dialog (it waits 30 seconds); every other an
 - ask: a question on the band, without pausing the helper: Continue (one more block, the size of the first limit), Stop and report, or Always while it's making progress. With no answer (the question is still open, it went when your turn ended, or the band cannot ask), the helper goes on while it is making progress, one block at a time, up to 10 times the estimate (the hard cap), then stops and reports. Stop and report stops it at its next call.
 - continue while making progress: rightsize adds a block by itself, one at a time, up to 10 times the estimate; past that it asks, as in ask, and with no answer it stops there.
 - stop at the limit: the helper is never extended.
-- A helper that is stuck is stopped with no question, whatever this says. An extension does not use a retry of the task. With no estimate for the task, a flat cap of tool calls (25 for Haiku, 40 for Sonnet) applies instead.
+- A helper that is stuck is stopped with no question, whatever this says. An extension does not use a retry of the task. With no estimate for the task, a count of tool calls (25 for Haiku, 40 for Sonnet) applies instead: past it the helper goes on while it is making progress, and stops when it is not or at 4 times the count.
 
 ### Output suggestion
 

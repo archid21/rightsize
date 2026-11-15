@@ -151,7 +151,7 @@ import {
 } from './settings'
 import { BRIEF_MAX, cutRequest, parseRating, ratingPrompt, ratingSystem } from './rate'
 import { isApprovalStep } from './approval'
-import { HANDBACK, LIMITS, type Signals, type StepUpCause, type Struggle, blockedError, errorKind, callKey, hookFailed, isBookkeeping, isEditTool, helperCap, SPEND_ASK_AT, SPEND_AUTO_MAX, spendMultiple, isTestCommand, noMatchExit, noSignals, noteCall, oneUp, refusedByHook, refusedByPerson, struggle, testsOutcome } from './struggle'
+import { CAP_HARD_X, WINDOW, capStop, HANDBACK, LIMITS, type Signals, type StepUpCause, type Struggle, blockedError, errorKind, callKey, hookFailed, isBookkeeping, isEditTool, helperCap, SPEND_ASK_AT, SPEND_AUTO_MAX, spendMultiple, isTestCommand, noMatchExit, noSignals, noteCall, oneUp, refusedByHook, refusedByPerson, struggle, testsOutcome } from './struggle'
 import { watchCheck, watchRange, type WatchCheck } from './check'
 import { type Change, type HelperLine, type Lifetime, type RunLine, type SwitchLine, type Windows, SESSION_TOTAL, SESSION_TOTAL_FROM, bandShareText, buildReport, costTag, foldLifetime, parseLifetime, parseLines, ratedInSession, sessionTotal, shareMessage, shareOf, usedTag, windowCostText, windowRates } from './report'
 import { CACHE_LIFE_KEY, isTracked, parseChanges, type ChangeLine } from './results'
@@ -5174,7 +5174,7 @@ const HELPER_RETURN =
 const limitReturn = (limit: number) =>
   `rightsize: stop now. This helper reached its spend limit (${money(limit)}). Your next and only call must be SubagentHandback with what you found, what is left and where you stopped; any other call is refused. The main chat takes it from here.`
 const capReturn = (cap: number) =>
-  `rightsize: stop now. You have used the ${cap} tool calls this task allows a helper. Your next and only call must be SubagentHandback with what you found, what is left and where you stopped; any other call is refused. The main chat takes it from here.`
+  `rightsize: stop now. You have made ${cap} tool calls and are no longer making progress. Your next and only call must be SubagentHandback with what you found, what is left and where you stopped; any other call is refused. The main chat takes it from here.`
 // A helper's cache cannot be kept warm from outside, so a foreground wait longer than it lives is refused (ADR 0030).
 // 270 s is 30 s under the 5-minute life. Claude Code's Bash default of 120 s is allowed.
 const HELPER_WAIT_CAP_MS = 270_000
@@ -7252,20 +7252,21 @@ export const register: Register = (on, options) => {
     const background = (e as unknown as { run_in_background?: unknown }).run_in_background
     const longWait =
       !off && e.agentId !== undefined && String(e.tool) === 'Bash' && background !== true && typeof timeout === 'number' && timeout > HELPER_WAIT_CAP_MS && helperTtl < 60 * 60_000
-    // A helper on a cheaper tier gets a fixed number of tool calls, however well they go. At the cap it is struggling:
-    // it goes back to the main chat, the way a helper with no retry left does.
+    // A helper on a cheaper tier with no spend limit (no estimate) has a call count (P-37): past it, it goes back to the main chat
+    // only when it is not making progress, or at CAP_HARD_X times the count whatever it does.
     if (helper && e.agentId !== undefined && !off && !handback) {
       // With a spend limit the call cap is not used: it is the fallback for a helper with no estimate.
       const cap = helper.tier && helper.limit === undefined ? helperCap(helper.tier) : undefined
       const stop = helper.limit !== undefined ? await spendCheck($, e.agentId, helper) : undefined
       if (stop) return { deny: stop }
-      if (cap !== undefined && helper.calls >= cap) {
+      if (cap !== undefined && capStop({ calls: helper.calls, cap, signals: helper.signals })) {
+        const hard = helper.calls >= cap * CAP_HARD_X
         helper.returned = true
         helper.stall = 'struggling'
-        helper.capped = cap
-        await setBand($, { text: `Helper stopped and sent back to the main chat: it used its ${cap} tool calls.`, acted: true })
-        await log($, `returned helper ${e.agentId} to the main chat at step ${helper.steps}: it reached the ${cap}-call cap for ${helper.tier}`)
-        return { deny: capReturn(cap) }
+        helper.capped = helper.calls
+        await setBand($, { text: hard ? `Helper stopped and sent back to the main chat: it used ${helper.calls} tool calls, ${CAP_HARD_X} times its ${cap}.` : `Helper stopped and sent back to the main chat: past ${cap} tool calls, its last ${WINDOW} made no progress.`, acted: true })
+        await log($, `returned helper ${e.agentId} to the main chat at step ${helper.steps}: ${hard ? `${helper.calls} calls, the hard limit of ${CAP_HARD_X}x its ${cap}-call count for ${helper.tier}` : `past its ${cap}-call count for ${helper.tier}, no progress in its last ${WINDOW} calls`}`)
+        return { deny: capReturn(helper.calls) }
       }
       if (!longWait) helper.calls += 1
     }

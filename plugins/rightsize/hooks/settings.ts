@@ -57,6 +57,7 @@ export const SETTINGS = {
   priceCheck: { title: 'Advanced · Price check', options: ['monthly', 'off'], default: 'monthly' },
   longHelpers: { title: 'Advanced · Long helpers', options: ['ask', 'continue while making progress', 'stop at the limit'], default: 'ask' },
   outputAdvice: { title: 'Advanced · Output suggestion', options: ['on', 'off'], default: 'on' },
+  bigTurn: { title: 'Advanced · Big-turn warning', options: ['off', 'auto', '$1', '$2', '$5'], default: 'off' },
 } as const satisfies Record<string, Spec>
 
 /** Every row but the first six (Mode, Routing, Hand-offs, Ask before changing, Cache, Band) is titled with this prefix, so /config lists those first and the rest as Advanced. */

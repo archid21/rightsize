@@ -160,6 +160,7 @@ rightsize has one rule set and no profiles. The values a profile used to hold ar
   - **Reports** (api or subscription, default api): dollars, or a share of usage. A value you set is final.
   - **Long helpers** (ask, continue while making progress or stop at the limit, default ask): what happens at 80% of a cheaper helper's spend limit when it is still finding new things. With no answer to ask, it goes on while it is making progress, up to 10 times the estimate, then stops and reports. A stuck helper is stopped with no question.
   - **Output suggestion** (on or off, default on): once a session, when output is a large share of the cost, rightsize asks whether to use the Concise output style. The row does not change your output style.
+  - **Big-turn warning** (off, auto, $1, $2 or $5, default off): warns before a prompt, and during a turn, that looks as expensive as your top 1% of turns. While the row is not set, rightsize asks once on the band after your first such turn. Before a prompt: Run it, Plan first, Lower effort. During a turn: Keep going or Finish up (drafts a message in your prompt box for you to send); rightsize never stops the turn, and if you stop it yourself a report request is drafted in your prompt box. Non-interactive runs (-p, including --max-budget-usd) are left alone.
 
 Every row in full: [docs/SETTINGS.md](../../docs/SETTINGS.md).
 

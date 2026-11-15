@@ -350,6 +350,20 @@ for (const surface of ['desktop', 'terminal'] as const) {
       set: 0,
       def: 1,
     },
+    {
+      key: 'bigTurn',
+      value: '$1',
+      start: { model: 'claude-sonnet-5-5', effort: 'high', stored: { ...NO_COLD } },
+      // A job estimated at about $2.70: with the row on at $1 the prompt is held with the Big turn question, with it off it is not.
+      see: async c => {
+        c.h.rating = '{"level":"high","model":"same","size":"large","type":"feature","read":300000,"write":50000,"steps":40,"reason":"a large feature"}'
+        c.h.answers = { 'Big turn': 'Run it', 'Big-turn warning': 'No thanks' }
+        await c.d.submit('implement the whole thing across the app')
+        return c.h.asked.filter(a => a.header === 'Big turn').length
+      },
+      set: 1,
+      def: 0,
+    },
   ]
 
   test(`every setting has a scenario here, and every scenario's value is one of its options (${surface})`, async () => {

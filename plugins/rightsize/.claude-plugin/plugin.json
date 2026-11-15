@@ -274,6 +274,19 @@
         "on",
         "off"
       ]
+    },
+    "bigTurn": {
+      "type": "string",
+      "title": "Advanced · Big-turn warning",
+      "description": "off (default): no warning. auto: warn when a prompt looks as expensive as your top 1% of turns (your own turns of the last 30 days; $2 until you have 50, never under $1; recomputed weekly). $1, $2, $5: warn at that amount. Before a prompt runs, rightsize holds it for the Question wait with Run it, Plan first and Lower effort; during a turn, the band shows Keep going and Finish up (which drafts a message in your prompt box for you to send), and rightsize never stops the turn; if you stop it yourself, a report request is drafted in your prompt box. rightsize learns as you go: early warnings can be false alarms. On a subscription the amounts show as a share of your 5-hour window once runs show the rate. Non-interactive runs (-p, including --max-budget-usd) are left alone.",
+      "default": "off",
+      "options": [
+        "off",
+        "auto",
+        "$1",
+        "$2",
+        "$5"
+      ]
     }
   },
   "homepage": "https://aivalue.blog/rightsize",

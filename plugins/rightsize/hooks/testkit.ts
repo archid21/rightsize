@@ -118,6 +118,11 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
     submitted: [] as { text: string; context?: readonly string[]; asUser?: boolean }[],
     logs: [] as string[],
     filled: [] as string[],
+    /** Every $.prompt.fill with its mode, and what the prompt box holds now (what $.prompt.read answers); a fill that lands in the box adds to it. */
+    fills: [] as { text: string; mode?: string }[],
+    draft: '',
+    /** What a $.prompt.fill answers: not filled, with the engine's refusal (`dialog`, `no_composer`), as under a dialog or headless. */
+    fillRefused: undefined as 'dialog' | 'no_composer' | undefined,
     /** startDayOne: the day-one tip was shown already, so a session on Opus does not open with its band (the tests of the tip clear it). */
     /** welcomed and tips off: the welcome and the tips (ADR 0039) stay out of the way; register.welcome.test.ts clears them. backfilled, installHintHidden and initHinted (P-42): the history stretches are not made and the two hints about whatsnext stay out of the way; register.wrapup.test.ts clears them. */
     store: { startDayOne: true, welcomed: true, backfilled: true, installHintHidden: true, initHinted: ['/repo'], tips: { tipsOff: true, seen: [] }, ...(start.store ?? {}) } as Record<string, unknown>,
@@ -521,9 +526,14 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
     return { value: undefined } as never
   })
   reg('prompt.fill', async ($, e) => {
-    h.filled.push((e as { text: string }).text)
-    return { isFilled: true } as never
+    const { text, mode } = e as { text: string; mode?: string }
+    h.filled.push(text)
+    h.fills.push({ text, ...(mode ? { mode } : {}) })
+    if (h.fillRefused) return { isFilled: false, refusal: h.fillRefused, text: h.draft } as never
+    h.draft = mode === 'append' ? `${h.draft}${text}` : text
+    return { isFilled: true, text: h.draft } as never
   })
+  reg('prompt.read', async () => ({ value: { text: h.draft, cursor: h.draft.length } }) as never)
   reg('model.complete', async ($, e) => {
     const model = String((e as { model?: unknown }).model ?? '')
     h.completions.push(model)
@@ -689,7 +699,7 @@ export const drive = (api: unknown, h: ReturnType<typeof engine>) => {
   const e = api as Engine
   h.test$ = api
   return {
-    start: (surface: string) => e.session.start({ source: 'startup', cwd: '/tmp', surface, isInteractive: true }),
+    start: (surface: string, isInteractive = true) => e.session.start({ source: 'startup', cwd: '/tmp', surface, isInteractive }),
     /** The session ends (exit by default). */
     end: (reason = 'prompt_input_exit') => e.session.end({ reason, sessionId: h.sessionId, resume: { id: h.sessionId } }),
     /** `turnId`: the turn that was running when the prompt was typed; left out, the session was idle. */
@@ -701,6 +711,8 @@ export const drive = (api: unknown, h: ReturnType<typeof engine>) => {
       for await (const _ of it as AsyncIterable<unknown>) void _
     },
     complete: (turnId: string) => e.turn.complete({ turnId, answer: '', durationMs: 1, isAborted: false, reason: 'answer' }),
+    /** The person stopped the turn (Esc, or Stop on the desktop app): it completes aborted. */
+    abort: (turnId: string) => e.turn.complete({ turnId, answer: '', durationMs: 1, isAborted: true, reason: 'aborted' }),
     // A subagent's own answer, in its own loop.
     answer: (agentId: string, isAborted = false) => e.turn.complete({ turnId: `${agentId}-turn`, agentId, answer: '', durationMs: 1, isAborted, reason: isAborted ? 'aborted' : 'answer' }),
     agent: (model: string) => e.tool.call({ tool: 'Agent', description: 'x', prompt: 'brief', model }),

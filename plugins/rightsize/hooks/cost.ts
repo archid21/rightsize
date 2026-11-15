@@ -962,15 +962,34 @@ export function lowerSwitches(r: Rating, s: Situation): number {
   return NO_PROMPT_RAISE.includes(s.tier) && r.type !== 'review' ? 1 : 2
 }
 
+/**
+ * Whether the main chat may be lowered one level now, on `type` work on the session's model: the checks the effort plan makes
+ * (P-46). There has to be room above the floor (Lowest effort), the route must not be paused (too few logged tasks, or the
+ * rater wrong too often), and a review stays at its level (`reviews: true` lets a review through, for the effort plan, which only
+ * sees one when no Opus route exists). `to` is the next level down, never under the floor. It does not weigh the saving: the
+ * effort plan does that itself, and a person's own choice to lower needs no saving. The caller's own guards (the Lowering rule,
+ * a pause, an unsure rating, Routing off, watch only) are not here.
+ */
+export function canLowerNow(type: TaskType, s: Situation, floor: Level, o: { level?: Level; reviews?: boolean } = {}): { ok: true; to: Level } | { ok: false; why: string } {
+  const level = o.level ?? s.level
+  const next = LEVELS[levelRank(level) - 1]
+  if (next === undefined || levelRank(level) <= levelRank(floor)) return { ok: false, why: `${level} is already the lowest effort` }
+  if (blocked(s, type, s.tier)) {
+    const why = unproven(s, type, s.tier) ? `only ${s.counts?.[`${type}:${s.tier}`] ?? 0} of the ${s.minTasks} tasks it needs are logged` : 'the rating was wrong too often'
+    return { ok: false, why: `lowering ${type} work on ${TIER_NAME[s.tier]} is paused: ${why}` }
+  }
+  if (type === 'review' && !o.reviews) return { ok: false, why: 'a review stays at its level' }
+  return { ok: true, to: next }
+}
+
 export function effortPlan(r0: Rating, s: Situation, floor: Level): Plan {
   const r = heldRating(r0, s)
   const target = capRaise(clampFloor(r.level, floor), s)
   if (target === s.level) return { kind: 'none', why: 'the level in use fits' }
   if (levelRank(target) > levelRank(s.level)) return { kind: 'effort', dir: 'raise', level: target }
-  if (blocked(s, r.type, s.tier)) {
-    const why = unproven(s, r.type, s.tier) ? `only ${s.counts?.[`${r.type}:${s.tier}`] ?? 0} of the ${s.minTasks} tasks it needs are logged` : 'the rating was wrong too often'
-    return { kind: 'none', why: `lowering ${r.type} work on ${TIER_NAME[s.tier]} is paused: ${why}` }
-  }
+  // Reviews are not stopped here: plan() sends them to reviewPlan first, and only a review with no Opus route reaches this.
+  const can = canLowerNow(r.type, s, floor, { level: s.level, reviews: true })
+  if (!can.ok) return { kind: 'none', why: can.why }
   const now = mainCost(r, s, s.level, 0)
   const lowered = mainCost(r, s, target, lowerSwitches(r, s))
   if (lowered >= now * (s.rules ?? DEFAULT_RULES).lower) return { kind: 'none', why: `lowering to ${target} saves less than the cache it costs` }

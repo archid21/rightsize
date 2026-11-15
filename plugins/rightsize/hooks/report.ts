@@ -33,9 +33,21 @@ export type RunLine = {
    * 'undone': the person pressed Retry at original effort or Run on the current model on a run's band (`ref` is the run's `id`, `undone` which one). The Saving check leaves that run out. Retries pressed before rightsize 0.13 were not logged. It carries no cost and is no part of any total.
    * 'warmSaved': the person came back to a kept-warm cache after the time it would have gone cold without keep warm, and the returning prompt's first request read the cache (at least ~80% of the kept conversation); `saved` is what coming back cold would have cost. It carries no `overhead`, and `totals` counts `saved` toward Total saved.
    * 'auto': a turn the person did not type (P-25): `origin` is the prompt origin kind, `source` the hook's `loop_wakeup` or `schedule_wakeup` for a scheduled trigger, with `context` and `cost`. Not a rated run: no total or check reads it.
+   * 'idle': one idle stretch that closed (P-40): how long the person was away after a main turn ended (`gapMs`) and how it ended (`ended`: 'warm' they came back before the cache expired, 'cold' after it, 'never' the session ended or died with no return), with the local `hour` and `weekday` the turn ended, the `billing`, the cache life `ttl`, the conversation's `context` and what coming back cold would have cost (`cold`). It carries no cost and is no part of any total or count of runs; keep warm's return chance reads it.
    * `totals` adds the `overhead` of every line, so these pings count as rightsize's own cost and lower Total saved.
    */
-  kind?: 'run' | 'overhead' | 'subagent' | 'check' | 'feedback' | 'corrected' | 'unrated' | 'dropped' | 'unbound' | 'warm' | 'warmSaved' | 'cold' | 'undone' | 'auto'
+  kind?: 'run' | 'overhead' | 'subagent' | 'check' | 'feedback' | 'corrected' | 'unrated' | 'dropped' | 'unbound' | 'warm' | 'warmSaved' | 'cold' | 'undone' | 'auto' | 'idle'
+  /** An 'idle' line: how long the stretch lasted in ms, and how it ended. */
+  gapMs?: number
+  ended?: 'warm' | 'cold' | 'never'
+  /** An 'idle' line: the local hour (0-23) and weekday (0-6, Sunday 0) when the turn ended, the cache life in ms, and what a cold return would have cost (dollars, API-equivalent on a subscription too). `billing` and `context` are the line's own. */
+  hour?: number
+  weekday?: number
+  billing?: 'api' | 'subscription'
+  ttl?: number
+  cold?: number
+  /** A 'warm' or 'warmSaved' line from keep warm's "while it pays" rule (P-40): the self-check reads these. */
+  pays?: true
   /** A run line: how the turn's last test run ended (the main chat's, else a helper's): the objective outcome of the work. */
   tests?: 'passed' | 'failed'
   /** A run line in watch-only mode: the change rightsize would have made, and the estimate of the route it would have taken. Nothing was applied. */

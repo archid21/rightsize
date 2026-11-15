@@ -136,7 +136,7 @@ import { COMPACT_TEXT, NO_FRESH_HANDOFF, WRAP_HEADROOM, WRAP_TURNS, isWhatsnext 
 import { ME, REPOS, SHARED_PATH, askText, blockedByClaim, parseShared, readStarCheck, reposToAsk, type Shared } from './star'
 import { STORE_KEY as TIPS_KEY, type Tip, type TipsState, nextTip, parseState, tipById, withSeen } from './tips'
 import { WELCOMED_KEY, welcomeMarkdown, welcomeText } from './welcome'
-import { COMPACT_GAP_MIN, PING_PROMPT, ROW_OF, WRAP_UP, addGap, planLength, alwaysText, compactBoundary, compactWorth, compactedText, idleCompactState, idleEstimate, breakEvenMs, cacheHeld, clockText, coldPlan, ignoredLately, keepWarmChoices, leadMs, learnedChoice, COLD_MIN, breakEvenPings, netSaving, offerAt, offerCountdown, offerText, pingCost, pingEvery, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText } from './warm'
+import { COMPACT_GAP_MIN, PING_PROMPT, ROW_OF, WRAP_UP, addGap, planLength, alwaysText, compactBoundary, compactedText, idleCompactState, breakEvenMs, cacheHeld, clockText, coldPlan, ignoredLately, keepWarmChoices, leadMs, learnedChoice, COLD_MIN, breakEvenPings, netSaving, offerAt, offerCountdown, offerText, pingCost, pingEvery, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText, IDLE_CAP, IDLE_GAP_MIN, PAYS_MAX, compactGate, paysCheck, paysSend, stretchesOf, PAYS_MIN_STRETCHES, type Stretch } from './warm'
 
 // Before a prompt is sent, a quick Haiku call rates the effort, the model and
 // the work needs on each model, and the cost model prices each route that fits. The first time
@@ -2671,6 +2671,80 @@ async function recordGap($: EngineInterface) {
   }
 }
 
+// ---- Idle stretches (P-40, ADR 0072) -------------------------------------------------------------------------------
+//
+// Every idle stretch is logged as one `idle` run line: opened when a main turn ends, closed by the person's next prompt (kept when
+// the gap is at least IDLE_GAP_MIN), by the session's end (`never`), or at a later session's start when the session that
+// opened it died (`never`, once it is older than IDLE_CAP). Keep warm's "while it pays" rule reads these lines.
+
+/** Each session's open stretch, in the store: `{ [sessionId]: OpenIdle }`. */
+const OPEN_IDLE = 'openIdle'
+type OpenIdle = { endedAt: number; hour: number; weekday: number; billing: Billing; ttl: number; context: number; cold: number }
+
+async function openIdle($: EngineInterface): Promise<Record<string, OpenIdle>> {
+  const v = await $.store.get(OPEN_IDLE).catch(() => undefined)
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return {}
+  const out: Record<string, OpenIdle> = {}
+  for (const [id, e] of Object.entries(v as Record<string, unknown>)) {
+    const o = e as Partial<OpenIdle> | null
+    if (o && typeof o === 'object' && typeof o.endedAt === 'number' && Number.isFinite(o.endedAt)) out[id] = o as OpenIdle
+  }
+  return out
+}
+
+/** Opens this session's stretch at a main turn's end (replacing one a turn the person did not type left open). */
+async function openStretch($: EngineInterface, context: number, cold: number) {
+  if (!sessionId) return
+  const endedAt = lastTurnAt || (await $.clock.now())
+  const d = new Date(endedAt)
+  const entry: OpenIdle = { endedAt, hour: d.getHours(), weekday: d.getDay(), billing, ttl: cacheTtl, context, cold: round(cold) }
+  await $.store.set(OPEN_IDLE, { ...(await openIdle($)), [sessionId]: entry }).catch(() => undefined)
+}
+
+async function writeStretch($: EngineInterface, session: string, e: OpenIdle, gapMs: number, ended: 'warm' | 'cold' | 'never') {
+  const line: RunLine = { at: new Date(await $.clock.now()).toISOString(), kind: 'idle', session, gapMs, ended, hour: e.hour, weekday: e.weekday, billing: e.billing, ttl: e.ttl, context: e.context, cold: e.cold }
+  await append($, 'runs.jsonl', JSON.stringify(line), RUNS_LOG_MAX)
+  runLog.push(line)
+}
+
+/**
+ * Closes this session's open stretch. `return`: the person's prompt came; a gap under IDLE_GAP_MIN is a pause and is dropped;
+ * longer, it is `warm` when the cache was refreshed (the turn's end, or the last answered keep-warm request) within its life
+ * before the prompt, else `cold`. `end`: the session ended with no return, `never`.
+ */
+async function closeStretch($: EngineInterface, how: 'return' | 'end') {
+  try {
+    if (!sessionId) return
+    const all = await openIdle($)
+    const e = all[sessionId]
+    if (!e) return
+    delete all[sessionId]
+    await $.store.set(OPEN_IDLE, all).catch(() => undefined)
+    const now = await $.clock.now()
+    const gap = now - e.endedAt
+    if (how === 'end') return await writeStretch($, sessionId, e, gap, 'never')
+    if (gap < IDLE_GAP_MIN) return
+    await writeStretch($, sessionId, e, gap, now - Math.max(e.endedAt, lastWarmAt) <= e.ttl ? 'warm' : 'cold')
+  } catch {
+    // A missing line only makes the record thinner.
+  }
+}
+
+/** At a session's start: another session's stretch older than IDLE_CAP belongs to a session that died; it never returned. This session's own entry stays: a resume may still come back to it. */
+async function closeDeadStretches($: EngineInterface) {
+  try {
+    const all = await openIdle($)
+    const now = await $.clock.now()
+    const dead = Object.entries(all).filter(([id, e]) => id !== sessionId && now - e.endedAt > IDLE_CAP)
+    if (!dead.length) return
+    for (const [id] of dead) delete all[id]
+    await $.store.set(OPEN_IDLE, all).catch(() => undefined)
+    for (const [id, e] of dead) await writeStretch($, id, e, now - e.endedAt, 'never')
+  } catch {
+    // The same.
+  }
+}
+
 const idleFor = (ms: number) => {
   const m = Math.round(ms / 60_000)
   const n = (v: number, unit: string) => `${v} ${unit}${v === 1 ? '' : 's'}`
@@ -3053,7 +3127,7 @@ async function limitCheck($: EngineInterface) {
     const saving = limitSaving(prices, tier, context)
     if (saving <= 0) return
     // An offer up owns the cache row; a keep-warm run takes the advice beside its own line (showAdvice).
-    if (coldTurn?.offer || warming?.note) {
+    if (coldTurn?.offer || pays?.row === 'countdown' || warming?.note) {
       await log($, 'usage-limit advice: not shown, the cache row is in use')
       return
     }
@@ -3643,6 +3717,8 @@ type ColdTurn = {
   task?: string
   /** Where each offered keep-warm choice ends, by its id. */
   ends: Record<string, number>
+  /** Keep warm "while it pays" runs for this turn: its keep-warm lines carry `pays`, for the self-check. */
+  pays?: true
   /** The offer as it shows without a question: its line, its one button and the choices of the ⋯ menu. `args` are what the line is made of, so a minute tick can redraw it. */
   offer?: { text: string; first: ColdButton; more: ColdButton[]; args: Omit<Parameters<typeof offerText>[0], 'now'> }
   /** The question the cache row asks instead, until it is answered. */
@@ -3654,7 +3730,7 @@ type ColdAsk = { kind: 'always'; choice: string } | { kind: 'stop' }
 let coldTurn: ColdTurn | null = null
 /** An offer is on the band and nobody has answered it: its outcome goes in the run log when it is. */
 let offerOpen = false
-type Warming = { until: number; pings: number; spent: number; rates: Awaited<ReturnType<typeof windowPerDollar>>; note?: CacheNote }
+type Warming = { until: number; pings: number; spent: number; rates: Awaited<ReturnType<typeof windowPerDollar>>; note?: CacheNote; /** Keep warm while it pays: the row has the Extend button beside Stop. */ extend?: true }
 /** Advice said on the keep-warm row while it runs (the usage-limit advice or the context warning): its text goes first, its button beside Stop. */
 type CacheNote = { text: string; button: { id: string; label: string }; more: readonly { id: string; label: string }[]; extra?: { id: string; label: string } }
 let warming: Warming | null = null
@@ -3681,6 +3757,7 @@ function stopColdTimer() {
 function cancelCold($: EngineInterface, why: string) {
   coldGen += 1
   stopColdTimer()
+  pays = null
   const w = warming
   warming = null
   if (w) void log($, `keep warm stopped (${why}): ${pingsText(w.pings)}, ${money(w.spent)}`)
@@ -3764,28 +3841,19 @@ async function coldCheck($: EngineInterface) {
   if (off || !cacheOn || coldDone || coldMode === 'off') return
   const context = lastContext
   if (!context) return
+  const tier = (await situation($)).tier
+  const idle = idleCost(prices[tier], context)
+  const cold = idle.resend
+  // Every stretch of idle time is logged, whatever the row does with it (P-40).
+  await openStretch($, context, cold)
   // Claude Code compacts this session by itself while it sits idle: no pings (they do not reset its timer and would pay for the
   // uncached summary after it), no offer, no rightsize compact; whatsnext's wrapup.autoIdle saves the handoff.
   if (await idleCompactNow($, context)) {
     await log($, `before the cache goes cold: nothing to do, Claude Code compacts this session by itself 54 minutes after the last request (${context} tokens, at or above its idle-compact threshold)`)
     return
   }
-  const tier = (await situation($)).tier
-  const idle = idleCost(prices[tier], context)
-  const cold = idle.resend
   const { whatsnext } = await neighbours($)
-  let plan = coldPlan(coldMode, whatsnext)
-  // A row the person did not set is the fixed keep warm: when keeping warm over the idle time this project usually shows
-  // costs at least 3 times a compaction and its summary's cold read, compact instead. A row they set is theirs.
-  if (!coldYours && plan.action === 'warm') {
-    // The expected idle time, but never past the time the pings would stop: the plan's hours, or the next usual start (ADR 0013).
-    const ended = lastTurnAt || (await $.clock.now())
-    const planMs = planLength(plan, ended, usualStart(runLog, await $.clock.now()).minutes)
-    const estimate = Math.min(idleEstimate(await idleGaps($)), planMs)
-    const v = compactWorth({ estimate, ttl: cacheTtl, ping: pingCost(prices[tier], context), compact: idle.compact, summaryCold: coldCost(prices, tier, COMPACT_SUMMARY_TOKENS) })
-    await log($, `before the cache goes cold: expected idle ${idleFor(estimate)}; keeping warm ${money(v.keepWarm)} against a compaction and its summary ${money(v.cost)}: ${v.worth ? 'compact' : 'keep warm'}`)
-    if (v.worth) plan = { action: 'compact' }
-  }
+  const plan = coldPlan(coldMode, whatsnext)
   // The row acts only on a conversation big enough to matter, by the Idle warning amount (COLD_MIN while that is off), and
   // when its action saves something: its own cost taken off coming back cold.
   if (cold < (idleWarning ?? COLD_MIN)) return
@@ -3798,7 +3866,9 @@ async function coldCheck($: EngineInterface) {
   const turn: ColdTurn = { endedAt: lastTurnAt || (await $.clock.now()), context, tier, cold, whatsnext, ...(task ? { task } : {}), ends: {} }
   coldTurn = turn
   const gen = coldGen
-  if (plan.action === 'warm') {
+  if (plan.action === 'pays') {
+    await startPays($, turn)
+  } else if (plan.action === 'warm') {
     await startWarm($, turn, planLength(plan, turn.endedAt, usualStart(runLog, await $.clock.now()).minutes), coldMode)
   } else if (plan.action === 'handoff' || plan.action === 'compact') {
     await log($, `before the cache goes cold: ${plan.action} ${Math.round(leadMs(cacheTtl) / 60_000)} min before it expires (${money(cold)} cold, ${Math.round(context / 1000)}K tokens on ${TIER_NAME[tier]})`)
@@ -3919,7 +3989,7 @@ function showWarming($: EngineInterface, w: Warming) {
   const stop = { id: 'stop', label: 'Stop keeping warm' }
   const off = { id: 'off', label: "Don't keep warm again" }
   const n = w.note
-  return n ? showCold($, `${n.text} ${text}`, [n.button, ...(n.extra ? [n.extra] : []), stop], true, [...n.more, off]) : showCold($, text, [stop], true, [off])
+  return n ? showCold($, `${n.text} ${text}`, [n.button, ...(n.extra ? [n.extra] : []), stop], true, [...n.more, off]) : showCold($, text, w.extend ? [EXTEND, stop] : [stop], true, [off])
 }
 
 /**
@@ -3927,7 +3997,7 @@ function showWarming($: EngineInterface, w: Warming) {
  * carries advice, or an offer up, keeps the row, and the advice waits for a later turn's end. False when it was not shown.
  */
 async function showAdvice($: EngineInterface, note: CacheNote): Promise<boolean> {
-  if (coldTurn?.offer) return false
+  if (coldTurn?.offer || pays?.row === 'countdown') return false
   if (warming) {
     if (warming.note) return false
     warming.note = note
@@ -3959,7 +4029,7 @@ async function endWarm($: EngineInterface, w: Warming, what: string) {
 
 /** Writes one `warm` line to the run log: the report counts its cost as rightsize's own, so it lowers Total saved. It carries the task the cache belongs to, whose total counts it. */
 async function logWarm($: EngineInterface, c: ColdTurn, cost: number) {
-  const line: RunLine = { at: new Date().toISOString(), kind: 'warm', session: sessionId, ...(c.task ? { task: c.task } : {}), warmRun: new Date(c.endedAt).toISOString(), tier: c.tier, context: c.context, overhead: round(cost) }
+  const line: RunLine = { at: new Date().toISOString(), kind: 'warm', session: sessionId, ...(c.task ? { task: c.task } : {}), warmRun: new Date(c.endedAt).toISOString(), tier: c.tier, context: c.context, overhead: round(cost), ...(c.pays ? { pays: true } : {}) }
   await append($, 'runs.jsonl', JSON.stringify(line), RUNS_LOG_MAX)
   runLog.push(line)
 }
@@ -3983,7 +4053,7 @@ async function settleWarm($: EngineInterface, c: ColdTurn, u: Usage) {
     await log($, `keep warm: the cache missed on return (the first request read ${u.cache_read_input_tokens} of ${c.context} tokens), so no saving is counted`)
     return
   }
-  const line: RunLine = { at: new Date().toISOString(), kind: 'warmSaved', session: sessionId, ...(c.task ? { task: c.task } : {}), tier: c.tier, context: c.context, saved: round(c.cold) }
+  const line: RunLine = { at: new Date().toISOString(), kind: 'warmSaved', session: sessionId, ...(c.task ? { task: c.task } : {}), tier: c.tier, context: c.context, saved: round(c.cold), ...(c.pays ? { pays: true } : {}) }
   await append($, 'runs.jsonl', JSON.stringify(line), RUNS_LOG_MAX)
   runLog.push(line)
   await log($, `keep warm: the cache held on return (read ${u.cache_read_input_tokens} of ${c.context} tokens); coming back cold would have cost ${money(c.cold)}`)
@@ -4016,6 +4086,35 @@ function armPing($: EngineInterface, gen: number, c: ColdTurn, w: Warming, k: nu
   return armCold($, gen, c.endedAt + k * pingEvery(cacheTtl), () => sendPing($, gen, c, w, k, count))
 }
 
+/**
+ * One keep-warm request of a run: the fork, its cost on the run and in the log, and the two stops every run has: a failed
+ * request and a cache miss (the request read under 80% of the conversation, so more would pay full price again). `go` when the
+ * run may go on; `stop` when it ended (the band says so), or a newer round began.
+ */
+async function pingOnce($: EngineInterface, gen: number, c: ColdTurn, w: Warming): Promise<'go' | 'stop'> {
+  const r = await $.model.fork({ prompt: PING_PROMPT }).catch((err: unknown) => ({ isAnswered: false as const, reason: `error: ${err instanceof Error ? err.message : String(err)}`, usage: undefined }))
+  const usage = 'usage' in r ? r.usage : undefined
+  // A request that came back with no usage still read the conversation from the cache.
+  const cost = r.isAnswered || usage ? pingCost(prices[c.tier], c.context, usage) : 0
+  w.pings += r.isAnswered ? 1 : 0
+  w.spent += cost
+  if (r.isAnswered || cost > 0) await logWarm($, c, cost)
+  if (r.isAnswered) lastWarmAt = await $.clock.now()
+  if (gen !== coldGen) return 'stop'
+  if (!r.isAnswered) {
+    const why = 'status' in r ? `${r.reason}${r.status === null ? '' : ` ${r.status}`}, ${r.error}` : r.reason
+    await log($, `keep warm stopped: the request failed (${why})`)
+    await endWarm($, w, 'Stopped keeping warm: a request failed')
+    return 'stop'
+  }
+  if (usage && !cacheHeld(usage.cache_read_input_tokens, c.context)) {
+    await log($, `keep warm stopped: the cache missed (the request read ${usage.cache_read_input_tokens} of ${c.context} tokens)`)
+    await endWarm($, w, 'Stopped keeping warm: the cache missed')
+    return 'stop'
+  }
+  return 'go'
+}
+
 // Ping `k` of `count`, when its timer fires. A turn running keeps the cache warm itself, and its end starts the next round. The run stops at a failed request and at a cache miss.
 async function sendPing($: EngineInterface, gen: number, c: ColdTurn, w: Warming, k: number, count: number) {
   try {
@@ -4024,27 +4123,7 @@ async function sendPing($: EngineInterface, gen: number, c: ColdTurn, w: Warming
       if (warming === w) warming = null
       return
     }
-    const r = await $.model.fork({ prompt: PING_PROMPT }).catch((err: unknown) => ({ isAnswered: false as const, reason: `error: ${err instanceof Error ? err.message : String(err)}`, usage: undefined }))
-    const usage = 'usage' in r ? r.usage : undefined
-    // A request that came back with no usage still read the conversation from the cache.
-    const cost = r.isAnswered || usage ? pingCost(prices[c.tier], c.context, usage) : 0
-    w.pings += r.isAnswered ? 1 : 0
-    w.spent += cost
-    if (r.isAnswered || cost > 0) await logWarm($, c, cost)
-    if (r.isAnswered) lastWarmAt = await $.clock.now()
-    if (gen !== coldGen) return
-    if (!r.isAnswered) {
-      const why = 'status' in r ? `${r.reason}${r.status === null ? '' : ` ${r.status}`}, ${r.error}` : r.reason
-      await log($, `keep warm stopped: the request failed (${why})`)
-      await endWarm($, w, 'Stopped keeping warm: a request failed')
-      return
-    }
-    // A request that read under 80% of the conversation from the cache missed it: more requests would pay full price again.
-    if (usage && !cacheHeld(usage.cache_read_input_tokens, c.context)) {
-      await log($, `keep warm stopped: the cache missed (the request read ${usage.cache_read_input_tokens} of ${c.context} tokens)`)
-      await endWarm($, w, 'Stopped keeping warm: the cache missed')
-      return
-    }
+    if ((await pingOnce($, gen, c, w)) === 'stop') return
     // The planned last request may end a little over: it is the end anyway. Before it, a run that costs more than planned stops.
     if (k < count && w.spent >= c.cold) {
       await log($, `keep warm stopped: ${money(w.spent)} spent, as much as coming back cold`)
@@ -4062,6 +4141,209 @@ async function sendPing($: EngineInterface, gen: number, c: ColdTurn, w: Warming
     await log($, `keep warm failed: ${err instanceof Error ? err.message : String(err)}`)
     if (gen === coldGen && warming === w) warming = null
   }
+}
+
+// ---- Keep warm while it pays (P-40, ADR 0072) ---------------------------------------------------------------------
+//
+// The default of Before the cache goes cold. Decision point k is the time a keep-warm request is due: k x pingEvery after the
+// turn ended, which is also the lead time before the cache's expiry. There, a request goes out when the person's own return
+// chance pays for it (warm.ts paysSend), at most PAYS_MAX times (the Extend button goes beyond that), and never past
+// break-even. When none goes out, the compaction gate runs at once: compact when that pays, else save a whatsnext handoff
+// note, else nothing. On a cache of 1 hour or more the cache row shows the countdown with an Extend 1 hour button from
+// OFFER_AFTER_MS after the turn. A prompt cancels all of it (cancelCold).
+
+const EXTEND = { id: 'extend', label: 'Extend 1 hour' }
+
+/** The run for one turn's stretch. `row`: what the cache row shows: the countdown with Extend, "Warm until" (after an Extend press), or nothing. */
+type Pays = {
+  c: ColdTurn
+  w: Warming
+  gen: number
+  /** The next decision point's number, from 1. */
+  k: number
+  /** Requests the rule sent; Extend presses not yet used. */
+  rule: number
+  extra: number
+  /** When the cache was last refreshed: the turn's end, then each answered request. */
+  refreshed: number
+  row: 'none' | 'countdown' | 'warm'
+  /** The stretches this run decides from, and whether the self-check paused its requests. */
+  stretches: Stretch[]
+  paused: boolean
+  /** What the countdown row is made of, and the text it last showed. */
+  args?: { ttl: number; cost: string; breakEven: number }
+  text?: string
+}
+let pays: Pays | null = null
+/** The band said once this session that keep warm is paused (the self-check). */
+let pausedSaid = false
+
+const pct = (p: number) => `${Math.round(p * 100)}%`
+
+/** At a main turn's end: plan the stretch. Arms the timer for the countdown row (a cache of 1 hour or more) or for the first decision point. */
+async function startPays($: EngineInterface, turn: ColdTurn) {
+  const now = await $.clock.now()
+  const stretches = stretchesOf(runLog, billing, now)
+  const check = paysCheck(runLog, now)
+  turn.pays = true
+  const gen = coldGen
+  const p: Pays = { c: turn, w: { until: turn.endedAt + cacheTtl, pings: 0, spent: 0, rates: undefined }, gen, k: 1, rule: 0, extra: 0, refreshed: turn.endedAt, row: 'none', stretches, paused: check.paused }
+  pays = p
+  await log($, `keep warm while it pays: ${stretches.length} idle stretches on record (${billing})${stretches.length < PAYS_MIN_STRETCHES ? ', too few for a chance: one request at the first expiry on a cache of 1 hour or more, none on a shorter one' : ''} (${money(turn.cold)} cold, ${Math.round(turn.context / 1000)}K tokens on ${TIER_NAME[turn.tier]})`)
+  if (check.paused) {
+    await log($, `keep warm while it pays: paused, its last ${check.runs} runs cost ${money(-check.net)} more than they saved; the compaction check still runs`)
+    if (!pausedSaid) {
+      pausedSaid = true
+      await showCold($, `Keep warm is paused: it cost more than it saved over its last ${check.runs} runs. In-turn keep warm still runs.`, undefined, true)
+    }
+  }
+  if (cacheTtl >= 60 * 60_000 && !check.paused) await armCold($, gen, offerAt(turn.endedAt, cacheTtl), () => showPaysRow($, p))
+  else await armPays($, p)
+}
+
+/** Arms the timer for decision point `p.k`. */
+function armPays($: EngineInterface, p: Pays) {
+  return armCold($, p.gen, p.c.endedAt + p.k * pingEvery(cacheTtl), () => payDecide($, p))
+}
+
+/** The cache row's text and button, from what it is made of; the minute it shows moves on with `now`. */
+function paysLine(p: Pays, now: number) {
+  const a = p.args as NonNullable<Pays['args']>
+  return offerText({ ttl: a.ttl, endedAt: p.refreshed, cost: a.cost, breakEven: a.breakEven, now })
+}
+
+/** Puts the stretch's row on the band: the countdown with Extend, or "Warm until …" once Extend was pressed. */
+async function showPays($: EngineInterface, p: Pays) {
+  if (p.row === 'none' || !p.args) return
+  const now = await $.clock.now()
+  if (p.row === 'warm') {
+    p.w.until = p.refreshed + cacheTtl + p.extra * pingEvery(cacheTtl)
+    await showWarming($, p.w)
+    return
+  }
+  p.text = paysLine(p, now)
+  await showCold($, p.text, [EXTEND], true, [{ id: 'off', label: "Don't keep warm again" }], undefined, offerCountdown({ ttl: p.args.ttl, endedAt: p.refreshed, now }))
+}
+
+/** From OFFER_AFTER_MS after the turn, on a cache of 1 hour or more: the countdown row. Then the first decision point. */
+async function showPaysRow($: EngineInterface, p: Pays) {
+  const now = await $.clock.now()
+  const had = (await $.state.get(BAND).catch(() => undefined))?.value
+  if (bandMode === 'off' || mainBusy || (had?.coldMore ?? []).some(m => m.id === LIMIT_WHY_ID) || p.c.endedAt + cacheTtl <= now) {
+    await log($, 'keep warm while it pays: no countdown row (the band is off, a turn is running, the usage-limit advice is on the band, or the cache went cold)')
+  } else {
+    const rates = billing === 'subscription' ? await windowPerDollar($) : undefined
+    p.w.rates = rates
+    p.args = { ttl: cacheTtl, cost: coldCostText(p.c.cold, rates), breakEven: 0 }
+    p.row = 'countdown'
+    await showPays($, p)
+  }
+  await armPays($, p)
+}
+
+/** Once a minute, from the 3-second timer: redraws the countdown when its minute has changed, unless something else took the cache row. */
+async function tickPays($: EngineInterface) {
+  const p = pays
+  if (!p || p.row !== 'countdown' || !p.args) return
+  const text = paysLine(p, await $.clock.now())
+  if (text === p.text) return
+  const shown = (await $.state.get(BAND).catch(() => undefined))?.value?.coldText
+  if (shown !== p.text) return
+  await showPays($, p)
+}
+
+/** Extend 1 hour: one more request at the next decision point the rule does not cover. The row then reads like keep warm. */
+async function pressExtend($: EngineInterface) {
+  const p = pays
+  if (!p || p.paused) return
+  p.extra += 1
+  if (p.row !== 'warm') {
+    p.row = 'warm'
+    p.w.extend = true
+    warming = p.w
+  }
+  await log($, `keep warm while it pays: Extend 1 hour pressed, ${p.extra} extra request${p.extra === 1 ? '' : 's'} waiting for a decision point the rule does not cover`)
+  await showPays($, p)
+}
+
+/** Decision point `p.k`: one request when the rule pays or an Extend press waits; otherwise the compaction gate. */
+async function payDecide($: EngineInterface, p: Pays) {
+  const gen = p.gen
+  try {
+    if (mainBusy) {
+      await log($, 'keep warm while it pays skipped: a turn is running')
+      if (pays === p) pays = null
+      if (warming === p.w) warming = null
+      return
+    }
+    const c = p.c
+    const now = await $.clock.now()
+    if (now >= p.refreshed + cacheTtl) {
+      await log($, 'keep warm while it pays: the cache already went cold, nothing to keep')
+      await endPays($, p)
+      return
+    }
+    const ping = pingCost(prices[c.tier], c.context)
+    const most = breakEvenPings(c.cold, ping)
+    const d = paysSend({ stretches: p.stretches, k: p.k, ttl: cacheTtl, cold: c.cold, ping })
+    const ruleOk = !p.paused && p.rule < PAYS_MAX && d.send
+    const extraOk = !p.paused && !ruleOk && p.extra > 0
+    const numbers = d.early ? `${p.stretches.length} stretches on record, fewer than ${PAYS_MIN_STRETCHES}` : `${pct(d.p ?? 0)} of ${d.n} stretches still going came back within the next cache life, ${money((d.p ?? 0) * c.cold)} expected against ${money(ping)} a request`
+    if ((ruleOk || extraOk) && p.w.pings >= most) {
+      await log($, `keep warm while it pays: no request at point ${p.k}, ${p.w.pings} requests are as many as pay against ${money(c.cold)} cold`)
+    } else if (ruleOk || extraOk) {
+      if (ruleOk) p.rule += 1
+      else p.extra -= 1
+      await log($, `keep warm while it pays: request ${p.w.pings + 1} at point ${p.k} (${ruleOk ? `rule: ${numbers}` : 'Extend 1 hour'})`)
+      if ((await pingOnce($, gen, c, p.w)) === 'stop') {
+        if (pays === p) pays = null
+        return
+      }
+      p.refreshed = lastWarmAt
+      p.k += 1
+      await showPays($, p)
+      await armPays($, p)
+      return
+    } else {
+      await log($, `keep warm while it pays: no request at point ${p.k} (${p.paused ? 'paused by the self-check' : p.rule >= PAYS_MAX && d.send ? `the rule's ${PAYS_MAX} requests are used` : numbers})`)
+    }
+    await payGate($, p)
+  } catch (err) {
+    await log($, `keep warm while it pays failed: ${err instanceof Error ? err.message : String(err)}`)
+    if (gen === coldGen && pays === p) pays = null
+  }
+}
+
+/** The stretch is over with nothing more to do: the timer and the run's state go, and the countdown row with them. */
+async function endPays($: EngineInterface, p: Pays) {
+  if (pays === p) pays = null
+  if (warming === p.w) warming = null
+  if (p.row !== 'none') await clearColdRow($)
+  p.row = 'none'
+}
+
+/**
+ * No request covers the next expiry: compact when the chance the person comes back after it, times what a compaction saves on
+ * that return, is more than the compaction costs (a prior stands in for the chance until the record is long enough). When it
+ * does not pay: with whatsnext, a handoff note (no compaction); without, nothing. Logged with the numbers.
+ */
+async function payGate($: EngineInterface, p: Pays) {
+  const c = p.c
+  const price = prices[c.tier]
+  const compact = idleCost(price, c.context).compact
+  const summaryCold = coldCost(prices, c.tier, COMPACT_SUMMARY_TOKENS)
+  const expiry = (p.k - 1) * pingEvery(cacheTtl) + cacheTtl
+  const g = compactGate({ stretches: p.stretches, atMs: expiry, cold: c.cold, summaryCold, compact })
+  const chance = g.early ? `chance of a later return ${pct(g.p)} (starting value, ${p.stretches.length} stretches on record)` : `${pct(g.p)} of ${g.n} stretches still going at the expiry came back later`
+  const numbers = `${chance}; it would save ${money(g.gain)} on average against ${money(compact)} to compact`
+  await endPays($, p)
+  if (g.pays) {
+    await log($, `keep warm while it pays: compacting ${Math.round(leadMs(cacheTtl) / 60_000)} min before the expiry: ${numbers}`)
+    await atCold($, c, 'compact')
+  } else if (c.whatsnext) {
+    await log($, `keep warm while it pays: not compacting, a handoff note instead: ${numbers}`)
+    await atCold($, c, 'handoff')
+  } else await log($, `keep warm while it pays: nothing to do before the expiry, compacting does not pay and whatsnext is not here: ${numbers}`)
 }
 
 // ---- In-turn keep warm (ADR 0029) ----------------------------------------------
@@ -4235,6 +4517,7 @@ async function pressCold($: EngineInterface, id: string): Promise<void> {
     return
   }
   if (id === 'ask-yes' || id === 'ask-no') return answerAsk($, id === 'ask-yes')
+  if (id === 'extend') return pressExtend($)
   await closeOffer($, id)
   if (id === 'off') {
     cancelCold($, 'turned off')
@@ -5670,6 +5953,7 @@ export const register: Register = (on, options) => {
   }).catch((_, e, next) => next(e))
 
   on('session.end', async ($, e, next) => {
+    await closeStretch($, 'end')
     // "This session" ends here: the output style goes back to what it was, if it still reads Concise.
     await restoreOutput($, `the session ended (${e.reason})`, false)
     spend = { output: 0, total: 0, requests: 0 }
@@ -5724,6 +6008,7 @@ export const register: Register = (on, options) => {
     mainBusy = false
     lastWarmAt = 0
     warmReturn = null
+    pausedSaid = false
     compactedAway = null
     manualCompact = false
     boundaryCheck = false
@@ -5797,6 +6082,7 @@ export const register: Register = (on, options) => {
     // Clearing out old sessions never holds up the start.
     void rollUpLifetime($).finally(() => pruneSessions($))
     runLog = await readRuns($)
+    await closeDeadStretches($)
     ratedRuns.clear()
     await refreshMisses($)
     switchedOff = (await readSwitches($))[NAME] === false
@@ -5812,6 +6098,7 @@ export const register: Register = (on, options) => {
         void checkOlder($)
       })
       void tickOffer($)
+      void tickPays($)
     })
     // After the band is reset above, so the pause line stays (ADR 0032).
     await checkOlder($)
@@ -5893,6 +6180,7 @@ export const register: Register = (on, options) => {
         await stopWait($, 'a prompt was typed into the turn')
       }
       await recordGap($)
+      await closeStretch($, 'return')
       await closeOffer($, 'ignored')
       await noteReturn($)
       cancelCold($, 'a prompt was submitted')

@@ -153,8 +153,9 @@ for (const surface of ['desktop', 'terminal'] as const) {
         const t = c.turn()
         await c.d.step(t)
         await c.d.complete(t)
-        // Balanced keeps warm until the usual start from the end of a big turn; with Cache off there is no keep-warm line.
-        return (await bandText(c.$, c.surface)).startsWith('Warm until ')
+        // Keep warm while it pays is the default: its countdown row (with Extend 1 hour) shows 5 minutes after a big turn; with Cache off there is none.
+        await c.h.advance(5 * 60_000)
+        return (await bandText(c.$, c.surface)).startsWith('Goes cold in ')
       },
       set: false,
       def: true,
@@ -269,8 +270,9 @@ for (const surface of ['desktop', 'terminal'] as const) {
         const t = c.turn()
         await c.d.step(t)
         await c.d.complete(t)
-        // Balanced keeps warm until the usual start with no question, from the end of a big turn.
-        return (await bandText(c.$, c.surface)).startsWith('Warm until ')
+        // Keep warm while it pays is the default: its countdown row shows 5 minutes after a big turn; with the row off there is none.
+        await c.h.advance(5 * 60_000)
+        return (await bandText(c.$, c.surface)).startsWith('Goes cold in ')
       },
       set: false,
       def: true,

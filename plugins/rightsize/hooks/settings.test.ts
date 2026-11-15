@@ -301,36 +301,37 @@ test('Band is a plain row: the six plain rows are Mode, Routing, Hand-offs, Ask 
 })
 
 test('the fixed values are what the Balanced profile held (ADR 0021)', async () => {
-  expect(FIXED).toEqual({ evidence: { minTasks: 0, maxMiss: 0.2 }, handOff: 0.7, raterEvery: 20, chances: 2, beforeCold: 'keep warm until my usual start', reviewCeiling: 'max' })
+  expect(FIXED).toEqual({ evidence: { minTasks: 0, maxMiss: 0.2 }, handOff: 0.7, raterEvery: 20, chances: 2, beforeCold: 'while it pays', reviewCeiling: 'max' })
 })
 
 test('the fixed values are in use whatever is stored; Before the cache goes cold is the one row that replaces its fixed value', async () => {
   const values = { ...defaults(), beforeCold: 'compact' }
-  expect(inUse(values, set())).toEqual({ handOff: 0.7, minTasks: 0, maxMiss: 0.2, raterEvery: 20, chances: 2, answers: answersOf(false), beforeCold: 'keep warm until my usual start', reviewCeiling: 'max' })
+  expect(inUse(values, set())).toEqual({ handOff: 0.7, minTasks: 0, maxMiss: 0.2, raterEvery: 20, chances: 2, answers: answersOf(false), beforeCold: 'while it pays', reviewCeiling: 'max' })
   expect(inUse(values, set('beforeCold')).beforeCold).toBe('compact')
   expect(inUse(values, set('beforeCold', 'floor', 'band'))).toMatchObject({ handOff: 0.7, maxMiss: 0.2, raterEvery: 20, chances: 2, reviewCeiling: 'max' })
 })
 
-test('Before the cache goes cold is a row: seven options, asking by default, and /config names it', async () => {
-  expect(SETTINGS.beforeCold.options).toEqual(['ask', 'keep warm 2 h', 'keep warm 8 h', 'keep warm until my usual start', 'save a handoff', 'compact', 'off'])
-  expect(SETTINGS.beforeCold.default).toBe('ask')
+test('Before the cache goes cold is a row: eight options, keeping warm while it pays by default, and /config names it', async () => {
+  expect(SETTINGS.beforeCold.options).toEqual(['while it pays', 'ask', 'keep warm 2 h', 'keep warm 8 h', 'keep warm until my usual start', 'save a handoff', 'compact', 'off'])
+  expect(SETTINGS.beforeCold.default).toBe('while it pays')
   expect(SETTINGS.beforeCold.title).toBe('Advanced · Before the cache goes cold')
   expect(settingNamed('before the cache goes cold')).toBe('beforeCold')
   expect(settingNamed('beforeCold')).toBe('beforeCold')
 })
 
 test('Before the cache goes cold: the fixed value applies until you set the row, and then your row wins', async () => {
-  expect(FIXED.beforeCold).toBe('keep warm until my usual start')
+  expect(FIXED.beforeCold).toBe('while it pays')
   const values = { ...defaults(), beforeCold: 'compact' }
   // Not set: the row's own value (here compact) is only the default's stand-in, and the fixed value applies.
-  expect(inUse(defaults(), set()).beforeCold).toBe('keep warm until my usual start')
-  expect(inUse(values, set()).beforeCold, 'a value that is not yours changes nothing').toBe('keep warm until my usual start')
+  expect(inUse(defaults(), set()).beforeCold).toBe('while it pays')
+  expect(inUse(values, set()).beforeCold, 'a value that is not yours changes nothing').toBe('while it pays')
   // Set: yours.
   expect(inUse(values, set('beforeCold')).beforeCold).toBe('compact')
   expect(inUse({ ...defaults(), beforeCold: 'off' }, set('beforeCold')).beforeCold).toBe('off')
   expect(inUse({ ...defaults(), beforeCold: 'keep warm 2 h' }, set('beforeCold')).beforeCold, 'your setting wins over the fixed value').toBe('keep warm 2 h')
-  // Set back to the default "ask", it is still yours: it asks.
-  expect(inUse(defaults(), set('beforeCold')).beforeCold).toBe('ask')
+  // Set to "ask", it is yours: it asks. Set back to the default, it is still yours.
+  expect(inUse({ ...defaults(), beforeCold: 'ask' }, set('beforeCold')).beforeCold).toBe('ask')
+  expect(inUse(defaults(), set('beforeCold')).beforeCold).toBe('while it pays')
 })
 
 test('Mode: watch only is read off its value', async () => {

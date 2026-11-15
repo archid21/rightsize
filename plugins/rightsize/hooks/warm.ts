@@ -13,7 +13,7 @@ const DAY = 24 * HOUR
  * What an action nets against coming back cold: the cold cost, less the action's own cost. The row acts only when this is
  * above zero (dollars; API-equivalent on a subscription too). There is no minimum size: a small saving counts if it is a saving.
  * `ping` is one keep-warm request (and a handoff, which reads the warm conversation once), `compact` a compaction's read.
- * `ask` is judged by its cheapest choice; `off` does nothing, so it nets nothing. A keep-warm run is also capped by `warmPlan`:
+ * `ask` is judged by its cheapest choice; `off` does nothing, so it nets nothing; `pays` (keep warm while it pays) is judged by its first request, like a ping. A keep-warm run is also capped by `warmPlan`:
  * it never costs more than coming back cold.
  */
 export function netSaving(action: ColdPlan['action'], o: { cold: number; ping: number; compact: number }) {
@@ -391,8 +391,8 @@ export const ignoredLately = (lines: readonly Answered[]) => {
   return last.length === BACK_OFF_AFTER && last.every(c => c === 'ignored')
 }
 
-/** What a row value does at a turn's end: `warm` has the hours, or `untilStart` (the usual start time, at most the hours). A handoff without whatsnext is a compaction. */
-export type ColdPlan = { action: 'ask' | 'warm' | 'handoff' | 'compact' | 'off'; hours?: number; untilStart?: true }
+/** What a row value does at a turn's end: `warm` has the hours, or `untilStart` (the usual start time, at most the hours); `pays` is keep warm while it pays (P-40). A handoff without whatsnext is a compaction. */
+export type ColdPlan = { action: 'ask' | 'warm' | 'pays' | 'handoff' | 'compact' | 'off'; hours?: number; untilStart?: true }
 
 /**
  * How long a keep-warm plan pings after a turn that ended at `endedAt`: its hours (8 unless set), and for "until my usual
@@ -405,6 +405,8 @@ export function planLength(plan: ColdPlan, endedAt: number, startMinutes: number
 
 export function coldPlan(value: string, whatsnext: boolean): ColdPlan {
   switch (value) {
+    case 'while it pays':
+      return { action: 'pays' }
     case 'keep warm 2 h':
       return { action: 'warm', hours: 2 }
     case 'keep warm 8 h':
@@ -420,4 +422,158 @@ export function coldPlan(value: string, whatsnext: boolean): ColdPlan {
     default:
       return { action: 'ask' }
   }
+}
+
+// ---- Keep warm while it pays (P-40) -------------------------------------------
+//
+// The default of Before the cache goes cold. At each time a keep-warm request is due, the person's own record decides: it
+// goes out only when the chance they come back before the next expiry, times what a cold return costs, is at least twice
+// what the request costs. The record is the run log's `idle` lines: one per idle stretch, however it ended.
+
+/** One idle stretch as the chance reads it: how long the person was away, and how it ended (`never`: the session ended or died with no return). */
+export type Stretch = { gapMs: number; ended: 'warm' | 'cold' | 'never' }
+
+/** Stretches this old, at most, count. */
+export const STRETCH_DAYS = 30
+/** Fewer stretches than this in the record, and the rule uses a fixed plan instead of a chance. */
+export const PAYS_MIN_STRETCHES = 20
+/** The chance of a later return the compaction gate uses until the record has PAYS_MIN_STRETCHES stretches. */
+export const PAYS_PRIOR = 0.25
+/** A request goes out when the chance times a cold return is at least this many times its cost. */
+export const PAYS_MARGIN = 2
+/** The most requests the rule sends in one stretch (the Extend button goes beyond this). */
+export const PAYS_MAX = 2
+/** The self-check looks at keep warm's runs once there are this many. */
+export const PAYS_CHECK_RUNS = 10
+
+type IdleLine = { at: string; kind?: string; gapMs?: unknown; ended?: unknown; billing?: unknown }
+
+/** The stretches in the run log for this billing: `idle` lines of the last 30 days, at least IDLE_GAP_MIN long. */
+export function stretchesOf(lines: readonly IdleLine[], billing: string, now: number): Stretch[] {
+  const out: Stretch[] = []
+  for (const l of lines) {
+    if (l.kind !== 'idle' || l.billing !== billing) continue
+    const at = Date.parse(l.at)
+    const gap = l.gapMs
+    if (!Number.isFinite(at) || now - at > STRETCH_DAYS * DAY || typeof gap !== 'number' || !Number.isFinite(gap) || gap < IDLE_GAP_MIN) continue
+    if (l.ended !== 'warm' && l.ended !== 'cold' && l.ended !== 'never') continue
+    out.push({ gapMs: gap, ended: l.ended })
+  }
+  return out
+}
+
+/** The stretches still going at `at`: a return needs a gap past it; a stretch that never returned counts to its end, `at` included. */
+const atRisk = (stretches: readonly Stretch[], at: number) => stretches.filter(s => (s.ended === 'never' ? s.gapMs >= at : s.gapMs > at))
+
+/**
+ * The chance the person comes back in the `ttlMs` after `elapsedMs` of idling: among the stretches still going at `elapsedMs`,
+ * the share that returned with `elapsedMs` < gap <= `elapsedMs + ttlMs`. `n` is how many were still going. No stretch: p is 0.
+ */
+export function returnChance(stretches: readonly Stretch[], elapsedMs: number, ttlMs: number): { p: number; n: number } {
+  const risk = atRisk(stretches, elapsedMs)
+  const back = risk.filter(s => s.ended !== 'never' && s.gapMs <= elapsedMs + ttlMs).length
+  return { p: risk.length ? back / risk.length : 0, n: risk.length }
+}
+
+/** The chance the person comes back at any time after `atMs`: among the stretches still going then, the share that returned. */
+export function laterChance(stretches: readonly Stretch[], atMs: number): { p: number; n: number } {
+  const risk = atRisk(stretches, atMs)
+  const back = risk.filter(s => s.ended !== 'never').length
+  return { p: risk.length ? back / risk.length : 0, n: risk.length }
+}
+
+/**
+ * Does the request due at decision point `k` (at `k * pingEvery(ttl)` after the turn ended) go out? Before PAYS_MIN_STRETCHES
+ * stretches are logged: one request at k = 1 on a cache of 1 hour or more, none on a shorter one. After: when the return chance
+ * times a cold return is at least PAYS_MARGIN times the request's cost. The cap (PAYS_MAX) and break-even are the caller's.
+ */
+export function paysSend(o: { stretches: readonly Stretch[]; k: number; ttl: number; cold: number; ping: number }) {
+  if (o.stretches.length < PAYS_MIN_STRETCHES) return { send: o.ttl >= HOUR && o.k === 1, early: true, p: undefined as number | undefined, n: o.stretches.length }
+  const { p, n } = returnChance(o.stretches, o.k * pingEvery(o.ttl), o.ttl)
+  return { send: p * o.cold >= PAYS_MARGIN * o.ping, early: false, p: p as number | undefined, n }
+}
+
+/**
+ * The gate before an expiry no request covers: compact when the chance of coming back after it, times what the compaction
+ * saves on that return (a cold read of the conversation less a cold read of the summary), is more than the compaction costs.
+ * `atMs` is the expiry, from the turn's end. Before PAYS_MIN_STRETCHES stretches the chance is PAYS_PRIOR.
+ */
+export function compactGate(o: { stretches: readonly Stretch[]; atMs: number; cold: number; summaryCold: number; compact: number }) {
+  const early = o.stretches.length < PAYS_MIN_STRETCHES
+  const later = early ? { p: PAYS_PRIOR, n: o.stretches.length } : laterChance(o.stretches, o.atMs)
+  const gain = later.p * (o.cold - o.summaryCold)
+  return { pays: gain > o.compact, early, p: later.p, n: later.n, gain }
+}
+
+type PaysLine = { at: string; kind?: string; pays?: unknown; warmRun?: string; overhead?: unknown; saved?: unknown }
+
+/**
+ * The self-check: over the last 30 days, the runs of the lines the rule wrote (`pays`, distinct `warmRun`), and what they
+ * saved less what they cost. With PAYS_CHECK_RUNS runs or more and a net below zero, `paused` is true: no more idle requests.
+ */
+export function paysCheck(lines: readonly PaysLine[], now: number) {
+  const mine = lines.filter(l => l.pays === true && (l.kind === 'warm' || l.kind === 'warmSaved') && now - Date.parse(l.at) <= STRETCH_DAYS * DAY)
+  const runs = new Set(mine.map(l => l.warmRun).filter((r): r is string => typeof r === 'string')).size
+  const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
+  const net = mine.reduce((n, l) => n + (l.kind === 'warmSaved' ? num(l.saved) : -num(l.overhead)), 0)
+  return { runs, net, paused: runs >= PAYS_CHECK_RUNS && net < 0 }
+}
+
+/** What the rule, or the old default, did over a list of stretches: requests sent, what they and any compactions cost, what the returns saved, compactions made, and saved less cost. */
+export type Replay = { requests: number; cost: number; saved: number; compacts: number; net: number }
+type ReplayPrices = { ttl: number; cold: number; ping: number; compact: number; summaryCold: number }
+
+/**
+ * Plays the rule over `list` in order, as it would have run: each stretch's decisions read only the stretches before it, so the
+ * first PAYS_MIN_STRETCHES behave as the rule does before it has a record. A request pays when the person comes back after the
+ * cache would have expired without it and before it expires with it (saving a cold return); a compaction pays when they come
+ * back after the expiry (saving a cold read of the conversation less one of the summary).
+ */
+export function replayPays(list: readonly Stretch[], o: ReplayPrices): Replay {
+  const every = pingEvery(o.ttl)
+  const lead = leadMs(o.ttl)
+  const most = breakEvenPings(o.cold, o.ping)
+  const r = { requests: 0, cost: 0, saved: 0, compacts: 0 }
+  list.forEach((s, i) => {
+    const before = list.slice(0, i)
+    const back = s.ended !== 'never'
+    const alive = (at: number) => (back ? s.gapMs > at : s.gapMs >= at)
+    let sent = 0
+    let gateAt: number | undefined
+    for (let k = 1; alive(k * every); k++) {
+      const at = k * every
+      if (sent < PAYS_MAX && sent < most && paysSend({ stretches: before, k, ttl: o.ttl, cold: o.cold, ping: o.ping }).send) {
+        sent += 1
+        continue
+      }
+      gateAt = at
+      break
+    }
+    r.requests += sent
+    r.cost += sent * o.ping
+    const lastRefresh = sent * every
+    if (back && sent > 0 && s.gapMs > o.ttl && s.gapMs <= lastRefresh + o.ttl) r.saved += o.cold
+    if (gateAt !== undefined && compactGate({ stretches: before, atMs: gateAt + lead, cold: o.cold, summaryCold: o.summaryCold, compact: o.compact }).pays) {
+      r.compacts += 1
+      r.cost += o.compact
+      if (back && s.gapMs > gateAt + lead) r.saved += o.cold - o.summaryCold
+    }
+  })
+  return { ...r, net: r.saved - r.cost }
+}
+
+/** The old default on the same stretches: a request every pingEvery until 8 hours, cut at break-even, whatever the person's record. */
+export function replayOld(list: readonly Stretch[], o: ReplayPrices): Replay {
+  const every = pingEvery(o.ttl)
+  const planned = warmPlan({ ms: IDLE_CAP, ttl: o.ttl, cold: o.cold, ping: o.ping, endedAt: 0 }).pings
+  const r = { requests: 0, cost: 0, saved: 0 }
+  for (const s of list) {
+    const back = s.ended !== 'never'
+    let sent = 0
+    while (sent < planned && (back ? s.gapMs > (sent + 1) * every : s.gapMs >= (sent + 1) * every)) sent += 1
+    r.requests += sent
+    r.cost += sent * o.ping
+    if (back && sent > 0 && s.gapMs > o.ttl && s.gapMs <= sent * every + o.ttl) r.saved += o.cold
+  }
+  return { ...r, compacts: 0, net: r.saved - r.cost }
 }

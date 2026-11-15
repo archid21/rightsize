@@ -51,7 +51,7 @@ export const SETTINGS = {
   rater: { title: 'Advanced · Rater', options: ['sonnet', 'haiku'], default: 'sonnet' },
   startTips: { title: 'Advanced · Start suggestions', options: ['weekly', 'monthly', 'off'], default: 'weekly' },
   idleWarning: { title: 'Advanced · Idle warning', options: ['over $0.10', 'over $0.50', 'over $1', 'off'], default: 'over $0.50' },
-  beforeCold: { title: 'Advanced · Before the cache goes cold', options: ['ask', 'keep warm 2 h', 'keep warm 8 h', 'keep warm until my usual start', 'save a handoff', 'compact', 'off'], default: 'ask' },
+  beforeCold: { title: 'Advanced · Before the cache goes cold', options: ['while it pays', 'ask', 'keep warm 2 h', 'keep warm 8 h', 'keep warm until my usual start', 'save a handoff', 'compact', 'off'], default: 'while it pays' },
   billing: { title: 'Advanced · Reports', options: ['api', 'subscription'], default: 'api' },
   questionWait: { title: 'Advanced · Question wait', options: ['30 seconds', '1 minute', '2 minutes'], default: '30 seconds' },
   priceCheck: { title: 'Advanced · Price check', options: ['monthly', 'off'], default: 'monthly' },
@@ -240,7 +240,7 @@ export type FixedValues = {
   /** Chances a task has to retry: a helper raised a level, or the main chat reworking a hand-off. */
   chances: number
   /** What a big session does before its cache goes cold, while Before the cache goes cold is not yours. */
-  beforeCold: 'keep warm until my usual start'
+  beforeCold: 'while it pays'
   /** The highest level a review switched to Opus runs at. */
   reviewCeiling: Level
 }
@@ -252,7 +252,7 @@ export const FIXED: FixedValues = {
   handOff: 0.7,
   raterEvery: 20,
   chances: 2,
-  beforeCold: 'keep warm until my usual start',
+  beforeCold: 'while it pays',
   reviewCeiling: 'max',
 }
 

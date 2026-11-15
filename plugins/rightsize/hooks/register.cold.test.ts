@@ -2,6 +2,9 @@ import { type TestBody, expect, test } from 'claude-code/testing'
 import { CAL_STORE } from './cost'
 import { type Engine, RUNS_FILE, LOG_PATH, LEGACY_RUNS, LOOKUP, DEBUG, NO_CHANGE, FREE_SWITCHES, BIG_TURN, cellsOf, engine, drive, untilAsked, last, mount, rowText, bandText, LOWER, WHATSNEXT_CMDS, installWhatsnext } from './testkit'
 
+/** The row as a person who set it to ask: Claude Code passes the stored value. */
+const ASK = { beforeCold: 'ask' }
+
 for (const surface of ['desktop', 'terminal'] as const) {
   const HOUR = 3600_000
 
@@ -99,7 +102,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   const NONE = { forks: 0, submitted: 0, compactions: 0 }
   const ZERO = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
 
-  test(`ask: a big Opus session gets the offer 5 minutes after the turn on a 1-hour cache: one line, one button, the other choices in the ⋯ menu; nobody presses, nothing happens (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`ask: a big Opus session gets the offer 5 minutes after the turn on a 1-hour cache: one line, one button, the other choices in the ⋯ menu; nobody presses, nothing happens (${surface})`, { timeoutMs: 30000, options: ASK }, async ($, on) => {
     const { h, d } = await coldSession($, on)
     await coldTurn(d, 't1')
     expect(await bandText($, surface), 'not at the turn\'s end').toBe('')
@@ -126,7 +129,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.sleepers.length, 'no timer waits').toBe(0)
   })
 
-  test(`ask: the offer names the clock time the cache goes cold, and the tokens and the model stay out of the band, in the log (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`ask: the offer names the clock time the cache goes cold, and the tokens and the model stay out of the band, in the log (${surface})`, { timeoutMs: 30000, options: ASK }, async ($, on) => {
     const { h, d } = await coldSession($, on)
     await coldTurn(d, 't1')
     await h.advance(5 * MIN)
@@ -135,7 +138,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(coldLog(h)).toContain('($0.63 cold, 81K tokens on Opus')
   })
 
-  test(`ask: the offer's minutes count down once a minute, from the 3-second timer; ten seconds later the row is the same (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`ask: the offer's minutes count down once a minute, from the 3-second timer; ten seconds later the row is the same (${surface})`, { timeoutMs: 30000, options: ASK }, async ($, on) => {
     const { h, d } = await coldSession($, on, { ticks: true })
     await coldTurn(d, 't1')
     await h.advance(5 * MIN)
@@ -148,7 +151,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   // P-5: only the offer's countdown is colored, green to yellow to red as the cache runs down.
-  test(`ask: the offer's countdown is drawn in its color, green, then yellow under half, then red under a fifth (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`ask: the offer's countdown is drawn in its color, green, then yellow under half, then red under a fifth (${surface})`, { timeoutMs: 30000, options: ASK }, async ($, on) => {
     const { h, d } = await coldSession($, on, { ticks: true })
     await coldTurn(d, 't1')
     const colored = async () => {
@@ -165,7 +168,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await colored()).toEqual([['10 min ▰▰▱▱▱▱▱▱▱▱', 'error']])
   })
 
-  test(`ask: a prompt in the first 5 minutes cancels the offer (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`ask: a prompt in the first 5 minutes cancels the offer (${surface})`, { timeoutMs: 30000, options: ASK }, async ($, on) => {
     const { h, d } = await coldSession($, on)
     await coldTurn(d, 't1')
     await h.advance(3 * MIN)
@@ -176,7 +179,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.afters.length, 'the timer was the only one; it was cancelled before it fired').toBe(1)
   })
 
-  test(`ask: with a route band above, the cache line is a second row with the one button, and ⋯ and × go on a header line (${surface})`, { timeoutMs: 30000, options: { lowerRule: 'lower automatically' } }, async ($, on) => {
+  test(`ask: with a route band above, the cache line is a second row with the one button, and ⋯ and × go on a header line (${surface})`, { timeoutMs: 30000, options: { ...ASK, lowerRule: 'lower automatically' } }, async ($, on) => {
     const { h, d } = await coldSession($, on, { stored: { lowerRule: 'lower automatically' }, store: { [CAL_STORE]: FREE_SWITCHES } })
     await coldTurn(d, 't0')
     h.rating = LOWER
@@ -194,7 +197,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect((await bandButtons($)).map(b => b[0]), '⋯ and × on the header; the route buttons; then the cache button').toEqual(['mode', 'close', 'retry', 'cold-2h'])
   })
 
-  test(`ask: with a route band above, the ⋯ menu lists the rule options first, then the cache choices, then the band setting, paged (${surface})`, { timeoutMs: 30000, options: { raiseRule: 'raise automatically' } }, async ($, on) => {
+  test(`ask: with a route band above, the ⋯ menu lists the rule options first, then the cache choices, then the band setting, paged (${surface})`, { timeoutMs: 30000, options: { ...ASK, raiseRule: 'raise automatically' } }, async ($, on) => {
     // A raise has no 👍 or 👎 in the menu, so the first list is the rule's other two options, the way down, and the band setting.
     const { h, d } = await coldSession($, on, { stored: { raiseRule: 'raise automatically' } })
     await coldTurn(d, 't0')
@@ -208,7 +211,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect((await openMenu($, h))[0]?.options, 'the rule options, then the cache choices, three to a page').toEqual(['Ask me each time', 'Never raise', 'Keep warm to 2:00 tomorrow ($0.13)', 'More…'])
   })
 
-  test(`ask: with whatsnext installed the offer says Save a handoff, and the usual start time comes from the run log (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`ask: with whatsnext installed the offer says Save a handoff, and the usual start time comes from the run log (${surface})`, { timeoutMs: 30000, options: ASK }, async ($, on) => {
     const { h, d } = await coldSession($, on, { commands: WHATSNEXT })
     // Six days whose first prompt was at 8:21, 8:22 ... 8:26: the median, 8:23.5, rounds to 8:30.
     const day = (n: number) => JSON.stringify({ at: new Date(2027, 0, 15 - n, 9, 30).toISOString(), submittedAt: new Date(2027, 0, 15 - n, 8, 20 + n).toISOString(), kind: 'run' })
@@ -222,7 +225,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(coldLog(h)).toContain('offered 2h, 8h, start')
   })
 
-  test(`ask: nothing for a small conversation or for Haiku; Sonnet needs about 128K, and there is no size ceiling (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`ask: nothing for a small conversation or for Haiku; Sonnet needs about 128K, and there is no size ceiling (${surface})`, { timeoutMs: 30000, options: ASK }, async ($, on) => {
     const { h, d } = await coldSession($, on, { usage: { ...BIG_TURN, cache_read_input_tokens: 20_000 } })
     await coldTurn(d, 't1')
     expect(await bandText($, surface), '20K tokens on Opus: $0.16 cold').toBe('')
@@ -266,14 +269,14 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await bandText($, surface)).toBe('')
   })
 
-  test(`ask: an aborted turn gets no offer: the person is at the keyboard (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`ask: an aborted turn gets no offer: the person is at the keyboard (${surface})`, { timeoutMs: 30000, options: ASK }, async ($, on) => {
     const { d } = await coldSession($, on)
     await d.step('t1')
     await ($ as Engine).turn.complete({ turnId: 't1', answer: '', durationMs: 1, isAborted: true, reason: 'aborted' })
     expect(await bandText($, surface)).toBe('')
   })
 
-  test(`Don't offer again saves the row as yours, says where it is, and nothing offers again (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`Don't offer again saves the row as yours, says where it is, and nothing offers again (${surface})`, { timeoutMs: 30000, options: ASK }, async ($, on) => {
     const { h, d } = await coldSession($, on)
     await coldOffer(h, d, 't1')
     await openMenu($, h, { ...CACHE_MENU, 'More options': "Don't offer again" }, 2)
@@ -292,7 +295,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await bandText($, surface)).toBe('')
   })
 
-  test(`Let it go cold closes the offer and does nothing; Compact now runs at once, while the cache is warm (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`Let it go cold closes the offer and does nothing; Compact now runs at once, while the cache is warm (${surface})`, { timeoutMs: 30000, options: ASK }, async ($, on) => {
     const { h, d } = await coldSession($, on)
     await coldOffer(h, d, 't1')
     await openMenu($, h, { ...CACHE_MENU, 'More options': 'Let it go cold' }, 2)
@@ -309,7 +312,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.compactions, 'once').toBe(1)
   })
 
-  test(`Save a handoff from the offer submits "wrap up" at once, and the turn it starts does not bring the offer back (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`Save a handoff from the offer submits "wrap up" at once, and the turn it starts does not bring the offer back (${surface})`, { timeoutMs: 30000, options: ASK }, async ($, on) => {
     const { h, d } = await coldSession($, on, { commands: WHATSNEXT })
     await coldOffer(h, d, 't1')
     await openMenu($, h, { Options: 'Save a handoff' }, 1)
@@ -329,7 +332,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await coldRow($), 'the offer is its own row under the prompt\'s').toContain('Goes cold in ')
   })
 
-  test(`an offered keep-warm time starts at once and counts from the turn's end (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`an offered keep-warm time starts at once and counts from the turn's end (${surface})`, { timeoutMs: 30000, options: ASK }, async ($, on) => {
     const { h, d } = await coldSession($, on)
     await coldTurn(d, 't1')
     await h.advance(10 * MIN)
@@ -347,7 +350,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await bandText($, surface)).toBe('Kept the cache warm until 20:00 · $0.03.')
   })
 
-  test(`a keep-warm button pressed 40 minutes after the turn ends keeps the end time and the cost it showed (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`a keep-warm button pressed 40 minutes after the turn ends keeps the end time and the cost it showed (${surface})`, { timeoutMs: 30000, options: ASK }, async ($, on) => {
     const { h, d } = await coldSession($, on)
     await coldOffer(h, d, 't1')
     expect((await bandButtons($))[0], 'the button as shown at 5 minutes').toEqual(['cold-2h', 'Keep warm to 20:00 ($0.03)'])
@@ -360,7 +363,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await bandText($, surface)).toBe('Kept the cache warm until 20:00 · $0.03.')
   })
 
-  test(`an offered time on a cache that already went cold says so and keeps nothing warm (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`an offered time on a cache that already went cold says so and keeps nothing warm (${surface})`, { timeoutMs: 30000, options: ASK }, async ($, on) => {
     const { h, d } = await coldSession($, on)
     await coldTurn(d, 't1')
     await h.advance(61 * MIN)

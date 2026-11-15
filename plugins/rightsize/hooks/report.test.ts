@@ -1305,3 +1305,11 @@ test('the Saving check reads the logged stay, and the raw stayRaw beside it chan
   const bare = lines.map(({ stayRaw: _raw, ...rest }) => rest)
   expect(savingCheck(lines)).toEqual(savingCheck(bare))
 })
+
+test('an idle line (P-40) is no run: it changes no total and no count of rated runs', async () => {
+  const run: RunLine = { at: '2027-01-15T18:00:00.000Z', kind: 'run', change: 'none', actual: 0.5 }
+  const idle: RunLine = { at: '2027-01-15T19:00:00.000Z', kind: 'idle', session: 's', gapMs: 3_600_000, ended: 'cold', hour: 18, weekday: 5, billing: 'api', ttl: 3_600_000, context: 80_500, cold: 0.63 }
+  expect(totals([run, idle, idle])).toEqual(totals([run]))
+  expect(totals([idle])).toEqual(totals([]))
+  expect(sessionTotal([run, idle], 's', false)).toBe(sessionTotal([run], 's', false))
+})

@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
-import { DEFAULT_PRICES, idleCost } from './cost'
-import { COMPACT_GAP_MIN, IDLE_COMPACT_DEFAULT, IDLE_COMPACT_FLOOR, compactBoundary, compactedText, idleCompactState, idleCompactThreshold, COMPACT_VALUE, IDLE_CAP, addGap, compactWorth, idleEstimate, ALWAYS_AFTER, BACK_OFF_AFTER, LEARN_OVER, OFFER_AFTER_MS, DEFAULT_START, ROW_OF, breakEvenMs, coldBar, offerCountdown, COLD_BAR_CELLS, breakEvenPings, clockText, coldPlan, planLength, alwaysText, ignoredLately, keepWarmChoices, leadMs, learnedChoice, netSaving, nextStart, offerAt, offerText, pingCost, pingEvery, pingsFor, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText, WARM_PROOF, cacheHeld } from './warm'
+import { COMPACT_SUMMARY_TOKENS, DEFAULT_PRICES, coldCost, idleCost } from './cost'
+import { COMPACT_GAP_MIN, IDLE_COMPACT_DEFAULT, IDLE_COMPACT_FLOOR, compactBoundary, compactedText, idleCompactState, idleCompactThreshold, COMPACT_VALUE, IDLE_CAP, addGap, compactWorth, idleEstimate, ALWAYS_AFTER, BACK_OFF_AFTER, LEARN_OVER, OFFER_AFTER_MS, DEFAULT_START, ROW_OF, breakEvenMs, coldBar, offerCountdown, COLD_BAR_CELLS, breakEvenPings, clockText, coldPlan, planLength, alwaysText, ignoredLately, keepWarmChoices, leadMs, learnedChoice, netSaving, nextStart, offerAt, offerText, pingCost, pingEvery, pingsFor, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText, WARM_PROOF, cacheHeld, PAYS_MAX, PAYS_MIN_STRETCHES, PAYS_PRIOR, type Stretch, compactGate, laterChance, paysCheck, paysSend, replayOld, replayPays, returnChance, stretchesOf } from './warm'
 
 const MIN = 60_000
 const HOUR = 60 * MIN
@@ -402,4 +402,137 @@ test('a keep-warm plan pings for its hours, and "until my usual start" no later 
   expect(planLength({ action: 'warm' }, evening, 9 * 60), 'no hours: 8').toBe(8 * HOUR)
   expect(planLength({ action: 'warm', hours: 8, untilStart: true }, evening, 23 * 60), 'start at 23:00: 1 hour').toBe(HOUR)
   expect(planLength({ action: 'warm', hours: 8, untilStart: true }, evening, 9 * 60), 'start at 9:00 tomorrow: capped at 8 hours').toBe(8 * HOUR)
+})
+
+
+// ---- Keep warm while it pays (P-40) --------------------------------------------------------------------------------
+
+const back = (min: number): Stretch => ({ gapMs: min * MIN, ended: min * MIN > HOUR ? 'cold' : 'warm' })
+const never = (min: number): Stretch => ({ gapMs: min * MIN, ended: 'never' })
+
+test('the row value "while it pays" is its own plan, judged by its first request like a ping', async () => {
+  expect(coldPlan('while it pays', false)).toEqual({ action: 'pays' })
+  expect(coldPlan('while it pays', true)).toEqual({ action: 'pays' })
+  expect(netSaving('pays', { cold: 1, ping: 0.1, compact: 0.5 })).toBe(0.9)
+  expect(netSaving('pays', { cold: 0.05, ping: 0.1, compact: 0.01 }), 'a request dearer than a cold return nets below zero').toBeLessThan(0)
+})
+
+test('return chance: of the stretches still going at the time, the share that came back in the next cache life; a never-returned stretch is at risk, a shorter gap is not', async () => {
+  const list: Stretch[] = [back(30), back(70), back(100), never(200), never(40), back(300)]
+  // At 60 minutes: still going are 70, 100, 200 (never), 300; 30 and 40 are over. Back within (60, 120]: 70 and 100.
+  expect(returnChance(list, 60 * MIN, HOUR)).toEqual({ p: 0.5, n: 4 })
+  // A never stretch lasting exactly the elapsed time is still at risk; a returned one with exactly that gap is not.
+  expect(returnChance([never(60), back(60)], 60 * MIN, HOUR)).toEqual({ p: 0, n: 1 })
+  // A return exactly at elapsed + ttl counts; one past it does not.
+  expect(returnChance([back(120), back(121), never(500)], 60 * MIN, HOUR)).toEqual({ p: 1 / 3, n: 3 })
+  expect(returnChance([], 60 * MIN, HOUR), 'no stretch: no chance').toEqual({ p: 0, n: 0 })
+  expect(returnChance([back(30)], 60 * MIN, HOUR), 'the only stretch was shorter than the elapsed time').toEqual({ p: 0, n: 0 })
+})
+
+test('later chance: of the stretches still going at the time, the share that came back at any time after it', async () => {
+  const list: Stretch[] = [back(30), back(70), back(100), never(200), never(40), back(300)]
+  expect(laterChance(list, 60 * MIN)).toEqual({ p: 3 / 4, n: 4 })
+  expect(laterChance(list, 250 * MIN), 'only the 300-minute return is still going').toEqual({ p: 1, n: 1 })
+  expect(laterChance([never(200)], 60 * MIN), 'a never-returned stretch is at risk and never returns').toEqual({ p: 0, n: 1 })
+  expect(laterChance([], 60 * MIN)).toEqual({ p: 0, n: 0 })
+})
+
+test('the stretches the chance reads: idle lines of this billing, the last 30 days, at least 5 minutes', async () => {
+  const now = local(15, 12)
+  const line = (over: Record<string, unknown>) => ({ at: new Date(now - DAY).toISOString(), kind: 'idle', billing: 'api', gapMs: 30 * MIN, ended: 'warm', ...over })
+  const lines = [
+    line({}),
+    line({ gapMs: 2 * MIN }),
+    line({ billing: 'subscription' }),
+    line({ at: new Date(now - 31 * DAY).toISOString() }),
+    line({ kind: 'run' }),
+    line({ ended: 'sometimes' }),
+    line({ gapMs: 'long' }),
+    line({ ended: 'never', gapMs: 9 * HOUR }),
+  ]
+  expect(stretchesOf(lines, 'api', now)).toEqual([{ gapMs: 30 * MIN, ended: 'warm' }, { gapMs: 9 * HOUR, ended: 'never' }])
+  expect(stretchesOf(lines, 'subscription', now)).toEqual([{ gapMs: 30 * MIN, ended: 'warm' }])
+})
+
+test('the rule: before 20 stretches one request at the first expiry on a 1-hour cache and none on a 5-minute one; after, a request when chance x cold return is at least twice its cost', async () => {
+  const few = Array.from({ length: PAYS_MIN_STRETCHES - 1 }, () => back(30))
+  expect(paysSend({ stretches: few, k: 1, ttl: HOUR, cold: 1, ping: 0.5 })).toMatchObject({ send: true, early: true })
+  expect(paysSend({ stretches: few, k: 2, ttl: HOUR, cold: 1, ping: 0.01 }), 'only the first').toMatchObject({ send: false, early: true })
+  expect(paysSend({ stretches: few, k: 1, ttl: 5 * MIN, cold: 1, ping: 0.01 }), 'a short cache: none').toMatchObject({ send: false, early: true })
+  // 20 stretches: 5 come back 60-100 minutes in, 15 are gone by 30 minutes. At 57 minutes only the 5 are going: all return in the next hour.
+  const known = [...Array.from({ length: 5 }, () => back(80)), ...Array.from({ length: 15 }, () => back(30))]
+  expect(paysSend({ stretches: known, k: 1, ttl: HOUR, cold: 1, ping: 0.5 })).toMatchObject({ send: true, early: false, p: 1, n: 5 })
+  // 20 stretches, one in 20 returning in the hour: 0.05 x $1 is under twice a $0.05 request.
+  const rare = [back(80), ...Array.from({ length: 4 }, () => never(600)), ...Array.from({ length: 15 }, () => back(1000))]
+  expect(paysSend({ stretches: rare, k: 1, ttl: HOUR, cold: 1, ping: 0.05 }).send, 'p = 1/20: 0.05 against 0.10').toBe(false)
+  expect(paysSend({ stretches: rare, k: 1, ttl: HOUR, cold: 1, ping: 0.025 }).send, '0.05 against 0.05: at least twice is enough').toBe(true)
+  expect(PAYS_MAX).toBe(2)
+})
+
+test('the compaction gate: compact when chance x (cold - summary cold) is more than the compaction costs; a prior of 25% until 20 stretches', async () => {
+  const o = { atMs: 117 * MIN, cold: 1.2, summaryCold: 0.05, compact: 0.6 }
+  expect(PAYS_PRIOR).toBe(0.25)
+  expect(compactGate({ ...o, stretches: [back(300)] })).toMatchObject({ early: true, p: 0.25, pays: false })
+  expect(compactGate({ ...o, compact: 0.2, stretches: [back(300)] })).toMatchObject({ early: true, p: 0.25, pays: true })
+  const known = Array.from({ length: 20 }, () => back(300))
+  expect(compactGate({ ...o, stretches: known })).toMatchObject({ early: false, p: 1, n: 20, pays: true })
+  expect(compactGate({ ...o, stretches: [...known, ...Array.from({ length: 60 }, () => never(600))] }), 'a fifth come back: 0.2 x 1.15 is under 0.6').toMatchObject({ pays: false })
+})
+
+test('the self-check: the last 30 days of the rule\'s own lines; paused from 10 runs when they cost more than they saved', async () => {
+  const now = local(15, 12)
+  const at = new Date(now - DAY).toISOString()
+  const warm = (run: number, cost: number, pays = true) => ({ at, kind: 'warm', warmRun: `run-${run}`, overhead: cost, ...(pays ? { pays: true as const } : {}) })
+  const losing = Array.from({ length: 10 }, (_, i) => warm(i, 0.1))
+  expect(paysCheck(losing, now)).toMatchObject({ runs: 10, paused: true })
+  expect(paysCheck(losing.slice(0, 9), now), 'nine runs: not yet').toMatchObject({ runs: 9, paused: false })
+  const saved = { at, kind: 'warmSaved', pays: true as const, saved: 0.5 }
+  expect(paysCheck([...losing, saved], now), 'saved 0.5 of 1.0 spent').toMatchObject({ paused: true })
+  expect(Math.abs(paysCheck([...losing, saved, saved], now).net), 'break-even').toBeLessThan(1e-9)
+  expect(paysCheck([...losing, saved, saved, saved], now), 'ahead').toMatchObject({ paused: false })
+  expect(paysCheck([...losing.map(l => ({ ...l, pays: undefined })), saved], now).runs, 'lines of other keep-warm rows are not the rule\'s').toBe(0)
+  expect(paysCheck(losing.map(l => ({ ...l, at: new Date(now - 31 * DAY).toISOString() })), now).runs, 'older than 30 days').toBe(0)
+})
+
+// Synthetic stretches shaped like a person who mostly steps away briefly (no real data): 80 that never came back (8 hours or more),
+// and 300 that did: 86% within 5-57 minutes, 8% in 57-117, 1% in 117-177, 3% in 177-480 and 2% over 480.
+// They come in proportion, each group spread evenly through the list: the first 20 are a fair mix, and no draw of luck decides the test.
+function synthetic(): Stretch[] {
+  const spread = (n: number, from: number, to: number) => Array.from({ length: n }, (_, i) => back(from + ((i + 0.5) / n) * (to - from)))
+  const groups = [
+    Array.from({ length: 80 }, (_, i) => never(480 + (i * 240) / 80)),
+    spread(258, 5, 57),
+    spread(24, 57, 117),
+    spread(3, 117, 177),
+    spread(9, 177, 480),
+    spread(6, 480, 720),
+  ]
+  return groups
+    .flatMap(g => g.map((x, i) => ({ x, key: (i + 0.5) / g.length })))
+    .sort((a, b) => a.key - b.key)
+    .map(k => k.x)
+}
+
+test('replay: over a person who rarely comes back after the first hour, the rule nets money and beats the old default (150K tokens, Opus, 1-hour prices)', async () => {
+  const context = 150_000
+  const o = { ttl: HOUR, cold: idleCost(OPUS, context).resend, ping: pingCost(OPUS, context), compact: idleCost(OPUS, context).compact, summaryCold: coldCost(DEFAULT_PRICES, 'opus', COMPACT_SUMMARY_TOKENS) }
+  const list = synthetic()
+  expect(list.length).toBe(380)
+  const rule = replayPays(list, o)
+  const old = replayOld(list, o)
+  // $1.17 cold, $0.03 a request: the rule sends 126 requests (about $3.78) and saves about $26.91 on the returns it kept warm; the old default
+  // sends 766 (about $22.98) and saves about $42.12.
+  expect(Math.round(rule.net * 100) / 100, 'net about $23.13').toBe(23.13)
+  expect(Math.round(old.net * 100) / 100, 'against about $19.14').toBe(19.14)
+  expect(rule.net, 'the rule nets money').toBeGreaterThan(0)
+  expect(rule.net, 'and more than the old default').toBeGreaterThan(old.net)
+  expect(rule.requests, 'with far fewer requests').toBeLessThan(old.requests)
+})
+
+test('replay: on a 5-minute cache the rule does not lose money', async () => {
+  const context = 150_000
+  const p5 = { ...OPUS, cacheWrite: 5 }
+  const o = { ttl: 5 * MIN, cold: idleCost(p5, context).resend, ping: pingCost(p5, context), compact: idleCost(p5, context).compact, summaryCold: coldCost({ ...DEFAULT_PRICES, opus: p5 }, 'opus', COMPACT_SUMMARY_TOKENS) }
+  const rule = replayPays(synthetic(), o)
+  expect(rule.net, 'about $5.55 net: 439 requests cost about $13.17, the returns they kept warm saved about $18.72').toBeGreaterThanOrEqual(0)
 })

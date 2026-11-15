@@ -57,6 +57,8 @@ export type RunLine = {
   wouldTaken?: number
   /** A 'warmSaved' line: what coming back cold would have cost (the conversation written again, less a read), in dollars (API-equivalent on a subscription). */
   saved?: number
+  /** A run line: the turn's cost projected again after its first main-chat requests, from its own pace (P-44): `after` requests, `spent` so far, `projected`. */
+  reestimate?: { after: number; spent: number; projected: number }
   /** A run line: what its main-chat requests in fast mode cost, in dollars at fast prices (P-29). On a subscription this is paid from usage credits, not the plan. */
   fast?: number
   /** A 'warm' line: the keep-warm run it belongs to, the ISO time of the turn that run kept warm. Lines of one run share it. */

@@ -83,6 +83,8 @@ import {
   rebaseCal,
   lowerSwitches,
   fastSupported,
+  REESTIMATE_AFTER,
+  reestimate,
 } from './cost'
 import { type FastState, fastGuess, nextFast, speedFromCost, speedSwitchCost, speedSwitchText } from './fast'
 import { type FreshRun, type HandedOff, NO_STEPS, type StepState, actingExp, mergeSteps, medians, parseStepState, STEP_PROVE, typicalShrink } from './steps'
@@ -345,6 +347,8 @@ type Run = {
   subCost: number
   /** The part of mainCost that ran in fast mode: on a subscription it is paid from usage credits, not the plan (P-29). */
   fastCost?: number
+  /** The turn's cost projected again from its own pace after REESTIMATE_AFTER main-chat requests (P-44). */
+  reestimate?: { after: number; spent: number; projected: number }
   /** What the turn's responses wrote, main chat and helpers: output tokens and cost split into thinking, text and code written (P-22), and what those requests cost. */
   out: OutputTotals
   /** What effort-switch cache misses cost this turn. */
@@ -1040,12 +1044,13 @@ async function choices($: EngineInterface): Promise<Choices> {
 
 // Samples learned since the last save. Other sessions save calibration too, so a
 // save applies these to the stored copy rather than writing this session's over it.
-let unsaved: { key: string; sample: number }[] = []
+let unsaved: { key: string; sample: number; amounts?: { actual: number; estimated: number } }[] = []
 let saving: Promise<void> = Promise.resolve()
 
-function teach(key: string, sample: number) {
-  cal = learn(cal, key, sample)
-  unsaved.push({ key, sample })
+/** Learns one run on `key`: `amounts`, when given, are the run's actual and estimated cost, learned in dollars (P-44). */
+function teach(key: string, sample: number, amounts?: { actual: number; estimated: number }) {
+  cal = learn(cal, key, sample, amounts)
+  unsaved.push({ key, sample, ...(amounts ? { amounts } : {}) })
 }
 
 /**
@@ -1089,11 +1094,11 @@ async function mergeCal($: EngineInterface) {
   unsaved = []
   try {
     let stored = parseCalibration(await $.store.get(CAL_STORE))
-    for (const s of batch) stored = learn(stored, s.key, s.sample)
+    for (const s of batch) stored = learn(stored, s.key, s.sample, s.amounts)
     await $.store.set(CAL_STORE, stored)
     await $.store.set(CAL_AT_STORE, new Date(await $.clock.now()).toISOString()).catch(() => undefined)
     // Samples learned while this save ran stay pending, on top of the merged copy.
-    cal = unsaved.reduce((c, s) => learn(c, s.key, s.sample), stored)
+    cal = unsaved.reduce((c, s) => learn(c, s.key, s.sample, s.amounts), stored)
   } catch {
     unsaved = [...batch, ...unsaved]
   }
@@ -2350,7 +2355,7 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
   if (!aborted && actual > 0 && !workflowSeen) {
     if (delegated && run.delegate && run.rawDelegate) {
       const sample = ratioSample(actual, run.rawDelegate)
-      for (const key of delegateKeys(r.type, run.delegate.tier, run.delegate.level)) teach(key, sample)
+      for (const key of delegateKeys(r.type, run.delegate.tier, run.delegate.level)) teach(key, sample, { actual, estimated: run.rawDelegate })
       // A hand-off the learned exponent would have stopped is scored against its real cost. It teaches g nothing.
       if (run.handedOff) unsavedSteps.push({ steps: r.steps, actual, taken: run.takenDelegate ?? 0, stepExpUsed: run.stepExp, g: run.learnG ?? stepState.g, handedOff: run.handedOff })
     }
@@ -2372,7 +2377,7 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
         g: run.learnG ?? stepState.g,
         estimated: (run.rawMain * routeFactor(cal, keys)) / Math.max(1, r.steps) ** run.stepExp,
       })
-      for (const key of keys) teach(key, sample)
+      for (const key of keys) teach(key, sample, { actual: spent, estimated: run.rawMain })
     }
     await saveCal($)
   }
@@ -2447,6 +2452,7 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
       ...(helpers.length ? { helpers } : {}),
       ...(retries > 0 ? { retries } : {}),
       requests: run.requests,
+      ...(run.reestimate ? { reestimate: run.reestimate } : {}),
       // Fast mode's part of the main chat's cost (P-29): on a subscription, paid from usage credits.
       ...(run.fastCost ? { fast: round(run.fastCost) } : {}),
       // What the output was made of (P-22): only when the turn's responses reported usage, else the line carries no split.
@@ -5044,7 +5050,7 @@ async function finishSubagent($: EngineInterface, m: Measured, aborted: boolean,
   // A workflow's agents say nothing about one route's estimate: they teach nothing, and the report counts no saving for them.
   if (!aborted && !m.inWorkflow) {
     const sample = ratioSample(spend, m.raw)
-    for (const key of subagentKeys(m.type, m.tier, m.level)) teach(key, sample)
+    for (const key of subagentKeys(m.type, m.tier, m.level)) teach(key, sample, { actual: spend, estimated: m.raw })
     await saveCal($)
   }
   const line: RunLine = {
@@ -6842,6 +6848,12 @@ export const register: Register = (on, options) => {
       if (run) {
         run.mainCost += requestCost
         run.requests += 1
+        if (run.requests === REESTIMATE_AFTER && !run.reestimate) {
+          const spentSoFar = run.mainCost + run.subCost
+          const projected = reestimate({ spent: spentSoFar, requests: run.requests, steps: run.rating.steps })
+          run.reestimate = { after: REESTIMATE_AFTER, spent: round(spentSoFar), projected: round(projected) }
+          await log($, `re-estimate after ${REESTIMATE_AFTER} requests: ${money(spentSoFar)} spent, about ${money(projected)} projected (first estimate ${money(run.delegate ? (run.takenDelegate ?? run.takenMain) : run.takenMain)}, ${run.rating.steps} steps rated)`)
+        }
         if (fastReq) run.fastCost = (run.fastCost ?? 0) + requestCost
         addOutput(run, splitOutput(prices, u.model, u, out.answer, out.toolUses, fastReq), requestCost)
       }

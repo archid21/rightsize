@@ -447,8 +447,12 @@ export function needOn(fit: Fit, tier: Tier): Level {
 
 // ---- Calibration -----------------------------------------------------------
 
-/** Per key, how many runs were seen and the mean of actual / estimated. */
-export type Calibration = Record<string, { n: number; ratio: number }>
+/**
+ * Per key, how many runs were seen and the ratio of actual to estimated cost. Since P-44 (ADR 0074) the ratio is learned in
+ * dollars: `act` and `est` are moving averages of the actual and estimated cost, and `ratio` is act / est (0.1 to 10). A key
+ * stored before that has only `ratio` (the mean of per-turn ratios); its next sample starts the dollar averages from it.
+ */
+export type Calibration = Record<string, { n: number; ratio: number; act?: number; est?: number }>
 /** Runs per key before the measured ratio fully replaces the guess. */
 export const CAL_FULL = 20
 /** Key for the share of effort switches that cost a cache miss, learned from each measured switch. */
@@ -488,8 +492,11 @@ export function parseCalibration(v: unknown): Calibration {
   const out: Calibration = {}
   if (!v || typeof v !== 'object' || Array.isArray(v)) return out
   for (const [k, e] of Object.entries(v as Record<string, unknown>)) {
-    const { n, ratio } = (e ?? {}) as { n?: unknown; ratio?: unknown }
-    if (typeof n === 'number' && n > 0 && typeof ratio === 'number' && Number.isFinite(ratio)) out[k] = { n, ratio }
+    const { n, ratio, act, est } = (e ?? {}) as { n?: unknown; ratio?: unknown; act?: unknown; est?: unknown }
+    if (typeof n === 'number' && n > 0 && typeof ratio === 'number' && Number.isFinite(ratio)) {
+      const dollars = typeof act === 'number' && Number.isFinite(act) && act >= 0 && typeof est === 'number' && Number.isFinite(est) && est > 0
+      out[k] = dollars ? { n, ratio, act, est } : { n, ratio }
+    }
   }
   return out
 }
@@ -502,11 +509,29 @@ export function factor(cal: Calibration, key: string, prior = 1) {
   return prior + (e.ratio - prior) * w
 }
 
-// A running mean that turns into a moving average after 50 runs, so old runs fade.
-export function learn(cal: Calibration, key: string, sample: number): Calibration {
+/** Runs after which the averages become moving averages, so old runs fade. */
+export const CAL_WINDOW = 50
+
+/**
+ * Learns one run. With its `actual` and `estimated` cost (P-44, ADR 0074), the key keeps moving averages of both and its ratio
+ * is their ratio: the dollar-weighted error, the one a route choice compares. A cheap turn that ran 10 times its estimate no longer
+ * moves the ratio as much as an expensive one that did. A key learned the old way starts its averages from its ratio over a unit
+ * estimate. With `sample` only (no amounts, as the switch key is learned), it keeps the plain running mean of samples.
+ */
+export function learn(cal: Calibration, key: string, sample: number, amounts?: { actual: number; estimated: number }): Calibration {
   const e = cal[key] ?? { n: 0, ratio: 0 }
   const n = e.n + 1
-  return { ...cal, [key]: { n, ratio: e.ratio + (sample - e.ratio) / Math.min(n, 50) } }
+  const w = Math.min(n, CAL_WINDOW)
+  if (!amounts || !(amounts.estimated > 0) || !(amounts.actual >= 0) || !Number.isFinite(amounts.actual)) {
+    return { ...cal, [key]: { n, ratio: e.ratio + (sample - e.ratio) / w } }
+  }
+  const act0 = e.act ?? (e.n > 0 ? e.ratio : 0)
+  const est0 = e.est ?? (e.n > 0 ? 1 : 0)
+  // The averages are of the costs relative to this run's estimate scale: dollars, so a big run weighs more.
+  const act = act0 + (amounts.actual - act0) / w
+  const est = est0 + (amounts.estimated - est0) / w
+  const ratio = est > 0 ? Math.min(10, Math.max(0.1, act / est)) : sample
+  return { ...cal, [key]: { n, ratio, act, est } }
 }
 
 export const ratioSample = (actual: number, estimated: number) =>
@@ -518,7 +543,15 @@ export const ratioSample = (actual: number, estimated: number) =>
  */
 export function rebaseCal(cal: Calibration, factor: number): Calibration {
   const out: Calibration = {}
-  for (const [key, e] of Object.entries(cal)) out[key] = key === SWITCH_KEY ? e : { n: e.n, ratio: Math.min(10, Math.max(0.1, e.ratio * factor)) }
+  for (const [key, e] of Object.entries(cal)) {
+    if (key === SWITCH_KEY) {
+      out[key] = e
+      continue
+    }
+    const ratio = Math.min(10, Math.max(0.1, e.ratio * factor))
+    // The dollar averages keep their estimate side; the actual side moves with the new basis.
+    out[key] = e.act !== undefined && e.est !== undefined ? { n: e.n, ratio, act: e.act * factor, est: e.est } : { n: e.n, ratio }
+  }
   return out
 }
 
@@ -1138,4 +1171,22 @@ export function share(part: number, whole: number) {
   if (whole <= 0) return 'an unknown share of'
   const x = part / whole
   return x < 1 ? `about ${Math.max(1, Math.round(x * 100))}% of` : `about ${x.toFixed(1)}x`
+}
+
+// ---- Re-estimate during a turn (P-44) -----------------------------------------
+
+/** Main-chat requests after which a turn's cost is projected again from what it has really spent. */
+export const REESTIMATE_AFTER = 5
+
+/**
+ * A turn's cost projected from its own pace after REESTIMATE_AFTER requests (P-44, ADR 0074): the cost per request so far
+ * times the requests it will likely make. That is the rated steps while the turn is within them; a turn already at or past
+ * its rated steps is assumed to be about halfway (a turn that has run long tends to run as long again). Never under what it
+ * has spent. Logged beside the first estimate; nothing acts on it yet.
+ */
+export function reestimate(o: { spent: number; requests: number; steps: number }): number {
+  if (!(o.spent > 0) || !(o.requests > 0)) return Math.max(0, o.spent)
+  const per = o.spent / o.requests
+  const expected = o.requests >= o.steps ? o.requests * 2 : o.steps
+  return Math.max(o.spent, per * expected)
 }

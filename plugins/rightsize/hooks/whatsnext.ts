@@ -2,6 +2,10 @@
 // text, the wrap-up limits and whether a plugin is whatsnext. Pure: no engine calls. register.tsx finds out
 // whether whatsnext is installed and runs it.
 
+import { money } from './cost'
+import type { Price } from './cost'
+import { WRAP_UP, pingCost } from './warm'
+
 /**
  * What rightsize's own compaction is told to write when whatsnext is not there or cannot compact: a handoff under eight
  * headings. rightsize's own text, no longer a copy of whatsnext's compact text; whatsnext keeps its own text and
@@ -19,3 +23,35 @@ export const NO_FRESH_HANDOFF = 'no fresh handoff'
 
 /** True when a plugin's name is whatsnext's (`whatsnext`, or `whatsnext@<marketplace>`). */
 export const isWhatsnext = (plugin: string | undefined) => plugin === 'whatsnext' || (plugin ?? '').startsWith('whatsnext@')
+
+/** True when a typed prompt is exactly `wrap up` (spaces and capitals do not matter): whatsnext's trigger for a handoff note. */
+export const isWrapUp = (text: string) => text.trim().toLowerCase() === WRAP_UP
+
+/** What a handoff note writes, in output tokens: the figure the hints price it at. */
+export const NOTE_OUTPUT_TOKENS = 2000
+
+/** What a whatsnext handoff note costs: one keep-warm request (the conversation read from the cache) and the note itself as output. */
+export const noteCost = (price: Price, context: number) => pingCost(price, context) + (NOTE_OUTPUT_TOKENS * price.output) / 1e6
+
+/** The install hint shows only when a note would have saved at least this much (dollars, API-equivalent on a subscription too). */
+export const INSTALL_HINT_MIN = 0.25
+/** It shows at most once in this long. */
+export const INSTALL_HINT_EVERY_MS = 30 * 24 * 60 * 60_000
+
+/** True when the install hint may show: the saving is enough, the person did not hide it for good, and the last one was over 30 days ago (`last`: when it last showed, ms; undefined: never). */
+export const installHintDue = (o: { saved: number; hidden: boolean; last: unknown; now: number }) =>
+  !o.hidden && o.saved >= INSTALL_HINT_MIN && !(typeof o.last === 'number' && Number.isFinite(o.last) && o.now - o.last < INSTALL_HINT_EVERY_MS)
+
+/** "about $0.31", with " API-equivalent" on a subscription (the dollars are what the same use would cost on the API). */
+const aboutMoney = (d: number, subscription: boolean) => `about ${money(d)}${subscription ? ' API-equivalent' : ''}`
+
+/** The hint for a person without whatsnext: what a handoff note would have saved, and where to get it. */
+export const installHintText = (saved: number, subscription: boolean) =>
+  `A whatsnext handoff note would have saved ${aboutMoney(saved, subscription)} here. Install whatsnext (github.com/archid21/whatsnext) to save handoffs instead of compacting.`
+
+/** The hint for whatsnext installed but not set up in this project. */
+export const initHintText = (extra: number, subscription: boolean) =>
+  `whatsnext isn't set up in this project, so rightsize compacted instead (${aboutMoney(extra, subscription)} more). Run \`whatsnext init\` here to save handoff notes.`
+
+/** The init hint needs a saving that shows as a positive amount. */
+export const INIT_HINT_MIN = 0.01

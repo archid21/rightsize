@@ -40,6 +40,8 @@ export type RunLine = {
   /** An 'idle' line: how long the stretch lasted in ms, and how it ended. */
   gapMs?: number
   ended?: 'warm' | 'cold' | 'never'
+  /** An 'idle' line made at the first start after the install from the run log's earlier runs (P-42), not seen as it happened: `hour`, `weekday` and `context` come from the run, `cold` is 0, and `ttl` is absent. */
+  history?: true
   /** An 'idle' line: the local hour (0-23) and weekday (0-6, Sunday 0) when the turn ended, the cache life in ms, and what a cold return would have cost (dollars, API-equivalent on a subscription too). `billing` and `context` are the line's own. */
   hour?: number
   weekday?: number

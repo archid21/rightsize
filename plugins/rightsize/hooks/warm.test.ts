@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import { COMPACT_SUMMARY_TOKENS, DEFAULT_PRICES, coldCost, idleCost } from './cost'
-import { COMPACT_GAP_MIN, IDLE_COMPACT_DEFAULT, IDLE_COMPACT_FLOOR, compactBoundary, compactedText, idleCompactState, idleCompactThreshold, COMPACT_VALUE, IDLE_CAP, addGap, compactWorth, idleEstimate, ALWAYS_AFTER, BACK_OFF_AFTER, LEARN_OVER, OFFER_AFTER_MS, DEFAULT_START, ROW_OF, breakEvenMs, coldBar, offerCountdown, COLD_BAR_CELLS, breakEvenPings, clockText, coldPlan, planLength, alwaysText, ignoredLately, keepWarmChoices, leadMs, learnedChoice, netSaving, nextStart, offerAt, offerText, pingCost, pingEvery, pingsFor, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText, WARM_PROOF, cacheHeld, PAYS_MAX, PAYS_MIN_STRETCHES, PAYS_PRIOR, type Stretch, compactGate, laterChance, paysCheck, paysSend, replayOld, replayPays, returnChance, stretchesOf } from './warm'
+import { COMPACT_GAP_MIN, IDLE_COMPACT_DEFAULT, IDLE_COMPACT_FLOOR, compactBoundary, compactedText, idleCompactState, idleCompactThreshold, COMPACT_VALUE, IDLE_CAP, addGap, compactWorth, idleEstimate, ALWAYS_AFTER, BACK_OFF_AFTER, LEARN_OVER, OFFER_AFTER_MS, DEFAULT_START, ROW_OF, breakEvenMs, coldBar, offerCountdown, COLD_BAR_CELLS, breakEvenPings, clockText, coldPlan, planLength, alwaysText, ignoredLately, keepWarmChoices, leadMs, learnedChoice, netSaving, nextStart, offerAt, offerText, pingCost, pingEvery, pingsFor, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText, WARM_PROOF, cacheHeld, PAYS_MAX, PAYS_MIN_STRETCHES, PAYS_PRIOR, type Stretch, compactGate, laterChance, paysCheck, paysSend, replayOld, replayPays, returnChance, stretchesOf, backfillLines } from './warm'
 
 const MIN = 60_000
 const HOUR = 60 * MIN
@@ -535,4 +535,59 @@ test('replay: on a 5-minute cache the rule does not lose money', async () => {
   const o = { ttl: 5 * MIN, cold: idleCost(p5, context).resend, ping: pingCost(p5, context), compact: idleCost(p5, context).compact, summaryCold: coldCost({ ...DEFAULT_PRICES, opus: p5 }, 'opus', COMPACT_SUMMARY_TOKENS) }
   const rule = replayPays(synthetic(), o)
   expect(rule.net, 'about $5.55 net: 439 requests cost about $13.17, the returns they kept warm saved about $18.72').toBeGreaterThanOrEqual(0)
+})
+
+// ---- The idle stretches made from the run log (P-42) -----------------------------------------------------------
+
+const runAt = (sess: string, submitted: number, over: Record<string, unknown> = {}) => ({ at: new Date(submitted + 2 * MIN).toISOString(), kind: 'run', session: sess, submittedAt: new Date(submitted).toISOString(), context: 60_000, ...over })
+
+test('backfill: a stretch from one run\'s end to the next prompt, ended cold; a pause under 5 minutes is none', async () => {
+  const now = local(15, 18)
+  const lines = [runAt('s', local(13, 9)), runAt('s', local(13, 9, 32)), runAt('s', local(13, 9, 36)), runAt('s', local(15, 17))]
+  const got = backfillLines(lines, now)
+  expect(got.map(l => [l.gapMs / MIN, l.ended, l.hour, l.weekday, l.at])).toEqual([
+    [30, 'cold', 9, 3, new Date(local(13, 9, 32)).toISOString()],
+    [(local(15, 17) - local(13, 9, 38)) / MIN, 'cold', 9, 3, new Date(local(15, 17)).toISOString()],
+  ])
+  expect(got.every(l => l.kind === 'idle' && l.history === true && l.cold === 0 && l.billing === 'api' && l.context === 60_000 && l.session === 's')).toBe(true)
+})
+
+test('backfill: the last run of a session ended over 8 hours ago gives a never stretch as long as the time since; a younger one gives none', async () => {
+  const now = local(15, 18)
+  const old = backfillLines([runAt('old', local(14, 8))], now)
+  expect(old.map(l => [l.ended, l.gapMs, l.at])).toEqual([['never', now - (local(14, 8) + 2 * MIN), new Date(local(14, 8) + 2 * MIN + IDLE_CAP).toISOString()]])
+  expect(backfillLines([runAt('young', now - 3 * HOUR)], now)).toEqual([])
+  expect(backfillLines([runAt('edge', now - 8 * HOUR - 2 * MIN)], now), 'exactly 8 hours is not over').toEqual([])
+})
+
+test('backfill: subscription when the run has windows; context from contextEnd, else context, else 0; sessions apart; aborted, other kinds and old runs left out', async () => {
+  const now = local(15, 18)
+  const lines = [
+    runAt('a', local(13, 9), { after: { five_hour: 5 }, contextEnd: 90_000 }),
+    runAt('a', local(13, 12)),
+    runAt('b', local(13, 10), { context: undefined }),
+    runAt('b', local(13, 10, 6), { aborted: true }),
+    { at: new Date(local(13, 11)).toISOString(), kind: 'warm', session: 'b', overhead: 0.1 },
+    runAt('c', now - 40 * DAY),
+    runAt('d', local(14, 9)),
+  ]
+  const got = backfillLines(lines, now)
+  const by = (s: string) => got.filter(l => l.session === s).map(l => [l.ended, l.billing, l.context])
+  expect(by('a')).toEqual([['cold', 'subscription', 90_000], ['never', 'api', 60_000]])
+  expect(by('b'), 'the aborted run and the warm line are no runs: one run, one never').toEqual([['never', 'api', 0]])
+  expect(by('c')).toEqual([])
+  expect(by('d')).toEqual([['never', 'api', 60_000]])
+})
+
+test('backfill: nothing when history lines are already there; the lines it makes are read as stretches', async () => {
+  const now = local(15, 18)
+  const lines = Array.from({ length: 21 }, (_, i) => runAt('s', now - 2 * DAY + i * HOUR))
+  const got = backfillLines(lines, now)
+  expect(got.length).toBe(21)
+  expect(backfillLines([...lines, got[0] as object as { at: string; kind: string; history: true }], now)).toEqual([])
+  const stretches = stretchesOf(got, 'api', now)
+  expect(stretches.length, 'P-40 reads every one, so 20 or more is a record').toBe(21)
+  expect(stretches.length).toBeGreaterThanOrEqual(PAYS_MIN_STRETCHES)
+  expect(stretches.filter(s => s.ended === 'never').length).toBe(1)
+  expect(stretchesOf(got, 'subscription', now)).toEqual([])
 })

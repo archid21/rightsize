@@ -36,6 +36,8 @@ With whatsnext installed it starts two more, only to compact: `git rev-parse --s
 
 For the star ask (ADR 0039; see **Network**) it starts `gh api user/starred/<repo>` (at most once a session) and, only when you press **Star on GitHub**, `gh api -X PUT user/starred/<repo>`, where `<repo>` is `archid21/rightsize` or `archid21/whatsnext`. When starring fails it opens the repo page with `open` (macOS) or `xdg-open` (Linux).
 
+It also runs `git rev-parse --is-inside-work-tree` (whether your project is a git repository, for the hint to run `whatsnext init`; it prints one word and changes nothing).
+
 It starts no other program, and fetches no code.
 
 ## Prompts it submits

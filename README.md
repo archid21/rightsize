@@ -27,7 +27,7 @@ MIT license · works with a Claude subscription (Pro, Max, Ultra) or an API key 
 
 **Cut cache and compact costs.** Keeps the cache warm when that is cheaper than coming back cold, warns as your context fills, steps aside for Claude's idle compact, and compacts only when the saving beats the cost.
 
-**rightsize works better with whatsnext.** rightsize decides when a compact pays. [whatsnext](https://github.com/archid21/whatsnext) decides what to keep: it saves a handoff note first, so a compact retains the details that matter. rightsize asks it for that handoff before the cache goes cold and uses its compact text for **Compact now**. rightsize works on its own too, and uses Claude's own compact when whatsnext isn't installed.
+**rightsize works better with whatsnext.** rightsize decides when a compact pays. [whatsnext](https://github.com/archid21/whatsnext) decides what to keep: it saves a handoff note first, so a compact retains the details that matter. rightsize asks it for that handoff before the cache goes cold and uses its compact text for **Compact now**. rightsize works on its own too: when whatsnext isn't installed or set up in the project, it compacts with its own handoff-style text, and a **Wrap up** press or a typed `wrap up` compacts instead of saving a note.
 
 ## The problem: one model for every prompt
 
@@ -174,7 +174,7 @@ Want to watch first? In `/config`, set **Mode** to watch only.
 
 **What it never does.** It never changes your model for you, never approves a tool call, never changes a permission, and never touches your project files. Hooks and file paths: [docs/WHAT-IT-TOUCHES.md](docs/WHAT-IT-TOUCHES.md).
 
-**What it runs, writes and sends.** It runs `mkdir`, `chmod`, `rm` and `rmdir` on its own log folders and, with whatsnext installed, `git rev-parse` and whatsnext's own script. For the star ask it runs `gh api` (and `open` or `xdg-open` when starring fails). The script's commands read what to compact and whether a handoff is missing; rightsize writes none of whatsnext's settings or files. It writes only under `~/.claude/mods-logs/rightsize/`, its own store, its own `prices.json`, and `~/.config/archid21/stars.json` (shared with whatsnext). Its web requests go to `platform.claude.com` (Anthropic's pricing page, monthly, sends nothing of yours) and, for the star ask, to GitHub through your own `gh`; it sends nothing to the author. It sets only its own `rightsize.*` settings, submits only the fixed text `wrap up`, reads no credential, and its `tool.call` hook only ever denies, never approves. The full list, checked against the code: [What it runs, writes and sends](plugins/rightsize/README.md#what-it-runs-writes-and-sends).
+**What it runs, writes and sends.** It runs `mkdir`, `chmod`, `rm` and `rmdir` on its own log folders and, with whatsnext installed, `git rev-parse` and whatsnext's own script. It also runs `git rev-parse --is-inside-work-tree`, to know whether to suggest `whatsnext init`. When you type exactly `wrap up` and whatsnext isn't set up in the project, it drops that prompt and compacts instead. For the star ask it runs `gh api` (and `open` or `xdg-open` when starring fails). The script's commands read what to compact and whether a handoff is missing; rightsize writes none of whatsnext's settings or files. It writes only under `~/.claude/mods-logs/rightsize/`, its own store, its own `prices.json`, and `~/.config/archid21/stars.json` (shared with whatsnext). Its web requests go to `platform.claude.com` (Anthropic's pricing page, monthly, sends nothing of yours) and, for the star ask, to GitHub through your own `gh`; it sends nothing to the author. It sets only its own `rightsize.*` settings, submits only the fixed text `wrap up`, reads no credential, and its `tool.call` hook only ever denies, never approves. The full list, checked against the code: [What it runs, writes and sends](plugins/rightsize/README.md#what-it-runs-writes-and-sends).
 
 ## Make it yours
 
@@ -227,7 +227,7 @@ claude plugin update rightsize@archid21
 - The rating is a model's estimate. It can be wrong on a single prompt; miss tracking corrects it over time.
 - Hand-offs take longer than staying, because the helper adds a brief and a check. The band says so.
 - If you already use Sonnet for everything, rightsize costs more than you pay now. What you get for it is Opus on reviews.
-- Handoffs before a compact need whatsnext. Without it, rightsize uses Claude's own compact.
+- Handoff notes before a compact need whatsnext. Without it, rightsize compacts with its own handoff-style text.
 - rightsize compacts only the open session, and only when you press a button or set a row to compact. It does not compact closed threads.
 - The effort picker in the app does not move; the status line shows the level in use.
 

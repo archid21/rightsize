@@ -132,11 +132,11 @@ import { LIFE_DAYS, LIFE_HEADER, LIFE_NO, LIFE_YES, PROBE_RESPONSES, type Provid
 import { type TrimSavings, isTrim, readTrimSavings } from './trim'
 import { LIMIT_BUTTON, LIMIT_COMPACT, LIMIT_HIDE, LIMIT_MORE, LIMIT_WHY, LIMIT_WHY_ID, isLimitId, limitDue, limitText } from './limit'
 import { SIZE_BUTTON, SIZE_COMPACT, SIZE_FRESH, SIZE_FRESH_BUTTON, SIZE_FRESH_COMPACT, SIZE_FRESH_COPY, SIZE_FRESH_COPY_FAILED, SIZE_FRESH_NOT_NOW, SIZE_FRESH_PASTE_BUTTONS, SIZE_FRESH_SAVING, SIZE_HIDE, SIZE_MORE, SIZE_WHY, SIZE_WHY_FRESH, SIZE_WHY_ID, isSizeId, sizeFreshNotWritten, sizeFreshNotice, sizeFreshPaste, sizeStep, sizeText } from './size'
-import { COMPACT_TEXT, NO_FRESH_HANDOFF, WRAP_HEADROOM, WRAP_TURNS, isWhatsnext } from './whatsnext'
+import { COMPACT_TEXT, INIT_HINT_MIN, NO_FRESH_HANDOFF, WRAP_HEADROOM, WRAP_TURNS, initHintText, installHintDue, installHintText, isWhatsnext, isWrapUp, noteCost } from './whatsnext'
 import { ME, REPOS, SHARED_PATH, askText, blockedByClaim, parseShared, readStarCheck, reposToAsk, type Shared } from './star'
 import { STORE_KEY as TIPS_KEY, type Tip, type TipsState, nextTip, parseState, tipById, withSeen } from './tips'
 import { WELCOMED_KEY, welcomeMarkdown, welcomeText } from './welcome'
-import { COMPACT_GAP_MIN, PING_PROMPT, ROW_OF, WRAP_UP, addGap, planLength, alwaysText, compactBoundary, compactedText, idleCompactState, breakEvenMs, cacheHeld, clockText, coldPlan, ignoredLately, keepWarmChoices, leadMs, learnedChoice, COLD_MIN, breakEvenPings, netSaving, offerAt, offerCountdown, offerText, pingCost, pingEvery, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText, IDLE_CAP, IDLE_GAP_MIN, PAYS_MAX, compactGate, paysCheck, paysSend, stretchesOf, PAYS_MIN_STRETCHES, type Stretch } from './warm'
+import { COMPACT_GAP_MIN, PING_PROMPT, ROW_OF, WRAP_UP, addGap, planLength, alwaysText, compactBoundary, compactedText, idleCompactState, breakEvenMs, cacheHeld, clockText, coldPlan, ignoredLately, keepWarmChoices, leadMs, learnedChoice, COLD_MIN, breakEvenPings, netSaving, offerAt, offerCountdown, offerText, pingCost, pingEvery, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText, IDLE_CAP, IDLE_GAP_MIN, PAYS_MAX, backfillLines, compactGate, paysCheck, paysSend, stretchesOf, PAYS_MIN_STRETCHES, type Stretch } from './warm'
 
 // Before a prompt is sent, a quick Haiku call rates the effort, the model and
 // the work needs on each model, and the cost model prices each route that fits. The first time
@@ -2713,6 +2713,7 @@ async function writeStretch($: EngineInterface, session: string, e: OpenIdle, ga
  * before the prompt, else `cold`. `end`: the session ended with no return, `never`.
  */
 async function closeStretch($: EngineInterface, how: 'return' | 'end') {
+  if (how === 'return') returnHint = null
   try {
     if (!sessionId) return
     const all = await openIdle($)
@@ -2724,10 +2725,26 @@ async function closeStretch($: EngineInterface, how: 'return' | 'end') {
     const gap = now - e.endedAt
     if (how === 'end') return await writeStretch($, sessionId, e, gap, 'never')
     if (gap < IDLE_GAP_MIN) return
-    await writeStretch($, sessionId, e, gap, now - Math.max(e.endedAt, lastWarmAt) <= e.ttl ? 'warm' : 'cold')
+    const ended = now - Math.max(e.endedAt, lastWarmAt) <= e.ttl ? 'warm' : 'cold'
+    await writeStretch($, sessionId, e, gap, ended)
+    if (ended === 'cold') await noteColdReturn($, e)
   } catch {
     // A missing line only makes the record thinner.
   }
+}
+
+/** A compaction ran since the last turn ended: the return is not to a big cold conversation, so no install hint for it. */
+let compactedSince = false
+/** The install hint a cold return earned: what a handoff note would have saved. It shows when that turn ends (hintCheck). */
+let returnHint: { saved: number } | null = null
+
+/** The person came back to a cold cache (an idle stretch closed as `cold`): remembers what a handoff note would have saved, for the install hint. */
+async function noteColdReturn($: EngineInterface, e: OpenIdle) {
+  if (off || compactedSince || bandMode === 'off' || !e.context) return
+  if ((await whatsnextInstalled($)) !== false) return
+  const tier = (await situation($)).tier
+  const saved = idleCost(prices[tier], e.context).resend - noteCost(prices[tier], e.context)
+  if (saved > 0) returnHint = { saved }
 }
 
 /** At a session's start: another session's stretch older than IDLE_CAP belongs to a session that died; it never returned. This session's own entry stays: a resume may still come back to it. */
@@ -3989,7 +4006,7 @@ function showWarming($: EngineInterface, w: Warming) {
   const stop = { id: 'stop', label: 'Stop keeping warm' }
   const off = { id: 'off', label: "Don't keep warm again" }
   const n = w.note
-  return n ? showCold($, `${n.text} ${text}`, [n.button, ...(n.extra ? [n.extra] : []), stop], true, [...n.more, off]) : showCold($, text, w.extend ? [EXTEND, stop] : [stop], true, [off])
+  return n ? showCold($, `${n.text} ${text}`, [n.button, ...(n.extra ? [n.extra] : []), stop], true, [...n.more, off]) : showCold($, text, w.extend ? [EXTEND, WRAP, stop] : [stop], true, [off])
 }
 
 /**
@@ -4222,7 +4239,7 @@ async function showPays($: EngineInterface, p: Pays) {
     return
   }
   p.text = paysLine(p, now)
-  await showCold($, p.text, [EXTEND], true, [{ id: 'off', label: "Don't keep warm again" }], undefined, offerCountdown({ ttl: p.args.ttl, endedAt: p.refreshed, now }))
+  await showCold($, p.text, [EXTEND, WRAP], true, [{ id: 'off', label: "Don't keep warm again" }], undefined, offerCountdown({ ttl: p.args.ttl, endedAt: p.refreshed, now }))
 }
 
 /** From OFFER_AFTER_MS after the turn, on a cache of 1 hour or more: the countdown row. Then the first decision point. */
@@ -4449,7 +4466,7 @@ async function atCold($: EngineInterface, c: ColdTurn, action: 'handoff' | 'comp
       await log($, `${action} skipped: a turn is running`)
       return
     }
-    await (action === 'handoff' ? saveHandoff($, c) : compactNow($))
+    await (action === 'handoff' ? saveHandoff($, c) : compactNow($, c))
   } catch (err) {
     await log($, `${action} failed: ${err instanceof Error ? err.message : String(err)}`)
   }
@@ -4476,9 +4493,10 @@ async function saveHandoff($: EngineInterface, c: ColdTurn) {
   }
 }
 
-async function compactNow($: EngineInterface) {
+async function compactNow($: EngineInterface, c?: ColdTurn) {
   coldDone = true
   try {
+    const base = await hintBase($, c)
     const own = async () => {
       const skip = await ownCompact($)
       if (skip !== undefined) {
@@ -4488,7 +4506,8 @@ async function compactNow($: EngineInterface) {
       // The conversation is small now: the idle question would quote the old size.
       idleWarnedFor = lastTurnAt
       await log($, 'compact: compacted before the cache went cold')
-      await showCold($, 'Compacted while the cache was warm.')
+      const hint = await compactHint($, base)
+      await showCold($, hint ? `Compacted while the cache was warm. ${hint.text}` : 'Compacted while the cache was warm.', undefined, false, hint?.more)
     }
     if ((await whatsnextInstalled($)) !== true) return await own()
     await compactWithWhatsnext($, {
@@ -4505,6 +4524,219 @@ async function compactNow($: EngineInterface) {
   }
 }
 
+// ---- Wrap up, and the hints about whatsnext (P-42, ADR 0073) --------------------------------------------------------
+//
+// Wrap up ends a session's work on purpose: with whatsnext, a handoff note; without it (or in a project it was not started in),
+// a compaction with rightsize's own handoff-style text. The button is on the countdown row of keep warm "while it pays"; a typed
+// `wrap up` does the same when whatsnext would not answer it. When rightsize compacts where a note would have done, a hint
+// says how to get notes: install whatsnext, or run `whatsnext init` in this project. Each hint is rare and each is logged.
+
+const WRAP = { id: 'wrap', label: 'Wrap up' }
+const INSTALL_HIDE = { id: 'install-hide', label: "Don't show again" }
+/** The store keys: when the install hint last showed (ms), whether the person hid it for good, and the projects the init hint showed in. */
+const INSTALL_HINT_AT = 'installHintAt'
+const INSTALL_HINT_HIDDEN = 'installHintHidden'
+const INIT_HINTED = 'initHinted'
+
+/** The model and the conversation's size a compaction is priced at, read before it runs: the turn's own when it is known, else the session's. */
+async function hintBase($: EngineInterface, c?: ColdTurn): Promise<{ tier: Tier; context: number } | undefined> {
+  try {
+    const context = c?.context ?? lastContext
+    if (!context) return undefined
+    return { tier: c?.tier ?? (await situation($)).tier, context }
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * rightsize just compacted with its own text. The hint that fits, or none: without whatsnext, the install hint (a note would have
+ * saved the difference between the compaction and the note); with it but not set up in this project, the init hint. `more`: the
+ * hint's ⋯ entries.
+ */
+async function compactHint($: EngineInterface, base: { tier: Tier; context: number } | undefined): Promise<{ text: string; more?: { id: string; label: string }[] } | undefined> {
+  try {
+    if (off || bandMode === 'off' || !base) return undefined
+    const saved = idleCost(prices[base.tier], base.context).compact - noteCost(prices[base.tier], base.context)
+    const installed = await whatsnextInstalled($)
+    if (installed === false) {
+      const text = await installHint($, saved)
+      return text ? { text, more: [INSTALL_HIDE] } : undefined
+    }
+    if (installed === true) {
+      const text = await initHint($, saved)
+      return text ? { text } : undefined
+    }
+  } catch {
+    // A hint must never hold up the compaction.
+  }
+  return undefined
+}
+
+/** The install hint's text when it may show now (enough saved, not hidden, not within 30 days of the last); the time is kept as it is returned. */
+async function installHint($: EngineInterface, saved: number): Promise<string | undefined> {
+  const now = await $.clock.now()
+  const hidden = (await $.store.get(INSTALL_HINT_HIDDEN).catch(() => undefined)) === true
+  const last = await $.store.get(INSTALL_HINT_AT).catch(() => undefined)
+  if (!installHintDue({ saved, hidden, last, now })) return undefined
+  await $.store.set(INSTALL_HINT_AT, now).catch(() => undefined)
+  await log($, `install hint: shown; a whatsnext handoff note would have saved ${money(saved)}`)
+  return installHintText(saved, billing === 'subscription')
+}
+
+/** The init hint's text when it may show now: whatsnext is installed but not set up here, the folder is a git repository, and it has not shown in this project. */
+async function initHint($: EngineInterface, extra: number): Promise<string | undefined> {
+  if (extra < INIT_HINT_MIN) return undefined
+  const cwd = await $.session.cwd().catch(() => '')
+  if (!cwd) return undefined
+  const inside = await $.process.run(['git', 'rev-parse', '--is-inside-work-tree'], { cwd }).catch(() => undefined)
+  if (!inside || inside.exitCode !== 0 || inside.stdout.trim() !== 'true') return undefined
+  const project = await projectFolder($)
+  if (!project) return undefined
+  const was = await $.store.get(INIT_HINTED).catch(() => undefined)
+  const seen = Array.isArray(was) ? was.filter((x): x is string => typeof x === 'string') : []
+  if (seen.includes(project) || (await neighbours($)).whatsnext) return undefined
+  await $.store.set(INIT_HINTED, [...seen, project]).catch(() => undefined)
+  await log($, `init hint: shown for ${project}; a note would have saved ${money(extra)}`)
+  return initHintText(extra, billing === 'subscription')
+}
+
+/** "Don't show again" on the install hint: it never shows again. */
+async function hideInstallHint($: EngineInterface) {
+  await $.store.set(INSTALL_HINT_HIDDEN, true).catch(() => undefined)
+  await clearColdRow($)
+  $.ui.toast('Rightsize: the whatsnext hint is hidden.')
+  await log($, 'install hint: hidden for good ("Don\'t show again")')
+}
+
+/** A turn ended after a return to a cold cache: the install hint, when nothing else is on the cache row. */
+async function hintCheck($: EngineInterface) {
+  const h = returnHint
+  if (!h) return
+  returnHint = null
+  try {
+    if (off || bandMode === 'off') return
+    const had = (await $.state.get(BAND).catch(() => undefined))?.value
+    if (had?.coldText || warming) {
+      await log($, 'install hint: not shown, the cache row is in use')
+      return
+    }
+    const text = await installHint($, h.saved)
+    if (text) await showCold($, text, undefined, true, [INSTALL_HIDE])
+  } catch {
+    // A hint must never hold up a turn.
+  }
+}
+
+/** Wrap up: the person pressed it on the countdown row. Ends the keep-warm run, then saves a handoff note (whatsnext) or compacts. */
+async function pressWrap($: EngineInterface) {
+  try {
+    const p = pays
+    if (!p) {
+      $.ui.toast('Rightsize: that choice is gone.')
+      return
+    }
+    if (mainBusy) {
+      $.ui.toast('Rightsize: a turn is running. Press Wrap up again when it ends.')
+      return
+    }
+    if ((await $.clock.now()) >= p.refreshed + cacheTtl) {
+      await endPays($, p)
+      $.ui.toast('Rightsize: the cache already went cold, so there is nothing to wrap up before it.')
+      await log($, 'wrap up: the cache had already gone cold when Wrap up was pressed')
+      return
+    }
+    // whatsnext's answer is asked again: the person may have run `whatsnext init` since the turn ended.
+    projectFlag = null
+    const { whatsnext } = await neighbours($)
+    const base = await hintBase($, p.c)
+    cancelCold($, 'Wrap up pressed')
+    coldDone = true
+    await clearColdRow($)
+    if (whatsnext) {
+      const drop = await submitOwn($, WRAP_UP)
+      if (drop !== undefined) {
+        await log($, `wrap up: "${WRAP_UP}" was refused (${drop})`)
+        $.ui.toast(`Rightsize: the wrap-up was refused (${drop}).`)
+        return
+      }
+      await log($, `wrap up: Wrap up pressed; submitted "${WRAP_UP}" to whatsnext before the cache went cold; keep warm ended`)
+      await showCold($, 'Wrapped up: saved a handoff note with whatsnext.')
+      return
+    }
+    await log($, 'wrap up: Wrap up pressed; whatsnext cannot write a note here; compacting with rightsize\'s own text; keep warm ended')
+    await wrapCompact($, base)
+  } catch (err) {
+    await log($, `wrap up failed: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
+/** Wrap up without whatsnext: rightsize's own compaction, then the row says so, with a hint when one fits. */
+async function wrapCompact($: EngineInterface, base: { tier: Tier; context: number } | undefined) {
+  const skip = await ownCompact($)
+  if (skip !== undefined) {
+    await log($, `wrap up: compact skipped: ${skip}`)
+    $.ui.toast(`Rightsize: the conversation was not compacted (${skip}).`)
+    return
+  }
+  idleWarnedFor = lastTurnAt
+  await log($, 'wrap up: compacted')
+  const hint = await compactHint($, base)
+  await showCold($, `Wrapped up: compacted the conversation.${hint ? ` ${hint.text}` : ''}`, undefined, false, hint?.more)
+}
+
+/**
+ * The person typed exactly `wrap up`. When whatsnext would answer it (installed and set up in this project), the prompt goes
+ * through unchanged. Otherwise it is dropped and rightsize compacts with its own text, on any cache life. Resolves to the reason
+ * the prompt is dropped, or undefined when it goes through. A turn running, or a command list that cannot be read, lets it through.
+ */
+async function typedWrapUp($: EngineInterface): Promise<string | undefined> {
+  try {
+    if (mainBusy) {
+      await log($, `wrap up: typed while a turn is running; left for whatsnext or the model`)
+      return undefined
+    }
+    const installed = await whatsnextInstalled($)
+    if (installed === undefined) {
+      await log($, `wrap up: typed, but the commands could not be listed; the prompt goes through`)
+      return undefined
+    }
+    // Asked again: the person may have run `whatsnext init` since the turn ended.
+    projectFlag = null
+    if (installed && (await neighbours($)).whatsnext) return undefined
+    const base = await hintBase($)
+    cancelCold($, 'wrap up typed')
+    coldDone = true
+    await clearColdRow($)
+    await log($, `wrap up: typed; whatsnext ${installed ? 'is not set up in this project' : 'is not installed'}; dropped the prompt and compacting with rightsize's own text`)
+    // The compaction takes a while: it runs from a timer, after the hook has answered.
+    $.clock.after(0, () => {
+      void wrapCompact($, base).catch(err => log($, `wrap up failed: ${err instanceof Error ? err.message : String(err)}`))
+    })
+    return 'rightsize: wrapped up with a compact, because whatsnext is not set up here'
+  } catch (err) {
+    await log($, `wrap up failed: ${err instanceof Error ? err.message : String(err)}`)
+    return undefined
+  }
+}
+
+/** At a session's start, once per install: the idle stretches the run log's earlier runs imply, so keep warm's record is not empty. */
+async function backfillStretches($: EngineInterface) {
+  try {
+    if ((await $.store.get(BACKFILLED).catch(() => undefined)) === true) return
+    // Claimed before the write: a second session starting at the same moment finds it done.
+    await $.store.set(BACKFILLED, true)
+    const lines = backfillLines(runLog, await $.clock.now())
+    if (!lines.length) return
+    await append($, 'runs.jsonl', lines.map(l => JSON.stringify(l)).join('\n'), RUNS_LOG_MAX)
+    runLog.push(...lines)
+    await log($, `idle stretches: ${lines.length} made from earlier runs (${lines.filter(l => l.ended === 'never').length} never returned)`)
+  } catch {
+    // The record only starts thinner.
+  }
+}
+const BACKFILLED = 'backfilled'
+
 // A band button. Offer buttons act on the turn that ended; the cache is still warm, so a handoff or a compaction runs
 // right away, and a keep-warm time counts from the turn's end. Each answer to an offer goes in the run log.
 async function pressCold($: EngineInterface, id: string): Promise<void> {
@@ -4518,6 +4750,8 @@ async function pressCold($: EngineInterface, id: string): Promise<void> {
   }
   if (id === 'ask-yes' || id === 'ask-no') return answerAsk($, id === 'ask-yes')
   if (id === 'extend') return pressExtend($)
+  if (id === WRAP.id) return pressWrap($)
+  if (id === INSTALL_HIDE.id) return hideInstallHint($)
   await closeOffer($, id)
   if (id === 'off') {
     cancelCold($, 'turned off')
@@ -4542,7 +4776,7 @@ async function runCold($: EngineInterface, c: ColdTurn, id: string) {
   cancelCold($, 'a new choice')
   if (id === 'handoff' || id === 'compact') {
     await setBand($, null)
-    await (id === 'handoff' ? saveHandoff($, c) : compactNow($))
+    await (id === 'handoff' ? saveHandoff($, c) : compactNow($, c))
     return
   }
   const end = c.ends[id]
@@ -5940,8 +6174,14 @@ export const register: Register = (on, options) => {
   // Claude Code's idle auto-compact: the engine's own compaction (trigger `auto`) after an idle gap of 50 minutes or more, between
   // turns. The person's /compact and a plugin's compact are not it; they only say the drop in context that follows is not one.
   on('session.compact', async ($, e, next) => {
-    const result = await next(e)
+    // A compaction of the main conversation told nothing gets rightsize's handoff-style text (P-42). Text the person typed after
+    // /compact, whatsnext's and another plugin's stays; so does a plugin's own compaction (rightsize's own passes its text) and a subagent's.
+    const told = !off && e.agentId === undefined && (e.trigger === 'manual' || e.trigger === 'auto' || e.trigger === 'precompute')
+    const bare = told && (e.instructions ?? '').trim() === ''
+    if (told) await log($, bare ? `compact (${e.trigger}): no instructions given; rightsize's handoff-style text used` : `compact (${e.trigger}): instructions given; left as they are`)
+    const result = await next(bare ? { ...e, instructions: COMPACT_TEXT } : e)
     if (off || e.agentId !== undefined || result.skip !== undefined) return result
+    if (e.trigger !== 'precompute') compactedSince = true
     if (e.trigger === 'manual' || e.trigger === 'plugin') {
       manualCompact = true
       return result
@@ -6011,6 +6251,8 @@ export const register: Register = (on, options) => {
     pausedSaid = false
     compactedAway = null
     manualCompact = false
+    compactedSince = false
+    returnHint = null
     boundaryCheck = false
     await $.command.register({ name: CMD, description: 'Rightsize: welcome, settings, status, report, share, retry or clear' })
     tipSession()
@@ -6083,6 +6325,7 @@ export const register: Register = (on, options) => {
     void rollUpLifetime($).finally(() => pruneSessions($))
     runLog = await readRuns($)
     await closeDeadStretches($)
+    await backfillStretches($)
     ratedRuns.clear()
     await refreshMisses($)
     switchedOff = (await readSwitches($))[NAME] === false
@@ -6186,6 +6429,11 @@ export const register: Register = (on, options) => {
       cancelCold($, 'a prompt was submitted')
       // The band's questions that wait for the next prompt go, unanswered.
       await endBand($, 'prompt')
+    }
+    // The person typed `wrap up` and whatsnext will not answer it here: rightsize compacts instead (P-42).
+    if (!off && fromPerson(e) && !e.command && !e.isMeta && isWrapUp(e.text)) {
+      const drop = await typedWrapUp($)
+      if (drop !== undefined) return { drop }
     }
     // 👍 and 👎 go with the next prompt, whatever it is.
     if (!off && fromPerson(e) && !e.isMeta) await dropRate($)
@@ -6968,6 +7216,7 @@ export const register: Register = (on, options) => {
       await stopWait($, 'the turn ended')
       boundaryCheck = true
       manualCompact = false
+      compactedSince = false
       completed.add(e.turnId)
       await knowBilling($, false)
       await refreshTtl($)
@@ -6988,6 +7237,7 @@ export const register: Register = (on, options) => {
     if (e.agentId === undefined && !e.isAborted) await watchRows($)
     if (e.agentId === undefined && !e.isAborted) await tipCheck($).catch(() => undefined)
     if (e.agentId === undefined && !e.isAborted) await outputCheck($)
+    if (e.agentId === undefined && !e.isAborted) await hintCheck($)
     if (e.agentId === undefined && !e.isAborted) await lifeCheck($)
     // whatsnext's wrap-up before a compaction ended: the compaction follows (after coldCheck, which cancels timers), from a timer (the hook does not wait for it). An interrupted wrap-up stops it.
     if (e.agentId === undefined && wrapThenCompact) {

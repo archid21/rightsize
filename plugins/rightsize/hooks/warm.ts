@@ -462,6 +462,56 @@ export function stretchesOf(lines: readonly IdleLine[], billing: string, now: nu
   return out
 }
 
+/** A run line as the backfill reads it. */
+type BackfillRun = { at: string; kind?: string; session?: string; submittedAt?: string; aborted?: boolean; after?: unknown; context?: number; contextEnd?: number; history?: unknown }
+
+/** One idle stretch made from the run log's earlier runs: an `idle` line marked `history`. */
+export type HistoryStretch = {
+  at: string
+  kind: 'idle'
+  session: string
+  gapMs: number
+  ended: 'cold' | 'never'
+  hour: number
+  weekday: number
+  billing: 'api' | 'subscription'
+  context: number
+  cold: number
+  history: true
+}
+
+/**
+ * The idle stretches the run log's runs of the last STRETCH_DAYS days imply, so a new install does not start with an empty record.
+ * Per session, in time order: a stretch from one run's end to the next run's start (its `submittedAt`, else its `at`) when it is at
+ * least IDLE_GAP_MIN long, `cold` (the chance only tells returned from never); the session's last run, when it ended over IDLE_CAP
+ * ago, gives a `never` stretch as long as the time since. Empty when `history` lines are already there.
+ */
+export function backfillLines(lines: readonly BackfillRun[], now: number): HistoryStretch[] {
+  if (lines.some(l => l.kind === 'idle' && l.history === true)) return []
+  const bySession = new Map<string, { end: number; start: number; line: BackfillRun }[]>()
+  for (const l of lines) {
+    if ((l.kind !== undefined && l.kind !== 'run') || l.aborted === true) continue
+    const end = Date.parse(l.at)
+    if (!Number.isFinite(end) || now - end > STRETCH_DAYS * DAY) continue
+    const submitted = typeof l.submittedAt === 'string' ? Date.parse(l.submittedAt) : NaN
+    const key = l.session || 'unknown'
+    bySession.set(key, [...(bySession.get(key) ?? []), { end, start: Number.isFinite(submitted) ? submitted : end, line: l }])
+  }
+  const out: HistoryStretch[] = []
+  for (const [session, runs] of bySession) {
+    runs.sort((a, b) => a.end - b.end)
+    runs.forEach((r, i) => {
+      const next = runs[i + 1]
+      const gap = next ? next.start - r.end : now - r.end
+      if (next ? gap < IDLE_GAP_MIN : gap <= IDLE_CAP) return
+      const d = new Date(r.end)
+      const context = r.line.contextEnd ?? r.line.context
+      out.push({ at: new Date(next ? next.start : r.end + IDLE_CAP).toISOString(), kind: 'idle', session, gapMs: gap, ended: next ? 'cold' : 'never', hour: d.getHours(), weekday: d.getDay(), billing: r.line.after ? 'subscription' : 'api', context: typeof context === 'number' && Number.isFinite(context) ? context : 0, cold: 0, history: true })
+    })
+  }
+  return out.sort((a, b) => Date.parse(a.at) - Date.parse(b.at))
+}
+
 /** The stretches still going at `at`: a return needs a gap past it; a stretch that never returned counts to its end, `at` included. */
 const atRisk = (stretches: readonly Stretch[], at: number) => stretches.filter(s => (s.ended === 'never' ? s.gapMs >= at : s.gapMs > at))
 

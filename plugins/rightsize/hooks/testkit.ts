@@ -119,8 +119,8 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
     logs: [] as string[],
     filled: [] as string[],
     /** startDayOne: the day-one tip was shown already, so a session on Opus does not open with its band (the tests of the tip clear it). */
-    /** welcomed and tips off: the welcome and the tips (ADR 0039) stay out of the way; register.welcome.test.ts clears them. */
-    store: { startDayOne: true, welcomed: true, tips: { tipsOff: true, seen: [] }, ...(start.store ?? {}) } as Record<string, unknown>,
+    /** welcomed and tips off: the welcome and the tips (ADR 0039) stay out of the way; register.welcome.test.ts clears them. backfilled, installHintHidden and initHinted (P-42): the history stretches are not made and the two hints about whatsnext stay out of the way; register.wrapup.test.ts clears them. */
+    store: { startDayOne: true, welcomed: true, backfilled: true, installHintHidden: true, initHinted: ['/repo'], tips: { tipsOff: true, seen: [] }, ...(start.store ?? {}) } as Record<string, unknown>,
     ratings: 0,
     now: 1_800_000_000_000,
     page: '',
@@ -155,6 +155,8 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
     stars: undefined as string | undefined,
     /** True: ~/.config/archid21/stars.json cannot be written. */
     starsUnwritable: false,
+    /** False: the session's folder is not inside a git repository (`git rev-parse --is-inside-work-tree` exits 128). */
+    inGit: true,
     /** True: rm and rmdir fail to start. */
     rmFails: false,
     /** What $.session.id() answers. */
@@ -484,6 +486,7 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
       return { value: { exitCode: 0, stdout: out, stderr: '' } } as never
     }
     // Where whatsnext starts: git's top level of the session's folder.
+    if (argv[0] === 'git' && argv[1] === 'rev-parse' && argv[2] === '--is-inside-work-tree') return { value: h.inGit ? { exitCode: 0, stdout: 'true\n', stderr: '' } : { exitCode: 128, stdout: '', stderr: 'fatal: not a git repository' } } as never
     if (argv[0] === 'git' && argv[1] === 'rev-parse') return { value: { exitCode: 0, stdout: `${h.cwd}\n`, stderr: '' } } as never
     if (argv[0] === 'python3') {
       h.wnRuns.push(argv)

@@ -647,7 +647,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.asked, 'no question').toEqual([])
     await h.advance(5 * MIN)
     expect(await bandText($, surface)).toContain('Goes cold in 55 min ▰▰▰▰▰▰▰▰▰▱ (19:00) · coming back after costs about $0.63')
-    expect(await bandButtons($)).toEqual([['cold-extend', 'Extend 1 hour'], ['mode', '⋯'], ['close', '×']])
+    expect(await bandButtons($)).toEqual([['cold-extend', 'Extend 1 hour'], ['cold-wrap', 'Wrap up'], ['mode', '⋯'], ['close', '×']])
     await h.advance(52 * MIN)
     expect(NOTHING_DONE(h), 'one request at the first expiry: no stretch is on record').toEqual({ forks: 1, submitted: 0, compactions: 0 })
     await h.advance(8 * HOUR)

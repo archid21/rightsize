@@ -34,10 +34,14 @@ test('a request\'s real cost says its speed only when it is near one price and n
   expect(speedFromCost({ ledger: 0.0004, standard: 0.0002, fast: 0.0004 }), 'too small to tell').toBeUndefined()
 })
 
-test('a reading against the settings guess wins at once; against an earlier reading it needs a second in a row', () => {
+test('a standard reading against a guess of on wins at once; turning on, or against an earlier reading, needs a second in a row', () => {
   const guessed = { on: false, by: 'setting' as const }
-  expect(nextFast(guessed, true)).toEqual({ on: true, by: 'cost' })
+  const first = nextFast(guessed, true)
+  expect(first, 'one fast reading against the guess: pending only (ADR 0078)').toEqual({ on: false, by: 'setting', pending: true })
+  expect(nextFast(first, true), 'the second in a row turns it on').toEqual({ on: true, by: 'cost' })
+  expect(nextFast(first, false), 'a standard reading clears it').toEqual({ on: false, by: 'cost' })
   expect(nextFast(guessed, undefined), 'no reading: unchanged').toBe(guessed)
+  expect(nextFast({ on: true, by: 'setting' }, false), 'a rate-limit fallback: off at once').toEqual({ on: false, by: 'cost' })
   const measured = { on: true, by: 'cost' as const }
   const once = nextFast(measured, false)
   expect(once).toEqual({ on: true, by: 'cost', pending: false })
@@ -91,15 +95,34 @@ test('fastMode on a model with no fast mode (Sonnet) prices at standard rates', 
   expect(runLines(h).at(-1)?.fast).toBeUndefined()
 })
 
-test('the setting off but a request that cost the fast price: fast mode is on from there, and logged', { timeoutMs: 30000 }, async ($, on) => {
+test('the setting off but requests that cost the fast price: fast mode is on after the second, and logged', { timeoutMs: 30000 }, async ($, on) => {
   const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
   h.stepCost = FAST_COST
   const d = drive($, h)
   await d.start('terminal')
   await turn(h, d, 't1')
-  expect(logOf(h)).toContain('fast mode on: a request cost')
+  expect(logOf(h), 'one reading is not enough to turn it on').not.toContain('fast mode on')
   await turn(h, d, 't2')
+  expect(logOf(h)).toContain('fast mode on: a request cost')
+  await turn(h, d, 't3')
   expect(runLines(h).at(-1)?.fast, 'the next turn is priced fast').toBeGreaterThan(0.02)
+})
+
+test('a helper request that ends during a main-chat request: that reading says nothing, however fast it looks', { timeoutMs: 30000 }, async ($, on) => {
+  const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+  h.stepCost = STANDARD_COST
+  const d = drive($, h)
+  await d.start('terminal')
+  for (const id of ['t1', 't2', 't3']) {
+    // The helper's request lands in the ledger while the main chat's is out: together they cost the fast price.
+    h.duringStep = async () => {
+      h.ledger = (h.ledger ?? 0) + (FAST_COST - 2 * STANDARD_COST)
+      await d.step(`${id}-helper`, 0, 'agent-bg')
+    }
+    await turn(h, d, id)
+  }
+  expect(logOf(h)).not.toContain('fast mode on')
+  expect(runLines(h).at(-1)?.fast).toBeUndefined()
 })
 
 test('the setting on but requests at the standard price (a rate-limit fallback): one reading that overrules the guess turns it off', { timeoutMs: 30000 }, async ($, on) => {

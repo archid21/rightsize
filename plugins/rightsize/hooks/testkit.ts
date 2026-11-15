@@ -195,6 +195,8 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
     rateLimits: [{ kind: 'spend_limit', percentUsed: 1 }] as { kind: string; percentUsed: number; resetsAt?: string }[],
     /** The session's cost ledger in dollars; undefined: the host keeps none. */
     ledger: 0 as number | undefined,
+    /** Runs inside the next main-chat request, once: what else ends while it is out (ADR 0078). */
+    duringStep: undefined as (() => Promise<void>) | undefined,
     stepCost: 0.01,
     /** Percent each main request adds to every rate-limit window. */
     windowStep: 0,
@@ -272,6 +274,8 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
     /** What each $.session.compact() call was given. */
     compactCalls: [] as unknown[],
     compactSkip: undefined as string | undefined,
+    /** An error $.session.compact() throws instead, as in the desktop app and other SDK sessions (ADR 0077). */
+    compactThrows: undefined as string | undefined,
     /** The sizes a compaction reports (`tokensBefore`, `tokensAfter`); left out, the engine reports none. */
     compactTokens: undefined as { before: number; after: number } | undefined,
     /** Every $.state.set, in order: the key, the plugin it was given with (a bare name has none) and the value. */
@@ -635,6 +639,12 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
   reg('turn.step', async function* ($, e) {
     h.sent.push({ effort: e.effort, model: e.model, agentId: e.agentId, turnId: e.turnId })
     if (h.ledger !== undefined) h.ledger += h.stepCost
+    // Something else that runs while this main-chat request does (a background helper's request): the test's own.
+    const during = e.agentId ? undefined : h.duringStep
+    if (during) {
+      h.duringStep = undefined
+      await during()
+    }
     if (!e.agentId && h.windowStep) h.rateLimits = h.rateLimits.map(l => ({ ...l, percentUsed: l.percentUsed + h.windowStep }))
     const usage = h.stepUsage
     return { turnId: e.turnId, index: e.index, answer: h.stepAnswer, toolUses: h.stepToolUses, stopReason: 'end_turn', usage: { ...usage, model: e.agentId ? h.subModel : (e.model ?? h.model) } } as never
@@ -662,6 +672,8 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
     return { value: { isAnswered: true, text: 'OK', ...(h.forkUsage ? { usage: h.forkUsage } : {}) } } as never
   })
   reg('session.compact', async ($, e) => {
+    // The kit cannot make $.session.compact reject (a hook's throw is skipped), so the engine's refusal comes back as a skip.
+    if (h.compactThrows !== undefined) return { skip: h.compactThrows } as never
     h.compactions += 1
     h.compactCalls.push(e)
     return (h.compactSkip !== undefined ? { skip: h.compactSkip } : { messages: [{ role: 'user', text: 'Summary of the conversation.', toolUses: [] }], ...(h.compactTokens ? { tokensBefore: h.compactTokens.before, tokensAfter: h.compactTokens.after } : {}) }) as never

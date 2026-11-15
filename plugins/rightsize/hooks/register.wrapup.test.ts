@@ -103,45 +103,43 @@ for (const surface of ['desktop', 'terminal'] as const) {
   const lastCompact = (h: ReturnType<typeof engine>) => h.compactCalls[h.compactCalls.length - 1] as { trigger: string; instructions?: string; agentId?: string }
 
   // ---- Handoff-style text for a compaction told nothing ---------------------------------------------------------
+  // The text comes from the classic PreCompact hook (hooks/precompact.py, ADR 0077), checked by scripts/check-precompact.mjs.
+  // The mod hook only observes: on Team and Enterprise logins Claude Code's built-in guard keeps it from running at all.
 
-  test(`compact text: a bare /compact and an automatic compaction get the handoff-style text (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`compact text: the session.compact hook passes every compaction on as it came (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const { h } = await session($, on)
     await compact($, 'manual')
-    expect(lastCompact(h).instructions).toBe(COMPACT_TEXT)
-    await compact($, 'manual', { instructions: '   \n' })
-    expect(lastCompact(h).instructions, 'only spaces is nothing').toBe(COMPACT_TEXT)
+    expect(lastCompact(h).instructions, 'a bare /compact: the PreCompact hook adds the text').toBeUndefined()
     await compact($, 'auto')
-    expect(lastCompact(h)).toMatchObject({ trigger: 'auto', instructions: COMPACT_TEXT })
-    await compact($, 'precompute')
-    expect(lastCompact(h)).toMatchObject({ trigger: 'precompute', instructions: COMPACT_TEXT })
-    expect(log(h)).toContain("compact (manual): no instructions given; rightsize's handoff-style text used")
-    expect(log(h)).toContain("compact (auto): no instructions given; rightsize's handoff-style text used")
-  })
-
-  test(`compact text: instructions the person typed after /compact are kept (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const { h } = await session($, on)
+    expect(lastCompact(h).instructions).toBeUndefined()
     await compact($, 'manual', { instructions: 'keep the API notes' })
     expect(lastCompact(h).instructions).toBe('keep the API notes')
-    await compact($, 'auto', { instructions: 'another plugin asked for this' })
-    expect(lastCompact(h).instructions).toBe('another plugin asked for this')
-    expect(log(h)).toContain('compact (manual): instructions given; left as they are')
+    expect(log(h)).not.toContain('compact (manual)')
   })
 
-  test(`compact text: a subagent's compaction and a plugin's own are left alone (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const { h } = await session($, on)
-    await compact($, 'auto', { agentId: 'agent-x' })
-    expect(lastCompact(h).instructions, "a subagent's").toBeUndefined()
-    await compact($, 'manual', { agentId: 'agent-x' })
-    expect(lastCompact(h).instructions).toBeUndefined()
-    await compact($, 'plugin')
-    expect(lastCompact(h).instructions, "a plugin's, with none").toBeUndefined()
-    expect(log(h)).not.toContain('compact (plugin)')
+  test(`compact text: where $.session.compact is not available, rightsize's own compact runs /compact with its text (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const { h, d } = await session($, on, { store: { installHintHidden: true } })
+    h.compactThrows = 'rightsize: $.session.compact: not available in a headless (-p / SDK) session yet'
+    await turn(d, 't1')
+    const r = (await d.submit('wrap up')) as { drop?: string }
+    expect(r.drop).toContain('rightsize: wrapped up with a compact')
+    await h.advance(0)
+    expect(h.commandRuns).toEqual([{ command: 'compact', args: COMPACT_TEXT }])
+    expect(await cacheRow($)).toBe('Wrapped up: compacted the conversation.')
+    expect(log(h)).toContain("compact: $.session.compact is not available here (rightsize: $.session.compact: not available in a headless (-p / SDK) session yet); running /compact with rightsize's own text instead")
+    expect(h.fills, 'nothing to give back').toEqual([])
   })
 
-  test(`compact text: rightsize off leaves every compaction as it is (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const { h } = await session($, on, { off: true })
-    await compact($, 'manual')
-    expect(lastCompact(h).instructions).toBeUndefined()
+  test(`compact text: when the wrap-up compact fails, "wrap up" goes back in the prompt box (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const { h, d } = await session($, on, { store: { installHintHidden: true } })
+    h.compactThrows = 'not available in a headless (-p / SDK) session yet'
+    h.commandRunFails = 'the command could not run'
+    await turn(d, 't1')
+    await d.submit('wrap up')
+    await h.advance(0)
+    expect(h.fills).toEqual([{ text: 'wrap up', mode: 'replace' }])
+    expect(h.toasts.some(t => t.includes('the wrap-up compact failed') && t.includes('"wrap up" is back in the prompt box'))).toBe(true)
+    expect(log(h)).toContain('wrap up failed: ')
   })
 
   // ---- The Wrap up button ----------------------------------------------------------------------------------------

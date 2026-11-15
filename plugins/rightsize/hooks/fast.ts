@@ -40,14 +40,15 @@ export function speedFromCost(o: { ledger: number; standard: number; fast: numbe
 }
 
 /**
- * The state after one cost reading. A reading that agrees clears any pending one. One that disagrees with the setting's guess
- * wins at once: the guess was only a guess. One that disagrees with an earlier reading needs a second in a row, so a single
- * request that overlapped with another does not flip it.
+ * The state after one cost reading. A reading that agrees clears any pending one. A standard-price reading against the setting's
+ * guess of on wins at once: the guess was only a guess, and a rate limit drops requests to standard speed. Every other change
+ * needs a second reading in a row, turning on always: a false "on" prices everything at fast rates, and a request whose window
+ * took in another's cost reads as fast (ADR 0078).
  */
 export function nextFast(s: FastState, reading: boolean | undefined): FastState {
   if (reading === undefined) return s
   if (reading === s.on) return { on: s.on, by: 'cost' }
-  if (s.by === 'setting' || s.pending === reading) return { on: reading, by: 'cost' }
+  if (s.pending === reading || (s.by === 'setting' && !reading)) return { on: reading, by: 'cost' }
   return { ...s, pending: reading }
 }
 

@@ -436,6 +436,9 @@ type Run = {
 let home = ''
 let sessionId = ''
 let off = false
+/** Requests that were not the main chat's (helpers, forks, the rater), counted as each one ends: a main-chat request during which
+ * this moved has their cost in its ledger reading too, so it says nothing about fast mode (ADR 0078). */
+let otherSpend = 0
 /** The person's on/off switch; `off` is this or an older main-chat model (ADR 0032). */
 let switchedOff = false
 /** "Opus 4.8" while the main chat runs an older model version than prices.json prices; null otherwise. */
@@ -2042,6 +2045,7 @@ async function spotCheck($: EngineInterface, session: string, task: string, tier
       timeoutMs: 15_000,
     })
     const usage = (r as { usage?: Usage }).usage
+    otherSpend += 1
     const overhead = usage ? usageCost(prices, SPOT_CHECKER, usage) : 0
     // The check ran beside a turn, so the ledger counts it in that turn: take it out of the turn's cost.
     if (active) active.sideCost += overhead
@@ -2076,6 +2080,7 @@ async function askRater($: EngineInterface, model: Rater, tier: Tier, level: Lev
     timeoutMs,
   })
   const usage = (r as { usage?: Usage }).usage
+  otherSpend += 1
   const overhead = usage ? usageCost(prices, model, usage) : 0
   if (!r.isAnswered) {
     await log($, `rating by ${model} failed: ${r.reason}`)
@@ -3386,8 +3391,25 @@ let wrapTurns = 0
 
 /** rightsize's own compaction, for when whatsnext is not there or cannot compact: one text for every path. Resolves to the reason when it was skipped. */
 async function ownCompact($: EngineInterface): Promise<string | undefined> {
-  return (await $.session.compact({ instructions: COMPACT_TEXT })).skip
+  // In the desktop app and other SDK sessions `$.session.compact` is not available ("not available in a headless (-p / SDK)
+  // session yet"): run /compact with the same text the way the person's own would (ADR 0077). Seen as an error or as a skip;
+  // any other error or skip stands.
+  let refused: string | undefined
+  try {
+    const skip = (await $.session.compact({ instructions: COMPACT_TEXT })).skip
+    if (skip === undefined || !UNAVAILABLE.test(skip)) return skip
+    refused = skip
+  } catch (err) {
+    refused = err instanceof Error ? err.message : String(err)
+    if (!UNAVAILABLE.test(refused)) throw err
+  }
+  await log($, `compact: $.session.compact is not available here (${refused}); running /compact with rightsize's own text instead`)
+  await $.command.run({ command: 'compact', args: COMPACT_TEXT })
+  return undefined
 }
+
+/** How the engine says `$.session.compact` cannot run in this kind of session. */
+const UNAVAILABLE = /not available in a headless/i
 
 /** `text` with " no fresh handoff" said when the compaction went ahead without one. */
 const withHandoffNote = (text: string, noFresh: boolean | undefined) => (noFresh ? `${text.replace(/\.$/, '')}; ${NO_FRESH_HANDOFF}.` : text)
@@ -4465,6 +4487,7 @@ function armPing($: EngineInterface, gen: number, c: ColdTurn, w: Warming, k: nu
 async function pingOnce($: EngineInterface, gen: number, c: ColdTurn, w: Warming): Promise<'go' | 'stop'> {
   const r = await $.model.fork({ prompt: PING_PROMPT }).catch((err: unknown) => ({ isAnswered: false as const, reason: `error: ${err instanceof Error ? err.message : String(err)}`, usage: undefined }))
   const usage = 'usage' in r ? r.usage : undefined
+  otherSpend += 1
   // A request that came back with no usage still read the conversation from the cache.
   const cost = r.isAnswered || usage ? pingCost(prices[c.tier], c.context, usage) : 0
   w.pings += r.isAnswered ? 1 : 0
@@ -4790,6 +4813,7 @@ async function armWait($: EngineInterface, gen: number, w: ToolWait) {
 async function pingWait($: EngineInterface, gen: number, w: ToolWait) {
   const r = await $.model.fork({ prompt: PING_PROMPT }).catch((err: unknown) => ({ isAnswered: false as const, reason: `error: ${err instanceof Error ? err.message : String(err)}`, usage: undefined }))
   const usage = 'usage' in r ? r.usage : undefined
+  otherSpend += 1
   const cost = r.isAnswered || usage ? pingCost(prices[w.c.tier], w.c.context, usage) : 0
   w.pings += r.isAnswered ? 1 : 0
   w.spent += cost
@@ -5065,7 +5089,13 @@ async function typedWrapUp($: EngineInterface): Promise<string | undefined> {
     await log($, `wrap up: typed; whatsnext ${installed ? 'is not set up in this project' : 'is not installed'}; dropped the prompt and compacting with rightsize's own text`)
     // The compaction takes a while: it runs from a timer, after the hook has answered.
     $.clock.after(0, () => {
-      void wrapCompact($, base).catch(err => log($, `wrap up failed: ${err instanceof Error ? err.message : String(err)}`))
+      void wrapCompact($, base).catch(async err => {
+        // The prompt was dropped before the compaction could run: give the words back, so a failure loses nothing.
+        const why = err instanceof Error ? err.message : String(err)
+        await log($, `wrap up failed: ${why}`)
+        const filled = await $.prompt.fill({ text: WRAP_UP, mode: 'replace' }).catch(() => null)
+        $.ui.toast(`Rightsize: the wrap-up compact failed (${why}).${filled?.isFilled ? ' "wrap up" is back in the prompt box.' : ''}`)
+      })
     })
     return 'rightsize: wrapped up with a compact, because whatsnext is not set up here'
   } catch (err) {
@@ -6399,7 +6429,8 @@ async function refreshFast($: EngineInterface, switchedTo?: string) {
   const was = fast.on
   const first = fastGuessed === undefined
   if (!supported) fast = { on: false, by: 'setting' }
-  else if (fast.by === 'setting' || guess !== fastGuessed) fast = { on: guess, by: 'setting' }
+  // A guess that has not changed keeps a reading waiting for its second (ADR 0078).
+  else if (guess !== fastGuessed || (fast.by === 'setting' && fast.on !== guess)) fast = { on: guess, by: 'setting' }
   fastGuessed = guess
   if (fast.on === was || first) return
   await log($, `fast mode ${fast.on ? 'on' : 'off'} (${supported ? 'the fastMode setting' : `${mainModel ?? 'this model'} has no fast mode`})`)
@@ -6530,13 +6561,10 @@ export const register: Register = (on, options) => {
 
   // Claude Code's idle auto-compact: the engine's own compaction (trigger `auto`) after an idle gap of 50 minutes or more, between
   // turns. The person's /compact and a plugin's compact are not it; they only say the drop in context that follows is not one.
+  // A compaction told nothing gets rightsize's handoff text from the classic PreCompact hook (hooks/precompact.py, ADR 0077), not
+  // here: on Team and Enterprise logins Claude Code's built-in guard runs first and this hook never runs. Where it does run, it only observes.
   on('session.compact', async ($, e, next) => {
-    // A compaction of the main conversation told nothing gets rightsize's handoff-style text (P-42). Text the person typed after
-    // /compact, whatsnext's and another plugin's stays; so does a plugin's own compaction (rightsize's own passes its text) and a subagent's.
-    const told = !off && e.agentId === undefined && (e.trigger === 'manual' || e.trigger === 'auto' || e.trigger === 'precompute')
-    const bare = told && (e.instructions ?? '').trim() === ''
-    if (told) await log($, bare ? `compact (${e.trigger}): no instructions given; rightsize's handoff-style text used` : `compact (${e.trigger}): instructions given; left as they are`)
-    const result = await next(bare ? { ...e, instructions: COMPACT_TEXT } : e)
+    const result = await next(e)
     if (off || e.agentId !== undefined || result.skip !== undefined) return result
     if (e.trigger !== 'precompute') compactedSince = true
     if (e.trigger === 'manual' || e.trigger === 'plugin') {
@@ -7076,6 +7104,7 @@ export const register: Register = (on, options) => {
       const send = level && e.effort !== undefined ? { ...e, effort: level } : e
       if (run && ours && isLevel(send.effort)) run.subLevel = send.effort
       const out = yield* next(send)
+      otherSpend += 1
       if (out.usage) {
         const cost = usageCost(prices, out.usage.model, out.usage)
         if (run) run.subCost += cost
@@ -7138,9 +7167,10 @@ export const register: Register = (on, options) => {
     if (held) lastApplied = undefined
     // The ledger around the request: what it really cost says whether it ran in fast mode (P-29). A switched turn runs another model.
     const ledgerBefore = sw ? undefined : (await usageNow($))?.cost?.usd
+    const othersBefore = otherSpend
     const out = yield* next(send)
     const u = out.usage
-    if (u && ledgerBefore !== undefined) await measureSpeed($, u, ledgerBefore)
+    if (u && ledgerBefore !== undefined && otherSpend === othersBefore) await measureSpeed($, u, ledgerBefore)
     if (u) {
       // An effort switch may make this request re-write the conversation: measure it.
       // A model rewritten on this step or the last one makes the cache miss the model's, not an effort switch's: not measured.

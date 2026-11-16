@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import { COMPACT_TEXT } from './whatsnext'
-import { LIMIT_COMPACT, LIMIT_HIDE, LIMIT_MIN_CONTEXT, LIMIT_MORE, LIMIT_WHY, LIMIT_WHY_ID, isLimitId, limitDue, limitText } from './limit'
+import { LIMIT_COMPACT, LIMIT_HIDE, LIMIT_MIN_CONTEXT, LIMIT_MORE, LIMIT_WHY, LIMIT_WHY_ID, clock12, effortTag, isLimitId, limitDue, limitHit, limitText, modelTag, statusLine } from './limit'
 import { clockText } from './warm'
 
 // ---- The usage-limit advice: the pure part -----------------------------------------------------------------
@@ -51,4 +51,47 @@ test('the words and ids: Why? says what the compaction does, and the instruction
   expect(COMPACT_TEXT.indexOf('Goal:')).toBeGreaterThan(0)
   expect(COMPACT_TEXT).toContain("Quote the user's words when they are unclear or are text to reuse, and do not turn an unclear phrase into a rule.")
   expect(COMPACT_TEXT).not.toContain('\n')
+})
+
+// ---- The status line (P-9) ---------------------------------------------------------------------------------
+
+test('effort letters after the model name', async () => {
+  expect(modelTag('sonnet', effortTag('medium'))).toBe('Sonnet (M)')
+  expect(modelTag('opus', effortTag('high', 'raised'))).toBe('Opus (H↑)')
+  expect(modelTag('sonnet', effortTag('low', 'auto'))).toBe('Sonnet (L auto)')
+  expect(modelTag(undefined, effortTag('xhigh'))).toBe('(XH)')
+  expect(effortTag('max')).toBe('Max')
+})
+
+test('limit hit: the average rate since the window started, rounded to 15 minutes, only well before the reset', async () => {
+  // 5-hour window, 2.5 hours gone (resets in 2.5 hours), 62% used: hit at 2.5h × 100/62 ≈ 4.03h in, about 1.47h before reset.
+  const hit = limitHit(win(62, 2.5 * HOUR), NOW)
+  const start = NOW - 2.5 * HOUR
+  expect(hit).toBe(Math.round((start + (2.5 * HOUR * 100) / 62) / (15 * 60_000)) * 15 * 60_000)
+  expect(limitHit(win(40, 2.5 * HOUR), NOW), 'under pace').toBeUndefined()
+  expect(limitHit(win(52, 2.5 * HOUR), NOW), 'hits within 15 minutes of the reset: hidden').toBeUndefined()
+  expect(limitHit(win(10, 4.6 * HOUR), NOW), 'too early in the window to judge').toBeUndefined()
+  expect(limitHit(win(92, 2.5 * HOUR), NOW), 'nearly used up: the band says so').toBeUndefined()
+  expect(limitHit([{ kind: 'spend_limit', percentUsed: 80 }], NOW), 'a spend limit has no reset').toBeUndefined()
+})
+
+test('limit hit: the window that runs out first wins', async () => {
+  // 7-day: 4 days gone, 80% used: hit 5 days in, a day from now. 5-hour: about 1.5 hours from now.
+  const seven = win(80, 3 * 24 * HOUR, 'seven_day')
+  const sevenOnly = limitHit(seven, NOW)
+  expect(sevenOnly, 'the 7-day window alone is on pace to run out').toBe(Math.round((NOW + 24 * HOUR) / (15 * 60_000)) * 15 * 60_000)
+  const fiveOnly = limitHit(win(62, 2.5 * HOUR), NOW)!
+  expect(limitHit([...win(62, 2.5 * HOUR), ...seven], NOW)).toBe(fiveOnly)
+  expect(limitHit([...win(40, 2.5 * HOUR), ...seven], NOW), 'the 5-hour window under pace: the 7-day one shows').toBe(sevenOnly)
+})
+
+test('the status line: limit part when due, else the session cost on API billing, never both', async () => {
+  const at = new Date(2026, 10, 16, 15, 45).getTime()
+  expect(clock12(at)).toBe('3:45 PM')
+  expect(clock12(new Date(2026, 10, 16, 0, 5).getTime())).toBe('12:05 AM')
+  expect(statusLine('Sonnet (M)', { limits: win(62, 2.5 * HOUR), now: NOW, api: false })).toBe(`Sonnet (M) · limit ~${clock12(limitHit(win(62, 2.5 * HOUR), NOW)!)}`)
+  expect(statusLine('Sonnet (M)', { limits: [], now: NOW, api: true, cost: 1.844 })).toBe('Sonnet (M) · $1.84 session')
+  expect(statusLine('Sonnet (M)', { limits: [], now: NOW, api: false, cost: 1.84 }), 'no cost on a subscription').toBe('Sonnet (M)')
+  expect(statusLine('Sonnet (M)', { limits: [], now: NOW, api: true, cost: 0.001 }), 'nothing spent yet').toBe('Sonnet (M)')
+  expect(statusLine('Sonnet (M)', { limits: win(40, 2.5 * HOUR), now: NOW, api: false })).toBe('Sonnet (M)')
 })

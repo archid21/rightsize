@@ -1,4 +1,4 @@
-import { MAX_USED, type Limit, money } from './cost'
+import { MAX_USED, PACE_FROM, TIER_NAME, type Level, type Limit, type Tier, money } from './cost'
 import { bandShareText, shareOf } from './report'
 import { clockText } from './warm'
 
@@ -51,4 +51,57 @@ export function limitText(resetAt: number, saving: number, subscription: boolean
   const what =
     !subscription ? `${amount} after the reset` : rates ? `${bandShareText(shareOf(saving, rates))} of your next window` : `${amount} API-equivalent after the reset`
   return `Near your 5-hour limit, resets ${clockText(resetAt)}. Compact now to save ${what}.`
+}
+
+// ---- The status line (P-9) ---------------------------------------------------------------------------------
+// At most "Sonnet (M) · limit ~3:45 PM" or "Sonnet (M) · $1.84 session": the model with its effort as a letter, then
+// the limit part (only when on pace to run out before the reset) or, on API billing, the session cost. The cache stays
+// on the band, never here.
+
+const LETTER: Record<Level, string> = { low: 'L', medium: 'M', high: 'H', xhigh: 'XH', max: 'Max' }
+
+/** "M", "H↑" when rightsize raised it, "L auto" when rightsize picked it. */
+export const effortTag = (level: Level, how?: 'raised' | 'auto') => `${LETTER[level]}${how === 'raised' ? '↑' : how === 'auto' ? ' auto' : ''}`
+
+/** "Sonnet (M)"; "(M)" when the model is not known. */
+export const modelTag = (tier: Tier | undefined, tag: string) => (tier ? `${TIER_NAME[tier]} (${tag})` : `(${tag})`)
+
+const WINDOW_LEN = { five_hour: 5 * 3600_000, seven_day: 7 * 24 * 3600_000 } as const
+const QUARTER = 15 * 60_000
+/** The limit part shows only when the limit is hit at least this long before the reset, so a borderline pace does not flicker. */
+export const LIMIT_MARGIN = QUARTER
+
+/**
+ * When the first window runs out at its average rate since it started, rounded to 15 minutes; undefined when no window
+ * runs out at least LIMIT_MARGIN before its reset, in the first PACE_FROM of a window (too little to judge), or past MAX_USED
+ * (the band says so instead).
+ */
+export function limitHit(limits: readonly Limit[], now: number) {
+  let first: number | undefined
+  for (const l of limits) {
+    if (l.kind !== 'five_hour' && l.kind !== 'seven_day') continue
+    const reset = l.resetsAt ? Date.parse(l.resetsAt) : NaN
+    if (!Number.isFinite(reset) || !(l.percentUsed > 0) || l.percentUsed >= MAX_USED) continue
+    const start = reset - WINDOW_LEN[l.kind]
+    const gone = now - start
+    if (gone < PACE_FROM * WINDOW_LEN[l.kind] || reset <= now) continue
+    const hit = start + (gone * 100) / l.percentUsed
+    if (hit > reset - LIMIT_MARGIN) continue
+    if (first === undefined || hit < first) first = hit
+  }
+  return first === undefined ? undefined : Math.round(first / QUARTER) * QUARTER
+}
+
+/** "3:45 PM" in local time. */
+export function clock12(ms: number) {
+  const d = new Date(ms)
+  const h = d.getHours() % 12 || 12
+  return `${h}:${String(d.getMinutes()).padStart(2, '0')} ${d.getHours() < 12 ? 'AM' : 'PM'}`
+}
+
+/** The status line: the model part, then "limit ~3:45 PM" when due, else "$1.84 session" on API billing. */
+export function statusLine(model: string, o: { limits: readonly Limit[]; now: number; api: boolean; cost?: number }) {
+  const hit = limitHit(o.limits, o.now)
+  const extra = hit !== undefined ? `limit ~${clock12(hit)}` : o.api && typeof o.cost === 'number' && o.cost >= 0.01 ? `${money(o.cost)} session` : ''
+  return extra ? `${model} · ${extra}` : model
 }

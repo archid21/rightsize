@@ -157,7 +157,7 @@ import { type Change, type HelperLine, type Lifetime, type RunLine, type SwitchL
 import { CACHE_LIFE_KEY, isTracked, parseChanges, type ChangeLine } from './results'
 import { LIFE_DAYS, LIFE_HEADER, LIFE_NO, LIFE_YES, PROBE_RESPONSES, type Provider, adviseLife, lifeEligible, lifeOffer, lifeQuestion, lifeRefusedText, lifeRevertedText, lifeSetText, lifeStuckText, lifeYes, probeRead, providerOf, settingDecides } from './cachelife'
 import { type TrimSavings, isTrim, readTrimSavings } from './trim'
-import { LIMIT_BUTTON, LIMIT_COMPACT, LIMIT_HIDE, LIMIT_MORE, LIMIT_WHY, LIMIT_WHY_ID, isLimitId, limitDue, limitText } from './limit'
+import { LIMIT_BUTTON, LIMIT_COMPACT, LIMIT_HIDE, LIMIT_MORE, LIMIT_WHY, LIMIT_WHY_ID, effortTag, isLimitId, limitDue, limitText, modelTag, statusLine } from './limit'
 import { SIZE_BUTTON, SIZE_COMPACT, SIZE_FRESH, SIZE_FRESH_BUTTON, SIZE_FRESH_COMPACT, SIZE_FRESH_COPY, SIZE_FRESH_COPY_FAILED, SIZE_FRESH_NOT_NOW, SIZE_FRESH_PASTE_BUTTONS, SIZE_FRESH_SAVING, SIZE_HIDE, SIZE_MORE, SIZE_WHY, SIZE_WHY_FRESH, SIZE_WHY_ID, isSizeId, sizeFreshNotWritten, sizeFreshNotice, sizeFreshPaste, sizeStep, sizeText } from './size'
 import { COMPACT_TEXT, INIT_HINT_MIN, NO_FRESH_HANDOFF, WRAP_HEADROOM, WRAP_TURNS, initHintText, installHintDue, installHintText, isWhatsnext, isWrapUp, noteCost } from './whatsnext'
 import { ME, REPOS, SHARED_PATH, askText, blockedByClaim, parseShared, readStarCheck, reposToAsk, type Shared } from './star'
@@ -2367,12 +2367,20 @@ async function showStatus($: EngineInterface) {
   if (olderPause || manualPause) return $.ui.status('rightsize paused')
   const run = active ?? pending[0] ?? null
   if (run?.delegate) return $.ui.status(`${TIER_NAME[run.delegate.tier]} helper`)
-  if (run?.switchTo) return $.ui.status(`${TIER_NAME[run.switchTo.tier]} · ${run.switchTo.level}`)
-  if (run?.raisedTo) return $.ui.status(`${run.raisedTo} (raised)`)
-  if (run?.steppedUp) return $.ui.status(`${run.normal} (raised)`)
-  if (run?.level) return $.ui.status(run.auto ? `${run.level} (auto)` : `${run.level}`)
-  const session = await sessionEffortInUse($)
-  $.ui.status(session ? `${session}` : undefined)
+  const live = tierOf(await $.session.model().catch(() => undefined))
+  let model: string | undefined
+  if (run?.switchTo) model = modelTag(run.switchTo.tier, effortTag(run.switchTo.level))
+  else if (run?.raisedTo) model = modelTag(live, effortTag(run.raisedTo, 'raised'))
+  else if (run?.steppedUp) model = modelTag(live, effortTag(run.normal, 'raised'))
+  else if (run?.level) model = modelTag(live, effortTag(run.level, run.auto ? 'auto' : undefined))
+  else {
+    const session = await sessionEffortInUse($)
+    if (session) model = modelTag(live, effortTag(session))
+  }
+  if (!model) return $.ui.status(undefined)
+  const u = await usageNow($)
+  const limits = u?.rateLimits ?? []
+  $.ui.status(statusLine(model, { limits, now: await $.clock.now(), api: billingOf(limits) === 'api', cost: u?.cost?.usd }))
 }
 
 // ---- Band ------------------------------------------------------------------

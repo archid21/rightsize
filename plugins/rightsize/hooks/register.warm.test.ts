@@ -143,7 +143,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t2')
     // The first request showed the cache held: the session total counts the saving at once (0.6279 less the ping's 0.01613).
     // The band shows that total only from the 3rd rated prompt, so it is read from the log here.
-    expect(sessionTotal(readRuns(h) as unknown as RunLine[], 'sess-1', false), 'the session total counts it').toBe('Session: ~$0.61 saved')
+    expect(sessionTotal(readRuns(h) as unknown as RunLine[], 'sess-1', false), 'the session total counts it').toBe('rightsize so far: ~$0.61 saved')
     await d.complete('t2')
     // 62 minutes after the turn ended: past its 60 minutes, kept warm by the ping at 57.
     const taskId = (readRuns(h).find(l => l.kind === 'run') as { id?: string } | undefined)?.id
@@ -750,7 +750,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await pressBand($, 'cold-2h')
     await h.advance(57 * MIN)
     expect(await bandText($, surface)).toMatch(/^Warm until 20:05 · ~0\.1% used/)
-    expect((await bandText($, surface)).split(' Session:')[0], 'no ping count, no dollars next to the share').not.toMatch(/\bpings?\b|\$/)
+    expect((await bandText($, surface)).split(' rightsize so far:')[0], 'no ping count, no dollars next to the share').not.toMatch(/\bpings?\b|\$/)
     await pressBand($, 'cold-stop')
     expect(await bandText($, surface)).toMatch(/^Stopped keeping warm · ~0\.1% used\./)
   })

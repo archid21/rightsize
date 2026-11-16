@@ -2461,7 +2461,7 @@ function setBand($: EngineInterface, from: Band | null, rating = false) {
   const band: Band = from
   // A band built from an earlier band's text already carries a total: drop it, and add the current one last.
   let text = band.text.replace(SESSION_TOTAL, '')
-  let coldText = band.coldText?.replace(SESSION_TOTAL, '')
+  const coldText = band.coldText?.replace(SESSION_TOTAL, '')
   if (bandNote && !text.includes(bandNote)) text = `${text} ${bandNote}`
   // The pause row stays on the band of the prompt it began on, with its Resume button, when a later band of the turn is set.
   const row = pauseRow
@@ -2469,12 +2469,11 @@ function setBand($: EngineInterface, from: Band | null, rating = false) {
   if (held && !text.includes(row)) text = `${row} ${text}`.trim()
   // Not before the session's 3rd rated prompt (SESSION_TOTAL_FROM); the report counts from the first.
   const total = ratedInSession(runLog, sessionId) + (rating ? 1 : 0) >= SESSION_TOTAL_FROM ? sessionTotal(runLog, sessionId, billing === 'subscription') : undefined
-  // The total goes after the route's text; a band with only the cache line carries it there.
+  // The total goes after the route's text only: on the cache row (an offer, a tip) it read as the cost of that offer.
   const after = (t: string) => `${t}${/[.!?]$/.test(t) ? '' : '.'} ${total}`
   if (held) {
     // A pause claims no saving: no total on it.
   } else if (total && text) text = after(text)
-  else if (total && coldText) coldText = after(coldText)
   const { coldText: droppedCold, ...rest } = band
   return $.state.set(BAND, { ...rest, text, ...(coldText ? { coldText } : {}), ...(held ? { acted: true, canResume: true } : {}) }).catch(() => undefined).then(() => showQuestion($))
 }

@@ -361,17 +361,17 @@ for (const surface of ['desktop', 'terminal'] as const) {
     // Prompts 1 and 2: fewer than SESSION_TOTAL_FROM (3) rated prompts, so no total on the band.
     h.rating = LOWER
     await d.submit(LOOKUP)
-    expect(await bandText($, surface), 'prompt 1').not.toContain('Session:')
+    expect(await bandText($, surface), 'prompt 1').not.toContain('rightsize so far:')
     await d.step('t1')
     await d.complete('t1')
     await d.submit(LOOKUP)
-    expect(await bandText($, surface), 'prompt 2: still none').not.toContain('Session:')
+    expect(await bandText($, surface), 'prompt 2: still none').not.toContain('rightsize so far:')
     await d.step('t2')
     await d.complete('t2')
     // The 3rd rated prompt: its band ends with the total.
     // A third lowering, then a subagent of Claude's own moved to Haiku: the end-of-turn band is built from the third one's text.
     await d.submit(LOOKUP)
-    expect(await bandText($, surface), 'prompt 3: the total').toMatch(/Effort lowered: medium → low for this prompt \(automatically\)\. Why: .+ Confidence: low\. Session: ~\$\d+\.\d\d saved$/)
+    expect(await bandText($, surface), 'prompt 3: the total').toMatch(/Effort lowered: medium → low for this prompt \(automatically\)\. Why: .+ Confidence: low\. rightsize so far: ~\$\d+\.\d\d saved$/)
     h.rating = '{"fit":{"haiku":"low","sonnet":"low","opus":"low","fable":"low"},"size":"small","type":"search","read":8000,"write":500,"steps":5,"reason":"list call sites"}'
     await d.step('t3', 0)
     await d.spawn('lister')
@@ -379,8 +379,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.complete('t3')
     const rebuilt = await bandText($, surface)
     expect(rebuilt, 'the earlier text and the new sentence are both there').toMatch(/Effort lowered.*Ran Claude's subagent on Haiku \(low\) instead of Opus\./)
-    expect(rebuilt.match(/Session:/g), 'one total only').toHaveLength(1)
-    expect(rebuilt, 'and it is last, with the figure as of now').toMatch(/ Session: ~\$\d+\.\d\d (saved|more)$/)
+    expect(rebuilt.match(/rightsize so far:/g), 'one total only').toHaveLength(1)
+    expect(rebuilt, 'and it is last, with the figure as of now').toMatch(/ rightsize so far: ~\$\d+\.\d\d (saved|more)$/)
   })
 
   // With 10 logged tasks the research prior is gone. The first miss is forgiven, so 2 misses in 10 is 1 in 9: 11%, under the line.

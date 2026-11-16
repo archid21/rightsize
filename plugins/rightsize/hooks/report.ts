@@ -631,7 +631,7 @@ export function bandShareText(s: Share) {
 }
 
 /** A running total already on a band's text, in any of the forms `sessionTotal` writes (and the older ones): `setBand` strips it before it adds the current one. */
-export const SESSION_TOTAL = /(?: ·)? Session: (?:about even|~\$[\d.,]+ (?:saved|more)(?: \(API-equivalent\))?|(?:~|under )[\d.]+(?:–[\d.]+)?% (?:of the 5-hour window saved|more of the 5-hour window|saved|more))/g
+export const SESSION_TOTAL = /(?: ·)? (?:Session|rightsize so far): (?:about even|~\$[\d.,]+ (?:saved|more)(?: \(API-equivalent\))?|(?:~|under )[\d.]+(?:–[\d.]+)?% (?:of the 5-hour window saved|more of the 5-hour window|saved|more))/g
 
 /**
  * The band shows its session total only from this many rated prompts in the session: one or two runs are too few for a
@@ -643,14 +643,17 @@ export const SESSION_TOTAL_FROM = 3
 /** How many rated prompts the session has: the figure `SESSION_TOTAL_FROM` is held against. */
 export const ratedInSession = (lines: readonly RunLine[], session: string) => totals(lines.filter(l => l.session === session)).rated
 
+/** The label of the band's running total: what rightsize's own changes saved or cost so far this session. */
+export const SO_FAR = 'rightsize so far:'
+
 /** The session's running net, in the band's words: "Session: ~10–17% saved", "Session: ~$0.84 saved". The same figure as the report's Session "Total saved": it comes from `stats`. */
 export function sessionTotal(lines: readonly RunLine[], session: string, subscription: boolean): string | undefined {
   if (session === '') return undefined
   const { net, empty, kept } = stats(lines.filter(l => l.session === session), subscription)
   if (empty) return undefined
-  if (Math.abs(net) < 0.005) return 'Session: about even'
-  if (kept) return `Session: ${bandShareText(kept.five)} ${kept.five.hi > 0 ? 'saved' : 'more'}`
-  return net > 0 ? `Session: ~${money(net)} saved` : `Session: ~${money(-net)} more`
+  if (Math.abs(net) < 0.005) return `${SO_FAR} about even`
+  if (kept) return `${SO_FAR} ${bandShareText(kept.five)} ${kept.five.hi > 0 ? 'saved' : 'more'}`
+  return net > 0 ? `${SO_FAR} ~${money(net)} saved` : `${SO_FAR} ~${money(-net)} more`
 }
 
 /**

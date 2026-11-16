@@ -2626,7 +2626,7 @@ async function chooseBandMode($: EngineInterface) {
   await putConfig($, 'band', v)
 }
 
-type MenuChoice = { rule: string } | { cold: string } | { tip: string } | { cache: true } | { mode: true } | { rate: 'up' | 'down' } | { retry: string }
+type MenuChoice = { rule: string } | { cold: string } | { tip: string } | { cache: true } | { mode: true } | { rate: 'up' | 'down' }
 
 const MENU_NOTE = 'Dollar amounts on a subscription are API-equivalent: what the same use would cost on the API.'
 
@@ -2640,7 +2640,6 @@ async function bandMenu($: EngineInterface, band: Band) {
   if (band.rate) own.push(['Mark this 👍 (right call)', { rate: 'up' }], ['Mark this 👎 (wrong call)', { rate: 'down' }])
   if (rule) for (const [value, label] of RULES[rule]) if (value !== have) own.push([label, { rule: value }])
   if (band.tip) own.push(['Stop suggesting', { tip: band.tip }])
-  if (band.retryRoute) own.push(['Try lowering again', { retry: band.retryRoute }])
   const cache: (readonly [string, MenuChoice])[] = (band.coldMore ?? []).map(c => [c.label, { cold: c.id }])
   const mode: readonly [string, MenuChoice] = ['When the band shows…', { mode: true }]
   const all = [...own, ...cache, mode]
@@ -2651,7 +2650,6 @@ async function bandMenu($: EngineInterface, band: Band) {
   if (!v) return
   if ('rule' in v && rule) await setRule($, rule, v.rule)
   else if ('rate' in v && band.rate) await giveFeedback($, band.rate, v.rate)
-  else if ('retry' in v) $.ui.toast(await retryLowering($, v.retry))
   else if ('tip' in v) await stopStartTips($)
   else if ('cold' in v) await pressCold($, v.cold)
   else if ('mode' in v) await chooseBandMode($)
@@ -7635,6 +7633,18 @@ export const register: Register = (on, options) => {
           label: 'Resume rightsize',
           press: async () => {
             const text = await resumeRightsize($, 'asked')
+            return $.ui.toast(text)
+          },
+        })
+      }
+      if (band.retryRoute) {
+        const key = band.retryRoute
+        buttons.push({
+          key: 'retry-lowering',
+          label: 'Try lowering again',
+          press: async () => {
+            const text = await retryLowering($, key)
+            await setBand($, null)
             return $.ui.toast(text)
           },
         })

@@ -278,7 +278,7 @@
     "lowerPause": {
       "type": "string",
       "title": "Advanced · Lowering pause",
-      "description": "How long lowering effort (and handing work to a cheaper model) pauses for a kind of work on a model after the rating was wrong too often: 2 or more of its last 10 outcomes. The count is prompts of that kind of work. When it runs out, lowering comes back on probation: one wrong rating pauses it again. The band's ⋯ menu has Try lowering again, which ends a pause from your next prompt.",
+      "description": "How long lowering effort (and handing work to a cheaper model) pauses for a kind of work on a model after the rating was wrong too often: 2 or more of its last 10 outcomes. The count is prompts of that kind of work. When it runs out, lowering comes back on probation: one wrong rating pauses it again. The band has a Try lowering again button, which ends a pause from your next prompt.",
       "default": "10 prompts",
       "options": [
         "5 prompts",

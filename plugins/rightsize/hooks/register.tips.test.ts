@@ -1060,8 +1060,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(report.replace(/\s+/g, ' ')).toContain('Paused: hand-downs of lookup work to Opus (wrong on 50% of 6). They resume by themselves')
   })
 
-  // Try lowering again (ADR 0082): the ⋯ menu ends the pause, and the next lookup is lowered.
-  test(`Try lowering again in the ⋯ menu ends a lowering pause from the next prompt (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  // Try lowering again (ADR 0082): the row's button ends the pause, and the next lookup is lowered.
+  test(`the Try lowering again button ends a lowering pause from the next prompt (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES }, stored: NO_COLD })
     const d = drive($, h)
     h.files[RUNS] = Array.from({ length: 6 }, (_, i) =>
@@ -1073,14 +1073,11 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t1')
     await d.complete('t1')
     expect(await bandText($, surface)).toContain('paused for 10 more prompts')
-    h.answers = { Options: 'Try lowering again' }
-    const before = h.asked.length
     const ui = await mount($, surface)
-    await ui.press({ key: 'mode' })
-    await untilAsked(h, before)
+    await ui.press({ key: 'retry-lowering' })
     await ui.unmount()
     await settle()
-    h.answers = {}
+    expect(await bandText($, surface), 'the row closes').not.toContain('paused for')
     h.rating = LOWER
     await d.submit(LOOKUP)
     await d.step('t2')

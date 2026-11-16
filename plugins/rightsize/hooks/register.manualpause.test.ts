@@ -270,7 +270,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.complete('t1')
     await press($, 'resume')
     expect(last(h.toasts)).toBe('Rightsize resumed.')
-    expect(last(h.statuses)).toBeUndefined()
+    expect(last(h.statuses) ?? '', 'the model and effort, no pause').not.toContain('paused')
     expect((await band($)).text).toBe('')
     expect(log(h)).toContain('resumed: the person asked')
     h.rating = NO_CHANGE
@@ -306,7 +306,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t1')
     await d.complete('t1')
     expect((await d.command('resume')).text).toBe('Rightsize resumed.')
-    expect(last(h.statuses)).toBeUndefined()
+    expect(last(h.statuses) ?? '', 'the model and effort, no pause').not.toContain('paused')
     h.rating = NO_CHANGE
     const rated = h.completions.length
     await d.submit(LOOKUP)

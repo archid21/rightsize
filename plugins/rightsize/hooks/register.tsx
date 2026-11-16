@@ -2374,7 +2374,8 @@ async function showStatus($: EngineInterface) {
   else if (run?.steppedUp) model = modelTag(live, effortTag(run.normal, 'raised'))
   else if (run?.level) model = modelTag(live, effortTag(run.level, run.auto ? 'auto' : undefined))
   else {
-    const session = await sessionEffortInUse($)
+    // No change this turn: the session switch, else the person's own effort as the last turn carried it.
+    const session = (await sessionEffortInUse($)) ?? (await personEffort($)) ?? (await seenEffort($))
     if (session) model = modelTag(live, effortTag(session))
   }
   if (!model) return $.ui.status(undefined)

@@ -39,6 +39,8 @@ export type RightsizeBand = {
   canRetry?: boolean
   /** The prompt was handed to a subagent on another model, or runs one turn on another model: the band offers "Run on <current model>", which runs this prompt once as it would have without rightsize. The rules stay as they are. */
   canStay?: boolean
+  /** A route (`${type}:${tier}`) whose lowering is paused on misses: the ⋯ menu offers Try lowering again. */
+  retryRoute?: string
   /** A session switch can be dropped. */
   canClear?: boolean
   /** The person stepped up the model or effort and rightsize is paused: the band offers Resume rightsize. */

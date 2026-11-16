@@ -49,7 +49,7 @@ const delegateTier = (l: RunLine) => {
 
 type Outcome = { type: TaskType; tier: Tier; miss: boolean }
 /** An outcome, the task it belongs to (a run's task, its own id before 0.8; a feedback's run's; a check is a task of its own), and where it came from. */
-type Counted = [Outcome, string, 'auto' | 'verdict']
+type Counted = [Outcome, string, 'auto' | 'verdict', string]
 
 /** The model a run's work ran on: a hand-off's subagent, else the main chat. */
 const workedOn = (l: RunLine) => delegateTier(l) ?? (isTier(l.tier) ? l.tier : undefined)
@@ -104,7 +104,7 @@ export function checkTotals(lines: readonly RunLine[]) {
 function counted(lines: readonly RunLine[]): Counted[] {
   const out: Counted[] = []
   const runs = new Map<string, RunLine>()
-  const verdicts = new Map<string, 'up' | 'down'>()
+  const verdicts = new Map<string, { value: 'up' | 'down'; at: string }>()
   // A correction counts once per run, and a verdict on that run stands over it.
   const corrected = new Map<string, Counted>()
   const taskOf = (l: RunLine, i: number) => l.task ?? l.id ?? `line ${i}`
@@ -112,27 +112,27 @@ function counted(lines: readonly RunLine[]): Counted[] {
     const kind = l.kind ?? 'run'
     if (kind === 'run') {
       const o = ofRun(l)
-      if (o) out.push([o, taskOf(l, i), 'auto'])
+      if (o) out.push([o, taskOf(l, i), 'auto', l.at])
       if (l.id) runs.set(l.id, l)
     } else if (kind === 'feedback') {
       // A person who changed their mind is counted once, on the last verdict.
-      if (l.ref && (l.value === 'up' || l.value === 'down')) verdicts.set(l.ref, l.value)
+      if (l.ref && (l.value === 'up' || l.value === 'down')) verdicts.set(l.ref, { value: l.value, at: l.at })
     } else if (kind === 'corrected') {
       // The person's next prompt said the reply was wrong: one miss on the cheaper route that made it, however many times it is said.
       const run = l.ref ? runs.get(l.ref) : undefined
       const tier = run ? workedOn(run) : undefined
       if (run && l.ref && tier && isTaskType(run.type) && (run.change === 'lower' || run.change === 'delegate-down') && !corrected.has(l.ref)) {
-        corrected.set(l.ref, [{ type: run.type, tier, miss: true }, run.task ?? l.ref, 'auto'])
+        corrected.set(l.ref, [{ type: run.type, tier, miss: true }, run.task ?? l.ref, 'auto', l.at])
       }
     } else if (kind === 'check') {
-      for (const o of ofCheck(l)) out.push([o, `check ${i}`, 'auto'])
+      for (const o of ofCheck(l)) out.push([o, `check ${i}`, 'auto', l.at])
     }
   })
   for (const [ref, c] of corrected) if (!verdicts.has(ref)) out.push(c)
-  for (const [ref, value] of verdicts) {
+  for (const [ref, { value, at }] of verdicts) {
     const run = runs.get(ref)
     const tier = run ? workedOn(run) : undefined
-    if (run && tier && isTaskType(run.type)) out.push([{ type: run.type, tier, miss: value === 'down' }, run.task ?? ref, 'verdict'])
+    if (run && tier && isTaskType(run.type)) out.push([{ type: run.type, tier, miss: value === 'down' }, run.task ?? ref, 'verdict', at])
   }
   return out
 }
@@ -156,19 +156,31 @@ export function missRates(lines: readonly RunLine[]): Rates {
  * forgiven (left out). A person's 👎 is never forgiven. `forgiven` lists the routes whose forgiveness this call used.
  */
 export function pauseRates(lines: readonly RunLine[], used: ReadonlySet<string>): { rates: Rates; forgiven: string[] } {
+  const { byKey, forgiven } = routeOutcomes(lines, used)
   const rates: Rates = {}
+  for (const [key, list] of Object.entries(byKey)) rates[key] = { n: list.length, misses: list.filter(o => o.miss).length }
+  return { rates, forgiven }
+}
+
+/** One outcome on a route, with the time of the log line that gave it. */
+export type RouteOutcome = { miss: boolean; at: string }
+
+/**
+ * Every outcome per `${type}:${tier}`, in log order, with the same forgiveness as pauseRates: the first automatic miss
+ * on each route not in `used` is left out. What the lowering pause (lowerpause.ts) judges from.
+ */
+export function routeOutcomes(lines: readonly RunLine[], used: ReadonlySet<string>): { byKey: Record<string, RouteOutcome[]>; forgiven: string[] } {
+  const byKey: Record<string, RouteOutcome[]> = {}
   const forgiven: string[] = []
-  for (const [o, , source] of counted(lines)) {
+  for (const [o, , source, at] of counted(lines)) {
     const key = missKey(o.type, o.tier)
     if (o.miss && source === 'auto' && !used.has(key) && !forgiven.includes(key)) {
       forgiven.push(key)
       continue
     }
-    const e = (rates[key] ??= { n: 0, misses: 0 })
-    e.n += 1
-    if (o.miss) e.misses += 1
+    ;(byKey[key] ??= []).push({ miss: o.miss, at })
   }
-  return { rates, forgiven }
+  return { byKey, forgiven }
 }
 
 /**

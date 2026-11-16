@@ -53,6 +53,7 @@ import {
   parsePrices,
   paceNote,
   LOWEST_EFFORT,
+  MISS_PAUSED,
   NONE_FITS,
   paceOf,
   pacedRules,
@@ -117,7 +118,8 @@ import { type FastState, fastGuess, nextFast, speedFromCost, speedSwitchCost, sp
 import { type FreshRun, type HandedOff, NO_STEPS, type StepState, actingExp, mergeSteps, medians, parseStepState, STEP_PROVE, typicalShrink } from './steps'
 import { type LearningNote, learningNote } from './learning'
 import { applyPrices, diffPrices, familiesFound, isDue, parsePricingPage } from './prices'
-import { confidence, missCounts, missMap, ownTasks, pauseRates } from './misses'
+import { confidence, missCounts, missMap, ownTasks, pauseRates, routeOutcomes, type Rates } from './misses'
+import { type Pauses, capPauses, judge, pauseLength, pausedNow, pausesOf, retryRoute, tick } from './lowerpause'
 import { START_CHECK_DAYS, START_MIN_PROMPTS, START_SNOOZE_DAYS, adviseStart, startBlock, startKey, startTip } from './start'
 import {
   ADVANCED,
@@ -651,6 +653,12 @@ let rater: Rater = 'sonnet'
 let runLog: RunLine[] = []
 /** How often the rater was wrong, by `${type}:${tier}`: what plan() skips hand-downs and lowerings on. */
 let misses: Record<string, number> = {}
+/** The rater's outcomes per route, as the pause reads them (missRate's research priors). */
+let missTable: Rates = {}
+/** The routes whose lowering is paused or on probation (lowerpause.ts), as the store holds them. */
+let pauses: Pauses = {}
+/** The prompts a lowering pause lasts (Advanced · Lowering pause). */
+let pausePrompts = pauseLength(undefined)
 /** Runs already given a 👍 or 👎, so a double press counts once. */
 const ratedRuns = new Set<string>()
 let runSeq = 0
@@ -939,10 +947,13 @@ async function refreshMisses($: EngineInterface, announce = false) {
     runLog = runLog.filter(l => now - Date.parse(l.at) <= MISS_WINDOW_DAYS * 24 * 60 * 60_000)
     // Lines from before Cost measurement was restarted teach nothing.
     const measured = runLog.filter(l => Date.parse(l.at) >= measureFrom)
-    const { rates, forgiven } = pauseRates(measured, new Set(await forgivenSeen($)))
+    const used = new Set(await forgivenSeen($))
+    const { rates, forgiven } = pauseRates(measured, used)
     misses = missMap(rates)
+    missTable = rates
     counts = missCounts(measured)
     ownCounts = ownTasks(measured)
+    await judgePauses($, routeOutcomes(measured, used).byKey)
     if (!forgiven.length) return
     // Read again just before writing, so the routes another session forgave are kept.
     await $.store.set(FORGIVEN_STORE, [...new Set([...(await forgivenSeen($)), ...forgiven])]).catch(() => undefined)
@@ -955,6 +966,46 @@ async function refreshMisses($: EngineInterface, announce = false) {
   } catch {
     // The old rates stand.
   }
+}
+
+// The lowering pause (lowerpause.ts, ADR 0082), kept in the store so it outlives the session and is shared by every session.
+const PAUSES_STORE = 'lowerPauses'
+
+async function readPauses($: EngineInterface): Promise<Pauses> {
+  return capPauses(pausesOf(await $.store.get(PAUSES_STORE).catch(() => undefined)), pausePrompts)
+}
+
+const routeName = (key: string) => {
+  const [type, tier] = key.split(':') as [string, Tier]
+  return `${type} work on ${TIER_NAME[tier] ?? tier}`
+}
+
+/** Starts a pause on every route whose recent outcomes went wrong too often. */
+async function judgePauses($: EngineInterface, byKey: Parameters<typeof judge>[0]) {
+  const { pauses: next, started } = judge(byKey, await readPauses($), missBlock, pausePrompts)
+  pauses = next
+  if (!started.length) return
+  await $.store.set(PAUSES_STORE, next).catch(() => undefined)
+  for (const key of started) await log($, `paused lowering ${routeName(key)} for ${pausePrompts} prompts: the rating was wrong too often`)
+}
+
+/** One prompt of `type` work on the session's `tier`: the pauses on it and on the cheaper models it could go to count down. */
+async function tickPauses($: EngineInterface, type: TaskType, tier: Tier) {
+  const keys = TIERS.filter(t => tierRank(t) <= tierRank(tier)).map(t => `${type}:${t}`)
+  const now = await readPauses($)
+  if (!keys.some(k => (now[k]?.left ?? 0) > 0)) return
+  const { pauses: next, resumed } = tick(now, keys, await isoNow($))
+  pauses = next
+  await $.store.set(PAUSES_STORE, next).catch(() => undefined)
+  for (const key of resumed) await log($, `lowering ${routeName(key)} is back on probation: one wrong rating pauses it again`)
+}
+
+/** Try lowering again (the band's ⋯ menu): the route comes back from the next prompt, on probation. */
+async function retryLowering($: EngineInterface, key: string) {
+  pauses = retryRoute(await readPauses($), key, await isoNow($))
+  await $.store.set(PAUSES_STORE, pauses).catch(() => undefined)
+  await log($, `try lowering again: ${routeName(key)} is back on probation`)
+  return `rightsize: lowering ${routeName(key)} resumes on your next prompt. One wrong rating pauses it again.`
 }
 
 /** Adds a line to the run log, and to the rater's record in memory. */
@@ -1793,6 +1844,7 @@ function writeSetting($: EngineInterface, key: SettingKey, value: string): Promi
     case 'questionWait': return $.config.set({ key: 'rightsize.questionWait', value: value })
     case 'priceCheck': return $.config.set({ key: 'rightsize.priceCheck', value: value })
     case 'longHelpers': return $.config.set({ key: 'rightsize.longHelpers', value: value })
+    case 'lowerPause': return $.config.set({ key: 'rightsize.lowerPause', value: value })
     case 'bigTurn': return $.config.set({ key: 'rightsize.bigTurn', value: value })
   }
 }
@@ -1948,7 +2000,7 @@ async function situation($: EngineInterface): Promise<Situation> {
   const reported = have ? undefined : usage?.context?.tokens
   const reportedWindow = typeof usage?.context?.window === 'number' && usage.context.window > 0 ? usage.context.window : undefined
   const context = have ? kept : typeof reported === 'number' && reported > 0 ? reported : DEFAULT_CONTEXT
-  return { tier, level, context, ...(reportedWindow !== undefined ? { reportedWindow } : {}), prices, helperPrices, cal, rules: DEFAULT_RULES, misses, missBlock, minTasks, counts, ceiling, reviewCeiling, without, stepExp: actingExp(stepState), ...(olderModel(mainModel) ? { older: true } : {}) }
+  return { tier, level, context, ...(reportedWindow !== undefined ? { reportedWindow } : {}), prices, helperPrices, cal, rules: DEFAULT_RULES, misses, paused: pausedNow(capPauses(pauses, pausePrompts), missTable, missBlock), missBlock, minTasks, counts, ceiling, reviewCeiling, without, stepExp: actingExp(stepState), ...(olderModel(mainModel) ? { older: true } : {}) }
 }
 
 // `unsure` says why the rater may have seen too little: the request was cut, or a task is in progress and its last reply could not be read.
@@ -2494,7 +2546,8 @@ export function bandFor(run: Pick<Run, 'id' | 'tier' | 'normal' | 'auto' | 'dele
     // Nothing held back, or held back by the person's own setting (Routing off, the Lowest effort floor): the plain row, hidden under "when it acts".
     if (p.why === NONE_FITS || p.why === ROUTING_OFF || p.why.endsWith(LOWEST_EFFORT)) return { text: `No change: ${run.normal} on ${cur} fits this prompt.`, acted: false }
     // A change was rated to fit and rightsize's own checks kept it: say which check.
-    return { text: `No change: kept ${run.normal} on ${cur}. ${p.why[0]!.toUpperCase()}${p.why.slice(1)}.${more(why, sure(run.tier))}`, acted: false, skipped: true, ...sureDetail(run.tier) }
+    const again = run.rating && p.why.endsWith(MISS_PAUSED) ? `${run.rating.type}:${run.tier}` : undefined
+    return { text: `No change: kept ${run.normal} on ${cur}. ${p.why[0]!.toUpperCase()}${p.why.slice(1)}.${more(why, sure(run.tier))}`, acted: false, skipped: true, ...sureDetail(run.tier), ...(again ? { retryRoute: again } : {}) }
   }
   const what = p.kind === 'effort' ? `${p.level} effort` : p.kind === 'switch' ? `${TIER_NAME[p.tier]} at ${p.level}` : `a ${TIER_NAME[p.tier]} subagent at ${p.level}`
   const rule = p.kind === 'effort' ? (p.dir === 'lower' ? 'lower' : 'raise') : p.kind === 'switch' ? 'up' : p.dir
@@ -2574,7 +2627,7 @@ async function chooseBandMode($: EngineInterface) {
   await putConfig($, 'band', v)
 }
 
-type MenuChoice = { rule: string } | { cold: string } | { tip: string } | { cache: true } | { mode: true } | { rate: 'up' | 'down' }
+type MenuChoice = { rule: string } | { cold: string } | { tip: string } | { cache: true } | { mode: true } | { rate: 'up' | 'down' } | { retry: string }
 
 const MENU_NOTE = 'Dollar amounts on a subscription are API-equivalent: what the same use would cost on the API.'
 
@@ -2588,6 +2641,7 @@ async function bandMenu($: EngineInterface, band: Band) {
   if (band.rate) own.push(['Mark this 👍 (right call)', { rate: 'up' }], ['Mark this 👎 (wrong call)', { rate: 'down' }])
   if (rule) for (const [value, label] of RULES[rule]) if (value !== have) own.push([label, { rule: value }])
   if (band.tip) own.push(['Stop suggesting', { tip: band.tip }])
+  if (band.retryRoute) own.push(['Try lowering again', { retry: band.retryRoute }])
   const cache: (readonly [string, MenuChoice])[] = (band.coldMore ?? []).map(c => [c.label, { cold: c.id }])
   const mode: readonly [string, MenuChoice] = ['When the band shows…', { mode: true }]
   const all = [...own, ...cache, mode]
@@ -2598,6 +2652,7 @@ async function bandMenu($: EngineInterface, band: Band) {
   if (!v) return
   if ('rule' in v && rule) await setRule($, rule, v.rule)
   else if ('rate' in v && band.rate) await giveFeedback($, band.rate, v.rate)
+  else if ('retry' in v) $.ui.toast(await retryLowering($, v.retry))
   else if ('tip' in v) await stopStartTips($)
   else if ('cold' in v) await pressCold($, v.cold)
   else if ('mode' in v) await chooseBandMode($)
@@ -5832,7 +5887,8 @@ async function resetMeasurement($: EngineInterface) {
   unsaved = []
   stepState = NO_STEPS
   unsavedSteps = []
-  for (const key of [CAL_STORE, CAL_AT_STORE, STEP_STORE, 'ties', SPOT_STORE, 'startCheckedAt', 'startSnooze']) await $.store.set(key, null).catch(() => undefined)
+  for (const key of [CAL_STORE, CAL_AT_STORE, STEP_STORE, 'ties', SPOT_STORE, 'startCheckedAt', 'startSnooze', PAUSES_STORE]) await $.store.set(key, null).catch(() => undefined)
+  pauses = {}
   measureFrom = await $.clock.now()
   await $.store.set('measureFrom', new Date(measureFrom).toISOString()).catch(() => undefined)
   await refreshMisses($)
@@ -6367,6 +6423,9 @@ function applyOption(key: SettingKey) {
       return
     case 'outputAdvice':
       outputAdvice = v !== 'off'
+      return
+    case 'lowerPause':
+      pausePrompts = pauseLength(v)
       return
     case 'bigTurn':
       bigTurnRow = isBigTurnRow(v) ? v : 'off'
@@ -7047,6 +7106,7 @@ export const register: Register = (on, options) => {
         // While Claude fans work out to workflows, a single hand-off would only cut across it. After one,
         // Workflows says whether hand-offs go on (follow my rules, right-size every agent) or wait (the default).
         const planned = plan(r, s, floor)
+        await tickPauses($, r.type, s.tier).catch(() => undefined)
         const afterWorkflow = workflowSeen && planned.kind === 'delegate' && (workflows === 'ask' || workflows === 'pause rightsize') ? effortPlan(r, s, floor) : planned
         // A switched-off feature (Routing, Hand-offs) drops its plans: nothing of it is asked, applied or described on the band.
         const gated = gate(afterWorkflow, r, s)

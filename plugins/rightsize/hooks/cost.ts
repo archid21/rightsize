@@ -631,6 +631,11 @@ export type Situation = {
   rules?: Rules
   /** How often the rater's judgement was wrong, by `${type}:${tier}` (see misses.ts): at the pause share or more, that model gets no hand-down and no lowering. */
   misses?: Record<string, number>
+  /**
+   * The routes paused now (lowerpause.ts pausedNow): prompts left per `${type}:${tier}`, or -1 for a route paused on the
+   * research alone. When present it decides the pause and `misses` does not; absent, a share of misses at the line pauses.
+   */
+  paused?: Record<string, number>
   /** The share of misses at which that pause starts; null: never pause. MISS_BLOCK when absent. */
   missBlock?: number | null
   /** Tasks logged per `${type}:${tier}` (misses.ts): what minTasks is counted against. */
@@ -651,10 +656,12 @@ export type Situation = {
 export const MISS_BLOCK = 0.2
 /** Fewer tasks logged than the evidence rule asks for. */
 const unproven = (s: Situation, type: TaskType, tier: Tier) => (s.minTasks ?? 0) > (s.counts?.[`${type}:${tier}`] ?? 0)
-const blocked = (s: Situation, type: TaskType, tier: Tier) => {
+const missPaused = (s: Situation, type: TaskType, tier: Tier) => {
+  if (s.paused) return (s.paused[`${type}:${tier}`] ?? 0) !== 0
   const line = s.missBlock === undefined ? MISS_BLOCK : s.missBlock
-  return unproven(s, type, tier) || (line !== null && (s.misses?.[`${type}:${tier}`] ?? 0) >= line)
+  return line !== null && (s.misses?.[`${type}:${tier}`] ?? 0) >= line
 }
+const blocked = (s: Situation, type: TaskType, tier: Tier) => unproven(s, type, tier) || missPaused(s, type, tier)
 
 /** The main chat doing the work at `level`, before calibration. */
 export function rawMainCost(r: Rating, s: Situation, level: Level) {
@@ -972,14 +979,18 @@ export function lowerSwitches(r: Rating, s: Situation): number {
  */
 /** The end of canLowerNow's reason at the floor (the Lowest effort setting). */
 export const LOWEST_EFFORT = ' is already the lowest effort'
+/** The end of canLowerNow's reason when the route is paused on misses: the band offers Try lowering again for it. */
+export const MISS_PAUSED = ': the rating was wrong too often'
 
 export function canLowerNow(type: TaskType, s: Situation, floor: Level, o: { level?: Level; reviews?: boolean } = {}): { ok: true; to: Level } | { ok: false; why: string } {
   const level = o.level ?? s.level
   const next = LEVELS[levelRank(level) - 1]
   if (next === undefined || levelRank(level) <= levelRank(floor)) return { ok: false, why: `${level}${LOWEST_EFFORT}` }
   if (blocked(s, type, s.tier)) {
-    const why = unproven(s, type, s.tier) ? `only ${s.counts?.[`${type}:${s.tier}`] ?? 0} of the ${s.minTasks} tasks it needs are logged` : 'the rating was wrong too often'
-    return { ok: false, why: `lowering ${type} work on ${TIER_NAME[s.tier]} is paused: ${why}` }
+    if (unproven(s, type, s.tier)) return { ok: false, why: `lowering ${type} work on ${TIER_NAME[s.tier]} is paused: only ${s.counts?.[`${type}:${s.tier}`] ?? 0} of the ${s.minTasks} tasks it needs are logged` }
+    const left = s.paused?.[`${type}:${s.tier}`] ?? 0
+    const span = left > 0 ? ` for ${left} more ${left === 1 ? 'prompt' : 'prompts'}` : ''
+    return { ok: false, why: `lowering ${type} work on ${TIER_NAME[s.tier]} is paused${span}${MISS_PAUSED}` }
   }
   if (type === 'review' && !o.reviews) return { ok: false, why: 'a review stays at its level' }
   return { ok: true, to: next }

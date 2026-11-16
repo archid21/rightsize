@@ -1052,12 +1052,39 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t1')
     expect(last(h.sent)?.effort, 'stays at medium').toBe('medium')
     await d.complete('t1')
-    expect(await bandText($, surface), 'a kept lowering says why').toContain('No change: kept medium on Opus. Lowering lookup work on Opus is paused: the rating was wrong too often.')
+    expect(await bandText($, surface), 'a kept lowering says why').toContain('No change: kept medium on Opus. Lowering lookup work on Opus is paused for 10 more prompts: the rating was wrong too often.')
     // The report says what the record is and what it paused.
     const report = await d.report()
     expect(report).toMatch(/Haiku's judgement +wrong on 3 of 6 checked prompts \(50%\)/)
     expect(report).toMatch(/Hand-downs paused +lookup work to Opus, wrong on 50% of 6/)
     expect(report.replace(/\s+/g, ' ')).toContain('Paused: hand-downs of lookup work to Opus (wrong on 50% of 6). They resume by themselves')
+  })
+
+  // Try lowering again (ADR 0082): the ⋯ menu ends the pause, and the next lookup is lowered.
+  test(`Try lowering again in the ⋯ menu ends a lowering pause from the next prompt (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES }, stored: NO_COLD })
+    const d = drive($, h)
+    h.files[RUNS] = Array.from({ length: 6 }, (_, i) =>
+      JSON.stringify({ at: new Date(h.now - (6 - i) * 60_000).toISOString(), kind: 'run', type: 'lookup', route: 'main', tier: 'opus', change: 'lower', steppedUp: i < 3 }),
+    ).join('\n') + '\n'
+    await d.start(surface)
+    h.rating = LOWER
+    await d.submit(LOOKUP)
+    await d.step('t1')
+    await d.complete('t1')
+    expect(await bandText($, surface)).toContain('paused for 10 more prompts')
+    h.answers = { Options: 'Try lowering again' }
+    const before = h.asked.length
+    const ui = await mount($, surface)
+    await ui.press({ key: 'mode' })
+    await untilAsked(h, before)
+    await ui.unmount()
+    await settle()
+    h.answers = {}
+    h.rating = LOWER
+    await d.submit(LOOKUP)
+    await d.step('t2')
+    expect(last(h.sent)?.effort, 'back on probation: lowered').toBe('low')
   })
 
   test(`with a clean record the same lowering goes ahead (${surface})`, { timeoutMs: 30000 }, async ($, on) => {

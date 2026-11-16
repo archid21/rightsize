@@ -350,6 +350,19 @@ for (const surface of ['desktop', 'terminal'] as const) {
       set: 0,
       def: 1,
     },
+    // A lookup on Opus the rater got wrong 3 times in 6: lowering it pauses, for 5 prompts with the row set, for 10 with the default.
+    {
+      key: 'lowerPause',
+      value: '5 prompts',
+      start: { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES }, stored: { ...NO_COLD } },
+      setup: h => void (h.files[RUNS_FILE] = lookupLog(h, 3)),
+      see: async c => {
+        await effortOf(c, LOOKUP, LOWER)
+        return /paused for (\d+) more prompts/.exec(await bandText(c.$, c.surface))?.[1]
+      },
+      set: '5',
+      def: '10',
+    },
     {
       key: 'bigTurn',
       value: '$1',

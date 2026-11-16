@@ -1,4 +1,5 @@
-import { MAX_USED, PACE_FROM, TIER_NAME, type Level, type Limit, type Tier, money } from './cost'
+import type { RightsizeLevel as Level, RightsizeTier as Tier } from '../types'
+import { MAX_USED, PACE_FROM, TIER_NAME, type Limit, money } from './cost'
 import { bandShareText, shareOf } from './report'
 import { clockText } from './warm'
 

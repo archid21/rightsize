@@ -159,6 +159,7 @@ import { type Change, type HelperLine, type Lifetime, type RunLine, type SwitchL
 import { CACHE_LIFE_KEY, isTracked, parseChanges, type ChangeLine } from './results'
 import { LIFE_DAYS, LIFE_HEADER, LIFE_NO, LIFE_YES, PROBE_RESPONSES, type Provider, adviseLife, lifeEligible, lifeOffer, lifeQuestion, lifeRefusedText, lifeRevertedText, lifeSetText, lifeStuckText, lifeYes, probeRead, providerOf, settingDecides } from './cachelife'
 import { type TrimSavings, isTrim, readTrimSavings } from './trim'
+import { TIP_FILL, TIP_NEXT, TIP_HIDE, TIP_START, TIP_STEPS, TIP_STILL_SONNET, TIP_WHY, TIP_WHY_ID, type TipStep, isTipId, tipCommandAt, tipDue, tipText } from './coldtip'
 import { LIMIT_BUTTON, LIMIT_COMPACT, LIMIT_HIDE, LIMIT_MORE, LIMIT_WHY, LIMIT_WHY_ID, effortTag, isLimitId, limitDue, limitText, modelTag, statusLine } from './limit'
 import { SIZE_BUTTON, SIZE_COMPACT, SIZE_FRESH, SIZE_FRESH_BUTTON, SIZE_FRESH_COMPACT, SIZE_FRESH_COPY, SIZE_FRESH_COPY_FAILED, SIZE_FRESH_NOT_NOW, SIZE_FRESH_PASTE_BUTTONS, SIZE_FRESH_SAVING, SIZE_HIDE, SIZE_MORE, SIZE_WHY, SIZE_WHY_FRESH, SIZE_WHY_ID, isSizeId, sizeFreshNotWritten, sizeFreshNotice, sizeFreshPaste, sizeStep, sizeText } from './size'
 import { COMPACT_TEXT, INIT_HINT_MIN, NO_FRESH_HANDOFF, WRAP_HEADROOM, WRAP_TURNS, initHintText, installHintDue, installHintText, isWhatsnext, isWrapUp, noteCost } from './whatsnext'
@@ -3519,6 +3520,124 @@ async function resumeCompact($: EngineInterface, w: WhatsnextCompact) {
 
 /** The store keys: true once the person hid the advice, and the `resetsAt` of the window it was last shown (or logged) for. */
 const LIMIT_HIDDEN = 'limitAdviceHidden'
+
+// ---- The cold-compact tip (P-47, ADR 0081) -------------------------------------
+// After keep warm let the cache go cold on a big Opus or Fable conversation, the band offers to walk the person through a
+// compaction on Sonnet: each step puts the next command in the prompt box, and the tip moves on when the person sends it.
+
+const TIP_HIDDEN = 'coldTipHidden'
+type ColdTip = { step: TipStep; tier: Tier; context: number; cost: string; saving: number; /** The model last logged while step 3 waits. */ seen?: string }
+let coldTip: ColdTip | null = null
+
+/** Shows the offer when it is due: the band is on, the tip is not hidden, and compacting on Sonnet saves at least the Idle warning amount. */
+async function showColdTip($: EngineInterface, c: ColdTurn) {
+  if (bandMode === 'off' || mainBusy) return
+  if ((await $.store.get(TIP_HIDDEN).catch(() => undefined)) === true) return
+  const saving = tipDue(prices, c.tier, c.context, idleWarning ?? COLD_MIN)
+  if (saving === undefined) {
+    await log($, `cold-compact tip: not due (${TIER_NAME[c.tier]}, ${Math.round(c.context / 1000)}K tokens)`)
+    return
+  }
+  const rates = billing === 'subscription' ? await windowPerDollar($) : undefined
+  const cost = coldCostText(saving, rates).replace(/^about /, '~')
+  coldTip = { step: 0, tier: c.tier, context: c.context, cost, saving }
+  await log($, `cold-compact tip: offered, compacting on Sonnet would save ${money(saving)} (${Math.round(c.context / 1000)}K tokens on ${TIER_NAME[c.tier]})`)
+  await drawColdTip($)
+}
+
+async function drawColdTip($: EngineInterface) {
+  const t = coldTip
+  if (!t) return
+  // Steps 1 and 3 move on by themselves (the model is seen); a compaction is not, so step 2 has Next.
+  const fill = t.step >= 1 && t.step <= 3 ? [{ id: TIP_FILL, label: 'Put it in the box again' }] : []
+  const more = [...fill, { id: TIP_WHY_ID, label: 'Why?' }, { id: TIP_HIDE, label: "Don't show again" }]
+  const button = t.step === 0 ? [{ id: TIP_START, label: 'Start' }] : t.step === 2 ? [{ id: TIP_NEXT, label: 'Next' }] : []
+  await showCold($, tipText(t.step, t.cost), button, true, t.step < 4 ? more : undefined)
+}
+
+/** Puts the command for `coldTip.step` in the prompt box (replacing a draft would lose the person's words: a draft keeps it after a blank line). */
+async function fillColdTip($: EngineInterface) {
+  const t = coldTip
+  if (!t || t.step < 1 || t.step > 3) return
+  const filled = await bigTurnFill($, TIP_STEPS[t.step - 1]!)
+  if (!filled.ok) await log($, `cold-compact tip: the prompt box could not be filled${filled.refusal ? ` (${filled.refusal})` : ''}`)
+}
+
+async function pressColdTip($: EngineInterface, id: string): Promise<void> {
+  try {
+    const t = coldTip
+    if (id === TIP_WHY_ID) {
+      if (t) $.ui.log(TIP_WHY(t.context, t.tier))
+      return
+    }
+    if (id === TIP_HIDE) {
+      await $.store.set(TIP_HIDDEN, true).catch(() => undefined)
+      coldTip = null
+      await clearColdRow($)
+      $.ui.toast('Rightsize: the cold-compact tip is hidden.')
+      await log($, 'cold-compact tip: hidden for good ("Don\'t show again")')
+      return
+    }
+    if (!t) return
+    if (id === TIP_START && t.step === 0) {
+      t.step = 1
+      await log($, 'cold-compact tip: Start pressed')
+    } else if (id === TIP_NEXT && t.step === 2) {
+      t.step = 3
+      await log($, 'cold-compact tip: Next pressed after /compact')
+    }
+    await fillColdTip($)
+    await drawColdTip($)
+  } catch (err) {
+    await log($, `cold-compact tip failed: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
+/** A prompt the person typed while the tip is on ends it (a step's own command is left alone), with a reminder when it left them on Sonnet. */
+async function coldTipSubmitted($: EngineInterface, text: string) {
+  const t = coldTip
+  if (!t || tipCommandAt(text) !== undefined) return
+  const onSonnet = t.step === 2 || t.step === 3
+  coldTip = null
+  await clearColdRow($)
+  await log($, `cold-compact tip: ended by a prompt at step ${t.step}`)
+  if (onSonnet) $.ui.toast(`Rightsize: ${TIP_STILL_SONNET}`)
+}
+
+let tipTicking = false
+/**
+ * Every 3 seconds while the tip walks the person through it: built-in commands do not reach the prompt hook, so each step is
+ * seen in the session itself. Step 1 is done when the model is Sonnet, step 3 when it is no longer Sonnet. A compaction is not
+ * seen by a mod (neither the token count nor the message list moves at once), so step 2 waits for Next.
+ */
+async function tickColdTip($: EngineInterface) {
+  const t = coldTip
+  if (!t || t.step < 1 || t.step > 3 || tipTicking) return
+  tipTicking = true
+  try {
+    const raw = await $.session.model().catch(() => undefined)
+    const model = tierOf(raw)
+    let done = false
+    if (t.step === 1) done = model === 'sonnet'
+    else if (t.step === 2) return
+    // After /model default the session may report a name that is not a model family ("default"): any model that is not Sonnet counts.
+    else done = typeof raw === 'string' && raw !== '' && model !== 'sonnet'
+    if (t.step === 3 && !done && t.seen !== raw) {
+      t.seen = typeof raw === 'string' ? raw : String(raw)
+      await log($, `cold-compact tip: step 3 waiting, the session reports the model as ${JSON.stringify(raw ?? null)}`)
+    }
+    if (!done || coldTip !== t) return
+    await log($, `cold-compact tip: step ${t.step} done (${TIP_STEPS[t.step - 1]})`)
+    t.step = (t.step + 1) as TipStep
+    if (t.step <= 3) await fillColdTip($)
+    else await log($, `cold-compact tip: done, saved about ${money(t.saving)}`)
+    await drawColdTip($)
+    // The status line names the model: it changed with step 1 and step 3.
+    await showStatus($)
+  } finally {
+    tipTicking = false
+  }
+}
 const LIMIT_WINDOW = 'limitAdviceWindow'
 
 /** The turn ended: shows the advice when it is due. Skipped while rightsize or Cache is off. Watch-only mode logs it. Never throws. */
@@ -4242,6 +4361,9 @@ async function armCold($: EngineInterface, gen: number, at: number, fn: () => Pr
 // one whose action would not save anything (netSaving), one over 200K tokens (Claude Code compacts those itself),
 // and a round already done after the person's last prompt.
 async function coldCheck($: EngineInterface) {
+  // The cold-compact tip is walking the person through its steps: a turn that ends on the way (a /compact) leaves it alone.
+  if (coldTip && coldTip.step >= 1 && coldTip.step <= 3) return
+  coldTip = null
   await closeOffer($, 'ignored')
   cancelCold($, 'a newer turn ended')
   coldTurn = null
@@ -4753,7 +4875,11 @@ async function payGate($: EngineInterface, p: Pays) {
   } else if (c.whatsnext) {
     await log($, `keep warm while it pays: not compacting, a handoff note instead: ${numbers}`)
     await atCold($, c, 'handoff')
-  } else await log($, `keep warm while it pays: nothing to do before the expiry, compacting does not pay and whatsnext is not here: ${numbers}`)
+  } else {
+    await log($, `keep warm while it pays: nothing to do before the expiry, compacting does not pay and whatsnext is not here: ${numbers}`)
+    // When the cache has gone cold, the band can walk the person through a compaction on Sonnet (P-47).
+    await armCold($, p.gen, p.refreshed + cacheTtl, () => showColdTip($, c))
+  }
 }
 
 // ---- In-turn keep warm (ADR 0029) ----------------------------------------------
@@ -5141,6 +5267,7 @@ const BACKFILLED = 'backfilled'
 // right away, and a keep-warm time counts from the turn's end. Each answer to an offer goes in the run log.
 async function pressCold($: EngineInterface, id: string): Promise<void> {
   if (isLimitId(id)) return pressLimit($, id)
+  if (isTipId(id)) return pressColdTip($, id)
   if (isSizeId(id)) return pressSize($, id)
   if (id === 'stop') {
     const w = warming
@@ -6744,6 +6871,7 @@ export const register: Register = (on, options) => {
       })
       void tickOffer($)
       void tickPays($)
+      void tickColdTip($).catch(() => undefined)
     })
     // After the band is reset above, so the pause line stays (ADR 0032).
     await checkOlder($)
@@ -6807,6 +6935,7 @@ export const register: Register = (on, options) => {
 
   on('prompt.submit', async ($, e, next) => {
     await checkOlder($)
+    if (!off && coldTip && fromPerson(e)) await coldTipSubmitted($, e.text)
     // rightsize's own prompt (the handoff's "wrap up"): not rated, and it does not count as the person coming back.
     if (coldPrompt !== null && e.text.trim() === coldPrompt) {
       coldPrompt = null

@@ -970,10 +970,13 @@ export function lowerSwitches(r: Rating, s: Situation): number {
  * effort plan does that itself, and a person's own choice to lower needs no saving. The caller's own guards (the Lowering rule,
  * a pause, an unsure rating, Routing off, watch only) are not here.
  */
+/** The end of canLowerNow's reason at the floor (the Lowest effort setting). */
+export const LOWEST_EFFORT = ' is already the lowest effort'
+
 export function canLowerNow(type: TaskType, s: Situation, floor: Level, o: { level?: Level; reviews?: boolean } = {}): { ok: true; to: Level } | { ok: false; why: string } {
   const level = o.level ?? s.level
   const next = LEVELS[levelRank(level) - 1]
-  if (next === undefined || levelRank(level) <= levelRank(floor)) return { ok: false, why: `${level} is already the lowest effort` }
+  if (next === undefined || levelRank(level) <= levelRank(floor)) return { ok: false, why: `${level}${LOWEST_EFFORT}` }
   if (blocked(s, type, s.tier)) {
     const why = unproven(s, type, s.tier) ? `only ${s.counts?.[`${type}:${s.tier}`] ?? 0} of the ${s.minTasks} tasks it needs are logged` : 'the rating was wrong too often'
     return { ok: false, why: `lowering ${type} work on ${TIER_NAME[s.tier]} is paused: ${why}` }
@@ -982,10 +985,13 @@ export function canLowerNow(type: TaskType, s: Situation, floor: Level, o: { lev
   return { ok: true, to: next }
 }
 
+/** The plan's reason when the level in use already fits: nothing was held back. */
+export const NONE_FITS = 'the level in use fits'
+
 export function effortPlan(r0: Rating, s: Situation, floor: Level): Plan {
   const r = heldRating(r0, s)
   const target = capRaise(clampFloor(r.level, floor), s)
-  if (target === s.level) return { kind: 'none', why: 'the level in use fits' }
+  if (target === s.level) return { kind: 'none', why: NONE_FITS }
   if (levelRank(target) > levelRank(s.level)) return { kind: 'effort', dir: 'raise', level: target }
   // Reviews are not stopped here: plan() sends them to reviewPlan first, and only a review with no Opus route reaches this.
   const can = canLowerNow(r.type, s, floor, { level: s.level, reviews: true })

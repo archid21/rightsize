@@ -3,6 +3,7 @@
 ## 0.15.0 (unreleased)
 
 - **A shorter status line with a limit forecast.** The status line shows the model with the effort as a letter: `Sonnet (M)`, `Opus (H↑)` when rightsize raised it, `Sonnet (L auto)` when it picked it. When a usage window is on pace to run out before it resets, it adds the estimated time: `limit ~3:45 PM`, from your average rate since the window started, rounded to 15 minutes. On API billing it shows the session cost instead: `$1.84 session`. The cache stays on the band.
+- **The band says why it kept a change.** When a cheaper or stronger option was rated to fit but rightsize kept your level (the saving was smaller than the cache it costs, too few of your tasks are logged, the rater was wrong too often, or the rater was not sure), the band now shows a row with that reason, even when Band is set to show only changes. Before, it said the level "fits this prompt", or showed nothing. A setting of yours (Routing off, Lowest effort) still shows nothing. The log line gives the reason too.
 
 ## 0.14.0 (2026-11-14)
 

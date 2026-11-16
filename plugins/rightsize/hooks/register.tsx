@@ -52,6 +52,8 @@ import {
   parseCalibration,
   parsePrices,
   paceNote,
+  LOWEST_EFFORT,
+  NONE_FITS,
   paceOf,
   pacedRules,
   plan,
@@ -2132,7 +2134,7 @@ const bandCost = (d: number, stay: number, cur: string) =>
 type Decision = { level?: Level; session?: Level; auto?: boolean; delegate?: Run['delegate']; model?: Run['switchTo'] }
 
 /** The effort-only plan a hand-off falls back to (Workflows, Hand-offs off, a declined question): nothing while Routing is off. */
-const effortOnly = (r: Rating, s: Situation): Plan => (routing ? effortPlan(r, s, floor) : { kind: 'none', why: 'Routing is off' })
+const effortOnly = (r: Rating, s: Situation): Plan => (routing ? effortPlan(r, s, floor) : { kind: 'none', why: ROUTING_OFF })
 
 /**
  * A plan after the feature switches. Routing off: an effort change and a review switch become no change. Hand-offs off: a hand-off
@@ -2141,8 +2143,8 @@ const effortOnly = (r: Rating, s: Situation): Plan => (routing ? effortPlan(r, s
  */
 function gate(p: Plan, r: Rating, s: Situation): { plan: Plan; dropped?: string } {
   if (p.kind === 'delegate' && !handOffs) return { plan: effortOnly(r, s), dropped: 'hand-off skipped: Hand-offs is off' }
-  if (!routing && p.kind === 'switch') return { plan: { kind: 'none', why: 'Routing is off' }, dropped: `${p.rule === 'review' ? 'review' : 'Sonnet'} switch skipped: Routing is off` }
-  if (!routing && p.kind === 'effort') return { plan: { kind: 'none', why: 'Routing is off' }, dropped: 'effort change skipped: Routing is off' }
+  if (!routing && p.kind === 'switch') return { plan: { kind: 'none', why: ROUTING_OFF }, dropped: `${p.rule === 'review' ? 'review' : 'Sonnet'} switch skipped: Routing is off` }
+  if (!routing && p.kind === 'effort') return { plan: { kind: 'none', why: ROUTING_OFF }, dropped: 'effort change skipped: Routing is off' }
   return { plan: p }
 }
 
@@ -2393,7 +2395,7 @@ const isBandMode = (v: unknown): v is BandMode => v === 'when it acts' || v === 
 
 /** Which of the band's rows show: the prompt's row (also when there is nothing else to show) and the cache row. */
 function bandRows(band: Band | null | undefined, mode: BandMode) {
-  const shows = !!band && mode !== 'off' && (mode === 'when it acts' ? band.acted : true)
+  const shows = !!band && mode !== 'off' && (mode === 'when it acts' ? band.acted || !!band.skipped : true)
   return { route: shows && (band.text !== '' || !band.coldText), cold: shows && !!band.coldText }
 }
 
@@ -2448,6 +2450,8 @@ const whyText = (reason: string) => {
 }
 
 /** What the band shows for a rated prompt: what was done, or what was suggested and not done. */
+const ROUTING_OFF = 'Routing is off'
+
 export function bandFor(run: Pick<Run, 'id' | 'tier' | 'normal' | 'auto' | 'delegate' | 'stay' | 'takenDelegate'> & Partial<Pick<Run, 'switchTo' | 'takenMain'>> & { rating?: Pick<Rating, 'reason' | 'type'> }, d: Decision, p: Plan): Band {
   const cur = TIER_NAME[run.tier]
   // Why this route, and for a move to a cheaper model (a lowering or a hand-off down: the routes the miss rate scores) how confident rightsize is: the level on the band, the detail in the ⋯ menu.
@@ -2485,7 +2489,12 @@ export function bandFor(run: Pick<Run, 'id' | 'tier' | 'normal' | 'auto' | 'dele
       ...(d.session ? { canClear: true } : {}),
     }
   }
-  if (p.kind === 'none') return { text: `No change: ${run.normal} on ${cur} fits this prompt.`, acted: false }
+  if (p.kind === 'none') {
+    // Nothing held back, or held back by the person's own setting (Routing off, the Lowest effort floor): the plain row, hidden under "when it acts".
+    if (p.why === NONE_FITS || p.why === ROUTING_OFF || p.why.endsWith(LOWEST_EFFORT)) return { text: `No change: ${run.normal} on ${cur} fits this prompt.`, acted: false }
+    // A change was rated to fit and rightsize's own checks kept it: say which check.
+    return { text: `No change: kept ${run.normal} on ${cur}. ${p.why[0]!.toUpperCase()}${p.why.slice(1)}.${more(why, sure(run.tier))}`, acted: false, skipped: true, ...sureDetail(run.tier) }
+  }
   const what = p.kind === 'effort' ? `${p.level} effort` : p.kind === 'switch' ? `${TIER_NAME[p.tier]} at ${p.level}` : `a ${TIER_NAME[p.tier]} subagent at ${p.level}`
   const rule = p.kind === 'effort' ? (p.dir === 'lower' ? 'lower' : 'raise') : p.kind === 'switch' ? 'up' : p.dir
   const down = p.kind === 'effort' ? (p.dir === 'lower' ? run.tier : undefined) : p.kind === 'delegate' && p.dir === 'down' ? p.tier : undefined
@@ -6975,9 +6984,9 @@ export const register: Register = (on, options) => {
         const band = watching
           ? watchBand(run, p, s)
           : raterUnsure
-          ? { text: `No change: the rater was not sure how hard this is, so rightsize left it on ${TIER_NAME[s.tier]} at ${s.level}.`, acted: false }
+          ? { text: `No change: the rater was not sure how hard this is, so rightsize left it on ${TIER_NAME[s.tier]} at ${s.level}.`, acted: false, skipped: true }
           : noDowngrade
-          ? { text: 'No change: the context was cut or missing, so rightsize did not lower this or hand it to a cheaper model.', acted: false }
+          ? { text: 'No change: the context was cut or missing, so rightsize did not lower this or hand it to a cheaper model.', acted: false, skipped: true }
           : p !== unfanned
           ? { text: `Kept ${s.level} on ${TIER_NAME[s.tier]} instead of ${unfanned.kind === 'delegate' ? `a ${TIER_NAME[unfanned.tier]} subagent` : unfanned.kind === 'switch' ? `running on ${TIER_NAME[unfanned.tier]}` : `raising to ${unfanned.kind === 'effort' ? unfanned.level : ''}`}.`, acted: true }
           : bandFor(run, d, p)
@@ -6997,7 +7006,7 @@ export const register: Register = (on, options) => {
         if (afterWorkflow !== planned) await log($, `hand-off to ${planned.kind === 'delegate' ? planned.tier : '?'} skipped: a workflow ran this session`)
         if (gated.dropped) await log($, gated.dropped)
         const paced = paceNow.mode === 'normal' ? '' : `, ${paceNow.mode} pace on ${paceNow.window}${paceNow.pace === undefined ? '' : ` (${paceNow.pace.toFixed(2)})`}`
-        await log($, `${r.type}${ratedType ? ` (rated ${ratedType}, continues the ${r.type} task)` : ''} on ${s.tier}/${s.level}${paced}: rated ${fit}, plan ${p.kind}${'dir' in p ? ` ${p.dir}` : ''}${run.tie ? ` (tie ${run.tie.by} over ${run.tie.over})` : ''}: ${did}`)
+        await log($, `${r.type}${ratedType ? ` (rated ${ratedType}, continues the ${r.type} task)` : ''} on ${s.tier}/${s.level}${paced}: rated ${fit}, plan ${p.kind}${'dir' in p ? ` ${p.dir}` : ''}${p.kind === 'none' ? ` (${p.why})` : ''}${run.tie ? ` (tie ${run.tie.by} over ${run.tie.over})` : ''}: ${did}`)
         // Every 20th Haiku rating (Rater set to haiku, or Haiku as the fallback when Sonnet fails) gets Sonnet's second opinion, in the background. A Sonnet rating is not checked
         // (Sonnet would only be asked to agree with itself), and does not count toward the 20.
         const spotDue = by === 'haiku' ? await dueCheck($) : false

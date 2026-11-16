@@ -31,6 +31,8 @@ export type RightsizeBand = {
   text: string
   /** True when rightsize changed something: the band shows under "when it acts". */
   acted: boolean
+  /** True when a change was rated to fit but rightsize's own checks kept it (too small a saving, too few tasks, a guard): also shows under "when it acts". */
+  skipped?: boolean
   /** The situation whose rule the band's buttons change. */
   rule?: keyof RightsizeChoices
   /** The prompt was lowered on its own and can be run again at the normal level. */

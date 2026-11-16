@@ -1052,7 +1052,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t1')
     expect(last(h.sent)?.effort, 'stays at medium').toBe('medium')
     await d.complete('t1')
-    expect(await bandText($, surface)).toBe('')
+    expect(await bandText($, surface), 'a kept lowering says why').toContain('No change: kept medium on Opus. Lowering lookup work on Opus is paused: the rating was wrong too often.')
     // The report says what the record is and what it paused.
     const report = await d.report()
     expect(report).toMatch(/Haiku's judgement +wrong on 3 of 6 checked prompts \(50%\)/)

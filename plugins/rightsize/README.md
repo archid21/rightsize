@@ -188,6 +188,7 @@ rightsize is a mod: it runs inside Claude Code and hooks some of its events. Thi
 
 - **Older models are priced by their own row.** Haiku 5.5, Sonnet 5.5, Opus 5.5 and Fable 5.2 are each family's newest model. Older versions, such as Opus 4.8 or Fable 5.1, cost more, so `prices.json` holds a row for each version the pricing page lists, and rightsize prices a main chat on an older version by its row. An effort change there writes the whole conversation again, so it is priced that way. A version with no row pauses rightsize: the band says so once, and `/rightsize prices` fetches the current list.
 - The app's effort picker does not move. The status line shows the level in use.
+- The status line reads `Sonnet (M)`, with `limit ~3:45 PM` when you are on pace to hit a usage limit before it resets, or `$1.84 session` on API billing. With your own `statusLine` script in settings, whether both show is not yet checked.
 - Helpers keep their own model and effort unless rightsize hands them work, or Claude started them as general-purpose without naming a model.
 - The rating is an estimate from a model. Calibration corrects cost guesses, not a wrong choice of model. rightsize measures how often the rating was wrong and stops trusting it where it keeps missing, but only once enough outcomes are in.
 - Hand-offs usually take longer than staying, because of the brief and the check. The band says so; the report's Time section compares them.

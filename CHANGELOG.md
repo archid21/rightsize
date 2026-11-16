@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.15.0 (unreleased)
+
+- **A shorter status line with a limit forecast.** The status line shows the model with the effort as a letter: `Sonnet (M)`, `Opus (H↑)` when rightsize raised it, `Sonnet (L auto)` when it picked it. When a usage window is on pace to run out before it resets, it adds the estimated time: `limit ~3:45 PM`, from your average rate since the window started, rounded to 15 minutes. On API billing it shows the session cost instead: `$1.84 session`. The cache stays on the band.
+
 ## 0.14.0 (2026-11-14)
 
 - **A busy helper is not stopped at a fixed count.** A helper on Haiku or Sonnet with no estimate for its task used to stop at 25 or 40 tool calls however well it was going. Past that count it now goes on while it is making progress (a file change or a passing test run in its last 10 calls) and stops when it is not, or at 4 times the count. A helper that repeats itself is still caught at once by rightsize's stuck signs.

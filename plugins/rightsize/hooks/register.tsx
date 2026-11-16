@@ -168,6 +168,7 @@ import { COMPACT_TEXT, INIT_HINT_MIN, NO_FRESH_HANDOFF, WRAP_HEADROOM, WRAP_TURN
 import { ME, REPOS, SHARED_PATH, askText, blockedByClaim, parseShared, readStarCheck, reposToAsk, type Shared } from './star'
 import { STORE_KEY as TIPS_KEY, type Tip, type TipsState, nextTip, parseState, tipById, withSeen } from './tips'
 import { WELCOMED_KEY, welcomeMarkdown, welcomeText } from './welcome'
+import { rebuildCause, rebuildTokens } from './rebuild'
 import { COMPACT_GAP_MIN, PING_PROMPT, ROW_OF, WRAP_UP, addGap, planLength, alwaysText, compactBoundary, compactedText, idleCompactState, breakEvenMs, cacheHeld, clockText, coldPlan, ignoredLately, keepWarmChoices, leadMs, learnedChoice, COLD_MIN, breakEvenPings, netSaving, offerAt, offerCountdown, offerText, pingCost, pingEvery, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText, IDLE_CAP, IDLE_GAP_MIN, PAYS_MAX, backfillLines, compactGate, paysCheck, paysSend, stretchesOf, PAYS_MIN_STRETCHES, type Stretch } from './warm'
 
 // Before a prompt is sent, a quick Haiku call rates the effort, the model and
@@ -509,6 +510,10 @@ let lastApplied: Level | undefined
 /** The last main-chat step ran on a model rightsize rewrote. */
 let lastSwitched = false
 let lastContext = 0
+/** The last main-chat request's model and effort, and whether rightsize chose them (P-35: a rebuild's cause). */
+let lastReqModel: string | undefined
+let lastReqEffort: string | undefined
+let lastReqOurs = false
 /**
  * The last prompt's route, for the band's one-click overrides: a lowering (Retry at original effort) or a hand-off or switch-run (Run on
  * the current model). `back` finishes "run it ...": where the prompt runs once the override is pressed. One slot: a
@@ -2414,6 +2419,34 @@ function startRun(r: Rating, s: Situation, d: Decision, p: Plan, base: Level, ov
     requests: 0,
     ...('rule' in p && p.rule ? { rule: p.rule } : {}),
   }
+}
+
+/**
+ * One main request's cache rebuild (P-35, ADR 0083): with Claude Code's miss rule, the tokens the cache held that this request
+ * wrote again; the likely cause from what rightsize knows; and what writing them again cost over reading them (dollars,
+ * API-equivalent on a subscription). Helpers never come here: Claude Code leaves them out of its own counts too.
+ */
+async function noteRebuild($: EngineInterface, u: Usage & { model: string }, now: { compacted: boolean; effort?: string; ours: boolean }) {
+  const held = lastContext
+  const tokens = rebuildTokens(held, u.cache_read_input_tokens)
+  const fromModel = lastReqModel
+  const fromEffort = lastReqEffort
+  const before = lastReqOurs
+  lastReqModel = u.model
+  lastReqEffort = now.effort
+  lastReqOurs = now.ours
+  if (!tokens || !lastRequestAt) return
+  const at = await $.clock.now()
+  const gapMs = Math.max(0, at - Math.max(lastRequestAt, lastWarmAt))
+  const cause = rebuildCause({ compacted: now.compacted, fromModel, toModel: u.model, fromEffort, toEffort: now.effort, gapMs, ttlMs: cacheTtl })
+  const t = tierOf(u.model)
+  const p = t ? atPrompt(prices[t], contextOf(u)) : undefined
+  const cost = p ? (tokens * Math.max(0, p.cacheWrite - p.cacheRead)) / 1e6 : 0
+  // Rightsize's own doing: its model or effort switch on this request or the one before it.
+  const ours = (cause === 'model' || cause === 'effort') && (now.ours || before)
+  const line: RunLine = { at: new Date(at).toISOString(), kind: 'rebuild', session: sessionId, cause, tokens, rebuildCost: round(cost), ...(t ? { tier: t } : {}), context: held, gapMs, ttl: cacheTtl, ...(ours ? { ours: true } : {}) }
+  await append($, 'runs.jsonl', JSON.stringify(line), RUNS_LOG_MAX)
+  runLog.push(line)
 }
 
 // ---- Reporting -------------------------------------------------------------
@@ -6802,6 +6835,9 @@ export const register: Register = (on, options) => {
     lastApplied = undefined
     lastSwitched = false
     lastContext = 0
+    lastReqModel = undefined
+    lastReqEffort = undefined
+    lastReqOurs = false
     workflowSeen = false
     manualPause = null
     pauseRow = null
@@ -7383,6 +7419,8 @@ export const register: Register = (on, options) => {
         if (!compactedAway && lastTurnAt && compactBoundary({ gap: (await $.clock.now()) - lastTurnAt, before: lastContext, after: contextOf(u), manual: manualCompact })) await noteCompacted($, lastContext, contextOf(u))
         manualCompact = false
       }
+      // A cache rebuild on this request (P-35): one 'rebuild' line with its likely cause and what writing it again cost.
+      await noteRebuild($, u, { compacted: compactedAway !== null, effort: isLevel(send.effort) ? send.effort : undefined, ours: sw !== undefined || (!held && applied !== undefined && applied !== own) })
       if (!sw && !lastSwitched && !compactedAway && applied && lastApplied && applied !== lastApplied && lastContext > 5000) {
         const missed = u.cache_read_input_tokens < lastContext * 0.5
         // An older model rebuilds the conversation on every switch, by design (ADR 0031): it would teach the current models nothing.

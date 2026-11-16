@@ -1,3 +1,4 @@
+import { CAUSE_NAME, rebuildSums } from './rebuild'
 import { type Calibration, MISS_BLOCK, TASK_TYPES, TIER_NAME, calKey, factor, isTier, money } from './cost'
 import { STEP_PROVE } from './steps'
 import type { StepUpCause } from './struggle'
@@ -36,7 +37,12 @@ export type RunLine = {
    * 'idle': one idle stretch that closed (P-40): how long the person was away after a main turn ended (`gapMs`) and how it ended (`ended`: 'warm' they came back before the cache expired, 'cold' after it, 'never' the session ended or died with no return), with the local `hour` and `weekday` the turn ended, the `billing`, the cache life `ttl`, the conversation's `context` and what coming back cold would have cost (`cold`). It carries no cost and is no part of any total or count of runs; keep warm's return chance reads it.
    * `totals` adds the `overhead` of every line, so these pings count as rightsize's own cost and lower Total saved.
    */
-  kind?: 'run' | 'overhead' | 'subagent' | 'check' | 'feedback' | 'corrected' | 'unrated' | 'dropped' | 'unbound' | 'warm' | 'warmSaved' | 'cold' | 'undone' | 'auto' | 'idle'
+  kind?: 'run' | 'overhead' | 'subagent' | 'check' | 'feedback' | 'corrected' | 'unrated' | 'dropped' | 'unbound' | 'warm' | 'warmSaved' | 'cold' | 'undone' | 'auto' | 'idle' | 'rebuild'
+  /** A 'rebuild' line (P-35): one main request that wrote again what the cache held. `cause` is the likely one (rebuild.ts), `tokens` how many it wrote again, `rebuildCost` what that cost over reading them (dollars, API-equivalent on a subscription), `ours` true when rightsize's own model or effort switch caused it; `tier`, `context` (what the cache held), `gapMs` (since the cache was last refreshed) and `ttl` are the line's own. No part of any total or count of runs. */
+  cause?: string
+  tokens?: number
+  rebuildCost?: number
+  ours?: boolean
   /** An 'idle' line: how long the stretch lasted in ms, and how it ended. */
   gapMs?: number
   ended?: 'warm' | 'cold' | 'never'
@@ -1387,6 +1393,9 @@ export function buildReport(
     // Lowering evidence (P-39): per route, what lowering did and how close it is to pausing. Lines from before Cost measurement restarted are left out, as the pause leaves them out.
     const low = opts.lowering ? loweringRows(month.filter(l => Date.parse(l.at) >= from), opts.lowering) : []
     if (low.length) out.push(...section('LOWERING (last 30 days)', grid(low, [1, 3, 4])))
+    // Cache rebuilds by cause (P-35): what writing the conversation again cost, and why. The compact row is expected, not waste.
+    const rebuilt = rebuildRows(month, lines.filter(since(7)), sub)
+    if (rebuilt) out.push(...section(`CACHE REBUILDS (last 30 days${sub ? ', API prices' : ''})`, grid(rebuilt.rows, [1, 2, 3, 4])), ...rebuilt.notes.flatMap(n => para(n, md ? '' : '  ')))
     const tuned = opts.calibration ? calibrationLine(opts.calibration.cal, opts.calibration.at) : undefined
     if (tuned) out.push('', ...para(tuned))
     const problem = problems(month, switches.filter(since(30)), sub)
@@ -1411,6 +1420,24 @@ export function buildReport(
     out.push('', ...foot.flatMap(f => para(f)))
     return out.join('\n')
   }
+}
+
+/**
+ * The details view's CACHE REBUILDS table (P-35): one row per cause over 30 days, with its 7-day cost beside it, most costly
+ * first and the expected compact row last. Undefined when the month has no 'rebuild' lines.
+ */
+export function rebuildRows(month: readonly RunLine[], week: readonly RunLine[], subscription: boolean): { rows: string[][]; notes: string[] } | undefined {
+  const rows = rebuildSums(month)
+  if (!rows.length) return undefined
+  const weekCost = new Map(rebuildSums(week).map(r => [r.cause, r.cost]))
+  const k = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(2)}M` : `${Math.round(n / 1000)}K`)
+  const table = [['Cause', 'Rebuilds', 'Tokens', 'Cost', 'Last 7 days'], ...rows.map(r => [CAUSE_NAME[r.cause], String(r.count), k(r.tokens), tildeMoney(r.cost), tildeMoney(weekCost.get(r.cause) ?? 0)])]
+  const ours = rows.reduce((n, r) => n + r.ours, 0)
+  const notes = [
+    ...(ours ? [`${plural(ours, 'rebuild')} came from rightsize's own model or effort switch.`] : []),
+    `Cost is writing the conversation again over reading it from the cache${subscription ? ', at API prices' : ''}. Causes are rightsize's best reading of each rebuild.`,
+  ]
+  return { rows: table, notes }
 }
 
 /**

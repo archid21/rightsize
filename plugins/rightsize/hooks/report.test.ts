@@ -1313,3 +1313,18 @@ test('an idle line (P-40) is no run: it changes no total and no count of rated r
   expect(totals([idle])).toEqual(totals([]))
   expect(sessionTotal([run, idle], 's', false)).toBe(sessionTotal([run], 's', false))
 })
+
+test('details: CACHE REBUILDS by cause, most costly first, the compact row last, with the 7-day cost and rightsize\'s own', () => {
+  const rb = (x: Partial<RunLine>): RunLine => ({ at: ago(1), kind: 'rebuild', session: 's1', cause: 'gap', tokens: 100_000, rebuildCost: 1, ...x })
+  const lines = [run({}), rb({}), rb({ at: ago(10), tokens: 700_000, rebuildCost: 3 }), rb({ cause: 'model', tokens: 50_000, rebuildCost: 0.4, ours: true }), rb({ cause: 'compact', tokens: 9000, rebuildCost: 5 })]
+  const text = details(lines)
+  const block = sectionOf(text, 'CACHE REBUILDS (last 30 days)')
+  expect(cells(text, 'Back after the cache expired')).toEqual(['2', '800K', '~$4.00', '~$1.00'])
+  expect(cells(text, 'Model switch')).toEqual(['1', '50K', '~$0.40', '~$0.40'])
+  const order = block.map(l => l.split('  ')[0])
+  expect(order.indexOf('After a compact (expected)')).toBeGreaterThan(order.indexOf('Model switch'))
+  expect(text).toContain("1 rebuild came from rightsize's own model or effort switch.")
+  // Rebuild lines are no part of any total or count of runs.
+  expect(details([run({})])).not.toContain('CACHE REBUILDS')
+  expect(summary([run({}), rb({ at: ago(0), rebuildCost: 50 })])).toBe(summary([run({})]))
+})

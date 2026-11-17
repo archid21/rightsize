@@ -16,7 +16,7 @@ test('not enough use: under 30 rated prompts or 7 days, no suggestions', () => {
   expect(optimize(base({ lines: runs().slice(0, 20) }))).toMatchObject({ enough: false, prompts: 20, suggestions: [] })
   const oneDay = runs().map(l => ({ ...l, at: ago(0) }))
   expect(optimize(base({ lines: oneDay })).enough).toBe(false)
-  expect(optimizeText(optimize(base({ lines: runs().slice(0, 20) })), true, true)).toContain('not enough use to judge yet (20 rated prompts')
+  expect(optimizeText(optimize(base({ lines: runs().slice(0, 20) })), true, true)).toContain('Not enough use to judge yet (20 rated prompts')
 })
 
 test('keep warm that cost more than it saved: suggest off, measured, with now and after', () => {
@@ -72,7 +72,7 @@ test('every suggestion is listed, with no cap, and the text says nothing changes
   expect(text).toContain('☐ Cache life: 1 hour → 5 minutes')
   expect(text).toContain('    With 5 minutes:  $9.80  →  $2.30 less')
   expect(optimizeText(r, false, false)).toContain('Nothing was changed.')
-  expect(optimizeText({ enough: true, prompts: 40, days: 20, suggestions: [] }, false, true)).toBe('rightsize optimize: no changes to suggest. Your settings fit your last 30 days.')
+  expect(optimizeText({ enough: true, prompts: 40, days: 20, suggestions: [] }, false, true)).toBe('No changes to suggest. Your settings fit your last 30 days.')
 })
 
 test('head, body and the applied line', () => {

@@ -60,7 +60,7 @@ test('tick one and Apply selected: only that row changes, recorded; the other hi
   expect(h.paneCloses).toContain('rightsize-optimize')
   expect(h.toasts.at(-1)).toBe('Changed: Before the cache goes cold → off. Did it work? in /rightsize report measures each once there are enough prompts.')
   // Big-turn warning was left unpicked: not suggested again for 30 days.
-  expect((await d.command('optimize')).text).toBe('rightsize optimize: no changes to suggest. Your settings fit your last 30 days.')
+  expect((await d.command('optimize')).text).toBe('No changes to suggest. Your settings fit your last 30 days.')
 })
 
 test('Apply all applies every suggestion', { timeoutMs: 30000, options: { bigTurn: 'off' } }, async ($, on) => {
@@ -80,6 +80,6 @@ test('too little use: says so, opens no pane', { timeoutMs: 30000 }, async ($, o
   h.now = NOW
   const d = drive($, h)
   await d.start('terminal')
-  expect((await d.command('optimize')).text).toContain('not enough use to judge yet (0 rated prompts')
+  expect((await d.command('optimize')).text).toContain('Not enough use to judge yet (0 rated prompts')
   expect(h.paneOpens).toEqual([])
 })

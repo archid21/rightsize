@@ -124,8 +124,8 @@ export const optPeriod = (subscription: boolean) => `Last ${OPT_DAYS} days${subs
 
 /** The command's text: what the pane shows, for the transcript, -p and a surface with no pane. */
 export function optimizeText(r: OptResult, subscription: boolean, pane: boolean) {
-  if (!r.enough) return `rightsize optimize: not enough use to judge yet (${r.prompts} rated prompts over ${r.days} days; needs ${OPT_MIN_PROMPTS} over ${OPT_MIN_DAYS} days).`
-  if (!r.suggestions.length) return `rightsize optimize: no changes to suggest. Your settings fit your last ${OPT_DAYS} days.`
+  if (!r.enough) return `Not enough use to judge yet (${r.prompts} rated prompts over ${r.days} days; needs ${OPT_MIN_PROMPTS} over ${OPT_MIN_DAYS} days).`
+  if (!r.suggestions.length) return `No changes to suggest. Your settings fit your last ${OPT_DAYS} days.`
   const rows = r.suggestions.flatMap(s => ['', suggestionHead(s, false), ...suggestionBody(s).map(b => `    ${b}`)])
   const how = pane ? 'Pick the ones to apply in the pane: Enter ticks a row, then Apply selected or Apply all. Esc changes nothing.' : 'Change them in /rightsize (settings) or /config. Nothing was changed.'
   return [OPT_LEAD, optPeriod(subscription), ...rows, '', how].join('\n')

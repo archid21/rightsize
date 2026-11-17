@@ -1238,10 +1238,10 @@ export function outcomeRows(tasks: readonly WholeTask[], subscription: boolean):
  * and the net. A run the person never came back to is pure cost. Undefined when there was no keep-warm run. A run is the
  * requests that share `warmRun` (an older line with none counts by its session); a dollar figure on a subscription is API-equivalent.
  */
-type KeepWarm = { runs: number; returns: number; saved: number; cost: number; net: number }
+export type KeepWarm = { runs: number; returns: number; saved: number; cost: number; net: number }
 
 /** Keep warm's numbers for the period: runs, returns that held the cache, what those saved, what the pings cost, the net. */
-function keepWarm(lines: readonly RunLine[]): KeepWarm | undefined {
+export function keepWarm(lines: readonly RunLine[]): KeepWarm | undefined {
   const pings = lines.filter(l => l.kind === 'warm')
   const t = totals(lines.filter(l => l.kind === 'warmSaved'))
   if (!pings.length && !t.returns) return undefined

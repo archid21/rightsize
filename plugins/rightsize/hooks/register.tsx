@@ -169,6 +169,7 @@ import { ME, REPOS, SHARED_PATH, askText, blockedByClaim, parseShared, readStarC
 import { STORE_KEY as TIPS_KEY, type Tip, type TipsState, nextTip, parseState, tipById, withSeen } from './tips'
 import { WELCOMED_KEY, welcomeMarkdown, welcomeText } from './welcome'
 import { rebuildCause, rebuildTokens } from './rebuild'
+import { OPT_LEAD, type OptId, type OptInput, type Suggestion, appliedText, optPeriod, optimize, optimizeText, suggestionBody, suggestionHead } from './optimize'
 import { COMPACT_GAP_MIN, PING_PROMPT, ROW_OF, WRAP_UP, addGap, planLength, alwaysText, compactBoundary, compactedText, idleCompactState, breakEvenMs, cacheHeld, clockText, coldPlan, ignoredLately, keepWarmChoices, leadMs, learnedChoice, COLD_MIN, breakEvenPings, netSaving, offerAt, offerCountdown, offerText, pingCost, pingEvery, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText, IDLE_CAP, IDLE_GAP_MIN, PAYS_MAX, backfillLines, compactGate, paysCheck, paysSend, stretchesOf, PAYS_MIN_STRETCHES, type Stretch } from './warm'
 
 // Before a prompt is sent, a quick Haiku call rates the effort, the model and
@@ -5797,6 +5798,7 @@ const COMMANDS: readonly (readonly [string, string])[] = [
   ['settings', 'answer the questions again'],
   ['report', 'what it saved, and what to change'],
   ['report details', 'how it decided, what went wrong, and time'],
+  ['optimize', 'suggest setting changes from your last 30 days, and apply the ones you pick'],
   ['retry', 're-run the last auto-lowered prompt at the original effort'],
   ['clear', 'drop the session switch'],
   ['resume', 'start changing the model and effort again, after you stepped up and rightsize paused'],
@@ -5811,6 +5813,95 @@ const COMMANDS: readonly (readonly [string, string])[] = [
 function helpText() {
   const width = Math.max(...COMMANDS.map(([c]) => `/${CMD} ${c}`.trim().length))
   return ['rightsize commands', '', ...COMMANDS.map(([c, what]) => `  ${`/${CMD} ${c}`.trim().padEnd(width)}  ${what}`), '', 'All settings are in /config.'].join('\n')
+}
+
+// ---- Optimize (P-38, ADR 0084) ------------------------------------------------------
+// /rightsize optimize: the settings the last 30 days say should change (optimize.ts), each priced under the current setting
+// and the new one, in a checklist pane. Nothing changes until the person presses Apply selected or Apply all.
+
+const OPT_ID = 'rightsize-optimize'
+const OPT_STATE = { plugin: 'rightsize', key: 'optimize' } as const
+const OPT_SKIPPED = 'optimizeSkipped'
+let optList: Suggestion[] = []
+let optPicked = new Set<OptId>()
+let optTicks = 0
+
+/** The pane draws again: it reads this key while it draws. */
+async function bumpOpt($: EngineInterface) {
+  optTicks += 1
+  await $.state.set(OPT_STATE, optTicks).catch(() => undefined)
+}
+
+async function readSkipped($: EngineInterface): Promise<Partial<Record<OptId, number>>> {
+  const v = await $.store.get(OPT_SKIPPED).catch(() => undefined)
+  return v && typeof v === 'object' && !Array.isArray(v) ? (v as Partial<Record<OptId, number>>) : {}
+}
+
+/** The cache-life comparison, only where rightsize may set the life (as the monthly check decides it). */
+async function lifeInput($: EngineInterface): Promise<OptInput['life']> {
+  if (!settingDecides(ttlBy)) return undefined
+  const provider = await providerNow($)
+  const u = await usageNow($)
+  const seen = detectedBilling ?? (billingYours() ? billing : undefined)
+  if (!lifeEligible({ provider, billing: seen, onCredits: onCredits(u?.rateLimits) })) return undefined
+  const advice = adviseLife(await readRuns($), await $.clock.now(), forModel(parsePrices(priceFile, '5m'), mainModel), forModel(parsePrices(priceFile, '1h'), mainModel))
+  return { advice, current: lifeNow() }
+}
+
+async function runOptimize($: EngineInterface) {
+  const sub = billing === 'subscription'
+  const life = await lifeInput($)
+  const r = optimize({ lines: await readRuns($), now: await $.clock.now(), subscription: sub, beforeCold: cfg.beforeCold, bigTurn: cfg.bigTurn, ...(life ? { life } : {}), skipped: await readSkipped($) })
+  optList = r.suggestions
+  optPicked = new Set()
+  let pane = false
+  if (r.suggestions.length) {
+    const surfaces = await $.session.surfaces().catch(() => [])
+    if (surfaces.length === 0 || !surfaces.every(x => x === 'mobile')) {
+      const opened = await $.ui.open({ id: OPT_ID, title: 'rightsize optimize', focus: true, closeOnEscape: true, holdToasts: true }).catch(() => undefined)
+      if (opened?.isPlaced) pane = true
+      else if (opened) await $.ui.close({ id: OPT_ID }).catch(() => undefined)
+    }
+    await bumpOpt($)
+  }
+  await log($, `optimize: ${r.enough ? `${r.suggestions.length} suggestion(s)${r.suggestions.length ? `: ${r.suggestions.map(x => `${x.id} ${x.from} -> ${x.to}`).join(', ')}` : ''}` : `not enough use (${r.prompts} prompts over ${r.days} days)`}`)
+  return optimizeText(r, sub, pane)
+}
+
+async function toggleOpt($: EngineInterface, id: OptId) {
+  if (optPicked.has(id)) optPicked.delete(id)
+  else optPicked.add(id)
+  await bumpOpt($)
+}
+
+/** Applies `which`: rightsize rows through the settings path (recorded for Did it work?), the cache life as its question does. The rest hide for 30 days. */
+async function applyOptimize($: EngineInterface, which: readonly Suggestion[]) {
+  const done: Suggestion[] = []
+  const refused: Suggestion[] = []
+  for (const x of which) {
+    if (x.id === 'promptCacheTtl') {
+      const to: Ttl = x.to === ttlText(TTL_MS['5m']) ? '5m' : '1h'
+      const from = lifeNow()
+      if (await setCacheLife($, to)) {
+        await recordChange($, CACHE_LIFE_KEY, from, to)
+        await refreshTtl($)
+        done.push(x)
+      } else refused.push(x)
+    } else {
+      await changeRow($, x.id, x.to)
+      done.push(x)
+    }
+  }
+  const now = await $.clock.now()
+  const left = optList.filter(x => !which.includes(x))
+  if (left.length) await $.store.set(OPT_SKIPPED, { ...(await readSkipped($)), ...Object.fromEntries(left.map(x => [x.id, now])) }).catch(() => undefined)
+  optList = []
+  optPicked = new Set()
+  await $.ui.close({ id: OPT_ID }).catch(() => undefined)
+  const text = appliedText(done, refused)
+  await log($, `optimize: ${text}`)
+  $.ui.toast(text)
+  await bumpMenu($)
 }
 
 // ---- Reset -------------------------------------------------------------------------
@@ -7004,6 +7095,7 @@ export const register: Register = (on, options) => {
     if (arg === 'welcome') return { text: welcomeText() }
     if (arg === 'tips') return { text: await showTipsAgain($) }
     if (arg === 'status') return { text: await summary($) }
+    if (arg === 'optimize') return { text: await runOptimize($) }
     if (arg === '') return { text: await openSettings($) }
     if (arg !== 'settings') return { text: `Unknown command "${arg}".\n\n${helpText()}` }
     const s = await situation($)
@@ -7820,6 +7912,32 @@ export const register: Register = (on, options) => {
     if (e.props.command !== CMD || (args !== 'report' && args !== 'report details') || e.props.isErrored || e.surface === 'terminal') return next(e)
     const { Markdown } = $.ui.resolve(e)
     return <Markdown key="report" text={reportMarkdown.get(e.props.text) ?? `\`\`\`\n${e.props.text}\n\`\`\``} />
+  })
+
+  // /rightsize optimize: the checklist. Each suggestion's head is a Button that ticks it; its now / with lines sit under it.
+  on('ui.render', { component: 'Pane', requestId: OPT_ID }, async ($, e) => {
+    await $.state.get(OPT_STATE).catch(() => undefined)
+    const { Box, Button, Text } = $.ui.resolve(e)
+    return (
+      <Box flexDirection="column">
+        <Text dimColor>Tab or ↑↓: move · Enter: tick a row or press a button · Esc: close, nothing changes.</Text>
+        <Text>{`${OPT_LEAD} ${optPeriod(billing === 'subscription')}`}</Text>
+        {optList.map((x, k) => (
+          <Box key={`opt-${x.id}`} flexDirection="column" marginTop={1}>
+            <Button key={`pick-${x.id}`} plain {...(k === 0 ? { autoFocus: true as const } : {})} onPress={() => void toggleOpt($, x.id)}>
+              {suggestionHead(x, optPicked.has(x.id))}
+            </Button>
+            {suggestionBody(x).map((b, j) => (
+              <Text key={`body-${x.id}-${j}`} dimColor={j === 2}>{`    ${b}`}</Text>
+            ))}
+          </Box>
+        ))}
+        <Box key="opt-actions" flexDirection="row" gap={2} marginTop={1}>
+          <Button key="opt-apply" variant="primary" label={`Apply selected (${optPicked.size})`} onPress={() => void applyOptimize($, optList.filter(x => optPicked.has(x.id)))} />
+          <Button key="opt-all" label="Apply all" onPress={() => void applyOptimize($, optList)} />
+        </Box>
+      </Box>
+    )
   })
 
   // The settings pane (bare /rightsize): every row of /config as a picker, Advanced rows under their own heading. The mobile

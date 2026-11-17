@@ -5875,7 +5875,11 @@ async function toggleOpt($: EngineInterface, id: OptId) {
   await bumpOpt($)
 }
 
-/** Applies `which`: rightsize rows through the settings path (recorded for Did it work?), the cache life as its question does. The rest hide for 30 days. */
+/**
+ * Applies `which`. A rightsize row write makes Claude Code reload the mod (session.start runs again, module state starts over),
+ * so everything the person sees (the pane closing, the summary, the hidden suggestions) happens before those writes. The cache
+ * life, Claude Code's own setting, is written first, since it can be refused. The rest hide for 30 days.
+ */
 async function applyOptimize($: EngineInterface, which: readonly Suggestion[]) {
   // Nothing ticked: no change, nothing hidden, and the checklist stays open to tick a row.
   if (!which.length) {
@@ -5886,28 +5890,28 @@ async function applyOptimize($: EngineInterface, which: readonly Suggestion[]) {
   const done: Suggestion[] = []
   const refused: Suggestion[] = []
   for (const x of which) {
-    if (x.id === 'promptCacheTtl') {
-      const to: Ttl = x.to === ttlText(TTL_MS['5m']) ? '5m' : '1h'
-      const from = lifeNow()
-      if (await setCacheLife($, to)) {
-        await recordChange($, CACHE_LIFE_KEY, from, to)
-        await refreshTtl($)
-        done.push(x)
-      } else refused.push(x)
-    } else {
-      await changeRow($, x.id, x.to)
+    if (x.id !== 'promptCacheTtl') continue
+    const to: Ttl = x.to === ttlText(TTL_MS['5m']) ? '5m' : '1h'
+    const from = lifeNow()
+    if (await setCacheLife($, to)) {
+      await recordChange($, CACHE_LIFE_KEY, from, to)
+      await refreshTtl($)
       done.push(x)
-    }
+    } else refused.push(x)
   }
+  const rows = which.filter(x => x.id !== 'promptCacheTtl')
   const now = await $.clock.now()
   const left = optList.filter(x => !which.includes(x))
   if (left.length) await $.store.set(OPT_SKIPPED, { ...(await readSkipped($)), ...Object.fromEntries(left.map(x => [x.id, now])) }).catch(() => undefined)
   optList = []
   optPicked = new Set()
   await $.ui.close({ id: OPT_ID }).catch(() => undefined)
-  const text = appliedText(done, refused)
+  optTicks = 0
+  await $.state.set(OPT_STATE, 0).catch(() => undefined)
+  const text = appliedText([...done, ...rows], refused)
   await log($, `optimize: ${text}`)
   $.ui.toast(text)
+  for (const x of rows) await changeRow($, x.id as SettingKey, x.to)
   await bumpMenu($)
 }
 
@@ -6917,6 +6921,11 @@ export const register: Register = (on, options) => {
   })
 
   on('session.start', async ($, e, next) => {
+    // A checklist left open by the mod before a reload has lost its suggestions: close it. Session state outlives the reload.
+    if (Number(await $.state.get(OPT_STATE).catch(() => 0)) > 0) {
+      await $.ui.close({ id: OPT_ID }).catch(() => undefined)
+      await $.state.set(OPT_STATE, 0).catch(() => undefined)
+    }
     const result = await next(e)
     // The plugin can live anywhere (a clone, ~/Projects), so ask for HOME rather than reading it off the path.
     const fromEnv = await $.env.get('HOME').catch(() => undefined)
@@ -7929,6 +7938,7 @@ export const register: Register = (on, options) => {
       <Box flexDirection="column">
         <Text dimColor>Tab or ↑↓: move · Enter: tick a row or press a button · Esc: close, nothing changes.</Text>
         <Text>{`${OPT_LEAD} ${optPeriod(billing === 'subscription')}`}</Text>
+        {optList.length ? null : <Text key="opt-empty">Nothing left to apply. Esc closes this.</Text>}
         {optList.map((x, k) => (
           <Box key={`opt-${x.id}`} flexDirection="column" marginTop={1}>
             <Button key={`pick-${x.id}`} plain {...(k === 0 ? { autoFocus: true as const } : {})} onPress={() => void toggleOpt($, x.id)}>
@@ -7939,10 +7949,12 @@ export const register: Register = (on, options) => {
             ))}
           </Box>
         ))}
+        {optList.length ? (
         <Box key="opt-actions" flexDirection="row" gap={2} marginTop={1}>
           <Button key="opt-apply" variant="primary" label={`Apply selected (${optPicked.size})`} onPress={() => void applyOptimize($, optList.filter(x => optPicked.has(x.id)))} />
           <Button key="opt-all" label="Apply all" onPress={() => void applyOptimize($, optList)} />
         </Box>
+        ) : null}
       </Box>
     )
   })

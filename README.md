@@ -9,7 +9,7 @@ claude plugin marketplace add archid21/rightsize
 claude plugin install rightsize@archid21 --scope user
 ```
 
-**Status: 0.14.0.** Keep warm only while it pays, a Wrap up button, handoff-style compacts, and an opt-in warning for big turns. See [New in 0.14.0](#new-in-0140).
+**Status: 0.15.0.** `/rightsize optimize` suggests setting changes priced on your own use, the report shows what cache rebuilds cost and why, and a paused route comes back by itself. See [New in 0.15.0](#new-in-0150).
 
 MIT license · works with a Claude subscription (Pro, Max, Ultra) or an API key · [Open an issue](https://github.com/archid21/rightsize/issues)
 
@@ -134,6 +134,17 @@ On a subscription, a keep-warm request draws a small share of your usage window,
 
 *Benchmark: real tasks from open-source repositories, each graded by hidden tests the model never sees. Your results depend on your work and settings. Method: [docs/METHOD.md](docs/METHOD.md).*
 
+## New in 0.15.0
+
+- **`/rightsize optimize`.** Suggests changes to rightsize's settings from your last 30 days. Each one shows the 30 days under your current setting and under the new one, measured or estimated. Tick the ones you want in a checklist and press **Apply selected**, or **Apply all**.
+- **Cache rebuilds by cause.** `/rightsize report details` shows what writing the conversation to the cache again cost you, and why: back after the cache expired, a model or effort switch, or a compact (expected).
+- **A paused route comes back by itself.** When the rating was wrong too often on a kind of work, lowering pauses for a number of prompts (**Lowering pause**, 10 by default), then comes back on probation. A **Try lowering again** button ends it early.
+- **A tip to compact on Sonnet** when the cache goes cold on a big Opus or Fable conversation, step by step.
+- **A shorter status line** with the effort as a letter and, when a usage window is on pace to run out, the time it will.
+- **The band says why it kept your level** when a cheaper or stronger option fit, and the running total reads `rightsize so far: …`.
+
+Every change: [CHANGELOG.md](CHANGELOG.md). Every feature: [docs/FEATURES.md](docs/FEATURES.md).
+
 ## New in 0.14.0
 
 - **Keep warm only while it pays.** The default of **Before the cache goes cold** now sends a keep-warm request only when your own record of idle breaks says it covers its cost. It stops on a cache miss, and a value you set yourself still wins.
@@ -142,17 +153,6 @@ On a subscription, a keep-warm request draws a small share of your usage window,
 - **Big-turn warning (opt-in).** Warns before a prompt that looks unusually expensive, and during a turn that is heading there, with **Keep going** and **Finish up**. Nothing is sent or stopped for you.
 - **How each task ended.** Tasks get an outcome, and the report shows how each route did and what lowered turns stepped back up from.
 - **Fast mode is priced,** and estimates now learn in dollars, so expensive turns count for more.
-
-Every change: [CHANGELOG.md](CHANGELOG.md). Every feature: [docs/FEATURES.md](docs/FEATURES.md).
-
-## New in 0.13.0
-
-- **The report leads with a checked saving:** the overall saving as a range, checked against what staying really costs, with prompts you overrode left out.
-- **A spend limit for helpers** instead of a flat call count, with a new **Long helpers** row. An unanswered question never loses a helper's work.
-- **Cache-life advice.** Once a month the band prices a 5-minute and a 1-hour cache for how you work and asks once whether to switch.
-- **Did it work?** The report measures each setting change against the days before it.
-- **Watch only** ends with a row after 7 days that shows what rightsize would have saved.
-- **Six plain rows in settings.** Question wait, Price check and Rater are fixed values now.
 
 Every change: [CHANGELOG.md](CHANGELOG.md). Every feature: [docs/FEATURES.md](docs/FEATURES.md).
 
@@ -216,7 +216,8 @@ When keeping warm over your usual idle time would cost at least 3 times a compac
 |---|---|
 | `/rightsize` | Settings pane |
 | `/rightsize report` | What you saved, what rightsize did, and what to change |
-| `/rightsize report details` | Accuracy, turns not counted, time and whole tasks |
+| `/rightsize report details` | Accuracy, cache rebuilds by cause, turns not counted, time and whole tasks |
+| `/rightsize optimize` | Suggests setting changes from your last 30 days, priced both ways; you pick which to apply |
 | `/rightsize welcome` | What rightsize does, as a table (also shown once after install) |
 | `/rightsize tips` | Show the tips again |
 | `/rightsize status` | What is in use and the settings you changed |

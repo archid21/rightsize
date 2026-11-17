@@ -169,7 +169,7 @@ import { ME, REPOS, SHARED_PATH, askText, blockedByClaim, parseShared, readStarC
 import { STORE_KEY as TIPS_KEY, type Tip, type TipsState, nextTip, parseState, tipById, withSeen } from './tips'
 import { WELCOMED_KEY, welcomeMarkdown, welcomeText } from './welcome'
 import { rebuildCause, rebuildTokens } from './rebuild'
-import { OPT_LEAD, type OptId, type OptInput, type Suggestion, appliedText, optPeriod, optimize, optimizeText, suggestionBody, suggestionHead } from './optimize'
+import { OPT_LEAD, OPT_NONE_TICKED, type OptId, type OptInput, type Suggestion, appliedText, optPeriod, optimize, optimizeText, suggestionBody, suggestionHead } from './optimize'
 import { COMPACT_GAP_MIN, PING_PROMPT, ROW_OF, WRAP_UP, addGap, planLength, alwaysText, compactBoundary, compactedText, idleCompactState, breakEvenMs, cacheHeld, clockText, coldPlan, ignoredLately, keepWarmChoices, leadMs, learnedChoice, COLD_MIN, breakEvenPings, netSaving, offerAt, offerCountdown, offerText, pingCost, pingEvery, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText, IDLE_CAP, IDLE_GAP_MIN, PAYS_MAX, backfillLines, compactGate, paysCheck, paysSend, stretchesOf, PAYS_MIN_STRETCHES, type Stretch } from './warm'
 
 // Before a prompt is sent, a quick Haiku call rates the effort, the model and
@@ -5871,11 +5871,18 @@ async function runOptimize($: EngineInterface) {
 async function toggleOpt($: EngineInterface, id: OptId) {
   if (optPicked.has(id)) optPicked.delete(id)
   else optPicked.add(id)
+  await log($, `optimize: ${optPicked.has(id) ? 'ticked' : 'unticked'} ${id}`)
   await bumpOpt($)
 }
 
 /** Applies `which`: rightsize rows through the settings path (recorded for Did it work?), the cache life as its question does. The rest hide for 30 days. */
 async function applyOptimize($: EngineInterface, which: readonly Suggestion[]) {
+  // Nothing ticked: no change, nothing hidden, and the checklist stays open to tick a row.
+  if (!which.length) {
+    await log($, 'optimize: Apply selected with nothing ticked')
+    $.ui.toast(OPT_NONE_TICKED)
+    return
+  }
   const done: Suggestion[] = []
   const refused: Suggestion[] = []
   for (const x of which) {

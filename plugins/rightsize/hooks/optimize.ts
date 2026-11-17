@@ -119,6 +119,8 @@ export const suggestionHead = (s: Suggestion, picked: boolean) => `${picked ? 'â
 /** The lines under a suggestion's head. */
 export const suggestionBody = (s: Suggestion) => [`Now:  ${s.now}`, `With ${s.to}:  ${s.after}`, s.basis]
 
+/** Apply selected with no row ticked. */
+export const OPT_NONE_TICKED = 'Nothing ticked: press Enter on a row to tick it, or use Apply all.'
 export const OPT_LEAD = 'Suggestions only: nothing changes until you apply them.'
 export const optPeriod = (subscription: boolean) => `Last ${OPT_DAYS} days${subscription ? ', API-equivalent dollars (you pay only your subscription)' : ''}.`
 

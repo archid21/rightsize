@@ -63,6 +63,18 @@ test('tick one and Apply selected: only that row changes, recorded; the other hi
   expect((await d.command('optimize')).text).toBe('No changes to suggest. Your settings fit your last 30 days.')
 })
 
+test('Apply selected with nothing ticked changes nothing, hides nothing, and keeps the checklist open', { timeoutMs: 30000, options: { bigTurn: 'off' } }, async ($, on) => {
+  const { h, d } = await start($, on)
+  await d.command('optimize')
+  const ui = await mountOpt($)
+  await ui.press({ key: 'opt-apply' })
+  await ui.unmount()
+  expect(changes(h)).toEqual([])
+  expect(h.paneCloses).not.toContain('rightsize-optimize')
+  expect(h.toasts.at(-1)).toBe('Nothing ticked: press Enter on a row to tick it, or use Apply all.')
+  expect((await d.command('optimize')).text, 'still suggested').toContain('☐ Big-turn warning: off → auto')
+})
+
 test('Apply all applies every suggestion', { timeoutMs: 30000, options: { bigTurn: 'off' } }, async ($, on) => {
   const { h, d } = await start($, on)
   await d.command('optimize')

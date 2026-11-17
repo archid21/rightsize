@@ -9,7 +9,7 @@ claude plugin marketplace add archid21/rightsize
 claude plugin install rightsize@archid21 --scope user
 ```
 
-**Status: 0.15.0.** `/rightsize optimize` suggests setting changes priced on your own use, the report shows what cache rebuilds cost and why, and a paused route comes back by itself. See [New in 0.15.0](#new-in-0150).
+**Status: 0.15.1.** A truer reason when rightsize keeps your effort. **0.15.0:** `/rightsize optimize` suggests setting changes priced on your own use, the report shows what cache rebuilds cost and why, and a paused route comes back by itself. See [New in 0.15.0](#new-in-0150).
 
 MIT license · works with a Claude subscription (Pro, Max, Ultra) or an API key · [Open an issue](https://github.com/archid21/rightsize/issues)
 

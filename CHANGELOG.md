@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.15.1 (2026-11-16)
+
+- **A truer reason when rightsize keeps your effort.** When lowering effort saved too little, the band said the saving was "less than the cache it costs", even where an effort change keeps the cache and costs nothing. It now names the cache only when a switch is measured to rebuild it. Otherwise it says the real reason: `Lowering to low saves under 10%: most of this prompt's cost is reading the conversation, the same at any effort.` What rightsize decides has not changed.
+
 ## 0.15.0 (2026-11-16)
 
 - **A shorter status line with a limit forecast.** The status line shows the model with the effort as a letter: `Sonnet (M)`, `Opus (H↑)` when rightsize raised it, `Sonnet (L auto)` when it picked it. When a usage window is on pace to run out before it resets, it adds the estimated time: `limit ~3:45 PM`, from your average rate since the window started, rounded to 15 minutes. On API billing it shows the session cost instead: `$1.84 session`. The cache stays on the band.

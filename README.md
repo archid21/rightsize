@@ -2,7 +2,7 @@
 
 **Make every Claude token count.**
 
-rightsize sends each prompt to the cheapest model and effort that does the job, raises effort only when Claude is actually stuck, and keeps your cache and context from costing more than they should. No profiles, no tuning: one rule set, two switches.
+rightsize sends each prompt to the cheapest model and effort that does the job, raises effort only when Claude is stuck, and keeps cache and context from costing more than they should. It logs every choice it makes and learns how you work. It then uses that history to optimize, so you spend less and get better results the longer you use it.
 
 ```bash
 claude plugin marketplace add archid21/rightsize

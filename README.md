@@ -136,6 +136,8 @@ On a subscription, a keep-warm request draws a small share of your usage window,
 
 ## New in 0.15.0
 
+rightsize now learns your settings from how you work. After it has watched for a while (30 rated prompts over at least 7 days), `/rightsize optimize` suggests what to change, priced on your own last 30 days, and applies only what you pick. This release also fixes a route that could stay paused for weeks.
+
 - **`/rightsize optimize`.** Suggests changes to rightsize's settings from your last 30 days. Each one shows the 30 days under your current setting and under the new one, measured or estimated. Tick the ones you want in a checklist and press **Apply selected**, or **Apply all**.
 - **Cache rebuilds by cause.** `/rightsize report details` shows what writing the conversation to the cache again cost you, and why: back after the cache expired, a model or effort switch, or a compact (expected).
 - **A paused route comes back by itself.** When the rating was wrong too often on a kind of work, lowering pauses for a number of prompts (**Lowering pause**, 10 by default), then comes back on probation. A **Try lowering again** button ends it early.

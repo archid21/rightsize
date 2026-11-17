@@ -999,6 +999,9 @@ export function canLowerNow(type: TaskType, s: Situation, floor: Level, o: { lev
 /** The plan's reason when the level in use already fits: nothing was held back. */
 export const NONE_FITS = 'the level in use fits'
 
+/** "saves under 10%" for a lowering bar of 0.9; "saves nothing" when the bar is 1 or more. */
+const pctUnder = (bar: number) => (bar >= 1 ? 'saves nothing' : `saves under ${Math.round((1 - bar) * 100)}%`)
+
 export function effortPlan(r0: Rating, s: Situation, floor: Level): Plan {
   const r = heldRating(r0, s)
   const target = capRaise(clampFloor(r.level, floor), s)
@@ -1009,7 +1012,13 @@ export function effortPlan(r0: Rating, s: Situation, floor: Level): Plan {
   if (!can.ok) return { kind: 'none', why: can.why }
   const now = mainCost(r, s, s.level, 0)
   const lowered = mainCost(r, s, target, lowerSwitches(r, s))
-  if (lowered >= now * (s.rules ?? DEFAULT_RULES).lower) return { kind: 'none', why: `lowering to ${target} saves less than the cache it costs` }
+  if (lowered >= now * (s.rules ?? DEFAULT_RULES).lower) {
+    // Name the cache only when the switch is priced; a free switch fails the bar because effort barely changes this prompt's cost.
+    const why = switchCost(s, lowerSwitches(r, s)) > 0
+      ? `lowering to ${target} saves less than the cache it costs`
+      : `lowering to ${target} ${pctUnder((s.rules ?? DEFAULT_RULES).lower)}: most of this prompt's cost is reading the conversation, the same at any effort`
+    return { kind: 'none', why }
+  }
   return { kind: 'effort', dir: 'lower', level: target, saving: now - lowered }
 }
 

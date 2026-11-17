@@ -411,7 +411,13 @@ test('on Opus and Fable every task but a review lowers to low, whatever the rati
   expect(effortPlan(rating({ level: 'medium', fit: { opus: 'medium' } }), { ...s, level: 'high' }, 'medium')).toMatchObject({ kind: 'effort', dir: 'lower', level: 'medium' })
   expect(plan(review({ opus: 'high' }, 'high'), s, 'low'), 'a review raises to high instead').toMatchObject({ kind: 'effort', dir: 'raise', level: 'high', rule: 'review' })
   // The lowering bar still applies where switches are measured to miss: a tiny task saves less than the cache it costs.
-  expect(effortPlan(rating({ level: 'medium', fit: { opus: 'medium' } }), { ...opus, cal: { [SWITCH_KEY]: { n: CAL_FULL, ratio: 1 } } }, 'low')).toMatchObject({ kind: 'none' })
+  expect(effortPlan(rating({ level: 'medium', fit: { opus: 'medium' } }), { ...opus, cal: { [SWITCH_KEY]: { n: CAL_FULL, ratio: 1 } } }, 'low')).toMatchObject({ kind: 'none', why: 'lowering to low saves less than the cache it costs' })
+  // A free switch that still fails the bar does not blame the cache: effort barely moves a prompt that mostly reads the conversation.
+  const reread = rating({ type: 'lookup', level: 'low', fit: { sonnet: 'low' }, read: 0, write: 50, steps: 1 })
+  expect(effortPlan(reread, { ...sonnetSession, context: 140_000, level: 'medium', cal: freeSwitches }, 'low')).toMatchObject({
+    kind: 'none',
+    why: "lowering to low saves under 10%: most of this prompt's cost is reading the conversation, the same at any effort",
+  })
   // Under the rule a lowering pays for one switch at most: the next prompt lowers too (lowerSwitches); a review still pays two.
   expect(lowerSwitches(rating({ type: 'feature' }), opus)).toBe(1)
   expect(lowerSwitches(rating({ type: 'review' }), opus)).toBe(2)

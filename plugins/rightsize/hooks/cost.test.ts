@@ -1140,12 +1140,14 @@ test('the logged tasks per route come from the outcomes in the run log', async (
   expect(missCounts(counted)['extract:haiku']).toBe(10)
   expect(Math.abs((missMap(missRates(counted))['extract:haiku'] ?? 0) - 0.1), 'one in ten needed rework').toBeLessThan(1e-9)
   // 10 tasks and exactly 10% misses: the strict rule refuses; with 11 tasks and the same one miss, it is under 10%.
+  // Extract goes to Sonnet now (P-70), so the route read here is Sonnet's.
+  const toSonnet = (lines: RunLine[]) => lines.map(l => ({ ...l, route: 'delegate:sonnet' }) as RunLine)
   const q = (lines: RunLine[]) => {
-    const ls = noPrior(lines)
+    const ls = noPrior(toSonnet(lines))
     return cheaperTo({ ...evidence('strict', missCounts(ls)), misses: missMap(missRates(ls)) }, 'extract')
   }
   expect(q([...hand(9), ...hand(1, 2)]), '1 of 10: 10%').toBe('none')
-  expect(q([...hand(10), ...hand(1, 2)]), '1 of 11: under 10%').toBe('haiku')
+  expect(q([...hand(10), ...hand(1, 2)]), '1 of 11: under 10%').toBe('sonnet')
   expect(q(hand(9)), '9 tasks').toBe('none')
 })
 
@@ -1307,4 +1309,79 @@ test('output split: text and tool input are sized from what was written, thinkin
   // No output: nothing, and no division by zero. An unknown model costs nothing.
   expect(splitOutput(DEFAULT_PRICES, model, { ...u, output_tokens: 0 }, '', [])).toMatchObject({ tokens: 0, thinking: 0, cost: 0, thinkingCost: 0 })
   expect(splitOutput(DEFAULT_PRICES, 'claude-unknown-9', u, 'hello', []).cost).toBe(0)
+})
+
+// ---- P-70: route by subject (ADR 0086) ----
+
+const subjectReview = (subject: Rating['subject'] | undefined, fit: Rating['fit'] = { haiku: 'low', sonnet: 'low', opus: 'low', fable: 'low' }, level: Rating['level'] = 'low') =>
+  rating({ type: 'review', ...(subject ? { subject } : {}), level, fit, read: 30_000, write: 2000, steps: 10 })
+const haikuSession: Situation = { tier: 'haiku', level: 'medium', context: 20_000, prices: DEFAULT_PRICES, cal: {} }
+
+test('a design or text review runs on Sonnet at medium: Haiku switches to Sonnet', async () => {
+  for (const subject of ['design', 'text'] as const) {
+    expect(plan(subjectReview(subject), haikuSession, 'low'), subject).toMatchObject({ kind: 'switch', tier: 'sonnet', level: 'medium', rule: 'review' })
+    expect(plan(subjectReview(subject, { sonnet: 'high' }), haikuSession, 'low'), `${subject}: the rated level above medium is kept`).toMatchObject({ kind: 'switch', tier: 'sonnet', level: 'high' })
+  }
+  expect(plan(subjectReview('design'), { ...haikuSession, without: ['sonnet'] }, 'low').kind, 'Sonnet turned off: no switch').not.toBe('switch')
+})
+
+test('a design or text review stays on Sonnet at medium or more', async () => {
+  for (const subject of ['design', 'text'] as const) {
+    expect(plan(subjectReview(subject), { ...sonnetSession, level: 'low' }, 'low'), `${subject} at low is raised to medium`).toMatchObject({ kind: 'effort', dir: 'raise', level: 'medium', rule: 'review' })
+    expect(plan(subjectReview(subject), sonnetSession, 'low'), `${subject} at medium stays`).toMatchObject({ kind: 'none' })
+    expect(plan(subjectReview(subject), { ...sonnetSession, level: 'high' }, 'low'), `${subject} at high stays`).toMatchObject({ kind: 'none' })
+  }
+})
+
+test('a design or text review on Opus or Fable is lowered like other work, not held at high', async () => {
+  for (const subject of ['design', 'text'] as const) {
+    for (const s of [opus, fable, { ...opus, level: 'high' as const }]) {
+      const p = plan(subjectReview(subject), s, 'low')
+      expect(p.kind, `${subject} on ${s.tier} is not switched or raised`).toBe('effort')
+      if (p.kind === 'effort') {
+        expect(p.dir, `${subject} on ${s.tier}`).toBe('lower')
+        expect(p.rule, 'not the review rule').toBeUndefined()
+        expect(p.level).toBe('low')
+      }
+    }
+  }
+  expect(lowerSwitches(subjectReview('text'), opus), 'one switch, as for other work').toBe(1)
+})
+
+test('a code review, a review with no subject and any other subject keep today\'s behavior', async () => {
+  for (const subject of ['code', undefined, 'architecture', 'ui', 'plain', 'code-legal-images', 'short-copy', 'long-docs'] as const) {
+    const name = String(subject)
+    expect(plan(subjectReview(subject), sonnetSession, 'low'), `${name} on Sonnet`).toMatchObject({ kind: 'switch', tier: 'opus', level: 'high', rule: 'review' })
+    expect(plan(subjectReview(subject), haikuSession, 'low'), `${name} on Haiku`).toMatchObject({ kind: 'switch', tier: 'opus', level: 'high', rule: 'review' })
+    expect(plan(subjectReview(subject, { opus: 'low' }), opus, 'low'), `${name} on Opus`).toMatchObject({ kind: 'effort', dir: 'raise', level: 'high', rule: 'review' })
+    expect(plan(subjectReview(subject, { fable: 'low' }), fable, 'low'), `${name} on Fable: planned as before`).toEqual(plan(subjectReview('code', { fable: 'low' }), fable, 'low'))
+  }
+  expect(lowerSwitches(subjectReview('code'), opus), 'a code review still pays two').toBe(2)
+})
+
+test('every other type ignores subject entirely', async () => {
+  const subjects = ['design', 'text', 'code'] as const
+  for (const type of TASK_TYPES.filter(t => t !== 'review')) {
+    for (const s of [haikuSession, sonnetSession, opus, fable]) {
+      const base = rating({ type, level: 'medium', fit: { haiku: 'medium', sonnet: 'medium', opus: 'medium', fable: 'medium' }, read: 30_000, write: 2000, steps: 30 })
+      for (const subject of subjects) expect(plan({ ...base, subject }, s, 'low'), `${type} ${subject} on ${s.tier}`).toEqual(plan(base, s, 'low'))
+    }
+  }
+})
+
+test('extract and summarize from Fable go to a Sonnet helper, at any size; Haiku keeps lookup, search and bulk-edit', async () => {
+  const work = (type: TaskType, steps: number) => rating({ type, level: 'low', fit: { haiku: 'low', sonnet: 'low', opus: 'low', fable: 'low' }, read: 150_000, write: 3000, steps })
+  const to = (r: Rating, s: Situation) => {
+    const p = plan(r, s, 'low')
+    return p.kind === 'delegate' ? p.tier : p.kind
+  }
+  expect(HAIKU_TYPES).toEqual(['lookup', 'search', 'bulk-edit'])
+  for (const s of [{ ...fable, cal: freeSwitches }]) {
+    for (const type of ['extract', 'summarize'] as const) {
+      expect(to(work(type, 30), s), `${type} on ${s.tier}`).toBe('sonnet')
+      expect(to(work(type, 3), s), `${type} on ${s.tier}, short: no 20-step floor`).toBe('sonnet')
+    }
+    for (const type of ['lookup', 'search', 'bulk-edit'] as const) expect(to(work(type, 30), s), `${type} on ${s.tier}`).toBe('haiku')
+    expect(to(work('feature', 3), s), 'other types keep the 20-step floor').toBe('effort')
+  }
 })

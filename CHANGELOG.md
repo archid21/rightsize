@@ -3,6 +3,9 @@
 ## 0.15.2 (unreleased)
 
 - **The tip to compact on Sonnet shows with whatsnext too.** When rightsize saved a whatsnext handoff before the cache went cold, the tip never showed: it was set up only without whatsnext, and the wrap-up turn's end cancelled it. It now shows when the cache warmed by the wrap-up goes cold, about one cache life after the wrap-up ends, unless you send a prompt first.
+- **A review of a design or of text no longer needs Opus.** The rater now also says what a request is about. A review of a design document (no code in it) or of prose such as an email or README wording runs on Sonnet at medium effort or more: from a Haiku start the chat switches to Sonnet for the turn, on Sonnet it stays, and on Opus or Fable it is lowered like other work. We tested this before changing it. A code review, or a review that cannot be placed, still runs on Opus at high effort or more.
+- **Extraction and summaries go to Sonnet, not Haiku.** From an Opus or Fable start, they now go to a Sonnet helper, at any size. Lookups, searches and bulk edits still go to Haiku.
+- **A Haiku helper gets three rules in its brief.** Count words, characters or items with a tool and report its number; use only facts in the input and say what is missing; give the final answer only.
 
 ## 0.15.1 (2026-11-16)
 

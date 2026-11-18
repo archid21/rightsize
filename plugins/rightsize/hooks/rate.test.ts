@@ -115,3 +115,21 @@ test('the rater is told that effort is difficulty, not size: many files or steps
   expect(prompt).not.toContain('multi-file changes')
   expect(prompt).not.toContain('long multi-step plans')
 })
+
+test('the rating reply carries `subject`, and the prompt lists its values (P-70)', async () => {
+  expect(prompt).toContain('"type":"<type>","subject":"<subject>"')
+  for (const v of ['code', 'design', 'text', 'architecture', 'ui', 'plain', 'code-legal-images', 'short-copy', 'long-docs']) expect(prompt, v).toContain(`- ${v}:`)
+  expect(prompt).toContain('pick the costlier subject')
+})
+
+test('parseRating reads a known subject, and a missing or unknown one is undefined, never an error', async () => {
+  const read = (extra: string) => parseRating(`{"fit":{"opus":"low"},"type":"review"${extra}}`, 'opus')
+  expect(read(',"subject":"design"')?.subject).toBe('design')
+  expect(read(',"subject":" Text "')?.subject, 'trimmed and lower-cased').toBe('text')
+  expect(read(',"subject":"code-legal-images"')?.subject).toBe('code-legal-images')
+  expect(read('')?.subject, 'missing').toBeUndefined()
+  expect(read(',"subject":"poetry"')?.subject, 'unknown').toBeUndefined()
+  expect(read(',"subject":5')?.subject, 'not a string').toBeUndefined()
+  expect(read(',"subject":"poetry"'), 'the rest of the rating still parses').toMatchObject({ type: 'review' })
+  expect('subject' in (read('') ?? {}), 'no key when missing').toBe(false)
+})

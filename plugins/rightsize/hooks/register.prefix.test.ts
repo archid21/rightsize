@@ -86,3 +86,18 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(new Set(h.forkKeys.map(k => k.join(','))), 'a prompt and no system text, context or model of its own').toEqual(new Set(['prompt']))
   })
 }
+
+test('a Haiku hand-off note carries the three helper rules; a Sonnet one does not (P-70)', async () => {
+  const haiku = delegateNote({ tier: 'haiku', level: 'low', dir: 'down' } as never, 2)
+  const sonnet = delegateNote({ tier: 'sonnet', level: 'low', dir: 'down' } as never, 2)
+  const opus = delegateNote({ tier: 'opus', level: 'high', dir: 'up' } as never, 1)
+  expect(haiku).toContain('Count words, characters or items with a tool (wc or a short script) and report the tool\'s number. Never estimate a count.')
+  expect(haiku).toContain('Use only facts in the input. If something needed is missing, say so instead of filling it in.')
+  expect(haiku).toContain('Give the final answer only: no drafts and no self-corrections.')
+  for (const note of [sonnet, opus]) {
+    expect(note).not.toContain('wc or a short script')
+    expect(note).not.toContain('Use only facts in the input')
+    expect(note).not.toContain('no drafts')
+  }
+  expect(delegateNote({ tier: 'haiku', level: 'low', dir: 'down' } as never, 2), 'same bytes each time').toBe(haiku)
+})

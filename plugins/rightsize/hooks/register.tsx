@@ -46,6 +46,8 @@ import {
   isTaskType,
   levelRank,
   REVIEW_LEVEL,
+  LIGHT_REVIEW_LEVEL,
+  lightReview,
   learn,
   mainCost,
   money,
@@ -2253,7 +2255,7 @@ async function resolve($: EngineInterface, p: Plan, r: Rating, s: Situation): Pr
     if (c === 'auto') return send
     if (c === 'stay') return stay()
     if (c !== 'ask' && c !== 'each') return {}
-    const why = p.rule === 'review' ? `This is a review: reviews run on ${to} at ${REVIEW_LEVEL} effort or more.` : `This is ${r.type} work, and ${cur} alone usually manages it.`
+    const why = p.rule === 'review' ? (lightReview(r) ? `This is a review of a design or of text: it runs on ${to} at ${LIGHT_REVIEW_LEVEL} effort or more.` : `This is a review: reviews run on ${to} at ${REVIEW_LEVEL} effort or more.`) : `This is ${r.type} work, and ${cur} alone usually manages it.`
     const question = `${why} Run this prompt on ${to} at ${p.level}, then go back to ${cur}? ${costLine(p.cost, p.mainCost, cur)}`
     // The Haiku-start switch always asks (ADR 0027), and "ask each time" never remembers: neither offers a rule.
     const keeps = p.rule !== 'haiku' && c !== 'each'
@@ -2302,6 +2304,14 @@ async function resolve($: EngineInterface, p: Plan, r: Rating, s: Situation): Pr
   return {}
 }
 
+/** Three rules a Haiku helper's brief carries (P-70, ADR 0086): Haiku miscounts, fills gaps and leaves drafts in its answer. */
+export const HAIKU_BRIEF_RULES: readonly string[] = [
+  '   The helper is Haiku, so add these three rules to the brief:',
+  '   a. Count words, characters or items with a tool (wc or a short script) and report the tool\'s number. Never estimate a count.',
+  '   b. Use only facts in the input. If something needed is missing, say so instead of filling it in.',
+  '   c. Give the final answer only: no drafts and no self-corrections.',
+]
+
 /** The hidden note that hands the request to a subagent and has the main chat check it. */
 export function delegateNote(d: NonNullable<Run['delegate']>, rounds = FIXED.chances) {
   // The task's chances are its rework rounds: a fixed count.
@@ -2312,6 +2322,7 @@ export function delegateNote(d: NonNullable<Run['delegate']>, rounds = FIXED.cha
     `[rightsize] The person has chosen to hand this request to a ${name} subagent, because ${why}. Do it this way:`,
     `1. Start one subagent with the Agent tool, model "${d.tier}", effort "${d.level}". Give it a complete brief: the goal, the files, facts and decisions it needs from this conversation, what is out of scope, and a "Done means" list of 3 to 6 items that can be checked. Point to code as file:line ranges or short excerpts. Never paste whole files into the brief.`,
     '   Tell the subagent: if it meets a choice the brief does not settle, or something that contradicts the brief, it stops and reports the question with its options. It does not guess. You decide, then continue it.',
+    ...(d.tier === 'haiku' ? HAIKU_BRIEF_RULES : []),
     '   If the request includes steps only the person can approve (pushing, publishing, releasing, deploying, sending messages, acting in their accounts), the subagent prepares everything (edits, tests, notes) and stops before those steps. It cannot see the person\'s approval, so it would refuse them. You do those steps yourself after step 2.',
     '2. When it reports back, check its result against every Done-means item yourself. Use real proof where you can (run the tests, read the changed files), not its summary.',
     `3. If an item fails, send that subagent a specific fix-up note (continue it with SendMessage where you can; otherwise start it again with the note and its last result). At most ${rounds === 1 ? '1 rework round' : `${rounds} rework rounds`}.`,

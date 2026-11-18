@@ -31,6 +31,10 @@ export const DEFAULT_LEVEL: Record<Tier, Level> = { haiku: 'medium', sonnet: 'hi
 
 export const isLevel = (v: unknown): v is Level => typeof v === 'string' && (LEVELS as readonly string[]).includes(v)
 export const isTier = (v: unknown): v is Tier => typeof v === 'string' && (TIERS as readonly string[]).includes(v)
+/** What a request is about, as the rater reads it (P-70, ADR 0086). Only a review's `design` and `text` change a route. */
+export const SUBJECTS = ['code', 'design', 'text', 'architecture', 'ui', 'plain', 'code-legal-images', 'short-copy', 'long-docs'] as const
+export type Subject = (typeof SUBJECTS)[number]
+export const isSubject = (v: unknown): v is Subject => typeof v === 'string' && (SUBJECTS as readonly string[]).includes(v)
 export const isTaskType = (v: unknown): v is TaskType => typeof v === 'string' && (TASK_TYPES as readonly string[]).includes(v)
 export const levelRank = (l: Level) => LEVELS.indexOf(l)
 export const tierRank = (t: Tier) => TIERS.indexOf(t)
@@ -419,6 +423,8 @@ export type Rating = {
   level: Level
   fit: Fit
   type: TaskType
+  /** What the request is about, as the rater read it (P-70). Only a review's design and text subjects change a route. */
+  subject?: Subject
   /** Tokens of files, logs and tool output the work reads. */
   read: number
   /** Tokens the work writes, thinking left out. */
@@ -737,8 +743,8 @@ export const PREFERRED: Record<TaskType, Tier> = {
   lookup: 'haiku',
   search: 'haiku',
   'bulk-edit': 'haiku',
-  extract: 'haiku',
-  summarize: 'haiku',
+  extract: 'sonnet',
+  summarize: 'sonnet',
   writing: 'sonnet',
   review: 'opus',
   other: 'sonnet',
@@ -938,6 +944,10 @@ const capRaise = (target: Level, s: Situation) => {
 // Sonnet session it is not taken for debugging (the rater cannot tell a routine bug from a subtle one from the prompt).
 // The session stays at its level (a lowering still goes through), and raising is left to stuck detection
 // (struggle.ts), which sees the turn go wrong. A review is never held: reviewPlan raises Opus to high on purpose.
+/** A review of a design document or of prose (subject `design` or `text`): it runs on Sonnet at medium or more, not on Opus at high (P-70, ADR 0086). */
+export const lightReview = (r: Rating) => r.type === 'review' && (r.subject === 'design' || r.subject === 'text')
+/** A review that keeps its level on Opus and Fable: every review but a light one. */
+const heldReview = (r: Rating) => r.type === 'review' && !lightReview(r)
 export const NO_PROMPT_RAISE: readonly Tier[] = ['opus', 'fable']
 const DEBUG_HOLD_TIER: Tier = 'sonnet'
 /** On Sonnet a rated raise is taken only for a task rated at least this hard and at least SONNET_RAISE_STEPS big (ADR 0021). */
@@ -950,11 +960,11 @@ function heldRating(r: Rating, s: Situation): Rating {
   // A model the rater says would struggle at any level is not held: the raise is the fallback when no stronger route exists.
   if (!own) return r
   // Opus and Fable: lower to low on every task type but review, whatever the rating says, and never raise at prompt time.
-  if (NO_PROMPT_RAISE.includes(s.tier) && r.type !== 'review') return { ...r, level: LOWER_TO, fit: { ...r.fit, [s.tier]: LOWER_TO } }
+  if (NO_PROMPT_RAISE.includes(s.tier) && !heldReview(r)) return { ...r, level: LOWER_TO, fit: { ...r.fit, [s.tier]: LOWER_TO } }
   if (levelRank(own) <= levelRank(s.level) && levelRank(r.level) <= levelRank(s.level)) return r
   // Sonnet: a debugging raise is never taken (it bought no passes); any other raise only for a hard-rated task of 20 steps or more.
   const hardAndBig = levelRank(r.level) >= levelRank(SONNET_RAISE_LEVEL) && r.steps >= SONNET_RAISE_STEPS
-  const held = NO_PROMPT_RAISE.includes(s.tier) ? r.type !== 'review' : s.tier === DEBUG_HOLD_TIER && (r.type === 'debug' || !hardAndBig)
+  const held = NO_PROMPT_RAISE.includes(s.tier) ? !heldReview(r) : s.tier === DEBUG_HOLD_TIER && (r.type === 'debug' || !hardAndBig)
   if (!held) return r
   return { ...r, level: levelRank(r.level) > levelRank(s.level) ? s.level : r.level, fit: { ...r.fit, [s.tier]: levelRank(own) > levelRank(s.level) ? s.level : own } }
 }
@@ -966,7 +976,7 @@ function heldRating(r: Rating, s: Situation): Rating {
  * only the first switch is ever paid (ADR 0024).
  */
 export function lowerSwitches(r: Rating, s: Situation): number {
-  return NO_PROMPT_RAISE.includes(s.tier) && r.type !== 'review' ? 1 : 2
+  return NO_PROMPT_RAISE.includes(s.tier) && !heldReview(r) ? 1 : 2
 }
 
 /**
@@ -1032,7 +1042,12 @@ export const HAND_DOWN_FROM: Tier = 'opus'
 /** A hand-down to a helper other than Haiku pays only for a task of this many rated steps or more (ADR 0021). */
 export const HAND_DOWN_STEPS = 20
 /** The task types a Haiku helper takes (ADR 0021): mechanical work. The rest stays on a stronger model. */
-export const HAIKU_TYPES: readonly TaskType[] = ['lookup', 'search', 'bulk-edit', 'extract', 'summarize']
+export const HAIKU_TYPES: readonly TaskType[] = ['lookup', 'search', 'bulk-edit']
+/** Extract and summarize went to Haiku until P-70 (ADR 0086). They now go to a Sonnet helper, at any size: no HAND_DOWN_STEPS floor. */
+export const SONNET_HELPER_TYPES: readonly TaskType[] = ['extract', 'summarize']
+/** A light review (see lightReview) runs on Sonnet at medium or more. */
+export const LIGHT_REVIEW_TIER: Tier = 'sonnet'
+export const LIGHT_REVIEW_LEVEL: Level = 'medium'
 /** On a Haiku session these task types switch the main chat to Sonnet for the turn, as a review switches to Opus (ADR 0021). */
 export const HAIKU_SWITCH_TYPES: readonly TaskType[] = ['debug', 'feature', 'refactor', 'writing']
 export const HAIKU_SWITCH_TIER: Tier = 'sonnet'
@@ -1071,7 +1086,24 @@ function haikuSwitchPlan(r: Rating, s: Situation, floor: Level): Plan | undefine
 export const REVIEW_LEVEL: Level = 'high'
 const atLeast = (l: Level, min: Level) => (levelRank(l) < levelRank(min) ? min : l)
 
+// A light review (subject design or text) is planned on Sonnet at medium or more. On Haiku it switches the main chat to Sonnet;
+// on Sonnet it stays; on Opus and Fable it is not held, so plan() lowers it like other work.
+function lightReviewPlan(r: Rating, s: Situation, floor: Level): Plan | undefined {
+  const top = s.reviewCeiling && levelRank(s.reviewCeiling) < levelRank(ceilingOf(s)) ? s.reviewCeiling : ceilingOf(s)
+  const level = clampCeiling(clampFloor(atLeast(r.fit[LIGHT_REVIEW_TIER] ?? LIGHT_REVIEW_LEVEL, LIGHT_REVIEW_LEVEL), floor), top)
+  if (tierRank(s.tier) < tierRank(LIGHT_REVIEW_TIER)) {
+    if (s.without?.includes(LIGHT_REVIEW_TIER) || !fitsWindow(s, LIGHT_REVIEW_TIER)) return undefined
+    const cost = mainCost(r, { ...s, tier: LIGHT_REVIEW_TIER }, level, 0) + (s.context * atPrompt(s.prices[LIGHT_REVIEW_TIER], s.context).cacheWrite) / 1e6
+    return { kind: 'switch', tier: LIGHT_REVIEW_TIER, level, cost, mainCost: mainCost(r, s, s.level, 0), rule: 'review' }
+  }
+  if (s.tier !== LIGHT_REVIEW_TIER) return undefined
+  const target = capRaise(level, s)
+  if (levelRank(target) > levelRank(s.level)) return { kind: 'effort', dir: 'raise', level: target, rule: 'review' }
+  return { kind: 'none', why: `this kind of review stays on ${TIER_NAME[LIGHT_REVIEW_TIER]} at ${LIGHT_REVIEW_LEVEL} effort or more` }
+}
+
 function reviewPlan(r: Rating, s: Situation, floor: Level): Plan | undefined {
+  if (lightReview(r)) return lightReviewPlan(r, s, floor)
   // Unlike a route in plan(), a ceiling below high does not drop this one: the review must still run,
   // so the switch is capped at the ceiling on purpose, though it then runs below the level a review needs.
   // The profile's review ceiling (Economy: high) caps it too.
@@ -1109,7 +1141,7 @@ export function plan(r: Rating, s: Situation, floor: Level): Plan {
   const routes = TIERS.flatMap(t => {
     const need = r.fit[t]
     if (t === s.tier || !need || s.without?.includes(t)) return []
-    if (r.type === 'review' && tierRank(t) < tierRank(REVIEW_TIER)) return []
+    if (heldReview(r) && tierRank(t) < tierRank(REVIEW_TIER)) return []
     // A model that needs more than Highest effort allows does not fit: no route, up or down. The review
     // minimum is not counted here: a review on Opus is capped at the ceiling on purpose (see reviewPlan).
     if (overCeiling(need, s)) return []
@@ -1118,9 +1150,10 @@ export function plan(r: Rating, s: Situation, floor: Level): Plan {
       if (blocked(s, r.type, t)) return []
       // Haiku takes mechanical work only; any other helper pays only on a task of 20 steps or more (the brief and the check
       // cost more than it saves on a short one).
-      if (t === 'haiku' ? !HAIKU_TYPES.includes(r.type) : r.steps < HAND_DOWN_STEPS) return []
+      if (t === 'haiku' ? !HAIKU_TYPES.includes(r.type) : r.steps < HAND_DOWN_STEPS && !SONNET_HELPER_TYPES.includes(r.type)) return []
     }
-    const level = clampCeiling(clampFloor(r.type === 'review' && t === REVIEW_TIER ? atLeast(need, REVIEW_LEVEL) : need, floor), ceilingOf(s))
+    const need2 = heldReview(r) && t === REVIEW_TIER ? atLeast(need, REVIEW_LEVEL) : lightReview(r) && t === LIGHT_REVIEW_TIER ? atLeast(need, LIGHT_REVIEW_LEVEL) : need
+    const level = clampCeiling(clampFloor(need2, floor), ceilingOf(s))
     return [{ tier: t, level, cost: delegateCost(r, s, t, level), n: runsOn(s.cal, delegateKeys(r.type, t, level)) }]
   }).sort((a, b) => a.cost - b.cost)
   const own = r.fit[s.tier]

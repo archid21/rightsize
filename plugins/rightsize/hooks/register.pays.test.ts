@@ -290,6 +290,24 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.submitted.length).toBe(1)
   })
 
+  test(`gate: with whatsnext and no compaction that pays, the handoff is saved and the cold-compact tip is still offered once the cache is cold (${surface})`, { timeoutMs: 30000, options: UNSET.options }, async ($, on) => {
+    // 180K tokens: big enough that compacting on Sonnet saves the Idle warning amount, under Claude Code's idle-compact size.
+    const { h, d } = await session($, on, { stretches: SHORT, commands: WHATSNEXT_CMDS, usage: { ...BIG_TURN, cache_read_input_tokens: 180_000 } })
+    await turn(d, 't1')
+    await h.advance(57 * MIN)
+    expect(h.submitted.map(s => s.text)).toEqual(['wrap up'])
+    // whatsnext answers the wrap-up as its own turn, which ends before the expiry.
+    await d.turnStart('t2', 'wrap up')
+    await turn(d, 't2')
+    // The wrap-up turn warmed the cache again: no tip while it lives, the tip once it has gone cold.
+    await h.advance(30 * MIN)
+    expect(coldLog(h)).not.toContain('cold-compact tip: offered')
+    await h.advance(31 * MIN)
+    expect(h.compactions, 'no compaction: the handoff is the action').toBe(0)
+    expect(coldLog(h)).toContain('cold-compact tip: offered')
+    expect(await bandText($, surface)).toContain('Cache is cold. Compact on Sonnet first to save')
+  })
+
   test(`gate: when it does not pay and there is no whatsnext, nothing is done (${surface})`, { timeoutMs: 30000, options: UNSET.options }, async ($, on) => {
     const { h, d } = await session($, on, { stretches: SHORT })
     await turn(d, 't1')

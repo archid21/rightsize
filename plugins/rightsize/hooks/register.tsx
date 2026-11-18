@@ -4350,6 +4350,8 @@ type CacheNote = { text: string; button: { id: string; label: string }; more: re
 let warming: Warming | null = null
 /** A handoff or a compaction ran since the person's last prompt: the turn it caused does not start another round. */
 let coldDone = false
+/** A handoff was saved before the cache went cold: the wrap-up turn's end arms the cold-compact tip (P-47) for when the cache it refreshed expires. */
+let tipAfterWrap: ColdTurn | null = null
 /** The prompt rightsize itself is submitting: its own prompt.submit hook lets it through unrated. */
 let coldPrompt: string | null = null
 /** A main-chat turn is running: nothing here fires meanwhile. */
@@ -4455,6 +4457,12 @@ async function coldCheck($: EngineInterface) {
   coldTurn = null
   // An offer for an earlier turn is stale now: this turn gets its own, or none.
   if ((await $.state.get(BAND).catch(() => undefined))?.value?.cold) await setBand($, null)
+  if (tipAfterWrap) {
+    const t = { ...tipAfterWrap, context: lastContext || tipAfterWrap.context }
+    tipAfterWrap = null
+    if (!off && cacheOn) await armCold($, coldGen, (lastTurnAt || (await $.clock.now())) + cacheTtl, () => showColdTip($, t))
+    return
+  }
   if (off || !cacheOn || coldDone || coldMode === 'off') return
   const context = lastContext
   if (!context) return
@@ -5091,6 +5099,7 @@ async function saveHandoff($: EngineInterface, c: ColdTurn) {
       return
     }
     await log($, `handoff: submitted "${WRAP_UP}" to whatsnext before the cache went cold`)
+    tipAfterWrap = c
     await showCold($, 'Saved a handoff with whatsnext before the cache went cold.')
   } catch (err) {
     await log($, `handoff failed: ${err instanceof Error ? err.message : String(err)}`)
@@ -6966,6 +6975,7 @@ export const register: Register = (on, options) => {
     offerOpen = false
     coldTurn = null
     coldDone = false
+    tipAfterWrap = null
     coldPrompt = null
     wrapThenCompact = null
     wrapThenFresh = false
@@ -7146,6 +7156,7 @@ export const register: Register = (on, options) => {
     // The person is back: keep-warm requests, a waiting handoff and a waiting offer stop, and the next big turn's end starts afresh.
     if (!off && fromPerson(e) && !e.command && !e.isMeta) {
       coldDone = false
+      tipAfterWrap = null
       wrapThenCompact = null
       wrapThenFresh = false
       freshHeld = null

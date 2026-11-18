@@ -1009,8 +1009,22 @@ export function canLowerNow(type: TaskType, s: Situation, floor: Level, o: { lev
 /** The plan's reason when the level in use already fits: nothing was held back. */
 export const NONE_FITS = 'the level in use fits'
 
-/** "saves under 10%" for a lowering bar of 0.9; "saves nothing" when the bar is 1 or more. */
+/** "saves under 10%" for a lowering bar of 0.9; "saves nothing" when the bar is 1 or more (any saving counts on Opus and Fable with a free switch, see lowerBar). */
 const pctUnder = (bar: number) => (bar >= 1 ? 'saves nothing' : `saves under ${Math.round((1 - bar) * 100)}%`)
+
+/**
+ * The share of staying a lowering must come in under. On Opus and Fable, with a free switch and the default bar, any saving
+ * counts (share 1; ADR 0088): the lower level writes about 9% fewer output and thinking tokens, and with nothing to lose to
+ * the cache that is all gain. Anything else keeps the bar in force: a priced switch (a gateway, an older model), where a
+ * saving must clear the cache it may cost; Sonnet and Haiku; and a bar budget pacing has moved (`rules.lower` is not the
+ * default), which pacing set on purpose. No /config row sets the bar; only pacing moves it.
+ */
+export function lowerBar(r: Rating, s: Situation): number {
+  const rules = s.rules ?? DEFAULT_RULES
+  // A bar under the default (stricter) is kept; the default and pacing's looser bars (0.97, 1) mean any saving here.
+  if (rules.lower < LOWER_RULE || !NO_PROMPT_RAISE.includes(s.tier)) return rules.lower
+  return switchCost(s, lowerSwitches(r, s)) === 0 ? 1 : rules.lower
+}
 
 export function effortPlan(r0: Rating, s: Situation, floor: Level): Plan {
   const r = heldRating(r0, s)
@@ -1022,11 +1036,12 @@ export function effortPlan(r0: Rating, s: Situation, floor: Level): Plan {
   if (!can.ok) return { kind: 'none', why: can.why }
   const now = mainCost(r, s, s.level, 0)
   const lowered = mainCost(r, s, target, lowerSwitches(r, s))
-  if (lowered >= now * (s.rules ?? DEFAULT_RULES).lower) {
+  const bar = lowerBar(r, s)
+  if (lowered >= now * bar) {
     // Name the cache only when the switch is priced; a free switch fails the bar because effort barely changes this prompt's cost.
     const why = switchCost(s, lowerSwitches(r, s)) > 0
       ? `lowering to ${target} saves less than the cache it costs`
-      : `lowering to ${target} ${pctUnder((s.rules ?? DEFAULT_RULES).lower)}: most of this prompt's cost is reading the conversation, the same at any effort`
+      : `lowering to ${target} ${pctUnder(bar)}: most of this prompt's cost is reading the conversation, the same at any effort`
     return { kind: 'none', why }
   }
   return { kind: 'effort', dir: 'lower', level: target, saving: now - lowered }

@@ -9,7 +9,7 @@ const ago = (d: number) => new Date(NOW - d * DAY).toISOString()
 /** 40 rated prompts over 20 days, each costing `actual`. */
 const runs = (actual = 0.1): RunLine[] => Array.from({ length: 40 }, (_, k) => ({ at: ago(k / 2), kind: 'run', session: 's', actual }))
 const pings = (n: number, overhead: number): RunLine[] => Array.from({ length: n }, (_, k) => ({ at: ago(k), kind: 'warm', session: 's', overhead }))
-const base = (x: Partial<OptInput> = {}): OptInput => ({ lines: runs(), now: NOW, subscription: true, beforeCold: 'while it pays', bigTurn: 'auto', skipped: {}, ...x })
+const base = (x: Partial<OptInput> = {}): OptInput => ({ lines: runs(), now: NOW, subscription: true, beforeCold: 'while it pays', bigTurn: 'auto', lowerRule: 'not set', skipped: {}, ...x })
 const ids = (x: Partial<OptInput>) => optimize(base(x)).suggestions.map(s => s.id)
 
 test('not enough use: under 30 rated prompts or 7 days, no suggestions', () => {
@@ -55,6 +55,67 @@ test('cache life: the cheaper life when it is not the current one, estimated, bo
   expect(ids({ life: { advice: advice(9.8, 12.1), current: '5m' } }), 'already the cheaper one').toEqual([])
   expect(ids({ life: { advice: { ok: false, turns: 3, days: 1 }, current: '1h' } })).toEqual([])
   expect(ids({}), 'not eligible: no life input').toEqual([])
+})
+
+/** `n` automatic lowerings over `days` days: each would have cost `stay`, really cost `actual`, and its switch missing the cache cost `miss`. */
+const lowerings = (n: number, days: number, stay: number, actual: number, miss = 0): RunLine[] =>
+  Array.from({ length: n }, (_, k) => ({ at: ago(k % days), kind: 'run' as const, session: 's', change: 'lower' as const, stay, actual, ...(miss ? { missCost: miss } : {}) }))
+const lowerIds = (x: Partial<OptInput>) => optimize(base(x)).suggestions.filter(s => s.id === 'lowerRule')
+
+test('lowering that saved about nothing: suggest never lower, measured, with now and after (P-78)', () => {
+  // 40 lowered turns over 10 days, each $1.00 to stay and $0.995 really: a 0.5% saving, $0.20 in all.
+  const [s] = lowerIds({ lines: [...runs(), ...lowerings(40, 10, 1, 0.995, 0.01)] })
+  expect(s).toMatchObject({ id: 'lowerRule', title: 'Lowering', from: 'not set', to: 'never lower' })
+  expect(s?.now).toBe('40 lowered turns saved $0.20, 0.5% of the $40.00 they would have cost, including $0.40 on turns that stepped back up')
+  expect(s?.after).toBe('$0.00 saved  →  $0.20 less saved')
+  expect(s?.basis.startsWith('Measured')).toBe(true)
+  expect(s?.saving, 'turning it off loses a little: no saving is promised').toBeUndefined()
+  expect(suggestionHead(s!, false)).toBe('☐ Lowering: not set → never lower')
+  expect(optimizeText(optimize(base({ lines: [...runs(), ...lowerings(40, 10, 1, 0.995)] })), true, true)).toContain('☐ Lowering: not set → never lower')
+})
+
+test('lowering that cost more than staying: suggest never lower, with the dollars it would save', () => {
+  const [s] = lowerIds({ lines: [...runs(), ...lowerings(40, 10, 1, 1.05)] })
+  expect(s?.now).toBe('40 lowered turns cost $2.00 more than staying')
+  expect(s?.after).toBe('$0.00 more  →  $2.00 less spent')
+  expect(Number(s?.saving?.toFixed(6))).toBe(2)
+})
+
+test('lowering that saved 1% or less of what staying cost counts, and over 1% does not', () => {
+  expect(lowerIds({ lines: [...runs(), ...lowerings(40, 10, 1, 0.991)] }), 'just under 1%').toHaveLength(1)
+  expect(lowerIds({ lines: [...runs(), ...lowerings(40, 10, 1, 0.98)] }), '2%: it pays, leave it').toEqual([])
+  expect(lowerIds({ lines: [...runs(), ...lowerings(40, 10, 1, 0.7)] }), 'clearly positive').toEqual([])
+})
+
+test('lowering: not under 30 lowered turns, not under 7 days of them, only the last 30 days', () => {
+  expect(lowerIds({ lines: [...runs(), ...lowerings(29, 10, 1, 1.05)] }), '29 turns').toEqual([])
+  expect(lowerIds({ lines: [...runs(), ...lowerings(40, 6, 1, 1.05)] }), '6 days').toEqual([])
+  expect(lowerIds({ lines: [...runs(), ...lowerings(40, 7, 1, 1.05)] }), '30 turns over 7 days is enough').toHaveLength(1)
+  const old = lowerings(40, 10, 1, 1.05).map(l => ({ ...l, at: ago(40 + Math.random()) }))
+  expect(lowerIds({ lines: [...runs(), ...old] }), 'older than 30 days').toEqual([])
+})
+
+test('lowering: a lowering the person made themselves, a turn they stopped and a turn that is not a lowering are not counted', () => {
+  const mine = lowerings(40, 10, 1, 1.05).map(l => ({ ...l, loweredBy: 'you' as const }))
+  expect(lowerIds({ lines: [...runs(), ...mine] })).toEqual([])
+  const stopped = lowerings(40, 10, 1, 1.05).map(l => ({ ...l, aborted: true }))
+  expect(lowerIds({ lines: [...runs(), ...stopped] })).toEqual([])
+  const raised = lowerings(40, 10, 1, 1.05).map(l => ({ ...l, change: 'raise' as const }))
+  expect(lowerIds({ lines: [...runs(), ...raised] })).toEqual([])
+})
+
+test('lowering: not suggested when the Lowering row is set (theirs), or when hidden for 30 days', () => {
+  const lines = [...runs(), ...lowerings(40, 10, 1, 1.05)]
+  for (const lowerRule of ['ask me', 'lower automatically', 'never lower']) expect(lowerIds({ lines, lowerRule }), lowerRule).toEqual([])
+  expect(lowerIds({ lines, skipped: { lowerRule: NOW - 10 * DAY } }), 'hidden').toEqual([])
+  expect(lowerIds({ lines, skipped: { lowerRule: NOW - 31 * DAY } }), 'hidden over 30 days ago').toHaveLength(1)
+})
+
+test('lowering: listed after the other rows it follows, and the pane and the apply path know the row key', () => {
+  const lines = [...runs(), ...pings(10, 2), ...lowerings(40, 10, 1, 1.05)]
+  const r = optimize(base({ lines, bigTurn: 'off', life: { advice: advice(9.8, 12.1), current: '1h' } }))
+  expect(r.suggestions.map(s => s.id)).toEqual(['beforeCold', 'bigTurn', 'lowerRule', 'promptCacheTtl'])
+  expect(appliedText([r.suggestions[2]!], [])).toBe('Changed: Lowering → never lower. Did it work? in /rightsize report measures each once there are enough prompts.')
 })
 
 test('a suggestion left unpicked hides for 30 days, then shows again', () => {

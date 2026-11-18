@@ -35,6 +35,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   const LOG = LOG_PATH
   const settingsText = async (d: ReturnType<typeof drive>) => (await d.command('status')).text ?? ''
   const OPUS = { model: 'claude-opus-5-5', effort: 'medium' }
+  const SONNET = { model: 'claude-sonnet-5-5', effort: 'high' }
   const FABLE = { model: 'claude-fable-5-2', effort: 'high' }
   const noteOf = (h: ReturnType<typeof engine>) => last(h.submitted)?.context?.join('\n') ?? ''
   const handedTo = (h: ReturnType<typeof engine>) => /model "(\w+)"/.exec(noteOf(h))?.[1]
@@ -158,7 +159,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.submit(SEARCH)
     return handedTo(h)
   }
-  // Lowering saves 94% of staying: over the default 90%, under the 97% a hot window allows.
+  // Lowering saves 94% of staying: over the default 90%, under the 97% a hot window allows. On Opus and Fable a free switch lowers on any
+  // saving (ADR 0088), so the bar itself is exercised on Sonnet (from high to low), where it still applies; SMALL saves 94% there too.
   const SMALL = '{"level":"low","model":"same","size":"small","type":"lookup","read":2000,"write":50,"steps":1}'
   // Hands off at 51% of staying: under the default 70%, and over a 50% bar. An underused window never moves the bar to 50%.
   const BIG = '{"fit":{"haiku":"medium","sonnet":"medium","opus":"medium","fable":"medium"},"size":"small","type":"search","read":40000,"write":1000,"steps":25,"reason":"list call sites"}'
@@ -187,7 +189,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   ]
   for (const row of LOWERING_ROWS) {
     test(`pacing and the lowering threshold, hot: ${row.name} (${surface})`, { timeoutMs: 30000, options: row.stored }, async ($, on) => {
-      const h = engine(on, { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES }, stored: row.stored })
+      const h = engine(on, { ...SONNET, store: { [CAL_STORE]: FREE_SWITCHES }, stored: row.stored })
       hot(h)
       const d = drive($, h)
       await d.start(surface)
@@ -206,7 +208,18 @@ for (const surface of ['desktop', 'terminal'] as const) {
       expect(await handedOffUnder(h, drive($, h), BIG)).toBe('haiku')
       expect(await bandText($, surface), 'no pace note').not.toMatch(/window/)
     })
-    test(`a lowering is planned the same with ${name} (${surface})`, { timeoutMs: 30000, options: { band: 'always' } }, async ($, on) => {
+    test(`a lowering is planned the same with ${name}: Sonnet keeps the 90% bar (${surface})`, { timeoutMs: 30000, options: { band: 'always' } }, async ($, on) => {
+      const h = engine(on, { ...SONNET, store: { [CAL_STORE]: FREE_SWITCHES }, stored: { band: 'always' } })
+      windows(h)
+      const d = drive($, h)
+      await d.start(surface)
+      h.rating = SMALL
+      await d.submit(LOOKUP)
+      await d.step('t1')
+      expect(last(h.sent)?.effort, '94% is over the default 90% bar: not lowered from high').toBe('high')
+      expect(await bandText($, surface), 'no pace note').not.toMatch(/window|unused/)
+    })
+    test(`a lowering on Opus takes any saving with ${name}: 94% lowers, with no pace note (${surface})`, { timeoutMs: 30000, options: { band: 'always' } }, async ($, on) => {
       const h = engine(on, { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES }, stored: { band: 'always' } })
       windows(h)
       const d = drive($, h)
@@ -214,7 +227,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
       h.rating = SMALL
       await d.submit(LOOKUP)
       await d.step('t1')
-      expect(last(h.sent)?.effort, '94% is over the default 90% bar: not lowered, and not at 80% either').toBe('medium')
+      expect(last(h.sent)?.effort, 'a free switch and a saving: lowered').toBe('low')
       expect(await bandText($, surface), 'no pace note').not.toMatch(/window|unused/)
     })
   }

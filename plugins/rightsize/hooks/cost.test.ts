@@ -51,6 +51,8 @@ import {
   subagentKeys,
   subWork,
   lowerSwitches,
+  lowerBar,
+  LOWER_RULE,
   switchCost,
   switchMissShare,
   rawMainCost,
@@ -422,6 +424,52 @@ test('on Opus and Fable every task but a review lowers to low, whatever the rati
   expect(lowerSwitches(rating({ type: 'feature' }), opus)).toBe(1)
   expect(lowerSwitches(rating({ type: 'review' }), opus)).toBe(2)
   expect(lowerSwitches(rating({ type: 'feature' }), sonnetSession)).toBe(2)
+})
+
+// ---- ADR 0088: any saving lowers on Opus and Fable, with a free switch ----
+
+test('on Opus and Fable a free switch lowers on any saving, a small one included (ADR 0088)', async () => {
+  // A prompt that mostly re-reads a big conversation: low saves a few percent at most, under the old 10% bar.
+  const reread = rating({ type: 'lookup', level: 'low', fit: { opus: 'low', fable: 'low' }, read: 0, write: 50, steps: 1 })
+  const s = { ...opus, level: 'medium' as const, context: 140_000, cal: freeSwitches }
+  const now = mainCost(reread, s, 'medium', 0)
+  const lowered = mainCost(reread, s, 'low', lowerSwitches(reread, s))
+  expect(lowered / now, 'Opus: a small saving, over the old 0.9 bar').toBeGreaterThan(LOWER_RULE)
+  expect(lowered / now, 'Opus: but a saving').toBeLessThan(1)
+  const p = effortPlan(reread, s, 'low')
+  expect(p, 'Opus lowers').toMatchObject({ kind: 'effort', dir: 'lower', level: 'low' })
+  if (p.kind === 'effort') expect(near(p.saving, now - lowered)).toBe(true)
+  // Fable's lower level also takes fewer steps, so its saving is larger; the bar is still "any saving", and it lowers.
+  const f = { ...fable, level: 'medium' as const, context: 140_000, cal: freeSwitches }
+  expect(lowerBar(reread, f)).toBe(1)
+  expect(effortPlan(reread, f, 'low')).toMatchObject({ kind: 'effort', dir: 'lower', level: 'low' })
+  // A review is held at its level on Opus and Fable: nothing here lowers it.
+  expect(effortPlan(rating({ type: 'review', level: 'high', fit: { opus: 'high' } }), { ...s, level: 'high' }, 'low').kind).not.toBe('effort')
+})
+
+test('the 0.9 bar stays for a priced switch, a moved bar and any Sonnet or Haiku session (ADR 0088)', async () => {
+  const reread = rating({ type: 'lookup', level: 'low', fit: { opus: 'low', sonnet: 'low', haiku: 'low' }, read: 0, write: 50, steps: 1 })
+  const big = { context: 140_000, level: 'medium' as const }
+  // A priced switch (a measured cache miss, or an older model): the saving has to clear the cache it may cost.
+  const miss = { [SWITCH_KEY]: { n: CAL_FULL, ratio: 1 } }
+  expect(effortPlan(reread, { ...opus, ...big, cal: miss }, 'low'), 'priced switch').toMatchObject({ kind: 'none', why: 'lowering to low saves less than the cache it costs' })
+  expect(effortPlan(reread, { ...opus, ...big, cal: freeSwitches, older: true }, 'low'), 'an older model prices every switch').toMatchObject({ kind: 'none', why: 'lowering to low saves less than the cache it costs' })
+  // Budget pacing only loosens the bar (0.97, 1): on a free Opus/Fable switch that is any saving, as the default. A stricter bar is kept.
+  const s = { ...opus, ...big, cal: freeSwitches }
+  const ratio = mainCost(reread, s, 'low', 1) / mainCost(reread, s, 'medium', 0)
+  expect(ratio).toBeGreaterThan(0.9)
+  expect(effortPlan(reread, { ...s, rules: { ...DEFAULT_RULES, lower: 0.8 } }, 'low'), 'a stricter bar under the ratio').toMatchObject({ kind: 'none', why: expect.stringContaining('saves under') })
+  expect(effortPlan(reread, { ...s, rules: { ...DEFAULT_RULES, lower: ratio + 0.001 } }, 'low'), 'a bar just over it').toMatchObject({ kind: 'effort', dir: 'lower' })
+  expect(effortPlan(reread, { ...s, rules: pacedRules(DEFAULT_RULES, { mode: 'max' }) }, 'low'), 'a window nearly used up: lower 1, any saving').toMatchObject({ kind: 'effort', dir: 'lower' })
+  expect(lowerBar(reread, s), 'no rules: the default bar, any saving here').toBe(1)
+  expect(lowerBar(reread, { ...s, rules: { ...DEFAULT_RULES, lower: 0.8 } }), 'a moved bar is returned as it is').toBe(0.8)
+  expect(lowerBar(reread, { ...s, rules: pacedRules(DEFAULT_RULES, { mode: 'hot' }) }), 'a hot window never lowers less than a normal one').toBe(1)
+  expect(lowerBar(reread, { ...s, cal: miss })).toBe(LOWER_RULE)
+  // Sonnet and Haiku are unchanged: 0.9, free switch or not.
+  const sonnet = { ...sonnetSession, ...big, cal: freeSwitches }
+  expect(lowerBar(reread, sonnet)).toBe(LOWER_RULE)
+  expect(lowerBar(reread, { ...sonnet, tier: 'haiku' })).toBe(LOWER_RULE)
+  expect(effortPlan(reread, sonnet, 'low'), 'Sonnet').toMatchObject({ kind: 'none', why: "lowering to low saves under 10%: most of this prompt's cost is reading the conversation, the same at any effort" })
 })
 
 test('on Sonnet a rated raise is taken only for a hard-rated task of 20 steps or more', async () => {

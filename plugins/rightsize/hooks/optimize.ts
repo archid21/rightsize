@@ -1,12 +1,16 @@
 import { autoAmount, turnCosts } from './bigturn'
 import { type LifeAdvice, lifeOffer } from './cachelife'
 import { type Ttl, TTL_MS, ttlText } from './cost'
-import { type RunLine, keepWarm } from './report'
+import { NOT_SET, RULE_LABELS } from './settings'
+import { type RunLine, keepWarm, loweringNet } from './report'
 
 // /rightsize optimize (P-38, ADR 0084): rightsize's own settings that the last 30 days of the run log say should change, each
 // with that period priced under the current setting and under the new one, so the person can judge the change. Only
 // rightsize's rows (and the cache life it already offers): no advice on habits or on Claude Code's /model. Nothing changes
 // here; register.tsx applies the ones the person picks. Pure functions.
+
+/** The Lowering row's off-like option, as /config shows it. */
+const NEVER_LOWER = RULE_LABELS.lower.find(l => l[1] === 'never')?.[0] ?? 'never lower'
 
 const DAY = 24 * 60 * 60_000
 
@@ -14,13 +18,17 @@ export const OPT_DAYS = 30
 /** Enough of the person's own use to judge from: rated prompts, over at least this many days. */
 export const OPT_MIN_PROMPTS = 30
 export const OPT_MIN_DAYS = 7
+/** Lowering is judged only on this many lowered turns or more (P-78, ADR 0088), over at least OPT_MIN_DAYS days. */
+export const OPT_MIN_LOWERED = 30
+/** Lowering off is suggested when the lowered turns saved this share of what they would have cost, or less. */
+export const OPT_LOWER_SHARE = 0.01
 /** A suggestion the person left unpicked is not shown again for this long. */
 export const OPT_SKIP_DAYS = 30
 /** Keep warm is judged only on this many of its requests or more. */
 export const OPT_MIN_PINGS = 5
 
 /** What a suggestion changes: a rightsize row, or the cache life (Claude Code's promptCacheTtl, which rightsize offers and sets). */
-export type OptId = 'beforeCold' | 'bigTurn' | 'promptCacheTtl'
+export type OptId = 'beforeCold' | 'bigTurn' | 'lowerRule' | 'promptCacheTtl'
 
 /**
  * One suggestion: the row's title, the value now and the one suggested; `now` and `after` the last 30 days under each;
@@ -35,6 +43,8 @@ export type OptInput = {
   /** The rows' values now. */
   beforeCold: string
   bigTurn: string
+  /** The Lowering row's value now: "not set" until the person answers it; any other value is theirs, and is not suggested over. */
+  lowerRule: string
   /** The cache-life check, when rightsize may set the life (cachelife.ts lifeEligible, and no variable fixes it); undefined otherwise. */
   life?: { advice: LifeAdvice; current: Ttl }
   /** When each suggestion was last left unpicked, ms. */
@@ -88,6 +98,27 @@ export function optimize(i: OptInput): OptResult {
         now: 'no warning',
         after: `would have warned before ${big.length} ${big.length === 1 ? 'turn' : 'turns'} of ${usd(amount)} or more, ${usd(total)} in all`,
         basis: 'No saving is promised: it depends on what you choose when warned.',
+      })
+    }
+  }
+
+  // Lowering: the automatic lowerings saved next to nothing (or cost more) over the month, measured from what those turns cost.
+  // Applies to the Lowering row, "never lower". A row the person answered is theirs: not suggested over.
+  if (i.lowerRule === NOT_SET && !hidden('lowerRule')) {
+    const low = loweringNet(month)
+    if (low.turns >= OPT_MIN_LOWERED && low.days >= OPT_MIN_DAYS && low.stay > 0 && low.saved <= OPT_LOWER_SHARE * low.stay) {
+      const turns = `${low.turns} lowered turns`
+      const miss = low.miss >= 0.005 ? `, including ${usd(low.miss)} on turns that stepped back up` : ''
+      const lost = low.saved < 0
+      out.push({
+        id: 'lowerRule',
+        title: 'Lowering',
+        from: i.lowerRule,
+        to: NEVER_LOWER,
+        now: lost ? `${turns} cost ${usd(-low.saved)} more than staying${miss}` : `${turns} saved ${usd(low.saved)}, ${(Math.round((low.saved / low.stay) * 1000) / 10).toFixed(1)}% of the ${usd(low.stay)} they would have cost${miss}`,
+        after: lost ? `$0.00 more  →  ${usd(-low.saved)} less spent` : `$0.00 saved  →  ${usd(low.saved)} less saved`,
+        basis: 'Measured from what those turns cost against staying at your own effort.',
+        ...(lost ? { saving: -low.saved } : {}),
       })
     }
   }

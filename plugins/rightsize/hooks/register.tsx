@@ -5871,7 +5871,7 @@ async function lifeInput($: EngineInterface): Promise<OptInput['life']> {
 async function runOptimize($: EngineInterface) {
   const sub = billing === 'subscription'
   const life = await lifeInput($)
-  const r = optimize({ lines: await readRuns($), now: await $.clock.now(), subscription: sub, beforeCold: cfg.beforeCold, bigTurn: cfg.bigTurn, ...(life ? { life } : {}), skipped: await readSkipped($) })
+  const r = optimize({ lines: await readRuns($), now: await $.clock.now(), subscription: sub, beforeCold: cfg.beforeCold, bigTurn: cfg.bigTurn, lowerRule: cfg.lowerRule, ...(life ? { life } : {}), skipped: await readSkipped($) })
   optList = r.suggestions
   optPicked = new Set()
   let pane = false

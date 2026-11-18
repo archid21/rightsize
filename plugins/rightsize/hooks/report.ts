@@ -1250,6 +1250,25 @@ export function keepWarm(lines: readonly RunLine[]): KeepWarm | undefined {
   return { runs, returns: t.returns, saved: t.keptSaved, cost, net: t.keptSaved - cost }
 }
 
+export type LoweringNet = { turns: number; days: number; stay: number; saved: number; miss: number }
+
+/**
+ * Automatic lowerings in `lines` (P-78, ADR 0088): the turns, the days they fell on, what staying would have cost (`stay`, as
+ * `counterfactual` reads it), what they saved against it (`saved`: the report's own Total saved for these turns, from the cost
+ * each turn really had, so the cache misses they caused are already in it) and, for information, what the switches that missed
+ * the cache cost (`miss`). A lowering the person made at a big-turn warning and a turn they stopped are left out.
+ */
+export function loweringNet(lines: readonly RunLine[]): LoweringNet {
+  const lowered = lines.filter(l => isRun(l) && !l.aborted && l.change === 'lower' && l.loweredBy !== 'you')
+  return {
+    turns: lowered.length,
+    days: new Set(lowered.map(l => l.at.slice(0, 10))).size,
+    stay: lowered.reduce((n, l) => n + counterfactual(l), 0),
+    saved: totals(lowered).saved,
+    miss: lowered.reduce((n, l) => n + num(l.missCost), 0),
+  }
+}
+
 export function keepWarmLine(lines: readonly RunLine[], subscription: boolean): string | undefined {
   const w = keepWarm(lines)
   if (!w) return undefined

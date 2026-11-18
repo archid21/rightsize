@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.15.2 (unreleased)
+
+- **The tip to compact on Sonnet shows with whatsnext too.** When rightsize saved a whatsnext handoff before the cache went cold, the tip never showed: it was set up only without whatsnext, and the wrap-up turn's end cancelled it. It now shows when the cache warmed by the wrap-up goes cold, about one cache life after the wrap-up ends, unless you send a prompt first.
+
 ## 0.15.1 (2026-11-16)
 
 - **A truer reason when rightsize keeps your effort.** When lowering effort saved too little, the band said the saving was "less than the cache it costs", even where an effort change keeps the cache and costs nothing. It now names the cache only when a switch is measured to rebuild it. Otherwise it says the real reason: `Lowering to low saves under 10%: most of this prompt's cost is reading the conversation, the same at any effort.` What rightsize decides has not changed.

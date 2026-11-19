@@ -2,227 +2,143 @@
 
 **Make every Claude token count.**
 
-rightsize sends each prompt to the cheapest model and effort that does the job, raises effort only when Claude is stuck, and keeps cache and context from costing more than they should. It logs every choice it makes and learns how you work. It then uses that history to optimize, so you spend less and get better results the longer you use it.
+[![Release](https://img.shields.io/github/v/release/archid21/rightsize)](https://github.com/archid21/rightsize/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![Claude Code](https://img.shields.io/badge/Claude%20Code-2.1.287%2B-orange)](#quickstart)
+
+rightsize is a Claude Code plugin. It sends each prompt to the cheapest model and effort that does the job, raises effort only when Claude is stuck, and keeps the cache and context from costing more than they should. It logs every choice, learns how you work, and shows what each choice cost.
+
+![rightsize in Claude Code: a routine edit stays on Sonnet, a review switches to Opus for one turn, and the band shows what each cost](docs/images/rightsize-demo.gif)
 
 ```bash
 claude plugin marketplace add archid21/rightsize
 claude plugin install rightsize@archid21 --scope user
 ```
 
-**Status: 0.16.0.** Opus and Fable lower effort on any saving, helpers take more work (under 90% of staying, and short tasks on proven routes), fewer false "stuck" signs, and a new model version starts with a clean record. See [New in 0.16.0](#new-in-0160).
+Works with a Claude subscription (Pro, Max, Ultra) or an API key · MIT license · **New in 0.16.0:** more savings on Opus and Fable, fewer false "stuck" signs, and a clean record for each new model version ([changelog](CHANGELOG.md)).
 
-MIT license · works with a Claude subscription (Pro, Max, Ultra) or an API key · [Open an issue](https://github.com/archid21/rightsize/issues)
+## Contents
 
----
+[Why use it](#why-use-it) · [Quickstart](#quickstart) · [How it works](#how-it-works) · [What you'll see](#what-youll-see) · [Features](#features) · [Make it yours](#make-it-yours) · [Commands](#commands) · [Privacy and safety](#privacy-and-safety) · [FAQ](#faq) · [Limits](#limits) · [Get involved](#get-involved)
 
 ## Why use it
 
-**Same outcome, lower cost from an Opus start.** Routine work goes to Haiku or Sonnet helpers and lower effort; Opus keeps the work that needs it. On our coding benchmark it matched Opus at up to 30% lower cost (API-equivalent).
+Claude Code runs every prompt on the model and effort you picked. On Opus, renaming a variable costs as much as reviewing a pull request, and you reach your usage limit early. On Sonnet, your usage lasts, but reviews and hard bugs get a weaker answer. Switching by hand with `/model` works until you forget.
 
-**Effort follows evidence, not guesses.** A rating never raises effort on Opus or Fable at prompt time. Effort goes up mid-turn only when the turn shows trouble: repeated failures, a loop, or two fixes in a row that leave the tests red. You stop paying for high effort that buys nothing.
+- **From an Opus start: same results, lower cost.** Routine work goes to Haiku or Sonnet helpers and lower effort; Opus keeps the work that needs it. On our coding benchmark it matched Opus at up to 30% lower cost (API-equivalent).
+- **From a Sonnet start: Opus-grade reviews.** Reviews switch to Opus for one turn, then come back. This costs more than Sonnet alone: on our benchmark about 1.4x to 2x, almost all of it from reviews.
+- **Effort follows evidence.** Effort goes up mid-turn only when the turn shows trouble: repeated failures, a loop, or two fixes in a row that leave the tests red.
+- **It learns which routes to trust.** Every hand-off, lowering, test run and 👍/👎 scores the rater per kind of work and model. A route that keeps missing is paused.
+- **Cache and compact costs under control.** It keeps the cache warm only while your own record says that pays, warns as the context fills, and compacts only when you press a button or set a row to.
 
-**Stronger reviews from a Sonnet start.** Reviews switch to Opus for that one turn and come back. You get Opus-grade review without switching models yourself. If your default is Sonnet you may spend more: on our coding benchmark, about 1.4x to 2x what Sonnet alone costs, almost all of it from reviews. Your cost depends on how many reviews you run.
-
-**It learns which routes to trust.** Every hand-off, lowering, test run and thumbs rating scores the rater per kind of work and model. A model that misses on reviews stops getting reviews until your own outcomes say otherwise.
-
-**Cut cache and compact costs.** Keeps the cache warm only while your own record says that is cheaper than coming back cold, stops if the cache misses, warns as your context fills, steps aside for Claude's idle compact, and compacts only when the saving beats the cost.
-
-**rightsize works better with whatsnext.** rightsize decides when a compact pays. [whatsnext](https://github.com/archid21/whatsnext) decides what to keep: it saves a handoff note first, so a compact retains the details that matter. rightsize asks it for that handoff before the cache goes cold and uses its compact text for **Compact now**. rightsize works on its own too: when whatsnext isn't installed or set up in the project, it compacts with its own handoff-style text, and a **Wrap up** press or a typed `wrap up` compacts instead of saving a note.
-
-## The problem: one model for every prompt
-
-Claude Code runs every prompt on the model you picked, at the effort you picked. So you pay one of two prices:
-
-- **Opus on everything.** Renaming a variable costs as much as reviewing a pull request. On Pro you hit your 5-hour limit before lunch; on Max and Ultra you still run into the weekly cap.
-- **Sonnet on everything.** Your usage lasts, but the work that needs Opus most, reviews and hard bugs, gets a weaker answer.
-
-Switching by hand with `/model` works until you forget, which is most of the time.
-
-## What you get
-
-| Feature | What it delivers | How to use it |
-|---|---|---|
-| Smart routing | Routine work on cheaper models, Opus where it counts | Automatic. **Ask before changing** in `/config` makes it ask first. |
-| Effort control | Lower effort for routine prompts; raised mid-turn only when Claude is stuck | Automatic. The **Lowering** and **Raising** rows set ask, automatic or never. |
-| Cheaper helpers | Big routine edits handled at lower cost | Automatic from Opus or Fable sessions. Press **Run on your model** on the band to undo one. |
-| Opus reviews | Stronger reviews without switching models | Automatic. The **Stronger model** row sets ask first or always send. |
-| Watch only | See what rightsize would save before it changes anything | Set **Mode** to watch only, then run `/rightsize report` after a week. |
-| Keep warm | Avoid paying to rewrite a cold cache | Automatic (**while it pays**). Or set **Before the cache goes cold** to keep warm for a set time, save a handoff, compact, ask or off; or pick a time when the band offers it. |
-| Wrap up | End a session with a handoff note, or a compact if whatsnext is not set up | Press **Wrap up** on the countdown row, or type `wrap up`. |
-| Big-turn warning | A heads-up before and during an unusually expensive turn | Off by default. Set **Big-turn warning** under Advanced. |
-| Context-size warning | Compact before the conversation gets costly | Appears at 40–90% full. Press **Compact now**. |
-| Compact before your 5-hour limit | Save usage after a window reset | Press **Compact now** when the band advises it. |
-| Handoff before a compact ★ | A compact that retains the details that matter | Install whatsnext. rightsize asks it automatically, before the cache goes cold and before **Compact now**. |
-| Cost report | Measured savings, spend and return rate | Run `/rightsize report`. |
-| Band and settings | See and change every decision | Use the band's buttons and ⋯ menu, `/config`, or `/rightsize settings`. |
-
-★ Needs whatsnext.
-
-### Routing in action
-
-Screenshots from a real session, with captions added.
-
-**1. The first time, it asks what you want.** You stay in charge.
-
-![Claude Code asking: When a task could run on a cheaper model than Opus, what should I do? Send it to a cheaper subagent (Recommended)](docs/images/1-asks-first.png)
-
-**2. This task doesn't need Opus, so it goes to a Sonnet subagent.**
-
-![rightsize band: Sending this to a Sonnet subagent at medium effort, using about 26% of the usage vs staying on Opus (estimated), with Ask first and Stay, lower effort only buttons](docs/images/2-hands-off.png)
-
-**3. Done by Sonnet: $0.18 instead of about $2.41 on Opus (estimated).**
-
-![rightsize band: Sent to Sonnet, used about 7% of the usage vs staying on Opus, API-equivalent $0.18 vs about $2.41 (estimated)](docs/images/3-result.png)
-
-### The cache and compact bands
-
-Each row sits above the prompt. The figures are examples; yours come from your own sessions and prices.
-
-**In the desktop app,** the same rows are labelled and the buttons are drawn as buttons. This is a mock-up of the layout.
-
-![Desktop app band with two rows: Prompt, Sent to Haiku, with a Run on Fable button; Cache, Context is 60% full, with a Compact now button](docs/images/band-desktop.png)
-
-**In the terminal,** each row is one line with its buttons below.
-
-**Keep warm offer.** The cache will go cold soon, and coming back would cost this much.
-
-![Band row: Goes cold in 55 min (19:10), coming back after costs about $1.56, with a Keep warm 8 h button](docs/images/band-keep-warm-offer.png)
-
-**Context-size warning.** The conversation reached the next step of the window.
-
-![Band row: Context is 60% full (120K of 200K tokens), with a Compact now button](docs/images/band-context-warning.png)
-
-**Advice to compact before your 5-hour limit.**
-
-![Band row: Near your 5-hour limit, resets 21:40, Compact now to save about $0.59 after the reset, with a Compact now button](docs/images/band-limit-advice.png)
-
-### See it run
-
-A routine edit stays on Sonnet; a review switches to Opus for one turn; the band shows what each cost.
-
-![rightsize in Claude Code: a routine edit stays on Sonnet, a review switches to Opus for one turn, and the band shows what each cost](docs/images/rightsize-demo.gif)
-
-**Opus results, without Opus prices.** Before each prompt runs, a quick rating decides what kind of work it is. Routine work stays on Sonnet. Reviews switch to Opus at high effort for that one turn, then your chat goes back.
-
-**More from your plan.** On Pro, Max and Ultra, rightsize watches your usage windows (weekly, and 5-hour where your plan has one) and saves harder as you run low. Opus allowance goes to the work that needs it.
-
-**Big routine jobs, done cheaper.** Working on Opus? A large, mechanical job such as the same edit across many files can go to a Haiku helper. Your main chat writes the brief, checks the result against it, and sends it back if anything is off. On our benchmark these hand-offs passed as often as Opus at a bit under half the cost. rightsize hands off only when the brief and the check still leave a saving, so from a Sonnet session it never does.
-
-**Come back to a warm session.** A long session is cheap only while its prompt cache (the stored copy of your conversation) is warm. Step away past the cache's life (an hour on a subscription, 5 minutes on an API key) and your next prompt pays to rebuild it. rightsize keeps a big session warm while you are away only when your own record of how long you stay away says it pays, and never past the point where coming back cold would be cheaper. When no keep-warm request is due, it compacts if that pays, and otherwise saves a whatsnext handoff note.
-
-| Coming back to a 150k-token Opus session | Cost at API prices |
-|---|---|
-| Cold: the conversation is written to the cache again | About $1.20 |
-| Kept warm for 8 hours: one cheap cache read per hour | About $0.25 |
-
-On a subscription, a keep-warm request draws a small share of your usage window, far less than rebuilding the cache; the band shows the running share. The band shows `Warm until 8:30 · ~0% used`, with a Stop button.
-
-**Compact before it costs you.** As a conversation fills the window, the band says so at 40, 50, 60, 70, 80 and 90%, skipping any point where Claude Code would compact by itself. Near your 5-hour limit it advises a compact while the cache is warm. Nothing compacts until you press the button.
-
-**Leave a thread cheaper to come back to.** Before the cache goes cold, rightsize can keep it warm, or save a whatsnext handoff and compact, whichever costs less. It acts only on the choice you made, and it never compacts a closed thread on its own.
-
-**Cost you can see.** A band above the prompt says what rightsize did and why. `/rightsize report` shows what each choice cost against staying on your own model, including the times it cost more. The report also shows how many sessions came back to a cold cache and what a compact could have saved on each.
-
-**Safe to try.** Watch-only mode rates every prompt and changes nothing, so you can see its calls on your own work first.
-
-| | Opus on everything | Sonnet on everything | Sonnet + rightsize |
+| | Opus on everything | Sonnet on everything | rightsize |
 |---|---|---|---|
 | Results on our benchmark | Baseline | Fewer tasks passed | Matched Opus |
-| Cost | Highest | Lowest | About 30% less than Opus |
 | Reviews | Opus | Sonnet | Opus, for that turn |
+| Routine work | Opus | Sonnet | Cheapest model that fits |
 | Remembering to switch | You | You | rightsize |
 
 *Benchmark: real tasks from open-source repositories, each graded by hidden tests the model never sees. Your results depend on your work and settings. Method: [docs/METHOD.md](docs/METHOD.md).*
 
-## New in 0.16.0
-
-rightsize now hands down and lowers more often where it is safe, and judges each model version on its own results. We tested each change on real use before making it.
-
-- **More savings on Opus and Fable.** An effort change keeps the cache there, so a lowering that saves anything goes through. A helper takes work when it costs under 90% of staying (was 70%), and short tasks go to a Sonnet helper once that kind of work has a record behind it.
-- **The right model for the job.** A review of a design or of prose runs on Sonnet; a code review stays on Opus. Extraction and summaries go to Sonnet instead of Haiku, and a Haiku helper gets three rules in its brief.
-- **Fewer false "stuck" signs.** Waiting for tests or a page no longer counts, a loop needs the same result three times, and each helper has its own 2 retries.
-- **A new model version starts with a clean record.** Misses and pauses are kept per version; what rightsize learned about costs carries over.
-- **`/rightsize optimize` can suggest turning lowering off** when lowering saved you almost nothing. Plus a fix for a first prompt that claimed an effort change it did not make.
-
-Every change: [CHANGELOG.md](CHANGELOG.md). Every feature: [docs/FEATURES.md](docs/FEATURES.md).
-
-## New in 0.15.0
-
-rightsize now learns your settings from how you work. After it has watched for a while (30 rated prompts over at least 7 days), `/rightsize optimize` suggests what to change, priced on your own last 30 days, and applies only what you pick. This release also fixes a route that could stay paused for weeks.
-
-- **`/rightsize optimize`.** Suggests changes to rightsize's settings from your last 30 days. Each one shows the 30 days under your current setting and under the new one, measured or estimated. Tick the ones you want in a checklist and press **Apply selected**, or **Apply all**.
-- **Cache rebuilds by cause.** `/rightsize report details` shows what writing the conversation to the cache again cost you, and why: back after the cache expired, a model or effort switch, or a compact (expected).
-- **A paused route comes back by itself.** When the rating was wrong too often on a kind of work, lowering pauses for a number of prompts (**Lowering pause**, 10 by default), then comes back on probation. A **Try lowering again** button ends it early.
-- **A tip to compact on Sonnet** when the cache goes cold on a big Opus or Fable conversation, step by step.
-- **A shorter status line** with the effort as a letter and, when a usage window is on pace to run out, the time it will.
-- **The band says why it kept your level** when a cheaper or stronger option fit, and the running total reads `rightsize so far: …`.
-
-Every change: [CHANGELOG.md](CHANGELOG.md). Every feature: [docs/FEATURES.md](docs/FEATURES.md).
-
-## New in 0.14.0
-
-- **Keep warm only while it pays.** The default of **Before the cache goes cold** now sends a keep-warm request only when your own record of idle breaks says it covers its cost. It stops on a cache miss, and a value you set yourself still wins.
-- **Wrap up.** A button on the countdown row, or typing `wrap up`, saves a whatsnext handoff note, or compacts when whatsnext is not set up.
-- **Handoff-style compacts.** A bare `/compact` and Claude Code's automatic compact use rightsize's handoff text; text you type after `/compact` is never replaced.
-- **Big-turn warning (opt-in).** Warns before a prompt that looks unusually expensive, and during a turn that is heading there, with **Keep going** and **Finish up**. Nothing is sent or stopped for you.
-- **How each task ended.** Tasks get an outcome, and the report shows how each route did and what lowered turns stepped back up from.
-- **Fast mode is priced,** and estimates now learn in dollars, so expensive turns count for more.
-
-Every change: [CHANGELOG.md](CHANGELOG.md). Every feature: [docs/FEATURES.md](docs/FEATURES.md).
-
 ## Quickstart
 
-**You need** Claude Code 2.1.287 or newer (2.1.286 in the desktop app) and a Claude subscription or API key. The handoff compact text also needs `python3` (on a Mac it comes with the Xcode command line tools, as git does); without it a compact uses Claude Code's own summary.
+**You need** Claude Code 2.1.287 or newer (2.1.286 in the desktop app) and a Claude subscription or API key. The handoff compact text also needs `python3` (on a Mac it comes with the Xcode command line tools); without it a compact uses Claude Code's own summary.
 
-1. Install:
-
-   ```bash
-   claude plugin marketplace add archid21/rightsize
-   claude plugin install rightsize@archid21 --scope user
-   ```
-
+1. Install with the two commands above.
 2. Start a new session and type `/rightsize`. If the settings pane opens, it works.
-3. On an Opus start, the band offers **Switch: /model sonnet** once. Press it, then Enter. rightsize never changes your model by itself.
+3. On an Opus start, the band offers **Switch: /model sonnet** once. Press it, then Enter. rightsize never changes your saved default model.
 4. Work as usual. After a few sessions, run `/rightsize report`.
-5. Optional: install [whatsnext](https://github.com/archid21/whatsnext) for compacts that retain better information.
+5. Optional: install [whatsnext](https://github.com/archid21/whatsnext) for compacts that keep better notes.
 
-Want to watch first? In `/config`, set **Mode** to watch only.
+**Want to watch first?** In `/config`, set **Mode** to watch only. rightsize rates every prompt and changes nothing; run `/rightsize report` after a week to see what it would have saved.
 
 ## How it works
 
 1. **Rate.** When you send a prompt, a hook asks Sonnet at low effort what kind of work it is and which models would do it well. This takes about a second.
-2. **Route.** rightsize keeps the prompt on your model, changes the effort level, switches to Opus for one turn, or hands the work to a helper subagent on a cheaper model. It acts only when its estimate says the choice pays.
-3. **Check.** After the turn it records what happened: rework, a failing test, a reply you correct, your 👍 or 👎. A route that keeps missing for a kind of work is paused for that kind of work.
-4. **Watch the cache and context.** At the end of a turn, rightsize checks the conversation's size and how long the cache will live. It can keep the cache warm, warn that the context is filling, or advise a compact. It acts only when its estimate says the choice pays, and it compacts only when you press a button.
+2. **Route.** rightsize keeps the prompt on your model, changes the effort, switches to Opus for one turn, or hands the work to a helper subagent on a cheaper model. It acts only when its estimate says the choice pays.
+3. **Check.** After the turn it records what happened: rework, a failing test, a reply you correct, your 👍 or 👎. A route that keeps missing for a kind of work is paused.
+4. **Watch the cache and context.** At the end of a turn it checks the conversation's size and how long the cache will live. It can keep the cache warm, warn that the context is filling, or advise a compact.
 
-**What leaves your machine.** Nothing goes to the author. The rating runs through Claude Code with your own sign-in, like any other prompt. Logs stay in `~/.claude/mods-logs/rightsize/`. rightsize's web requests are a monthly fetch of Anthropic's pricing page (**Price check**, can be turned off) and a GitHub star check through your own `gh` sign-in (at most once a session, only after rightsize has saved you something, until you answer the star ask): [docs/PRIVACY.md](docs/PRIVACY.md).
+The report counts rightsize's own cost (the rating calls) against the savings, so the totals you see are after that cost. Every rule and number: [docs/HOW-IT-DECIDES.md](docs/HOW-IT-DECIDES.md).
 
-**What it costs to run.** Each rating adds about one second and a small Sonnet call before the prompt. The report counts that cost against the savings, so the totals you see are after rightsize's own cost.
+## What you'll see
 
-**What it never does.** It never changes your model for you, never approves a tool call, never changes a permission, and never touches your project files. Hooks and file paths: [docs/WHAT-IT-TOUCHES.md](docs/WHAT-IT-TOUCHES.md).
+A band above the prompt says what rightsize did and why. Screenshots from a real session, with captions added.
 
-**What it runs, writes and sends.** It runs `mkdir`, `chmod`, `rm` and `rmdir` on its own log folders and, with whatsnext installed, `git rev-parse` and whatsnext's own script. It also runs `git rev-parse --is-inside-work-tree`, to know whether to suggest `whatsnext init`. When you type exactly `wrap up` and whatsnext isn't set up in the project, it drops that prompt and compacts instead. For the star ask it runs `gh api` (and `open` or `xdg-open` when starring fails). The script's commands read what to compact and whether a handoff is missing; rightsize writes none of whatsnext's settings or files. It writes only under `~/.claude/mods-logs/rightsize/`, its own store, its own `prices.json`, and `~/.config/archid21/stars.json` (shared with whatsnext). Its web requests go to `platform.claude.com` (Anthropic's pricing page, monthly, sends nothing of yours) and, for the star ask, to GitHub through your own `gh`; it sends nothing to the author. It sets only its own `rightsize.*` settings, submits only the fixed text `wrap up`, reads no credential, and its `tool.call` hook only ever denies, never approves. The full list, checked against the code: [What it runs, writes and sends](plugins/rightsize/README.md#what-it-runs-writes-and-sends).
+**The first time, it asks what you want.**
+
+![Claude Code asking: When a task could run on a cheaper model than Opus, what should I do? Send it to a cheaper subagent (Recommended)](docs/images/1-asks-first.png)
+
+**A task that doesn't need Opus goes to a Sonnet helper,** and the band shows the result: $0.18 instead of about $2.41 on Opus (estimated).
+
+![rightsize band: Sending this to a Sonnet subagent at medium effort, using about 26% of the usage vs staying on Opus (estimated)](docs/images/2-hands-off.png)
+
+![rightsize band: Sent to Sonnet, used about 7% of the usage vs staying on Opus, API-equivalent $0.18 vs about $2.41 (estimated)](docs/images/3-result.png)
+
+**Cache and context rows.** The figures are examples; yours come from your own sessions and prices.
+
+![Band row: Goes cold in 55 min (19:10), coming back after costs about $1.56, with a Keep warm 8 h button](docs/images/band-keep-warm-offer.png)
+
+![Band row: Context is 60% full (120K of 200K tokens), with a Compact now button](docs/images/band-context-warning.png)
+
+<details>
+<summary>More: the desktop app band and the 5-hour limit advice</summary>
+
+In the desktop app the same rows are labelled and the buttons are drawn as buttons (a mock-up of the layout):
+
+![Desktop app band with two rows: Prompt, Sent to Haiku, with a Run on Fable button; Cache, Context is 60% full, with a Compact now button](docs/images/band-desktop.png)
+
+Near your 5-hour limit it advises a compact while the cache is warm:
+
+![Band row: Near your 5-hour limit, resets 21:40, Compact now to save about $0.59 after the reset, with a Compact now button](docs/images/band-limit-advice.png)
+
+</details>
+
+## Features
+
+**Automatic**
+
+| Feature | What it delivers |
+|---|---|
+| Smart routing | Routine work on cheaper models, Opus where it counts. **Ask before changing** in `/config` makes it ask first. |
+| Effort control | Lower effort for routine prompts; raised mid-turn only when Claude is stuck. |
+| Cheaper helpers | Big routine jobs (the same edit across many files) go to a Haiku or Sonnet helper. Your main chat writes the brief and checks the result. **Run on your model** on the band undoes one. |
+| Opus reviews | Stronger reviews without switching models yourself. |
+| Keep warm | Keeps a big session's cache warm while you are away, only while your record says it pays. |
+| Usage windows | On Pro, Max and Ultra, saves harder as your weekly or 5-hour window runs low. |
+
+**On request**
+
+| Feature | How to use it |
+|---|---|
+| Cost report | `/rightsize report`: measured savings, spend, and the times rightsize cost more. |
+| Settings suggestions | `/rightsize optimize`: changes priced on your last 30 days; you pick which to apply. |
+| Compact now | Press it when the band warns the context is filling (40 to 90%) or you are near your 5-hour limit. |
+| Wrap up | Press **Wrap up** on the countdown row, or type `wrap up`, to save a handoff note (or compact without whatsnext). |
+| Big-turn warning | Off by default. Set **Big-turn warning** under Advanced for a heads-up before an unusually expensive turn. |
+
+**Works better with [whatsnext](https://github.com/archid21/whatsnext).** rightsize decides when a compact pays; whatsnext decides what to keep, by saving a handoff note first. Without whatsnext, rightsize compacts with its own handoff-style text.
+
+Every feature, with the release that added it: [docs/FEATURES.md](docs/FEATURES.md).
 
 ## Make it yours
 
-One rule set, two switches. **Hand-offs** turns helper subagents off (effort still changes). **Ask before changing** makes every move ask first. The rest is fixed or has an Advanced row you can set.
+Two switches cover most needs. **Hand-offs** turns helper subagents off (effort still changes). **Ask before changing** makes every move ask first.
 
 | | Default | Row |
 |---|---|---|
-| Moves to a cheaper model when | The rating says it fits and the helper costs under 90% of staying | **Cheaper model** (the 90% bar is fixed) |
-| Lowers effort when | Every prompt on Opus or Fable but a review runs at low; elsewhere when the rating says the lower level fits | **Lowering** |
+| Moves to a cheaper model when | The rating says it fits and the helper costs under 90% of staying | **Cheaper model** |
+| Lowers effort when | On Opus or Fable, every prompt but a review; elsewhere when the rating says the lower level fits | **Lowering** |
 | Reviews on Opus | Yes, highest effort | **Stronger model** |
 | Keeps the cache warm while you're away | Only while your own record says it pays | **Before the cache goes cold** |
 
-When keeping warm over your usual idle time would cost at least 3 times a compact, keep warm becomes a compact instead. A **Before the cache goes cold** row you set yourself always wins.
-
 **Recipes**
 
-- **Opus reviews, but no helper subagents:** set **Hand-offs** to off.
-- **Just effort, no model changes:** set **Stronger model** to stay and **Cheaper model** to stay.
-- **Ask before anything changes:** set **Ask before changing** to on, or set any of the four rules to ask me.
+- **Opus reviews, but no helpers:** set **Hand-offs** to off.
+- **Just effort, no model changes:** set **Stronger model** and **Cheaper model** to stay.
+- **Ask before anything changes:** set **Ask before changing** to on.
 
-**Routing**, **Hand-offs** and **Cache** each turn one feature off. Every setting, with its options and default: [docs/SETTINGS.md](docs/SETTINGS.md). Every rule and number: [docs/HOW-IT-DECIDES.md](docs/HOW-IT-DECIDES.md). Every feature, how it works, its value and the release that added it: [docs/FEATURES.md](docs/FEATURES.md).
+Every setting, with its options and default: [docs/SETTINGS.md](docs/SETTINGS.md).
 
 ## Commands
 
@@ -230,40 +146,46 @@ When keeping warm over your usual idle time would cost at least 3 times a compac
 |---|---|
 | `/rightsize` | Settings pane |
 | `/rightsize report` | What you saved, what rightsize did, and what to change |
-| `/rightsize report details` | Accuracy, cache rebuilds by cause, turns not counted, time and whole tasks |
-| `/rightsize optimize` | Suggests setting changes from your last 30 days, priced both ways; you pick which to apply |
-| `/rightsize welcome` | What rightsize does, as a table (also shown once after install) |
-| `/rightsize tips` | Show the tips again |
+| `/rightsize report details` | Accuracy, cache rebuilds by cause, time and whole tasks |
+| `/rightsize optimize` | Setting changes from your last 30 days, priced both ways |
 | `/rightsize status` | What is in use and the settings you changed |
 | `/rightsize retry` | Runs the last lowered prompt at normal effort |
-| `/mods` | Turns rightsize on or off |
+| `/rightsize help` | All commands |
 
-All commands: `/rightsize help`.
+**Update:** `claude plugin update rightsize@archid21`. **Pause:** `/mods`, or `claude plugin disable rightsize@archid21` (keeps your settings). **Remove:** `claude plugin uninstall rightsize@archid21`, then `rm -r ~/.claude/plugins/store/rightsize_*.json ~/.claude/mods-logs/rightsize*` to delete its data.
 
-## Update, pause, remove
+## Privacy and safety
 
-```bash
-claude plugin update rightsize@archid21
-```
+- **Nothing goes to the author.** The rating runs through Claude Code with your own sign-in, like any other prompt. Logs stay in `~/.claude/mods-logs/rightsize/`.
+- **Two web requests:** a monthly fetch of Anthropic's pricing page (**Price check**, can be turned off), and a GitHub star check through your own `gh` sign-in, only after rightsize has saved you something and until you answer it.
+- **It never** changes your saved model, approves a tool call, changes a permission, reads a credential, or touches your project files.
+- **It writes only** its own logs, store and settings. The full list of what it runs, writes and sends, checked against the code: [plugins/rightsize/README.md](plugins/rightsize/README.md#what-it-runs-writes-and-sends). More: [docs/PRIVACY.md](docs/PRIVACY.md), [docs/WHAT-IT-TOUCHES.md](docs/WHAT-IT-TOUCHES.md).
 
-- **Pause:** `/mods`, or `claude plugin disable rightsize@archid21` (keeps your settings).
-- **Remove:** `claude plugin uninstall rightsize@archid21`, then `rm -r ~/.claude/plugins/store/rightsize_*.json ~/.claude/mods-logs/rightsize*` to delete its data.
+## FAQ
+
+**Will it cost me more?** From an Opus start it is built to cost less. If you already use Sonnet for everything, it costs more, because reviews go to Opus; set **Stronger model** to stay to avoid that.
+
+**Why didn't it lower or hand off this prompt?** It acts only when its estimate says the choice pays, and the band says why it kept your level. A route that missed too often is paused for a number of prompts.
+
+**The rating was wrong. What now?** Press 👎 or correct the reply; rightsize counts that against the route. `/rightsize retry` reruns a lowered prompt at normal effort.
+
+**Is the dollar figure my bill?** On a subscription, no: it is API-equivalent (what the same tokens would cost at API prices). The report also shows your share of each usage window.
+
+**How do I check it is running?** Type `/rightsize`. If the settings pane opens, it works; `/rightsize status` shows what is in use.
 
 ## Limits
 
-- **Older models are priced by their own row.** Haiku 5.5, Sonnet 5.5, Opus 5.5 and Fable 5.2 are each family's newest model. Older versions, such as Opus 4.8 or Fable 5.1, cost more, so `prices.json` holds a row for each version the pricing page lists, and rightsize prices a main chat on an older version by its row. An effort change there writes the whole conversation again, so it is priced that way. A version with no row pauses rightsize: the band says so once, and `/rightsize prices` fetches the current list.
 - The rating is a model's estimate. It can be wrong on a single prompt; miss tracking corrects it over time.
 - Hand-offs take longer than staying, because the helper adds a brief and a check. The band says so.
-- If you already use Sonnet for everything, rightsize costs more than you pay now. What you get for it is Opus on reviews.
-- Handoff notes before a compact need whatsnext. Without it, rightsize compacts with its own handoff-style text.
-- rightsize compacts only the open session, and only when you press a button or set a row to compact. It does not compact closed threads.
+- Older model versions (such as Opus 4.8) are priced by their own row in `prices.json`, and an effort change there rewrites the whole conversation. A version with no row pauses rightsize; `/rightsize prices` fetches the current list.
+- rightsize compacts only the open session, and only when you press a button or set a row to compact.
 - The effort picker in the app does not move; the status line shows the level in use.
 
 ## Get involved
 
 - ⭐ [Star the repo](https://github.com/archid21/rightsize) if it saves you usage.
 - Found a bad call? [Open an issue](https://github.com/archid21/rightsize/issues) with the band text and `/rightsize status`.
-- Using it, and want to say how it went? [Send feedback](https://github.com/archid21/rightsize/issues/new?template=feedback.md): what you use, what it did well or got wrong, and optionally your `/rightsize report`.
+- Want to say how it went? [Send feedback](https://github.com/archid21/rightsize/issues/new?template=feedback.md).
 - Pull requests are welcome: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 Made by [Archi Dubey](https://github.com/archid21). An independent project, not made or endorsed by Anthropic. [MIT](LICENSE) © 2026.

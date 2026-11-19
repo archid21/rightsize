@@ -4661,10 +4661,11 @@ async function coldCheck($: EngineInterface) {
   if (idleCompact) {
     await log($, `before the cache goes cold: nothing to do, Claude Code compacts this session by itself 54 minutes after the last request (${context} tokens, at or above its idle-compact threshold)`)
     // whatsnext saves a handoff note before Claude Code compacts, so the compact has something to keep (its PreCompact text points to the note).
+    // When whatsnext does it itself (wrapup.autoIdle, at 45 minutes), rightsize adds none: one note, not two.
     if (whatsnext) {
       const at = (lastRequestAt || turn.endedAt) + IDLE_COMPACT_AFTER - leadMs(cacheTtl)
-      await log($, `before the cache goes cold: handoff note ${Math.round(leadMs(cacheTtl) / 60_000)} min before Claude Code's idle compact`)
-      await armCold($, coldGen, at, () => atCold($, turn, 'handoff'))
+      await log($, `before the cache goes cold: handoff note ${Math.round(leadMs(cacheTtl) / 60_000)} min before Claude Code's idle compact, unless whatsnext saves one itself`)
+      await armCold($, coldGen, at, () => idleHandoff($, turn))
     }
     return
   }
@@ -5264,6 +5265,30 @@ async function pingWait($: EngineInterface, gen: number, w: ToolWait) {
     return
   }
   await armWait($, gen, w)
+}
+
+/**
+ * True when whatsnext says its own idle wrap-up is on (`wrapup.autoIdle` in `config show --json`: it sends `wrap up` 45 minutes
+ * after the last turn, before Claude Code's idle compact). One local command, asked only when the 51-minute mark comes, never
+ * at a turn's end. False when it is off, when whatsnext is not found or too old to answer, and for any answer rightsize cannot read.
+ */
+async function whatsnextAutoIdle($: EngineInterface): Promise<boolean> {
+  const got = await whatsnextRun($, ['config', 'show', '--json'])
+  if ('why' in got || got.run.exitCode !== 0) return false
+  try {
+    return (JSON.parse(got.run.stdout) as Record<string, { value?: unknown } | undefined>)['wrapup.autoIdle']?.value === true
+  } catch {
+    return false
+  }
+}
+
+// The handoff note before Claude Code's idle compact, at the 51-minute mark: whatsnext's own idle wrap-up (45 minutes) covers it when it is on.
+async function idleHandoff($: EngineInterface, c: ColdTurn) {
+  if (await whatsnextAutoIdle($)) {
+    await log($, 'handoff note: whatsnext saves the handoff note itself (wrapup.autoIdle is on); none from rightsize')
+    return
+  }
+  await atCold($, c, 'handoff')
 }
 
 // Before expiry: the handoff or the compaction, once. Not while a turn runs.

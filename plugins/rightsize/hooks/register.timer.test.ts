@@ -11,7 +11,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   const EVENING = new Date(2027, 0, 15, 18, 0, 0, 0).getTime()
   /** A turn that leaves the conversation at exactly `tokens` (BIG_TURN's 500 other tokens counted). */
   const turnOf = (tokens: number) => ({ ...BIG_TURN, cache_read_input_tokens: tokens - 500 })
-  const LOW = 'Cache cold at 7:00 PM · coming back then costs ~$0.16 · context 10%'
+  const LOW = 'Goes cold at 7:00 PM · coming back then costs ~$0.16 · context 10%'
 
   type Over = {
     tokens?: number
@@ -103,19 +103,19 @@ for (const surface of ['desktop', 'terminal'] as const) {
   test(`timer: a bigger conversation shows its own cost and percent; a turn that ran under the same row replaces it (${surface})`, { timeoutMs: 30000, options: {} }, async ($, on) => {
     const { d } = await session($, on, { tokens: 100_000 })
     await turn(d, 't1')
-    expect((await cacheRow($)).text).toBe('Cache cold at 7:00 PM · coming back then costs ~$0.78 · context 50%')
+    expect((await cacheRow($)).text).toBe('Goes cold at 7:00 PM · coming back then costs ~$0.78 · context 50%')
   })
 
   test(`timer: it shows on Sonnet too, at any size (${surface})`, { timeoutMs: 30000, options: {} }, async ($, on) => {
     const { d } = await session($, on, { model: 'claude-sonnet-5-5' })
     await turn(d, 't1')
-    expect((await cacheRow($)).text).toMatch(/^Cache cold at 7:00 PM · coming back then costs ~\$0\.\d\d · context 10%$/)
+    expect((await cacheRow($)).text).toMatch(/^Goes cold at 7:00 PM · coming back then costs ~\$0\.\d\d · context 10%$/)
   })
 
   test(`timer: on a subscription with no usage record yet, the cost is labelled API-equivalent (${surface})`, { timeoutMs: 30000, options: { billing: 'subscription' } }, async ($, on) => {
     const { d } = await session($, on, { stored: { billing: 'subscription' } })
     await turn(d, 't1')
-    expect((await cacheRow($)).text).toBe('Cache cold at 7:00 PM · coming back then costs ~$0.16 API-equivalent · context 10%')
+    expect((await cacheRow($)).text).toBe('Goes cold at 7:00 PM · coming back then costs ~$0.16 API-equivalent · context 10%')
   })
 
   test(`timer: a subagent's turn end draws nothing (${surface})`, { timeoutMs: 30000, options: {} }, async ($, on) => {
@@ -134,7 +134,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.submit('continue')
     expect((await cacheRow($)).text).toBe('')
     await turn(d, 't2')
-    expect((await cacheRow($)).text, 'counted from the new turn\'s end').toBe('Cache cold at 7:10 PM · coming back then costs ~$0.16 · context 10%')
+    expect((await cacheRow($)).text, 'counted from the new turn\'s end').toBe('Goes cold at 7:10 PM · coming back then costs ~$0.16 · context 10%')
   })
 
   test(`timer: Cache timer off hides the line (${surface})`, { timeoutMs: 30000, options: { cacheTimer: 'off' } }, async ($, on) => {
@@ -185,7 +185,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   test(`row: the keep-warm offer replaces the timer line when it shows, 5 minutes after the turn on a 1-hour cache (${surface})`, { timeoutMs: 30000, options: { beforeCold: 'ask' } }, async ($, on) => {
     const { h, d } = await session($, on, { tokens: 80_500, stored: { beforeCold: 'ask' } })
     await turn(d, 't1')
-    expect((await cacheRow($)).text, 'the timer until then').toBe('Cache cold at 7:00 PM · coming back then costs ~$0.63 · context 40%')
+    expect((await cacheRow($)).text, 'the timer until then').toBe('Goes cold at 7:00 PM · coming back then costs ~$0.63 · context 40%')
     await h.advance(5 * MIN)
     const r = await cacheRow($)
     expect(r.text).toBe('Goes cold in 55 min ▰▰▰▰▰▰▰▰▰▱ (19:00) · coming back after costs about $0.63')
@@ -196,7 +196,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const { h, d } = await session($, on, { tokens: 120_000, contextTokens: 120_000 })
     await turn(d, 't1')
     const r = await cacheRow($)
-    expect(r.text).toBe('Cache cold at 7:00 PM · coming back then costs ~$0.94. Context is 60% full (120K of 200K tokens). A compact now makes every later turn cheaper.')
+    expect(r.text).toBe('Goes cold at 7:00 PM · coming back then costs ~$0.94. Context is 60% full (120K of 200K tokens). A compact now makes every later turn cheaper.')
     expect(r.rows, 'one Cache row').toBe(1)
     expect(r.buttons.filter(b => String(b[0]).startsWith('cold-')), 'the context warning\'s own Compact now, no second one').toEqual([['cold-size-compact', 'Compact now']])
     expect(logOf(h)).toContain('context warning: shown at 60%')
@@ -240,13 +240,13 @@ for (const surface of ['desktop', 'terminal'] as const) {
   test(`idle compact: below the threshold the row is the usual timer (${surface})`, { timeoutMs: 30000, options: {} }, async ($, on) => {
     const { d } = await session($, on, { tokens: 150_000 })
     await turn(d, 't1')
-    expect((await cacheRow($)).text).toMatch(/^Cache cold at 7:00 PM/)
+    expect((await cacheRow($)).text).toMatch(/^Goes cold at 7:00 PM/)
   })
 
   test(`idle compact: with idle compaction off in Claude Code the row is the usual timer (${surface})`, { timeoutMs: 30000, options: {} }, async ($, on) => {
     const { d } = await session($, on, { tokens: 250_000, window: 1_000_000, settings: { idleCompaction: false } })
     await turn(d, 't1')
-    expect((await cacheRow($)).text).toMatch(/^Cache cold at 7:00 PM/)
+    expect((await cacheRow($)).text).toMatch(/^Goes cold at 7:00 PM/)
   })
 
   // ---- The cold-compact tip on every path -------------------------------------------------------------------
@@ -276,7 +276,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   test(`tip: with Before the cache goes cold off, the tip still shows when the cache goes cold (${surface})`, { timeoutMs: 30000, options: { beforeCold: 'off' } }, async ($, on) => {
     const { h, d } = await session($, on, { tokens: BIG, stored: { beforeCold: 'off' } })
     await turn(d, 't1')
-    expect((await cacheRow($)).text).toMatch(/^Cache cold at 7:00 PM/)
+    expect((await cacheRow($)).text).toMatch(/^Goes cold at 7:00 PM/)
     await h.advance(HOUR + MIN)
     expect((await cacheRow($)).text).toContain(TIP)
   })
@@ -375,6 +375,50 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const { h } = await session($, on, { store: LAST(), liveModel: '' })
     expect((await cacheRow($)).text).toBe('')
     expect(logOf(h)).toContain('a reopened chat, but its model is not known at the start')
+  })
+
+  // The whole path, with nothing seeded: a turn ends and writes the store's last-turn record; the process ends; a later process starts
+  // the same session id (Claude Code's `--resume` keeps the id: every resumed transcript in this project's history does) and finds it.
+  // The restart is a second session.start with the clock moved on and the old process's timers dropped (a session.end first).
+  const reopen = async (h: ReturnType<typeof engine>, d: ReturnType<typeof drive>, gap: number, over: { id?: string; liveModel?: string } = {}) => {
+    await d.end()
+    h.sleepers.length = 0
+    h.now += gap
+    if (over.id !== undefined) h.sessionId = over.id
+    if (over.liveModel !== undefined) h.liveModel = over.liveModel
+    await d.start(surface)
+  }
+
+  test(`reopened, end to end: a turn on Opus ends, a new process starts the same session id 3 hours later, and the tip shows (${surface})`, { timeoutMs: 30000, options: { beforeCold: 'off' } }, async ($, on) => {
+    const { h, d } = await session($, on, { tokens: BIG, stored: { beforeCold: 'off' } })
+    await turn(d, 't1')
+    expect(h.store.lastTurns, 'the turn end wrote the record the reopened chat reads').toEqual({ 'sess-1': { at: EVENING, context: BIG, tier: 'opus' } })
+    expect(logOf(h), 'nothing yet: the cache is warm').not.toContain('cold-compact tip: offered')
+    await reopen(h, d, 3 * HOUR)
+    expect((await cacheRow($)).text, 'before the person types').toContain(TIP)
+    expect(logOf(h)).toContain('cold-compact tip: offered')
+    expect((await cacheRow($)).buttons.some(b => b[0] === 'cold-tip-start')).toBe(true)
+  })
+
+  test(`reopened, end to end: the model comes from the stored turn when the new process does not report one yet (${surface})`, { timeoutMs: 30000, options: { beforeCold: 'off' } }, async ($, on) => {
+    const { h, d } = await session($, on, { tokens: BIG, stored: { beforeCold: 'off' } })
+    await turn(d, 't1')
+    await reopen(h, d, 3 * HOUR, { liveModel: '' })
+    expect((await cacheRow($)).text).toContain(TIP)
+  })
+
+  test(`reopened, end to end: the same session id inside one cache life shows nothing (${surface})`, { timeoutMs: 30000, options: { beforeCold: 'off' } }, async ($, on) => {
+    const { h, d } = await session($, on, { tokens: BIG, stored: { beforeCold: 'off' } })
+    await turn(d, 't1')
+    await reopen(h, d, 30 * MIN)
+    expect((await cacheRow($)).text).toBe('')
+  })
+
+  test(`reopened, end to end: a session id the store has no turn for shows nothing (a resume under a new id would not be found; resume keeps the id) (${surface})`, { timeoutMs: 30000, options: { beforeCold: 'off' } }, async ($, on) => {
+    const { h, d } = await session($, on, { tokens: BIG, stored: { beforeCold: 'off' } })
+    await turn(d, 't1')
+    await reopen(h, d, 3 * HOUR, { id: 'sess-2' })
+    expect((await cacheRow($)).text).toBe('')
   })
 
   test(`reopened: a prompt typed with the tip up ends it (${surface})`, { timeoutMs: 30000, options: {} }, async ($, on) => {

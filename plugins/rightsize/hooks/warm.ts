@@ -286,12 +286,12 @@ export function keepWarmChoices(o: { ttl: number; endedAt: number; cold: number;
 export const IDLE_COMPACT_AFTER = 54 * MIN
 
 /**
- * The Cache row after every main-chat turn: "Cache cold at 11:12 PM · coming back then costs ~$0.40 · context 32%". A clock
+ * The Cache row after every main-chat turn: "Goes cold at 11:12 PM · coming back then costs ~$0.40 · context 32%". A clock
  * time, never a countdown: the terminal band redraws only on events, so a countdown would go stale. `cost` is the cold cost as
  * the caller writes it ("~$0.40", "~2%"); `percent` is how full the conversation is, left out when the window is not known.
  */
 export function timerText(o: { coldAt: number; cost: string; percent?: number }) {
-  return `Cache cold at ${clock12(o.coldAt)} · coming back then costs ${o.cost}${o.percent === undefined ? '' : ` · context ${o.percent}%`}`
+  return `Goes cold at ${clock12(o.coldAt)} · coming back then costs ${o.cost}${o.percent === undefined ? '' : ` · context ${o.percent}%`}`
 }
 
 /** The same row while Claude Code's idle compact will run by itself: "Claude Code compacts this at about 12:05 AM · context 52%". */

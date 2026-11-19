@@ -1,5 +1,5 @@
 import { type TestBody, expect, test } from 'claude-code/testing'
-import { LOG_PATH, BIG_TURN, NO_CHANGE, OLD_PRICES, bandText, drive, engine, installWhatsnext, WHATSNEXT_CMDS } from './testkit'
+import { LOG_PATH, BIG_TURN, NO_CHANGE, OLD_PRICES, WHATSNEXT_SCRIPT, bandText, drive, engine, installWhatsnext, WHATSNEXT_CMDS } from './testkit'
 
 // Claude Code's idle auto-compact (ADR 0019): above its threshold rightsize sends no pings, makes no offer and compacts nothing,
 // and it notices the compact when it has happened. Runs on a virtual clock, as the keep-warm tests do.
@@ -231,4 +231,45 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t2')
     expect(await bandText($, surface)).not.toContain('Claude compacted')
   })
+
+  // ---- One handoff note before Claude Code's idle compact (whatsnext's wrapup.autoIdle) ----------------------------------
+
+  test(`whatsnext's autoIdle on: rightsize sends no wrap up at 51 minutes, and asks whatsnext once, at that time (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const { h, d } = await session($, on, { tokens: 250_000, stored: { beforeCold: 'save a handoff' }, whatsnext: true })
+    h.wnAutoIdle = true
+    await turn(d, 't1')
+    expect(h.wnConfigRuns, 'not asked at the turn end: only when the 51-minute mark comes').toEqual([])
+    await h.advance(2 * HOUR)
+    expect(h.submitted.map(s => s.text), 'whatsnext says its own wrap up at 45 minutes; rightsize adds none').toEqual([])
+    expect(h.wnConfigRuns.length).toBe(1)
+    expect(h.wnConfigRuns[0]?.slice(1)).toEqual([WHATSNEXT_SCRIPT, 'config', 'show', '--json'])
+    expect(logOf(h)).toContain('whatsnext saves the handoff note itself (wrapup.autoIdle is on)')
+    expect(h.compactions + h.forks.length, 'nothing else runs either').toBe(0)
+    expect(await bandText($, surface), 'the row still says when Claude Code compacts').toBe('Claude Code compacts this at about 6:54 PM · context 125%')
+  })
+
+  test(`whatsnext's autoIdle off: rightsize sends one wrap up at 51 minutes, not before (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const { h, d } = await session($, on, { tokens: 250_000, stored: { beforeCold: 'save a handoff' }, whatsnext: true })
+    h.wnAutoIdle = false
+    await turn(d, 't1')
+    await h.advance(50 * MIN)
+    expect(h.submitted, 'not yet').toEqual([])
+    await h.advance(2 * MIN)
+    expect(h.submitted.map(s => s.text)).toEqual(['wrap up'])
+    expect(h.wnConfigRuns.length).toBe(1)
+  })
+
+  for (const [what, reply] of [
+    ['an error', { exitCode: 2, stdout: '', stderr: 'invalid choice' }],
+    ['an answer that is not JSON', { exitCode: 0, stdout: 'not json' }],
+    ['an answer without the setting', { exitCode: 0, stdout: '{}' }],
+  ] as const) {
+    test(`whatsnext's setting cannot be read (${what}): rightsize sends its wrap up as before (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+      const { h, d } = await session($, on, { tokens: 250_000, stored: { beforeCold: 'save a handoff' }, whatsnext: true })
+      h.wnConfigReply = reply
+      await turn(d, 't1')
+      await h.advance(2 * HOUR)
+      expect(h.submitted.map(s => s.text)).toEqual(['wrap up'])
+    })
+  }
 }

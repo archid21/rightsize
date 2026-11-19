@@ -290,6 +290,11 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
     /** What the next whatsnext.py runs answer, in order; when none is left, `wnReply`. */
     wnReplies: [] as { exitCode: number; stdout: string; stderr?: string }[],
     wnReply: { exitCode: 0, stdout: wnAnswer(false) } as { exitCode: number; stdout: string; stderr?: string },
+    /** Whether whatsnext's `config show --json` says `wrapup.autoIdle` is on (its default is off); `wnConfigReply` replaces the whole answer. */
+    wnAutoIdle: false,
+    wnConfigReply: undefined as { exitCode: number; stdout: string; stderr?: string } | undefined,
+    /** Every `config show` run, as its arguments (kept apart from `wnRuns`, which the compaction tests count). */
+    wnConfigRuns: [] as string[][],
     /** What `fresh-instructions` answers; the default is a whatsnext that does not know the command yet (P-69 is open). */
     wnFresh: { exitCode: 2, stdout: '', stderr: "whatsnext.py: error: argument command: invalid choice: 'fresh-instructions'\n" } as { exitCode: number; stdout: string; stderr?: string },
     /** What the next `fresh-instructions` runs answer, in order; when none is left, `wnFresh`. */
@@ -497,6 +502,12 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
     // Where whatsnext starts: git's top level of the session's folder.
     if (argv[0] === 'git' && argv[1] === 'rev-parse' && argv[2] === '--is-inside-work-tree') return { value: h.inGit ? { exitCode: 0, stdout: 'true\n', stderr: '' } : { exitCode: 128, stdout: '', stderr: 'fatal: not a git repository' } } as never
     if (argv[0] === 'git' && argv[1] === 'rev-parse') return { value: { exitCode: 0, stdout: `${h.cwd}\n`, stderr: '' } } as never
+    if (argv[0] === 'python3' && argv.includes('config')) {
+      h.wnConfigRuns.push(argv)
+      const answer = { 'wrapup.autoIdle': { value: h.wnAutoIdle, source: h.wnAutoIdle ? 'user' : 'default', file: h.wnAutoIdle ? '~/.config/whatsnext/config.json' : null } }
+      const reply = h.wnConfigReply ?? { exitCode: 0, stdout: JSON.stringify(answer, null, 2) }
+      return { value: { exitCode: reply.exitCode, stdout: reply.stdout, stderr: reply.stderr ?? '' } } as never
+    }
     if (argv[0] === 'python3') {
       h.wnRuns.push(argv)
       const reply = argv.includes('fresh-instructions') ? (h.wnFreshReplies.shift() ?? h.wnFresh) : (h.wnReplies.shift() ?? h.wnReply)

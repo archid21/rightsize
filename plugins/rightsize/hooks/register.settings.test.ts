@@ -170,7 +170,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
         await c.d.step(t)
         await c.d.complete(t)
         // The timer line is on the Cache row after every main turn; with the row off it is not.
-        return (await bandText(c.$, c.surface)).startsWith('Cache cold at ')
+        return (await bandText(c.$, c.surface)).startsWith('Goes cold at ')
       },
       set: false,
       def: true,

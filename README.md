@@ -8,7 +8,7 @@
 
 rightsize is a Claude Code plugin. It sends each prompt to the cheapest model and effort that does the job, raises effort only when Claude is stuck, and keeps the cache and context from costing more than they should. It logs every choice, learns how you work, and shows what each choice cost.
 
-![rightsize in Claude Code: a routine edit stays on Sonnet, a review switches to Opus for one turn, and the band shows what each cost](docs/images/rightsize-demo.gif)
+![rightsize in the Claude desktop app: it asks once, hands a routine task to a Sonnet helper, shows the saving, lowers and raises effort, and offers keep warm and compact](docs/images/rightsize-desktop.gif)
 
 ```bash
 claude plugin marketplace add archid21/rightsize
@@ -63,34 +63,42 @@ The report counts rightsize's own cost (the rating calls) against the savings, s
 
 ## What you'll see
 
-A band above the prompt says what rightsize did and why. Screenshots from a real session, with captions added.
+A band above the prompt says what rightsize did and why, with buttons to undo it. Pictures of the desktop app; figures are examples.
 
-**The first time, it asks what you want.**
+**The first time, it asks what you want.** You stay in charge.
 
-![Claude Code asking: When a task could run on a cheaper model than Opus, what should I do? Send it to a cheaper subagent (Recommended)](docs/images/1-asks-first.png)
+![Question: When a task could run on a cheaper model than Opus (such as Sonnet), what should I do? Send it to a cheaper subagent (Recommended)](docs/images/d-ask.png)
 
-**A task that doesn't need Opus goes to a Sonnet helper,** and the band shows the result: $0.18 instead of about $2.41 on Opus (estimated).
+**A routine task goes to a Sonnet helper,** and the band shows what it saved.
 
-![rightsize band: Sending this to a Sonnet subagent at medium effort, using about 26% of the usage vs staying on Opus (estimated)](docs/images/2-hands-off.png)
+![Band: Sending this to a Sonnet subagent at medium effort. That uses about 26% of the usage vs staying on Opus (estimated). Buttons: Ask first, Stay, lower effort only](docs/images/d-sending.png)
 
-![rightsize band: Sent to Sonnet, used about 7% of the usage vs staying on Opus, API-equivalent $0.18 vs about $2.41 (estimated)](docs/images/3-result.png)
+![Band: Sent to Sonnet. ~7% of Opus usage ($0.18 vs ~$2.41). Button: Run on Opus](docs/images/d-sent.png)
 
-**Cache and context rows.** The figures are examples; yours come from your own sessions and prices.
+**Effort follows the work.** Low for a quick answer; raised mid-turn only when the turn shows trouble.
 
-![Band row: Goes cold in 55 min (19:10), coming back after costs about $1.56, with a Keep warm 8 h button](docs/images/band-keep-warm-offer.png)
+![Band: Effort lowered: high → low for this prompt. Button: Retry at original effort](docs/images/d-lowered.png)
 
-![Band row: Context is 60% full (120K of 200K tokens), with a Compact now button](docs/images/band-context-warning.png)
+![Band: Effort raised mid-turn: low → medium (two fixes in a row left the tests red)](docs/images/d-raised.png)
+
+**Cache and context.** Keep the cache warm while you are away, or compact before the conversation gets costly.
+
+![Band: Goes cold in 55 min (19:10) · coming back after costs about $1.56. Buttons: Keep warm 8 h, Wrap up](docs/images/d-warm.png)
+
+![Band with two rows: Sent to Haiku, $0.04 vs ~$0.31 on Fable; Context is 60% full (120K of 200K tokens), with a Compact now button](docs/images/d-context.png)
 
 <details>
-<summary>More: the desktop app band and the 5-hour limit advice</summary>
+<summary>In the terminal</summary>
 
-In the desktop app the same rows are labelled and the buttons are drawn as buttons (a mock-up of the layout):
+The same rows, one line each, with buttons below. Screenshots from a real session, with captions added.
 
-![Desktop app band with two rows: Prompt, Sent to Haiku, with a Run on Fable button; Cache, Context is 60% full, with a Compact now button](docs/images/band-desktop.png)
+![rightsize in Claude Code's terminal: a routine edit stays on Sonnet, a review switches to Opus for one turn, and the band shows what each cost](docs/images/rightsize-demo.gif)
 
-Near your 5-hour limit it advises a compact while the cache is warm:
+![Terminal band: Sending this to a Sonnet subagent at medium effort](docs/images/2-hands-off.png)
 
-![Band row: Near your 5-hour limit, resets 21:40, Compact now to save about $0.59 after the reset, with a Compact now button](docs/images/band-limit-advice.png)
+![Terminal band: Sent to Sonnet, API-equivalent $0.18 vs about $2.41 (estimated)](docs/images/3-result.png)
+
+![Terminal band: Near your 5-hour limit, resets 21:40, Compact now to save about $0.59 after the reset](docs/images/band-limit-advice.png)
 
 </details>
 

@@ -1,0 +1,48 @@
+<!doctype html>
+<!-- Desktop-app band mock-ups for the README. Render one scene: band.html#<scene>. Figures are examples. -->
+<html><head><meta charset="utf-8"><style>
+*{box-sizing:border-box}
+body{margin:0;background:#f4f1ea;font:16px/1.45 -apple-system,"SF Pro Text","Helvetica Neue",sans-serif;color:#2b2a27}
+.stage{width:820px;padding:24px 28px 18px}
+.chat{color:#3d3a34;margin:0 4px 16px}
+.you{background:#e9e4d8;border-radius:14px;padding:10px 14px;margin:0 0 10px auto;max-width:78%;width:fit-content}
+.claude{padding:2px 4px;color:#55514a}
+.band{background:#fff;border:1px solid #e3ddd0;border-radius:18px;box-shadow:0 1px 3px rgba(0,0,0,.05)}
+.top{display:flex;justify-content:flex-end;gap:26px;padding:6px 20px 4px;color:#6b665c;font-size:18px;border-bottom:1px solid #eee8dc}
+.row{display:flex;align-items:center;gap:20px;padding:14px 16px 14px 16px;border-top:1px solid #eee8dc}
+.row:first-of-type{border-top:0}
+.label{width:82px;flex:none;font-size:12px;font-weight:700;letter-spacing:.09em;color:#8a8475}
+.text{flex:1}
+.btns{display:flex;gap:8px;flex:none}
+.b{border:1px solid #d9d2c3;background:#f7f5f0;border-radius:9px;padding:6px 13px;font-size:15px;white-space:nowrap}
+.b.p{background:#c8643f;border-color:#c8643f;color:#fff;font-weight:600}
+.reply{margin-top:14px;background:#fff;border:1px solid #e3ddd0;border-radius:18px;padding:12px 18px;color:#9a9486;font-size:17px}
+.cap{margin:12px 2px 0;color:#8a8475;font-size:13px}
+.ask{background:#fff;border:1px solid #e3ddd0;border-radius:18px;padding:16px 20px}
+.ask h4{margin:0 0 12px;font-size:16px;font-weight:600}
+.opt{border:1px solid #e3ddd0;border-radius:10px;padding:9px 13px;margin-top:8px}
+.opt.r{border-color:#c8643f;background:#fbf3ee}
+.opt small{display:block;color:#8a8475;font-size:13px}
+.hide{display:none}
+</style></head><body><div class="stage" id="s"></div>
+<script>
+const you = t => `<div class="you">${t}</div>`;
+const said = t => `<div class="claude">${t}</div>`;
+const row = (l, t, b = []) => `<div class="row"><div class="label">${l}</div><div class="text">${t}</div><div class="btns">${b.map(x => `<span class="b${x[0] === '!' ? ' p' : ''}">${x.replace(/^!/, '')}</span>`).join('')}</div></div>`;
+const band = (...rows) => `<div class="band"><div class="top"><span>···</span><span>✕</span></div>${rows.join('')}</div>`;
+const reply = '<div class="reply">Reply…</div>';
+const task = you('In lib/, replace every <code>var</code> with <code>const</code> or <code>let</code>, whichever fits each variable.');
+const scenes = {
+  ask: `<div class="chat">${task}</div><div class="ask"><h4>When a task could run on a cheaper model than Opus (such as Sonnet), what should I do?</h4>
+    <div class="opt r">Send it to a cheaper subagent (Recommended)</div>
+    <div class="opt">Ask before sending it</div><div class="opt">Stay on Opus, lower effort only</div><div class="opt">Ask me each time</div></div>`,
+  sending: `<div class="chat">${task}</div>${band(row('PROMPT', 'Sending this to a Sonnet subagent at medium effort. That uses about 26% of the usage vs staying on Opus (estimated).', ['Ask first', 'Stay, lower effort only']))}${reply}`,
+  sent: `<div class="chat">${task}${said('Done: 41 declarations changed across 9 files; the tests pass.')}</div>${band(row('PROMPT', 'Sent to Sonnet. ~7% of Opus usage ($0.18 vs ~$2.41).', ['Run on Opus']))}${reply}`,
+  lowered: `<div class="chat">${you('What does the <code>--scope</code> flag do in this install command?')}</div>${band(row('PROMPT', 'Effort lowered: high → low for this prompt. A short answer needs no deep thinking.', ['Retry at original effort']))}${reply}`,
+  raised: `<div class="chat">${you('Fix the failing date parser test.')}${said('Running the tests… 2 failed after the fix.')}</div>${band(row('PROMPT', 'Effort raised mid-turn: low → medium (two fixes in a row left the tests red).'))}${reply}`,
+  warm: `<div class="chat">${said('Done. All 3 steps are finished and committed.')}</div>${band(row('CACHE', 'Goes cold in 55 min (19:10) · coming back after costs about $1.56', ['!Keep warm 8 h', 'Wrap up']))}${reply}`,
+  context: `<div class="chat">${said('The migration is written; next is the backfill.')}</div>${band(row('PROMPT', 'Sent to Haiku. $0.04 vs ~$0.31 on Fable (estimated).', ['Run on Fable']), row('CACHE', 'Context is 60% full (120K of 200K tokens). A compact now makes every later turn cheaper.', ['!Compact now']))}${reply}`,
+};
+const k = location.hash.slice(1) || 'context';
+document.getElementById('s').innerHTML = scenes[k] + '<div class="cap">Example band in the desktop app. Figures are examples.</div>';
+</script></body></html>

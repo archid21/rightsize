@@ -174,7 +174,7 @@ import { STORE_KEY as TIPS_KEY, type Tip, type TipsState, nextTip, parseState, t
 import { WELCOMED_KEY, welcomeMarkdown, welcomeText } from './welcome'
 import { rebuildCause, rebuildTokens } from './rebuild'
 import { OPT_LEAD, OPT_NONE_TICKED, type OptId, type OptInput, type Suggestion, appliedText, optPeriod, optimize, optimizeText, suggestionBody, suggestionHead } from './optimize'
-import { COMPACT_GAP_MIN, PING_PROMPT, ROW_OF, WRAP_UP, addGap, planLength, alwaysText, compactBoundary, compactedText, idleCompactState, breakEvenMs, cacheHeld, clockText, coldPlan, ignoredLately, keepWarmChoices, leadMs, learnedChoice, COLD_MIN, breakEvenPings, netSaving, offerAt, offerCountdown, offerText, pingCost, pingEvery, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText, IDLE_CAP, IDLE_GAP_MIN, PAYS_MAX, backfillLines, compactGate, paysCheck, paysSend, stretchesOf, PAYS_MIN_STRETCHES, type Stretch } from './warm'
+import { COMPACT_GAP_MIN, IDLE_COMPACT_AFTER, PING_PROMPT, clock12, idleCompactTimerText, timerText, ROW_OF, WRAP_UP, addGap, planLength, alwaysText, compactBoundary, compactedText, idleCompactState, breakEvenMs, cacheHeld, clockText, coldPlan, ignoredLately, keepWarmChoices, leadMs, learnedChoice, COLD_MIN, breakEvenPings, netSaving, offerAt, offerCountdown, offerText, pingCost, pingEvery, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText, IDLE_CAP, IDLE_GAP_MIN, PAYS_MAX, backfillLines, compactGate, paysCheck, paysSend, stretchesOf, PAYS_MIN_STRETCHES, type Stretch } from './warm'
 
 // Before a prompt is sent, a quick Haiku call rates the effort, the model and
 // the work needs on each model, and the cost model prices each route that fits. The first time
@@ -628,6 +628,8 @@ let watching = false
 let routing = true
 let handOffs = true
 let cacheOn = true
+/** Cache timer in /config: whether the band shows the Cache row's timer line after every main-chat turn. */
+let cacheTimer = true
 /** The cases decided with no rule set for the prompt being rated (the default, or Ask before changing), and those the band has already said so for this session. */
 let profileChose: (keyof Choices)[] = []
 const profileNoted = new Set<keyof Choices>()
@@ -1575,7 +1577,8 @@ async function showQuestion($: EngineInterface) {
   const band = (await $.state.get(BAND).catch(() => undefined))?.value
   const mode = (await $.state.get(BAND_MODE).catch(() => undefined))?.value ?? bandMode
   const rows = bandRows(band, mode)
-  const full = rows.route && rows.cold
+  // The Cache timer row is always there after a turn: it does not fill the band, so a question still shows beside it.
+  const full = rows.route && rows.cold && !timerIsOn(band)
   const ask = bandAsks.find(x => x.ready && (!full || x.until === 'turn'))
   if (ask) ask.shown = true
   await $.state.set(QUESTION, ask?.q ?? null).catch(() => undefined)
@@ -1897,6 +1900,7 @@ function writeSetting($: EngineInterface, key: SettingKey, value: string): Promi
     case 'outputAdvice': return $.config.set({ key: 'rightsize.outputAdvice', value: value })
     case 'idleWarning': return $.config.set({ key: 'rightsize.idleWarning', value: value })
     case 'beforeCold': return $.config.set({ key: 'rightsize.beforeCold', value: value })
+    case 'cacheTimer': return $.config.set({ key: 'rightsize.cacheTimer', value: value })
     case 'billing': return $.config.set({ key: 'rightsize.billing', value: value })
     case 'band': return $.config.set({ key: 'rightsize.band', value: value })
     case 'questionWait': return $.config.set({ key: 'rightsize.questionWait', value: value })
@@ -3158,7 +3162,7 @@ async function askHelper($: EngineInterface, sign: Struggle, cur: Level, to: Lev
 
 /** Each recent session's last turn, so a resume days later knows how long it sat. */
 const LAST_TURNS = 'lastTurns'
-type LastTurn = { at: number; context: number }
+type LastTurn = { at: number; context: number; /** The main chat's model tier when the turn ended: a reopened chat may not report its model at its start. */ tier?: Tier }
 
 async function lastTurns($: EngineInterface): Promise<Record<string, LastTurn>> {
   const v = await $.store.get(LAST_TURNS).catch(() => undefined)
@@ -3168,7 +3172,8 @@ async function lastTurns($: EngineInterface): Promise<Record<string, LastTurn>> 
 async function rememberTurn($: EngineInterface) {
   lastTurnAt = await $.clock.now()
   if (!sessionId) return
-  const all = { ...(await lastTurns($)), [sessionId]: { at: lastTurnAt, context: lastContext } }
+  const tier = tierOf(mainModel)
+  const all = { ...(await lastTurns($)), [sessionId]: { at: lastTurnAt, context: lastContext, ...(tier ? { tier } : {}) } }
   const recent = Object.entries(all).sort((a, b) => b[1].at - a[1].at).slice(0, 20)
   await $.store.set(LAST_TURNS, Object.fromEntries(recent)).catch(() => undefined)
 }
@@ -3680,7 +3685,7 @@ type ColdTip = { step: TipStep; tier: Tier; context: number; cost: string; savin
 let coldTip: ColdTip | null = null
 
 /** Shows the offer when it is due: the band is on, the tip is not hidden, and compacting on Sonnet saves at least the Idle warning amount. */
-async function showColdTip($: EngineInterface, c: ColdTurn) {
+async function showColdTip($: EngineInterface, c: { tier: Tier; context: number }) {
   if (bandMode === 'off' || mainBusy) return
   if ((await $.store.get(TIP_HIDDEN).catch(() => undefined)) === true) return
   const saving = tipDue(prices, c.tier, c.context, idleWarning ?? COLD_MIN)
@@ -4087,7 +4092,7 @@ async function sizeCheck($: EngineInterface) {
     // An offer, or advice with its own button (the usage-limit advice, alone or on a keep-warm row), owns the cache row: this
     // step is said at a later turn's end. A keep-warm run takes the warning beside its own line (showAdvice).
     const had = (await $.state.get(BAND).catch(() => undefined))?.value
-    if (coldTurn?.offer || warming?.note || (!warming && had?.cold?.length)) {
+    if (coldTurn?.offer || warming?.note || (!warming && had?.cold?.length && !timerIsOn(had))) {
       await log($, `context warning: ${step}% not shown, the cache row is in use`)
       return
     }
@@ -4101,7 +4106,7 @@ async function sizeCheck($: EngineInterface) {
     // Start fresh: only when whatsnext can do it and the window has room for a wrap-up turn. Anything else leaves Compact now alone.
     const fresh = await freshOffered($, window - tokens)
     sizeFreshShown = fresh
-    await showAdvice($, { text, button: SIZE_BUTTON, more: SIZE_MORE, ...(fresh ? { extra: SIZE_FRESH_BUTTON } : {}) })
+    await showAdvice($, { text, button: SIZE_BUTTON, more: SIZE_MORE, withTimer: true, ...(fresh ? { extra: SIZE_FRESH_BUTTON } : {}) })
     await log($, `context warning: shown at ${step}% (${Math.round(tokens / 1000)}K of ${Math.round(window / 1000)}K tokens)`)
   } catch {
     // A warning must never hold up a turn.
@@ -4410,12 +4415,10 @@ let coldTurn: ColdTurn | null = null
 let offerOpen = false
 type Warming = { until: number; pings: number; spent: number; rates: Awaited<ReturnType<typeof windowPerDollar>>; note?: CacheNote; /** Keep warm while it pays: the row has the Extend button beside Stop. */ extend?: true }
 /** Advice said on the keep-warm row while it runs (the usage-limit advice or the context warning): its text goes first, its button beside Stop. */
-type CacheNote = { text: string; button: { id: string; label: string }; more: readonly { id: string; label: string }[]; extra?: { id: string; label: string } }
+type CacheNote = { text: string; button: { id: string; label: string }; more: readonly { id: string; label: string }[]; extra?: { id: string; label: string }; /** The context warning: on the Cache timer row it joins that row's line instead of replacing the row (ADR 0094). */ withTimer?: true }
 let warming: Warming | null = null
 /** A handoff or a compaction ran since the person's last prompt: the turn it caused does not start another round. */
 let coldDone = false
-/** A handoff was saved before the cache went cold: the wrap-up turn's end arms the cold-compact tip (P-47) for when the cache it refreshed expires. */
-let tipAfterWrap: ColdTurn | null = null
 /** The prompt rightsize itself is submitting: its own prompt.submit hook lets it through unrated. */
 let coldPrompt: string | null = null
 /** A main-chat turn is running: nothing here fires meanwhile. */
@@ -4454,6 +4457,8 @@ async function clearColdRow($: EngineInterface) {
 /** Everything of the cache path stops: the pending timer or keep-warm run, the offer (closed with no outcome: nobody answered it) and its row. */
 async function dropCache($: EngineInterface, why: string) {
   cancelCold($, why)
+  cancelTip()
+  timerRow = null
   coldTurn = null
   offerOpen = false
   warmReturn = null
@@ -4495,6 +4500,115 @@ async function neighbours($: EngineInterface) {
   return { whatsnext: ready }
 }
 
+// ---- The Cache timer, and the cold-compact tip on every path (P-80, ADR 0094 group 3) ---------------------------------
+//
+// After every main-chat turn the Cache row says when the cache goes cold, what coming back then costs and how full the conversation
+// is, with Compact now and (when whatsnext can write it) Save handoff note. An offer or a keep-warm row takes the row over from the
+// timer line; a context warning joins it. The Cache timer row hides only this line. When the cache has expired on an Opus or Fable
+// chat, the cold-compact tip shows, whichever path ran before (keep warm, an offer, a handoff, nothing), and for a reopened chat at
+// the session's start. The tip has its own timer, apart from the session's one before-cold timer (armCold).
+
+/** The timer row as drawn: its line, the line without the context part (the context warning goes after it) and its buttons. Cleared when another row takes the cache row. */
+let timerRow: { text: string; lead: string; buttons: ColdButton[] } | null = null
+const TIMER_COMPACT: ColdButton = { id: 'compact', label: 'Compact now' }
+const TIMER_HANDOFF: ColdButton = { id: 'handoff', label: 'Save handoff note' }
+
+/** True when the cache row on `band` is the timer row, still as drawn. */
+const timerIsOn = (band: Band | null | undefined) => timerRow !== null && !!band?.cold?.length && band.coldText === timerRow.text
+
+/** How full the conversation is, in whole percent of the window; undefined when the window or the size is not known. */
+async function contextPercent($: EngineInterface): Promise<number | undefined> {
+  const window = (await usageNow($))?.context?.window
+  return typeof window === 'number' && window > 0 && lastContext > 0 ? Math.round((lastContext / window) * 100) : undefined
+}
+
+/** Draws the timer row for `turn`. Not with Cache timer off or the band off; any later row (an offer, a keep-warm run) replaces it. */
+async function showTimer($: EngineInterface, turn: ColdTurn, idleCompact: boolean) {
+  if (!cacheTimer || bandMode === 'off') return
+  const percent = await contextPercent($)
+  const pctPart = percent === undefined ? {} : { percent }
+  let lead: string
+  let text: string
+  if (idleCompact) {
+    const at = (lastRequestAt || turn.endedAt) + IDLE_COMPACT_AFTER
+    text = idleCompactTimerText({ at, ...pctPart })
+    lead = idleCompactTimerText({ at })
+  } else {
+    const rates = billing === 'subscription' ? await windowPerDollar($) : undefined
+    const cost = coldCostText(turn.cold, rates).replace(/^about /, '~')
+    const coldAt = turn.endedAt + cacheTtl
+    text = timerText({ coldAt, cost, ...pctPart })
+    lead = timerText({ coldAt, cost })
+  }
+  lead = `${lead}.`
+  const buttons = [TIMER_COMPACT, ...(turn.whatsnext ? [TIMER_HANDOFF] : [])]
+  timerRow = { text, lead, buttons }
+  await showCold($, text, buttons, true)
+  await log($, `cache timer: ${text}`)
+}
+
+let tipTimer: Timer | null = null
+/** Every cancel and every new turn bumps this: a tip callback that wakes up under an older number does nothing. */
+let tipGen = 0
+
+function cancelTip() {
+  tipGen += 1
+  tipTimer?.cancel()
+  tipTimer = null
+}
+
+/**
+ * At a main turn's end: the cold-compact tip waits for the cache to expire. It is armed only when it would be due (an Opus or Fable
+ * chat, big enough to save the Idle warning amount), and not while Claude Code's idle compact will shrink the conversation first.
+ * The cache's life counts from the last request that refreshed it, so a keep-warm run moves the tip along with each request.
+ */
+async function armTip($: EngineInterface, tier: Tier, context: number, idleCompact: boolean) {
+  cancelTip()
+  if (off || !cacheOn || bandMode === 'off' || idleCompact) return
+  if (tipDue(prices, tier, context, idleWarning ?? COLD_MIN) === undefined) return
+  const gen = tipGen
+  const arm = async (at: number) => {
+    const wait = Math.max(0, at - (await $.clock.now()))
+    if (gen !== tipGen) return
+    tipTimer?.cancel()
+    tipTimer = $.clock.after(wait, () => {
+      tipTimer = null
+      if (gen !== tipGen || off) return
+      void tipFire().catch(err => log($, `cold-compact tip failed: ${err instanceof Error ? err.message : String(err)}`))
+    })
+  }
+  const tipFire = async () => {
+    const coldAt = Math.max(lastTurnAt, lastWarmAt) + cacheTtl
+    if ((await $.clock.now()) < coldAt) return arm(coldAt)
+    if (coldTip || mainBusy) return
+    await showColdTip($, { tier, context })
+  }
+  await arm(Math.max(lastTurnAt, lastWarmAt) + cacheTtl)
+}
+
+/**
+ * At a session's start: a reopened chat whose last turn ended more than one cache life ago is cold, so the tip shows before the
+ * person types, when it is due for its size. The turn's time and size are the store's last-turn record; the model is the one the
+ * session reports, else the one the last turn ran on. With any of them missing, nothing shows.
+ */
+async function reopenedTip($: EngineInterface) {
+  try {
+    if (off || !cacheOn || !interactive || bandMode === 'off' || !sessionId) return
+    const last = (await lastTurns($))[sessionId]
+    if (!last || !(last.at > 0) || !(last.context > 0)) return
+    const live = tierOf(await $.session.model().catch(() => undefined))
+    const tier = live ?? (TIERS.includes(last.tier as Tier) ? last.tier : undefined)
+    if (!tier) {
+      await log($, 'cold-compact tip: a reopened chat, but its model is not known at the start')
+      return
+    }
+    if ((await $.clock.now()) - last.at <= cacheTtl) return
+    await showColdTip($, { tier, context: last.context })
+  } catch (err) {
+    await log($, `cold-compact tip (reopened chat) failed: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
 // Arms the session's one timer for `at` (ms): `fn` runs then, unless the timer was cancelled, a newer round began or
 // rightsize is off. `$.clock.after` is the engine's API for a long wait: its callback is kept in the plugin's
 // environment, so it does not hang on the budget of the hook that scheduled it. An earlier timer is replaced.
@@ -4509,39 +4623,51 @@ async function armCold($: EngineInterface, gen: number, at: number, fn: () => Pr
   })
 }
 
-// At a main turn's end, in the session's own model's prices. Skipped: rightsize off, Cache or the row off, no conversation,
-// one whose action would not save anything (netSaving), one over 200K tokens (Claude Code compacts those itself),
-// and a round already done after the person's last prompt.
+// At a main turn's end, in the session's own model's prices. Every turn gets the Cache timer row (showTimer) and the
+// cold-compact tip's timer (armTip). Skipped for the rest: rightsize off, Cache or the row off, no conversation, one whose action
+// would not save anything (netSaving), one that Claude Code compacts itself, and a round already done after the person's last prompt.
 async function coldCheck($: EngineInterface) {
   // The cold-compact tip is walking the person through its steps: a turn that ends on the way (a /compact) leaves it alone.
   if (coldTip && coldTip.step >= 1 && coldTip.step <= 3) return
   coldTip = null
+  cancelTip()
   await closeOffer($, 'ignored')
   cancelCold($, 'a newer turn ended')
   coldTurn = null
+  timerRow = null
   // An offer for an earlier turn is stale now: this turn gets its own, or none.
   if ((await $.state.get(BAND).catch(() => undefined))?.value?.cold) await setBand($, null)
-  if (tipAfterWrap) {
-    const t = { ...tipAfterWrap, context: lastContext || tipAfterWrap.context }
-    tipAfterWrap = null
-    if (!off && cacheOn) await armCold($, coldGen, (lastTurnAt || (await $.clock.now())) + cacheTtl, () => showColdTip($, t))
-    return
-  }
-  if (off || !cacheOn || coldDone || coldMode === 'off') return
+  if (off || !cacheOn) return
   const context = lastContext
   if (!context) return
   const tier = (await situation($)).tier
   const idle = idleCost(prices[tier], context)
   const cold = idle.resend
+  // Claude Code compacts this session by itself while it sits idle: no pings (they do not reset its timer and would pay for the
+  // uncached summary after it), no offer, no rightsize compact. The row says when it compacts; a handoff note is saved before.
+  const idleCompact = await idleCompactNow($, context)
+  // The cold-compact tip, whichever path runs below (or none): it waits for the cache to expire (P-80).
+  await armTip($, tier, context, idleCompact)
+  // A handoff or a compaction ran since the person's last prompt: the turn it caused starts no round, and the row says what was done.
+  if (coldDone) return
+  const { whatsnext } = await neighbours($)
+  const task = (await currentTask($))?.id
+  const turn: ColdTurn = { endedAt: lastTurnAt || (await $.clock.now()), context, tier, cold, whatsnext, ...(task ? { task } : {}), ends: {} }
+  coldTurn = turn
+  await showTimer($, turn, idleCompact)
+  if (coldMode === 'off') return
   // Every stretch of idle time is logged, whatever the row does with it (P-40).
   await openStretch($, context, cold)
-  // Claude Code compacts this session by itself while it sits idle: no pings (they do not reset its timer and would pay for the
-  // uncached summary after it), no offer, no rightsize compact; whatsnext's wrapup.autoIdle saves the handoff.
-  if (await idleCompactNow($, context)) {
+  if (idleCompact) {
     await log($, `before the cache goes cold: nothing to do, Claude Code compacts this session by itself 54 minutes after the last request (${context} tokens, at or above its idle-compact threshold)`)
+    // whatsnext saves a handoff note before Claude Code compacts, so the compact has something to keep (its PreCompact text points to the note).
+    if (whatsnext) {
+      const at = (lastRequestAt || turn.endedAt) + IDLE_COMPACT_AFTER - leadMs(cacheTtl)
+      await log($, `before the cache goes cold: handoff note ${Math.round(leadMs(cacheTtl) / 60_000)} min before Claude Code's idle compact`)
+      await armCold($, coldGen, at, () => atCold($, turn, 'handoff'))
+    }
     return
   }
-  const { whatsnext } = await neighbours($)
   const plan = coldPlan(coldMode, whatsnext)
   // The row acts only on a conversation big enough to matter, by the Idle warning amount (COLD_MIN while that is off), and
   // when its action saves something: its own cost taken off coming back cold.
@@ -4551,9 +4677,6 @@ async function coldCheck($: EngineInterface) {
     await log($, `before the cache goes cold: ${plan.action} skipped, it would cost ${money(cold - net)} against ${money(cold)} cold`)
     return
   }
-  const task = (await currentTask($))?.id
-  const turn: ColdTurn = { endedAt: lastTurnAt || (await $.clock.now()), context, tier, cold, whatsnext, ...(task ? { task } : {}), ends: {} }
-  coldTurn = turn
   const gen = coldGen
   if (plan.action === 'pays') {
     await startPays($, turn)
@@ -4687,6 +4810,14 @@ function showWarming($: EngineInterface, w: Warming) {
  */
 async function showAdvice($: EngineInterface, note: CacheNote): Promise<boolean> {
   if (coldTurn?.offer || pays?.row === 'countdown') return false
+  // The Cache timer row takes the context warning into its own line: one Cache row. With Start fresh offered, it already saves the note.
+  const timer = timerRow
+  if (note.withTimer && timer && timerIsOn((await $.state.get(BAND).catch(() => undefined))?.value)) {
+    timerRow = null
+    const handoff = timer.buttons.filter(b => b.id === TIMER_HANDOFF.id && !note.extra)
+    await showCold($, `${timer.lead} ${note.text}`, [note.button, ...(note.extra ? [note.extra] : []), ...handoff], true, [...note.more])
+    return true
+  }
   if (warming) {
     if (warming.note) return false
     warming.note = note
@@ -5035,8 +5166,6 @@ async function payGate($: EngineInterface, p: Pays) {
     await atCold($, c, 'handoff')
   } else {
     await log($, `keep warm while it pays: nothing to do before the expiry, compacting does not pay and whatsnext is not here: ${numbers}`)
-    // When the cache has gone cold, the band can walk the person through a compaction on Sonnet (P-47).
-    await armCold($, p.gen, p.refreshed + cacheTtl, () => showColdTip($, c))
   }
 }
 
@@ -5163,7 +5292,6 @@ async function saveHandoff($: EngineInterface, c: ColdTurn) {
       return
     }
     await log($, `handoff: submitted "${WRAP_UP}" to whatsnext before the cache went cold`)
-    tipAfterWrap = c
     await showCold($, 'Saved a handoff with whatsnext before the cache went cold.')
   } catch (err) {
     await log($, `handoff failed: ${err instanceof Error ? err.message : String(err)}`)
@@ -5296,7 +5424,7 @@ async function hintCheck($: EngineInterface) {
   try {
     if (off || bandMode === 'off') return
     const had = (await $.state.get(BAND).catch(() => undefined))?.value
-    if (had?.coldText || warming) {
+    if ((had?.coldText && !timerIsOn(had)) || warming) {
       await log($, 'install hint: not shown, the cache row is in use')
       return
     }
@@ -6493,7 +6621,7 @@ async function tipCheck($: EngineInterface) {
   if (!(await tipsCanShow($)) || (await shownTip($))) return
   const band = (await $.state.get(BAND).catch(() => undefined))?.value
   const question = (await $.state.get(QUESTION).catch(() => undefined))?.value
-  if (question || band?.coldText || band?.acted) return
+  if (question || (band?.coldText && !timerIsOn(band)) || band?.acted) return
   if (saved && (await offerTip($, 'report'))) return
   if (loweredThisSession && (await offerTip($, 'retry'))) return
   const earned = ((await $.store.get(STAR_KEY).catch(() => undefined)) as { earned?: unknown } | undefined)?.earned === true
@@ -6658,6 +6786,9 @@ function applyOption(key: SettingKey) {
     case 'idleWarning':
       idleWarning = parseIdleWarning(v)
       return
+    case 'cacheTimer':
+      cacheTimer = v !== 'off'
+      return
     case 'billing':
       billing = v === 'subscription' ? 'subscription' : 'api'
       return
@@ -6687,6 +6818,13 @@ async function followRow($: EngineInterface, key: SettingKey, value: string) {
       // The row changed: what was waiting or pinging under the old value stops. The next big turn's end follows the new one.
       cancelCold($, 'Before the cache goes cold changed')
       coldTurn = null
+      return
+    case 'cacheTimer':
+      // Off takes the timer line off the band now; on, the next turn's end draws it.
+      if (value === 'off' && timerIsOn((await $.state.get(BAND).catch(() => undefined))?.value)) {
+        timerRow = null
+        await clearColdRow($)
+      }
       return
     case 'cache':
       // Cache off: a keep-warm run, a waiting offer and a timed handoff or compaction stop at once, and the Cache row goes. Back on, the next big turn's end follows it.
@@ -7100,7 +7238,8 @@ export const register: Register = (on, options) => {
     offerOpen = false
     coldTurn = null
     coldDone = false
-    tipAfterWrap = null
+    cancelTip()
+    timerRow = null
     coldPrompt = null
     wrapThenCompact = null
     wrapThenFresh = false
@@ -7210,6 +7349,8 @@ export const register: Register = (on, options) => {
     // After the band is reset above, so the pause line stays (ADR 0032).
     await checkOlder($)
     await showStatus($)
+    // A reopened chat that has gone cold: the tip shows before the person types (P-80).
+    await reopenedTip($)
     return result
   })
 
@@ -7281,7 +7422,7 @@ export const register: Register = (on, options) => {
     // The person is back: keep-warm requests, a waiting handoff and a waiting offer stop, and the next big turn's end starts afresh.
     if (!off && fromPerson(e) && !e.command && !e.isMeta) {
       coldDone = false
-      tipAfterWrap = null
+      cancelTip()
       wrapThenCompact = null
       wrapThenFresh = false
       freshHeld = null
@@ -7895,7 +8036,7 @@ export const register: Register = (on, options) => {
     const shown = bandRows(band, mode)
     // A tip: on its own row, never while a turn runs, and only when the band says nothing else that matters.
     const shownTipNow = (await $.state.get(TIP).catch(() => undefined))?.value as ShownTip | null | undefined
-    const tip = shownTipNow && mode !== 'off' && !e.props.isWorking && !question && !shown.cold && !(shown.route && band?.acted) ? tipById(shownTipNow.id) : undefined
+    const tip = shownTipNow && mode !== 'off' && !e.props.isWorking && !question && !(shown.cold && !timerIsOn(band)) && !(shown.route && band?.acted) ? tipById(shownTipNow.id) : undefined
     if (!shown.route && !shown.cold && !question && !tip) return next(e)
     const { Box, Button, Link, Text } = $.ui.resolve(e)
     type Row = { key: string; label: string; text: string; buttons: ReturnType<typeof Button>[]; note?: string; link?: { label: string; href: string }; tone?: Band['coldTone'] }

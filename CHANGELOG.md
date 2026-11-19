@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.16.1 (unreleased)
+
+- **A Cache row after every turn.** The band now shows, after each turn in your main chat and at any conversation size, when the cache goes cold, what coming back then costs and how full the conversation is: `Cache cold at 11:12 PM · coming back then costs ~$0.40 · context 32%`. It is a clock time, not a countdown, because the terminal band only redraws when something happens. **Compact now** compacts, and **Save handoff note** shows when whatsnext is set up in the project. A keep-warm offer or a running keep-warm replaces this line, and a context warning (40 to 90% full) is added to it, so there is only ever one Cache row.
+- **New setting: Cache timer** (Advanced, on by default). Off hides only that line; keep-warm offers, the context warning and the compact tip still show. **Cache** off still hides everything.
+- **The compact-on-Sonnet tip shows whichever way the wait went.** It used to show only after a whatsnext handoff, or when no handoff was possible. It now shows once the cache has gone cold on a big Opus or Fable chat after keep warm, an offer nobody answered, a handoff, or nothing at all, unless you send a prompt first.
+- **Reopened chats get the tip too.** When you reopen a chat whose last turn ended more than one cache life ago, the tip is on the band before you type, if compacting on Sonnet would save enough.
+- **When Claude Code compacts an idle chat itself, the Cache row says when** (`Claude Code compacts this at about 12:05 AM`), and with whatsnext set up in the project rightsize saves a handoff note 3 minutes before, so the compact has something to keep. rightsize still does not keep that chat warm or compact it.
+- **Fix: the docs now say the hand-off bar is 90%.** `docs/SETTINGS.md` said 70%; the code has used 90% since 0.16.0.
+
 ## 0.16.0 (2026-11-18)
 
 - **The tip to compact on Sonnet shows with whatsnext too.** When rightsize saved a whatsnext handoff before the cache went cold, the tip never showed: it was set up only without whatsnext, and the wrap-up turn's end cancelled it. It now shows when the cache warmed by the wrap-up goes cold, about one cache life after the wrap-up ends, unless you send a prompt first.

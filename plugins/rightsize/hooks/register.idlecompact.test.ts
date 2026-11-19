@@ -56,18 +56,18 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await turn(d, 't1')
     await h.advance(8 * HOUR)
     expect(nothingDone(h)).toEqual(NONE)
-    expect(await bandText($, surface)).toBe('')
+    expect(await bandText($, surface), 'the Cache row says when Claude Code compacts').toBe('Claude Code compacts this at about 6:54 PM · context 100%')
     expect(logOf(h)).toContain('Claude Code compacts this session by itself 54 minutes after the last request')
     expect(kept(h)).toMatchObject({ on: true, context: 200_000 })
   })
 
   for (const row of ['compact', 'save a handoff', 'ask']) {
-    test(`Before the cache goes cold = ${row}: nothing is done in that state (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    test(`Before the cache goes cold = ${row}: no keep warm, offer or compact in that state; whatsnext saves one handoff note before Claude Code compacts (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
       const { h, d } = await session($, on, { tokens: 250_000, stored: { beforeCold: row }, whatsnext: true })
       await turn(d, 't1')
       await h.advance(2 * HOUR)
-      expect(nothingDone(h)).toEqual(NONE)
-      expect(await bandText($, surface)).toBe('')
+      expect({ ...nothingDone(h), submitted: h.submitted.map(s => s.text) }, 'the note is the only thing sent, and once').toEqual({ forks: 0, submitted: ['wrap up'], compactions: 0 })
+      expect(await bandText($, surface)).toBe('Saved a handoff with whatsnext before the cache went cold.')
     })
   }
 

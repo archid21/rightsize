@@ -147,7 +147,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   test(`wrap up button: beside Extend 1 hour on the countdown row, from 5 minutes on a 1-hour cache (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const { h, d } = await session($, on)
     await turn(d, 't1')
-    expect(await buttons($)).toEqual([])
+    expect(await buttons($), 'the Cache timer row until then: no Extend, no Wrap up').toEqual([['cold-compact', 'Compact now'], ['mode', '⋯'], ['close', '×']])
     await h.advance(5 * MIN)
     expect(await buttons($)).toEqual([['cold-extend', 'Extend 1 hour'], ['cold-wrap', 'Wrap up'], ['mode', '⋯'], ['close', '×']])
   })
@@ -222,7 +222,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const { h, d } = await session($, on, { prices: OLD_PRICES, usage: { ...BIG_TURN, cache_read_input_tokens: 150_000 } })
     await turn(d, 't1')
     await h.advance(3 * MIN)
-    expect(await buttons($)).toEqual([])
+    expect(await buttons($), 'the timer row\'s Compact now, and no Wrap up').toEqual([['cold-compact', 'Compact now'], ['mode', '⋯'], ['close', '×']])
   })
 
   test(`wrap up button: pressed while a turn runs it waits, with a note (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -408,7 +408,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await cacheRow($)).toBe(`Wrapped up: compacted the conversation. ${INSTALL('$0.27')}`)
   })
 
-  test(`install hint: coming back to a cold cache shows it when that turn ends, with the saving over a cold return (${surface})`, { timeoutMs: 30000, options: ASK }, async ($, on) => {
+  test(`install hint: coming back to a cold cache shows it when that turn ends, with the saving over a cold return (${surface})`, { timeoutMs: 30000, options: { ...ASK, cacheTimer: 'off' } }, async ($, on) => {
     const { h, d } = await session($, on, { stored: ASK })
     await turn(d, 't1')
     await h.advance(130 * MIN)
@@ -419,7 +419,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(log(h)).toContain('install hint: shown; a whatsnext handoff note would have saved $0.57')
   })
 
-  test(`install hint: a return to a warm cache shows nothing (${surface})`, { timeoutMs: 30000, options: ASK }, async ($, on) => {
+  test(`install hint: a return to a warm cache shows nothing (${surface})`, { timeoutMs: 30000, options: { ...ASK, cacheTimer: 'off' } }, async ($, on) => {
     const { h, d } = await session($, on, { stored: ASK })
     await turn(d, 't1')
     await h.advance(20 * MIN)
@@ -428,7 +428,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await cacheRow($)).toBe('')
   })
 
-  test(`install hint: a cold return that a note would have saved under $0.25 on shows nothing (${surface})`, { timeoutMs: 30000, options: ASK }, async ($, on) => {
+  test(`install hint: a cold return that a note would have saved under $0.25 on shows nothing (${surface})`, { timeoutMs: 30000, options: { ...ASK, cacheTimer: 'off' } }, async ($, on) => {
     const { h, d } = await session($, on, { stored: ASK, usage: { ...BIG_TURN, cache_read_input_tokens: 29_500 } })
     await turn(d, 't1')
     await h.advance(130 * MIN)
@@ -438,7 +438,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.store.installHintAt).toBeUndefined()
   })
 
-  test(`install hint: a return after the conversation was compacted while away shows nothing (${surface})`, { timeoutMs: 30000, options: ASK }, async ($, on) => {
+  test(`install hint: a return after the conversation was compacted while away shows nothing (${surface})`, { timeoutMs: 30000, options: { ...ASK, cacheTimer: 'off' } }, async ($, on) => {
     const { h, d } = await session($, on, { stored: ASK })
     await turn(d, 't1')
     await compact($, 'manual', { instructions: 'x' })
@@ -448,7 +448,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await cacheRow($)).toBe('')
   })
 
-  test(`install hint: not when whatsnext is installed (${surface})`, { timeoutMs: 30000, options: ASK }, async ($, on) => {
+  test(`install hint: not when whatsnext is installed (${surface})`, { timeoutMs: 30000, options: { ...ASK, cacheTimer: 'off' } }, async ($, on) => {
     const { h, d } = await session($, on, { stored: ASK, whatsnext: 'uninitialized', store: { initHinted: ['/repo'] } })
     await turn(d, 't1')
     await h.advance(130 * MIN)

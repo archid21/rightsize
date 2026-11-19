@@ -105,10 +105,10 @@ for (const surface of ['desktop', 'terminal'] as const) {
   test(`ask: a big Opus session gets the offer 5 minutes after the turn on a 1-hour cache: one line, one button, the other choices in the ⋯ menu; nobody presses, nothing happens (${surface})`, { timeoutMs: 30000, options: ASK }, async ($, on) => {
     const { h, d } = await coldSession($, on)
     await coldTurn(d, 't1')
-    expect(await bandText($, surface), 'not at the turn\'s end').toBe('')
+    expect(await bandText($, surface), 'at the turn\'s end the Cache timer row stands in for the offer').toBe('Cache cold at 7:00 PM · coming back then costs ~$0.63 · context 40%')
     expect(h.afters, 'one timer, for 5 minutes after the turn').toEqual([5 * MIN])
     await h.advance(4 * MIN)
-    expect(await bandText($, surface), 'not at 4 minutes').toBe('')
+    expect(await bandText($, surface), 'not at 4 minutes: still the timer row').toMatch(/^Cache cold at 7:00 PM/)
     await h.advance(MIN)
     expect(await bandText($, surface), 'the cache line stands alone: no route text, so it carries the prefix').toBe('Goes cold in 55 min ▰▰▰▰▰▰▰▰▰▱ (19:00) · coming back after costs about $0.63')
     expect(await bandButtons($), 'one button; ⋯ and × follow it').toEqual([
@@ -186,7 +186,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.submit(LOOKUP)
     await d.step('t1')
     await d.complete('t1')
-    expect(await coldRow($), 'not yet').toBe('')
+    expect(await coldRow($), 'not yet: the timer row').toBe('Cache cold at 7:00 PM · coming back then costs ~$0.63 · context 40%')
     await h.advance(5 * MIN)
     const ui = await mount($, surface)
     const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text)
@@ -225,7 +225,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(coldLog(h)).toContain('offered 2h, 8h, start')
   })
 
-  test(`ask: nothing for a small conversation or for Haiku; Sonnet needs about 128K, and there is no size ceiling (${surface})`, { timeoutMs: 30000, options: ASK }, async ($, on) => {
+  test(`ask: nothing for a small conversation or for Haiku; Sonnet needs about 128K, and there is no size ceiling (${surface})`, { timeoutMs: 30000, options: { ...ASK, cacheTimer: 'off' } }, async ($, on) => {
     const { h, d } = await coldSession($, on, { usage: { ...BIG_TURN, cache_read_input_tokens: 20_000 } })
     await coldTurn(d, 't1')
     expect(await bandText($, surface), '20K tokens on Opus: $0.16 cold').toBe('')
@@ -261,7 +261,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await bandText($, surface)).toContain('Goes cold')
   })
 
-  test(`ask: Idle warning over $1 skips a $0.55 cold return (${surface})`, { timeoutMs: 30000, options: { idleWarning: 'over $1' } }, async ($, on) => {
+  test(`ask: Idle warning over $1 skips a $0.55 cold return (${surface})`, { timeoutMs: 30000, options: { idleWarning: 'over $1', cacheTimer: 'off' } }, async ($, on) => {
     const { h, d } = await coldSession($, on)
     h.model = 'claude-sonnet-5-5'
     h.stepUsage = { ...BIG_TURN, cache_read_input_tokens: 139_500 }
@@ -276,7 +276,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await bandText($, surface)).toBe('')
   })
 
-  test(`Don't offer again saves the row as yours, says where it is, and nothing offers again (${surface})`, { timeoutMs: 30000, options: ASK }, async ($, on) => {
+  test(`Don't offer again saves the row as yours, says where it is, and nothing offers again (${surface})`, { timeoutMs: 30000, options: { ...ASK, cacheTimer: 'off' } }, async ($, on) => {
     const { h, d } = await coldSession($, on)
     await coldOffer(h, d, 't1')
     await openMenu($, h, { ...CACHE_MENU, 'More options': "Don't offer again" }, 2)

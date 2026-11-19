@@ -1364,7 +1364,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(last(h.submitted)?.context?.join('\n') ?? '').toContain('model "haiku"')
   })
 
-  test(`the band shows a change and who decided it; Retry undoes it (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`the band shows a change and who decided it; Retry undoes it (${surface})`, { timeoutMs: 30000, options: { cacheTimer: 'off' } }, async ($, on) => {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES }, stored: NO_COLD })
     const d = drive($, h)
     await d.start(surface)

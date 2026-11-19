@@ -38,7 +38,7 @@ import {
 const set = (...keys: SettingKey[]) => new Set<SettingKey>(keys)
 
 test('every row is a picker: a title, two or more options, and a default among them', async () => {
-  expect(KEYS.length).toBe(29)
+  expect(KEYS.length).toBe(30)
   for (const k of KEYS) {
     const row = SETTINGS[k]
     expect(row.title.length, k).toBeGreaterThan(0)
@@ -298,6 +298,13 @@ test('Band is a plain row: the six plain rows are Mode, Routing, Hand-offs, Ask 
   expect(SETTINGS.floor.title).toBe('Advanced · Lowest effort')
   expect(plainTitle(SETTINGS.floor.title)).toBe('Lowest effort')
   expect(plainTitle('Mode'), 'no prefix to take off').toBe('Mode')
+})
+
+test('Cache timer is an on/off row, on by default (ADR 0094)', async () => {
+  expect(SETTINGS.cacheTimer.options).toEqual(['on', 'off'])
+  expect(SETTINGS.cacheTimer.default).toBe('on')
+  expect(SETTINGS.cacheTimer.title).toBe('Advanced · Cache timer')
+  expect(settingNamed('cache timer')).toBe('cacheTimer')
 })
 
 test('the fixed values are what the Balanced profile held (ADR 0021)', async () => {

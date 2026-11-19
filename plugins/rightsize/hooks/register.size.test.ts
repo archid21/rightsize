@@ -39,13 +39,13 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect((await row($)).text, 'nothing before a turn ends').toBe('')
     await turn(d, 't1')
     const r = await row($)
-    expect(r.text).toBe('Context is 60% full (120K of 200K tokens). A compact now makes every later turn cheaper.')
+    expect(r.text, 'on the Cache timer row, not a row of its own').toBe('Cache cold at 1:00 AM · coming back then costs ~$0.16. Context is 60% full (120K of 200K tokens). A compact now makes every later turn cheaper.')
     expect(r.buttons).toContain('cold-size-compact')
     expect(log(h)).toContain('context warning: shown at 60%')
     expect(h.compactions).toBe(0)
   })
 
-  test(`each step is said once: the next turn at the same size says nothing (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
+  test(`each step is said once: the next turn at the same size says nothing (${surface})`, { timeoutMs: 30000, options: { ...API, cacheTimer: 'off' } }, async ($, on) => {
     const h = setup(on, 120_000)
     const d = drive($, h)
     await d.start(surface)
@@ -57,7 +57,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect((await row($)).text).toContain('Context is 70% full (150K of 200K')
   })
 
-  test(`under 40% there is no row (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
+  test(`under 40% there is no row (${surface})`, { timeoutMs: 30000, options: { ...API, cacheTimer: 'off' } }, async ($, on) => {
     const h = setup(on, 70_000)
     const d = drive($, h)
     await d.start(surface)
@@ -65,7 +65,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect((await row($)).text).toBe('')
   })
 
-  test(`steps at or above the auto-compact threshold are skipped (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
+  test(`steps at or above the auto-compact threshold are skipped (${surface})`, { timeoutMs: 30000, options: { ...API, cacheTimer: 'off' } }, async ($, on) => {
     const h = setup(on, 170_000, 160_000)
     const d = drive($, h)
     await d.start(surface)
@@ -113,7 +113,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.forks.length, 'no keep-warm request after the compaction').toBe(0)
   })
 
-  test(`Don't show again hides the warning for good (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
+  test(`Don't show again hides the warning for good (${surface})`, { timeoutMs: 30000, options: { ...API, cacheTimer: 'off' } }, async ($, on) => {
     const h = setup(on, 120_000)
     h.answers = { Options: "Don't show again" }
     const d = drive($, h)

@@ -84,7 +84,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect((await advice($)).text).toMatch(/^Near your 5-hour limit, resets \d+:\d\d\. Compact now to save ~[\d.–]+% of your next window\.$/)
   })
 
-  test(`no advice when the reset is within the cache life: the cache stays warm (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
+  test(`no advice when the reset is within the cache life: the cache stays warm (${surface})`, { timeoutMs: 30000, options: { ...API, cacheTimer: 'off' } }, async ($, on) => {
     const h = setup(on, { waitMs: 30 * MIN })
     const d = drive($, h)
     await d.start(surface)
@@ -93,7 +93,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(log(h)).not.toContain('usage-limit')
   })
 
-  test(`no advice with a wait of exactly the cache life, advice one minute past it (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
+  test(`no advice with a wait of exactly the cache life, advice one minute past it (${surface})`, { timeoutMs: 30000, options: { ...API, cacheTimer: 'off' } }, async ($, on) => {
     const h = setup(on, { waitMs: HOUR })
     const d = drive($, h)
     await d.start(surface)
@@ -104,7 +104,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect((await advice($)).text, 'one minute past the cache life').toBe(SHOWN(h, HOUR + MIN))
   })
 
-  test(`no advice under 90% (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
+  test(`no advice under 90% (${surface})`, { timeoutMs: 30000, options: { ...API, cacheTimer: 'off' } }, async ($, on) => {
     const h = setup(on, { percent: 89 })
     const d = drive($, h)
     await d.start(surface)
@@ -113,7 +113,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(log(h)).not.toContain('usage-limit')
   })
 
-  test(`no advice at 30,000 tokens or less, advice just over it (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
+  test(`no advice at 30,000 tokens or less, advice just over it (${surface})`, { timeoutMs: 30000, options: { ...API, cacheTimer: 'off' } }, async ($, on) => {
     const h = setup(on, { usage: SMALL })
     const d = drive($, h)
     await d.start(surface)
@@ -124,7 +124,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect((await advice($)).text, '30,001').toContain('Compact now to save ~$0.')
   })
 
-  test(`once per 5-hour window: a second turn in the same window says nothing, a new window may (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
+  test(`once per 5-hour window: a second turn in the same window says nothing, a new window may (${surface})`, { timeoutMs: 30000, options: { ...API, cacheTimer: 'off' } }, async ($, on) => {
     const h = setup(on)
     const d = drive($, h)
     await d.start(surface)
@@ -160,7 +160,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(log(h)).not.toContain('usage-limit')
   })
 
-  test(`watch only: the advice is logged, not shown, once per window (${surface})`, { timeoutMs: 30000, options: { ...API, mode: 'watch only' } }, async ($, on) => {
+  test(`watch only: the advice is logged, not shown, once per window (${surface})`, { timeoutMs: 30000, options: { ...API, mode: 'watch only', cacheTimer: 'off' } }, async ($, on) => {
     const h = setup(on, { stored: { mode: 'watch only' } })
     const d = drive($, h)
     await d.start(surface)
@@ -199,7 +199,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.compactions).toBe(0)
   })
 
-  test(`Don't show again hides this row for good, in later windows and sessions too (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
+  test(`Don't show again hides this row for good, in later windows and sessions too (${surface})`, { timeoutMs: 30000, options: { ...API, cacheTimer: 'off' } }, async ($, on) => {
     const h = setup(on, { effort: 'low' })
     const d = drive($, h)
     await d.start(surface)
@@ -394,7 +394,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect((await advice($)).text).toBe('')
   })
 
-  test(`an unreadable usage reading never breaks the turn (${surface})`, { timeoutMs: 30000, options: API }, async ($, on) => {
+  test(`an unreadable usage reading never breaks the turn (${surface})`, { timeoutMs: 30000, options: { ...API, cacheTimer: 'off' } }, async ($, on) => {
     const h = setup(on)
     h.rateLimits = [{ kind: 'five_hour', percentUsed: Number.NaN, resetsAt: 'soon' }]
     const d = drive($, h)

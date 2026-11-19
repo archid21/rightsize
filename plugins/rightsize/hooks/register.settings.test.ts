@@ -160,6 +160,21 @@ for (const surface of ['desktop', 'terminal'] as const) {
       set: false,
       def: true,
     },
+    {
+      key: 'cacheTimer',
+      value: 'off',
+      start: OPUS,
+      see: async c => {
+        c.h.stepUsage = BIG_TURN
+        const t = c.turn()
+        await c.d.step(t)
+        await c.d.complete(t)
+        // The timer line is on the Cache row after every main turn; with the row off it is not.
+        return (await bandText(c.$, c.surface)).startsWith('Cache cold at ')
+      },
+      set: false,
+      def: true,
+    },
     { key: 'floor', value: 'medium', start: { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES } }, see: c => effortOf(c, LOOKUP, LOWER), set: 'medium', def: 'low' },
     {
       key: 'ceiling',
@@ -490,7 +505,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   const logOf = (h: ReturnType<typeof engine>) => h.files[LOG_PATH] ?? ''
   const KEEP8 = { beforeCold: 'keep warm 8 h' }
 
-  test(`Routing off: a lowering is not applied, nothing is asked, the band says nothing, and the log says why (${surface})`, { timeoutMs: 30000, options: ROUTING_OFF.options }, async ($, on) => {
+  test(`Routing off: a lowering is not applied, nothing is asked, the band says nothing, and the log says why (${surface})`, { timeoutMs: 30000, options: { ...ROUTING_OFF.options, cacheTimer: 'off' } }, async ($, on) => {
     const h = engine(on, { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES }, stored: { ...ROUTING_OFF.stored, ...NO_COLD } })
     const d = drive($, h)
     await d.start(surface)
@@ -509,7 +524,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(runLines(h).find(l => l.type === 'lookup')).toMatchObject({ change: 'none' })
   })
 
-  test(`Routing off: a raise, a session switch and a review on Opus are not set either, and a stuck turn is not raised (${surface})`, { timeoutMs: 30000, options: ROUTING_OFF.options }, async ($, on) => {
+  test(`Routing off: a raise, a session switch and a review on Opus are not set either, and a stuck turn is not raised (${surface})`, { timeoutMs: 30000, options: { ...ROUTING_OFF.options, cacheTimer: 'off' } }, async ($, on) => {
     // Raising set to ask: the question would offer a session switch.
     const h = engine(on, { model: 'claude-sonnet-5-5', effort: 'medium', store: { ...AUTO_RAISE, choices: { raise: 'ask' }, [CAL_STORE]: FREE_SWITCHES }, stored: { ...ROUTING_OFF.stored, ...NO_COLD } })
     const d = drive($, h)

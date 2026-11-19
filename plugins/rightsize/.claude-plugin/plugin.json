@@ -244,6 +244,16 @@
         "off"
       ]
     },
+    "cacheTimer": {
+      "type": "string",
+      "title": "Advanced · Cache timer",
+      "description": "on (default): after every main-chat turn the band shows when the prompt cache goes cold (a clock time), what coming back then costs and how full the conversation is, with Compact now and, when whatsnext is set up in the project, Save handoff note. When Claude Code will compact an idle session by itself, the line says when. off: that line is not shown. The offers (keep warm, the context warning, the cold-compact tip) still show. Cache off hides everything.",
+      "default": "on",
+      "options": [
+        "on",
+        "off"
+      ]
+    },
     "billing": {
       "type": "string",
       "title": "Advanced · Reports",

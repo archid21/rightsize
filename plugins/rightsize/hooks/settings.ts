@@ -52,6 +52,7 @@ export const SETTINGS = {
   startTips: { title: 'Advanced · Start suggestions', options: ['weekly', 'monthly', 'off'], default: 'weekly' },
   idleWarning: { title: 'Advanced · Idle warning', options: ['over $0.10', 'over $0.50', 'over $1', 'off'], default: 'over $0.50' },
   beforeCold: { title: 'Advanced · Before the cache goes cold', options: ['while it pays', 'ask', 'keep warm 2 h', 'keep warm 8 h', 'keep warm until my usual start', 'save a handoff', 'compact', 'off'], default: 'while it pays' },
+  cacheTimer: { title: 'Advanced · Cache timer', options: ['on', 'off'], default: 'on' },
   billing: { title: 'Advanced · Reports', options: ['api', 'subscription'], default: 'api' },
   questionWait: { title: 'Advanced · Question wait', options: ['30 seconds', '1 minute', '2 minutes'], default: '30 seconds' },
   priceCheck: { title: 'Advanced · Price check', options: ['monthly', 'off'], default: 'monthly' },

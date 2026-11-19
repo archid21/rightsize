@@ -831,7 +831,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     return h.asked.slice(before)
   }
 
-  test(`👍 and 👎 in the ⋯ menu on a hand-off's result write a feedback line for that run, once (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`👍 and 👎 in the ⋯ menu on a hand-off's result write a feedback line for that run, once (${surface})`, { timeoutMs: 30000, options: { cacheTimer: 'off' } }, async ($, on) => {
     const h = engine(on, { model: 'claude-fable-5-2', effort: 'high', stored: NO_COLD })
     const d = drive($, h)
     h.now = Date.now()
@@ -875,7 +875,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await d.report()).toMatch(/Haiku's judgement +wrong on 1 of 2 checked prompts \(50%\)/)
   })
 
-  test(`👍 and 👎 in the ⋯ menu on an automatic lowering write a feedback line for that run, and 👍 counts as a hit (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`👍 and 👎 in the ⋯ menu on an automatic lowering write a feedback line for that run, and 👍 counts as a hit (${surface})`, { timeoutMs: 30000, options: { cacheTimer: 'off' } }, async ($, on) => {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES }, stored: NO_COLD })
     const d = drive($, h)
     h.now = Date.now()
@@ -1037,7 +1037,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   // The record steers the next decisions: a model the rater has often got wrong gets no lowering.
-  test(`a task type the rater keeps getting wrong is not lowered, once the log shows it (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`a task type the rater keeps getting wrong is not lowered, once the log shows it (${surface})`, { timeoutMs: 30000, options: { cacheTimer: 'off' } }, async ($, on) => {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES }, stored: NO_COLD })
     const d = drive($, h)
     h.files[RUNS] = Array.from({ length: 6 }, (_, i) =>
@@ -1061,7 +1061,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   // Try lowering again (ADR 0082): the row's button ends the pause, and the next lookup is lowered.
-  test(`the Try lowering again button ends a lowering pause from the next prompt (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`the Try lowering again button ends a lowering pause from the next prompt (${surface})`, { timeoutMs: 30000, options: { cacheTimer: 'off' } }, async ($, on) => {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES }, stored: NO_COLD })
     const d = drive($, h)
     h.files[RUNS] = Array.from({ length: 6 }, (_, i) =>

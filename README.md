@@ -9,7 +9,7 @@ claude plugin marketplace add archid21/rightsize
 claude plugin install rightsize@archid21 --scope user
 ```
 
-**Status: 0.15.1.** A truer reason when rightsize keeps your effort. **0.15.0:** `/rightsize optimize` suggests setting changes priced on your own use, the report shows what cache rebuilds cost and why, and a paused route comes back by itself. See [New in 0.15.0](#new-in-0150).
+**Status: 0.16.0.** Opus and Fable lower effort on any saving, helpers take more work (under 90% of staying, and short tasks on proven routes), fewer false "stuck" signs, and a new model version starts with a clean record. See [New in 0.16.0](#new-in-0160).
 
 MIT license · works with a Claude subscription (Pro, Max, Ultra) or an API key · [Open an issue](https://github.com/archid21/rightsize/issues)
 
@@ -133,6 +133,18 @@ On a subscription, a keep-warm request draws a small share of your usage window,
 | Remembering to switch | You | You | rightsize |
 
 *Benchmark: real tasks from open-source repositories, each graded by hidden tests the model never sees. Your results depend on your work and settings. Method: [docs/METHOD.md](docs/METHOD.md).*
+
+## New in 0.16.0
+
+rightsize now hands down and lowers more often where it is safe, and judges each model version on its own results. We tested each change on real use before making it.
+
+- **More savings on Opus and Fable.** An effort change keeps the cache there, so a lowering that saves anything goes through. A helper takes work when it costs under 90% of staying (was 70%), and short tasks go to a Sonnet helper once that kind of work has a record behind it.
+- **The right model for the job.** A review of a design or of prose runs on Sonnet; a code review stays on Opus. Extraction and summaries go to Sonnet instead of Haiku, and a Haiku helper gets three rules in its brief.
+- **Fewer false "stuck" signs.** Waiting for tests or a page no longer counts, a loop needs the same result three times, and each helper has its own 2 retries.
+- **A new model version starts with a clean record.** Misses and pauses are kept per version; what rightsize learned about costs carries over.
+- **`/rightsize optimize` can suggest turning lowering off** when lowering saved you almost nothing. Plus a fix for a first prompt that claimed an effort change it did not make.
+
+Every change: [CHANGELOG.md](CHANGELOG.md). Every feature: [docs/FEATURES.md](docs/FEATURES.md).
 
 ## New in 0.15.0
 

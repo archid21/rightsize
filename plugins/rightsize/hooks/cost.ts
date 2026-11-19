@@ -1060,6 +1060,12 @@ export const HAND_DOWN_STEPS = 20
 export const HAIKU_TYPES: readonly TaskType[] = ['lookup', 'search', 'bulk-edit']
 /** Extract and summarize went to Haiku until P-70 (ADR 0086). They now go to a Sonnet helper, at any size: no HAND_DOWN_STEPS floor. */
 export const SONNET_HELPER_TYPES: readonly TaskType[] = ['extract', 'summarize']
+/**
+ * P-75 (ADR 0091): a route with this many measured hand-downs to a Sonnet helper (its type, any level) skips HAND_DOWN_STEPS.
+ * Short Sonnet hand-downs cost about a third of staying with no misses; the estimate and the hand-off bar decide.
+ */
+export const SHORT_ROUTE_RUNS = 5
+const shortOk = (cal: Calibration, type: TaskType, t: Tier) => t === 'sonnet' && (cal[`${type}:delegate:sonnet`]?.n ?? 0) >= SHORT_ROUTE_RUNS
 /** A light review (see lightReview) runs on Sonnet at medium or more. */
 export const LIGHT_REVIEW_TIER: Tier = 'sonnet'
 export const LIGHT_REVIEW_LEVEL: Level = 'medium'
@@ -1164,8 +1170,8 @@ export function plan(r: Rating, s: Situation, floor: Level): Plan {
       // A hand-down to a model the rater has been wrong about for this kind of work waits until its record mends.
       if (blocked(s, r.type, t)) return []
       // Haiku takes mechanical work only; any other helper pays only on a task of 20 steps or more (the brief and the check
-      // cost more than it saves on a short one).
-      if (t === 'haiku' ? !HAIKU_TYPES.includes(r.type) : r.steps < HAND_DOWN_STEPS && !SONNET_HELPER_TYPES.includes(r.type)) return []
+      // cost more than it saves on a short one), unless its Sonnet route has SHORT_ROUTE_RUNS measured hand-downs (P-75).
+      if (t === 'haiku' ? !HAIKU_TYPES.includes(r.type) : r.steps < HAND_DOWN_STEPS && !SONNET_HELPER_TYPES.includes(r.type) && !shortOk(s.cal, r.type, t)) return []
     }
     const need2 = heldReview(r) && t === REVIEW_TIER ? atLeast(need, REVIEW_LEVEL) : lightReview(r) && t === LIGHT_REVIEW_TIER ? atLeast(need, LIGHT_REVIEW_LEVEL) : need
     const level = clampCeiling(clampFloor(need2, floor), ceilingOf(s))

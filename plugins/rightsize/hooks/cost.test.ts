@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import type { RightsizeTaskType as TaskType } from '../types'
-import {
+import { SHORT_ROUTE_RUNS,
   CAL_FULL,
   DEFAULT_PRICES,
   DEFAULT_RULES,
@@ -1415,6 +1415,23 @@ test('every other type ignores subject entirely', async () => {
       for (const subject of subjects) expect(plan({ ...base, subject }, s, 'low'), `${type} ${subject} on ${s.tier}`).toEqual(plan(base, s, 'low'))
     }
   }
+})
+
+// P-75 (ADR 0091): short Sonnet hand-downs cost about a third of staying with no misses, so a route with
+// SHORT_ROUTE_RUNS measured hand-downs to Sonnet skips the 20-step floor. A newer route and an Opus helper keep it.
+test('a short task goes to a Sonnet helper once its route has 5 measured hand-downs', async () => {
+  expect(SHORT_ROUTE_RUNS).toBe(5)
+  const work = (steps: number, fit = { haiku: null, sonnet: 'low', opus: 'low', fable: 'low' } as const) => rating({ type: 'feature', level: 'low', fit, read: 150_000, write: 3000, steps })
+  const to = (r: Rating, s: Situation) => {
+    const p = plan(r, s, 'low')
+    return p.kind === 'delegate' ? p.tier : p.kind
+  }
+  const runs = (n: number) => ({ ...freeSwitches, 'feature:delegate:sonnet': { n, ratio: 1 } })
+  expect(to(work(3), { ...fable, cal: runs(4) }), '4 runs: the floor holds').toBe('effort')
+  expect(to(work(3), { ...fable, cal: runs(5) }), '5 runs: no floor').toBe('sonnet')
+  // An Opus helper from Fable has no measured route: the floor stays.
+  const opusOnly = { haiku: null, sonnet: null, opus: 'low', fable: 'low' } as const
+  expect(to(work(3, opusOnly), { ...fable, cal: { ...freeSwitches, 'feature:delegate:opus': { n: 50, ratio: 1 } } })).not.toBe('opus')
 })
 
 test('extract and summarize from Fable go to a Sonnet helper, at any size; Haiku keeps lookup, search and bulk-edit', async () => {

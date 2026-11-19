@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import { MISS_BLOCK } from './cost'
-import { MISS_MIN, PRIOR_N, RESEARCH_PRIORS, checkTotals, confidence, missCounts, missMap, missRate, missRates, missTotals, outcomes, ownTasks, pauseRates } from './misses'
+import { MISS_MIN, PRIOR_N, RESEARCH_PRIORS, checkTotals, confidence, missCounts, missMap, missRate, missRates, missTotals, outcomes, ownTasks, pauseRates, routeOutcomes } from './misses'
 import type { RunLine } from './report'
 
 const at = new Date(Date.parse('2026-10-23T18:00:00.000Z')).toISOString()
@@ -197,4 +197,47 @@ test('a corrected line is a miss for the cheaper route of the run it names, once
   expect(rates([lowered({ id: 'r2' }), corrected('r2'), corrected('r2')]), 'counted once').toEqual({ 'lookup:opus': { n: 2, misses: 1 } })
   expect(rates([run({ id: 'r3' }), corrected('r3')]), 'an unchanged run is not the rater\'s miss').toEqual({})
   expect(rates([handDown({ id: 'r4' }), corrected('r4'), { at, kind: 'feedback', ref: 'r4', value: 'up' }]), 'a 👍 stands over the correction').toEqual({ 'search:haiku': { n: 2, misses: 0 } })
+})
+
+// ---- P-77: misses are kept per model version --------------------------------------------------------------------
+
+test('a newer version of a model ignores the older versions\' misses; lines with no model count as today\'s version', () => {
+  const old = [lowered({ steppedUp: true }), lowered({ steppedUp: true }), lowered()]
+  const now = { opus: 'claude-opus-5-6' }
+  expect(missRates(old, now), 'all three lines are Opus 5.5 (unknown = today)').toEqual({})
+  expect(missRates(old, { opus: 'claude-opus-5-5' })).toEqual({ 'lookup:opus': { n: 3, misses: 2 } })
+  expect(missRates(old), 'no versions given: everything counts').toEqual({ 'lookup:opus': { n: 3, misses: 2 } })
+  const mixed = [...old, lowered({ model: 'claude-opus-5-6', steppedUp: true }), lowered({ model: 'claude-opus-5-6' })]
+  expect(missRates(mixed, now)).toEqual({ 'lookup:opus': { n: 2, misses: 1 } })
+  expect(ownTasks(mixed, now)['lookup:opus']).toBe(2)
+  expect(missCounts(mixed, now)['lookup:opus']).toBe(2)
+  expect(routeOutcomes(mixed, new Set(), now).byKey['lookup:opus']?.length, 'the first miss forgiven: only the new version\'s').toBe(1)
+})
+
+test('a version is per family: a new Sonnet leaves Opus\'s record alone', () => {
+  const lines = [lowered({ steppedUp: true }), handDown({ route: 'delegate:sonnet', model: 'claude-sonnet-5-5', agentCalls: 2 })]
+  expect(missRates(lines, { sonnet: 'claude-sonnet-6' })).toEqual({ 'lookup:opus': { n: 1, misses: 1 } })
+})
+
+test('a hand-down, a verdict and a correction follow the version of the run they are about', () => {
+  const lines: RunLine[] = [
+    handDown({ id: 'a', model: 'claude-haiku-5-5', agentCalls: 1 }),
+    { at, kind: 'feedback', ref: 'a', value: 'down' },
+    handDown({ id: 'b', model: 'claude-haiku-6', agentCalls: 1 }),
+    { at, kind: 'feedback', ref: 'b', value: 'down' },
+  ]
+  expect(missRates(lines, { haiku: 'claude-haiku-6' })).toEqual({ 'search:haiku': { n: 2, misses: 1 } })
+  expect(missRates(lines, { haiku: 'claude-haiku-5-5' })).toEqual({ 'search:haiku': { n: 2, misses: 1 } })
+})
+
+test('a newer version has no research prior: no prior rate and no pseudo-tasks; today\'s versions keep them', () => {
+  const newer = { haiku: 'claude-haiku-6' }
+  expect(missRate({}, 'review', 'haiku', { haiku: 'claude-haiku-5-5' })).toBe(0.8)
+  expect(missRate({}, 'review', 'haiku', newer)).toBe(0)
+  expect(missMap({}, newer)['review:haiku']).toBeUndefined()
+  expect(missMap({}, { haiku: 'claude-haiku-5-5' })['review:haiku']).toBe(0.8)
+  expect(missCounts([], newer)['review:haiku']).toBeUndefined()
+  expect(missCounts([], newer)['review:sonnet'], 'another family keeps its prior').toBe(PRIOR_N)
+  expect(missCounts([], { haiku: 'claude-haiku-5-5' })['review:haiku']).toBe(PRIOR_N)
+  expect(confidence('review', 'haiku', {}, {}, newer).detail).toBe('none of your tasks yet')
 })

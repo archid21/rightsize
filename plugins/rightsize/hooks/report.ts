@@ -105,6 +105,10 @@ export type RunLine = {
   /** `stay` before calibration (0.13 on), logged beside it. `estimate` is the same for the route taken; `taken` is its calibrated form. */
   stayRaw?: number
   actual?: number
+  /** A run line (P-77): the model ID its route ran on (`claude-fable-5-2`): the main chat's, or a hand-down's helper. Misses, pauses and probation are kept per version; a line without it stands for the version current when P-77 shipped. */
+  model?: string
+  /** A check line (P-77): the version each family was on when it ran, by version key. */
+  versions?: Partial<Record<'haiku' | 'sonnet' | 'opus' | 'fable', string>>
   /** The model that rated the prompt: sonnet, or haiku (chosen in Rater, or the fallback). */
   rater?: 'sonnet' | 'haiku'
   /** The rating call's cost. */

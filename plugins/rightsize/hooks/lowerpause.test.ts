@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { PAUSE_LAST, type Pauses, UNTIL_LOGGED, capPauses, judge, pauseLength, pausedNow, pausesOf, retryRoute, tick } from './lowerpause'
+import { PAUSE_LAST, type Pauses, UNTIL_LOGGED, capPauses, judge, livePauses, pauseLength, pausedNow, pausesOf, retryRoute, tick } from './lowerpause'
 import type { RouteOutcome } from './misses'
 
 const T0 = Date.parse('2026-11-16T12:00:00Z')
@@ -67,4 +67,36 @@ test('the store value is read back with only well-formed entries', () => {
 
 test('a shorter Lowering pause shortens the pauses already running; a longer one does not lengthen them', () => {
   expect(capPauses({ a: { left: 9 }, b: { left: 3 }, c: { left: 0, since: 'x' } }, 5)).toEqual({ a: { left: 5 }, b: { left: 3 }, c: { left: 0, since: 'x' } })
+})
+
+// ---- P-77: a pause belongs to the model version it was made on ------------------------------------------------------
+
+test('a new pause carries its version; a pause made on another version does not apply, and the route starts clean', () => {
+  const now = { opus: 'claude-opus-5-5' }
+  const hit = judge({ [K]: run([true, true, false, false, false]) }, {}, 0.2, 10, now)
+  expect(hit.pauses).toEqual({ [K]: { left: 10, version: 'claude-opus-5-5' } })
+  expect(pausedNow(hit.pauses, {}, 0.2, now)[K]).toBe(10)
+  const newer = { opus: 'claude-opus-6' }
+  expect(pausedNow(hit.pauses, {}, 0.2, newer)[K], 'the old pause is not this version\'s').toBeUndefined()
+  expect(livePauses(hit.pauses, newer)).toEqual({})
+  expect(judge({ [K]: run([false, false, false, false, false]) }, hit.pauses, 0.2, 10, newer), 'not paused, and cleared from the store').toEqual({ pauses: {}, started: [] })
+  // A probation of the old version does not make one wrong outcome enough.
+  const probation = { [K]: { left: 0, since: at(10), version: 'claude-opus-5-5' } }
+  expect(judge({ [K]: run([true, false, false, false, false], 11) }, probation, 0.2, 5, newer).started, 'the old probation is gone: judged like a new route, 1 miss in 5 reaches the 20% line').toEqual([K])
+})
+
+test('a pause with no version is today\'s version; the version rides along through tick and retry', () => {
+  const old = { [K]: { left: 3 } }
+  expect(pausedNow(old, {}, 0.2, { opus: 'claude-opus-5-5' })[K]).toBe(3)
+  expect(pausedNow(old, {}, 0.2, { opus: 'claude-opus-5-6' })[K]).toBeUndefined()
+  expect(tick({ [K]: { left: 2, version: 'claude-opus-6' } }, [K], at(1)).pauses).toEqual({ [K]: { left: 1, version: 'claude-opus-6' } })
+  expect(tick({ [K]: { left: 1, version: 'claude-opus-6' } }, [K], at(1)).pauses).toEqual({ [K]: { left: 0, since: at(1), version: 'claude-opus-6' } })
+  expect(retryRoute({}, K, at(5), { opus: 'claude-opus-6' })).toEqual({ [K]: { left: 0, since: at(5), version: 'claude-opus-6' } })
+  expect(pausesOf({ a: { left: 3, version: 'claude-opus-6' } })).toEqual({ a: { left: 3, version: 'claude-opus-6' } })
+})
+
+test('research-prior pauses apply only on today\'s versions; a newer version of the family drops them', () => {
+  expect(pausedNow({}, {}, 0.2, { haiku: 'claude-haiku-5-5' })['review:haiku']).toBe(UNTIL_LOGGED)
+  expect(pausedNow({}, {}, 0.2, { haiku: 'claude-haiku-6' })['review:haiku']).toBeUndefined()
+  expect(pausedNow({}, {}, 0.2, { sonnet: 'claude-sonnet-6' })['review:haiku'], 'another family\'s version does not matter').toBe(UNTIL_LOGGED)
 })

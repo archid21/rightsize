@@ -72,6 +72,8 @@ import {
   forModel,
   unpricedOlder,
   NEWEST,
+  modelVersion,
+  versionKey,
   versionName,
   tierRank,
   usageCost,
@@ -120,8 +122,8 @@ import { type FastState, fastGuess, nextFast, speedFromCost, speedSwitchCost, sp
 import { type FreshRun, type HandedOff, NO_STEPS, type StepState, actingExp, mergeSteps, medians, parseStepState, STEP_PROVE, typicalShrink } from './steps'
 import { type LearningNote, learningNote } from './learning'
 import { applyPrices, diffPrices, familiesFound, isDue, parsePricingPage } from './prices'
-import { confidence, missCounts, missMap, ownTasks, pauseRates, routeOutcomes, type Rates } from './misses'
-import { type Pauses, capPauses, judge, pauseLength, pausedNow, pausesOf, retryRoute, tick } from './lowerpause'
+import { confidence, currentVersion, missCounts, missMap, ownTasks, pauseRates, routeOutcomes, type Rates, type Versions } from './misses'
+import { type Pauses, capPauses, judge, livePauses, pauseLength, pausedNow, pausesOf, retryRoute, tick } from './lowerpause'
 import { START_CHECK_DAYS, START_MIN_PROMPTS, START_SNOOZE_DAYS, adviseStart, startBlock, startKey, startTip } from './start'
 import {
   ADVANCED,
@@ -939,6 +941,48 @@ async function pruneSessions($: EngineInterface) {
   }
 }
 
+// Model versions (P-77): misses, pauses and probation are kept per version, so a new version starts clean. The version each family
+// is on is the one the main chat last ran (its model ID); a family not seen yet is on today's (misses.ts todayVersion).
+const VERSIONS_STORE = 'seenVersions'
+/** The version each family is on now, by version key. */
+let versions: Versions = {}
+/** The band line for a version seen for the first time: said at the next prompt, once. */
+let versionNote = ''
+
+async function readVersions($: EngineInterface): Promise<{ current: Versions; noted: string[] }> {
+  const v = (await $.store.get(VERSIONS_STORE).catch(() => undefined)) as { current?: Record<string, unknown>; noted?: unknown } | undefined
+  const current: Versions = {}
+  for (const t of TIERS) {
+    const key = v?.current?.[t]
+    if (typeof key === 'string' && modelVersion(key)?.tier === t) current[t] = key
+  }
+  return { current, noted: Array.isArray(v?.noted) ? v.noted.filter((x): x is string => typeof x === 'string') : [] }
+}
+
+async function loadVersions($: EngineInterface) {
+  versions = (await readVersions($)).current
+}
+
+/** The main chat's model ID is read: its version becomes its family's. A version newer than the ones the research and the log know says so once (P-77). */
+async function noteVersion($: EngineInterface, model: string | undefined) {
+  const mv = modelVersion(model)
+  if (!mv) return
+  const key = versionKey(mv.tier, mv.v)
+  const { current, noted } = await readVersions($)
+  versions = current
+  if (currentVersion(current, mv.tier) === key) return
+  const next = { current: { ...current, [mv.tier]: key }, noted: [...noted] }
+  const newer = mv.v[0] > NEWEST[mv.tier][0] || (mv.v[0] === NEWEST[mv.tier][0] && mv.v[1] > NEWEST[mv.tier][1])
+  if (newer && !noted.includes(key)) {
+    next.noted.push(key)
+    versionNote = `${versionName(mv.tier, mv.v)} is new: past misses from older versions no longer count.`
+  }
+  await $.store.set(VERSIONS_STORE, next).catch(() => undefined)
+  versions = next.current
+  await log($, `model version: ${mv.tier} is on ${key}; misses, pauses and probation count from here`)
+  await refreshMisses($)
+}
+
 // The routes whose first automatic miss was forgiven, across sessions (misses.ts pauseRates): each is forgiven once, ever.
 const FORGIVEN_STORE = 'forgivenRoutes'
 
@@ -951,17 +995,18 @@ async function forgivenSeen($: EngineInterface): Promise<string[]> {
 // also shows in the band: the turn that had it is the one that just ended.
 async function refreshMisses($: EngineInterface, announce = false) {
   try {
+    await loadVersions($)
     const now = await $.clock.now()
     runLog = runLog.filter(l => now - Date.parse(l.at) <= MISS_WINDOW_DAYS * 24 * 60 * 60_000)
     // Lines from before Cost measurement was restarted teach nothing.
     const measured = runLog.filter(l => Date.parse(l.at) >= measureFrom)
     const used = new Set(await forgivenSeen($))
-    const { rates, forgiven } = pauseRates(measured, used)
-    misses = missMap(rates)
+    const { rates, forgiven } = pauseRates(measured, used, versions)
+    misses = missMap(rates, versions)
     missTable = rates
-    counts = missCounts(measured)
-    ownCounts = ownTasks(measured)
-    await judgePauses($, routeOutcomes(measured, used).byKey)
+    counts = missCounts(measured, versions)
+    ownCounts = ownTasks(measured, versions)
+    await judgePauses($, routeOutcomes(measured, used, versions).byKey)
     if (!forgiven.length) return
     // Read again just before writing, so the routes another session forgave are kept.
     await $.store.set(FORGIVEN_STORE, [...new Set([...(await forgivenSeen($)), ...forgiven])]).catch(() => undefined)
@@ -980,7 +1025,8 @@ async function refreshMisses($: EngineInterface, announce = false) {
 const PAUSES_STORE = 'lowerPauses'
 
 async function readPauses($: EngineInterface): Promise<Pauses> {
-  return capPauses(pausesOf(await $.store.get(PAUSES_STORE).catch(() => undefined)), pausePrompts)
+  // A pause made on another version of the model does not apply (P-77).
+  return livePauses(capPauses(pausesOf(await $.store.get(PAUSES_STORE).catch(() => undefined)), pausePrompts), versions)
 }
 
 const routeName = (key: string) => {
@@ -990,7 +1036,7 @@ const routeName = (key: string) => {
 
 /** Starts a pause on every route whose recent outcomes went wrong too often. */
 async function judgePauses($: EngineInterface, byKey: Parameters<typeof judge>[0]) {
-  const { pauses: next, started } = judge(byKey, await readPauses($), missBlock, pausePrompts)
+  const { pauses: next, started } = judge(byKey, await readPauses($), missBlock, pausePrompts, versions)
   pauses = next
   if (!started.length) return
   await $.store.set(PAUSES_STORE, next).catch(() => undefined)
@@ -1010,7 +1056,7 @@ async function tickPauses($: EngineInterface, type: TaskType, tier: Tier) {
 
 /** Try lowering again (the band's ⋯ menu): the route comes back from the next prompt, on probation. */
 async function retryLowering($: EngineInterface, key: string) {
-  pauses = retryRoute(await readPauses($), key, await isoNow($))
+  pauses = retryRoute(await readPauses($), key, await isoNow($), versions)
   await $.store.set(PAUSES_STORE, pauses).catch(() => undefined)
   await log($, `try lowering again: ${routeName(key)} is back on probation`)
   return `rightsize: lowering ${routeName(key)} resumes on your next prompt. One wrong rating pauses it again.`
@@ -2008,7 +2054,7 @@ async function situation($: EngineInterface): Promise<Situation> {
   const reported = have ? undefined : usage?.context?.tokens
   const reportedWindow = typeof usage?.context?.window === 'number' && usage.context.window > 0 ? usage.context.window : undefined
   const context = have ? kept : typeof reported === 'number' && reported > 0 ? reported : DEFAULT_CONTEXT
-  return { tier, level, context, ...(reportedWindow !== undefined ? { reportedWindow } : {}), prices, helperPrices, cal, rules: DEFAULT_RULES, misses, paused: pausedNow(capPauses(pauses, pausePrompts), missTable, missBlock), missBlock, minTasks, counts, ceiling, reviewCeiling, without, stepExp: actingExp(stepState), ...(olderModel(mainModel) ? { older: true } : {}) }
+  return { tier, level, context, ...(reportedWindow !== undefined ? { reportedWindow } : {}), prices, helperPrices, cal, rules: DEFAULT_RULES, misses, paused: pausedNow(capPauses(pauses, pausePrompts), missTable, missBlock, versions), missBlock, minTasks, counts, ceiling, reviewCeiling, without, stepExp: actingExp(stepState), ...(olderModel(mainModel) ? { older: true } : {}) }
 }
 
 // `unsure` says why the rater may have seen too little: the request was cut, or a task is in progress and its last reply could not be read.
@@ -2121,7 +2167,7 @@ async function spotCheck($: EngineInterface, session: string, task: string, tier
       }
       return
     }
-    const line: RunLine = { at: new Date().toISOString(), kind: 'check', session, task, type: first.type, fit: first.fit, check: { by: SPOT_CHECKER, fit: second.fit }, overhead: round(overhead) }
+    const line: RunLine = { at: new Date().toISOString(), kind: 'check', session, task, type: first.type, fit: first.fit, check: { by: SPOT_CHECKER, fit: second.fit }, versions: Object.fromEntries(TIERS.map(t => [t, currentVersion(versions, t)])), overhead: round(overhead) }
     await appendRun($, line)
     const fit = (f: Rating['fit']) => TIERS.map(t => `${t[0]}:${f[t] ?? (f[t] === null ? 'no' : '?')}`).join(' ')
     await log($, `rater check on ${first.type}: haiku ${fit(first.fit)}; sonnet ${fit(second.fit)}`)
@@ -2553,7 +2599,7 @@ export function bandFor(run: Pick<Run, 'id' | 'tier' | 'normal' | 'auto' | 'dele
   const cur = TIER_NAME[run.tier]
   // Why this route, and for a move to a cheaper model (a lowering or a hand-off down: the routes the miss rate scores) how confident rightsize is: the level on the band, the detail in the ⋯ menu.
   const why = run.rating ? whyText(run.rating.reason) : ''
-  const conf = (tier: Tier) => (run.rating ? confidence(run.rating.type, tier, ownCounts, misses) : undefined)
+  const conf = (tier: Tier) => (run.rating ? confidence(run.rating.type, tier, ownCounts, misses, versions) : undefined)
   const sure = (tier: Tier) => {
     const c = conf(tier)
     return c ? `Confidence: ${c.level}.` : ''
@@ -2863,6 +2909,8 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
       ...(run.unsure ? { unsure: run.unsure } : {}),
       route: delegated ? `delegate:${run.delegate?.tier}` : 'main',
       tier: run.tier,
+      // The model its route ran on (P-77): a hand-down's helper, a switched turn's model, else the main chat's.
+      model: currentVersion(versions, (delegated ? run.delegate?.tier : undefined) ?? run.switchTo?.tier ?? run.tier),
       level: run.steppedUp ? run.normal : (run.level ?? run.normal),
       // The session's own level and size: what the starting-point check replays from.
       normal: run.normal,
@@ -6842,6 +6890,7 @@ async function checkOlder($: EngineInterface): Promise<void> {
   const switchedTo = model !== mainModel && mainModel !== undefined ? model : undefined
   if (model !== mainModel) {
     mainModel = model
+    await noteVersion($, model)
     const name = olderModel(model)
     if (name && !unpricedOlder(rawPrices, model)) await log($, `${name}: priced by its own row in prices.json`)
   }
@@ -7216,6 +7265,12 @@ export const register: Register = (on, options) => {
     if (speedNote) {
       bandNote = speedNote
       speedNote = ''
+      await setBand($, { text: bandNote, acted: true })
+    }
+    // A model version seen for the first time: its past misses no longer count (P-77). Said once.
+    if (versionNote) {
+      bandNote = bandNote ? `${bandNote} ${versionNote}` : versionNote
+      versionNote = ''
       await setBand($, { text: bandNote, acted: true })
     }
     const text = e.text.trim()

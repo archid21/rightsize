@@ -1,5 +1,5 @@
 import type { RightsizeTaskType as TaskType, RightsizeTier as Tier } from '../types'
-import { TASK_TYPES, TIERS, isLevel, isTaskType, isTier } from './cost'
+import { NEWEST, TASK_TYPES, TIERS, isLevel, isTaskType, isTier, modelVersion, versionKey } from './cost'
 import type { RunLine } from './report'
 
 // How often the rater (Haiku) was wrong, scored against what happened. Each rated
@@ -42,6 +42,31 @@ export const RESEARCH_PRIORS: Readonly<Record<string, number>> = {
 
 export const missKey = (type: string, tier: string) => `${type}:${tier}`
 
+/** A route's research prior, or undefined: the research was done on today's versions, so a tier on another version has none (P-77). */
+const priorFor = (key: string, current?: Versions): number | undefined => {
+  const tier = key.split(':')[1] ?? ''
+  return current !== undefined && currentVersion(current, tier) !== todayVersion(tier) ? undefined : RESEARCH_PRIORS[key]
+}
+
+// Model versions (P-77). Misses, pauses and probation belong to a model VERSION: a new version starts with a clean slate.
+/** The version each model family is on now, by version key (`claude-sonnet-5-5`); a family not listed is on today's (NEWEST). */
+export type Versions = Partial<Record<Tier, string>>
+
+/** The version key every family had when the research priors were made, and the one a log line with no `model` stands for. */
+export const todayVersion = (tier: string): string => (isTier(tier) ? versionKey(tier, NEWEST[tier]) : '')
+
+/** The version `tier` is on now: the one in `current`, else today's. */
+export const currentVersion = (current: Versions | undefined, tier: string): string => (isTier(tier) ? current?.[tier] : undefined) ?? todayVersion(tier)
+
+/** The version key a model ID names for `tier`, or undefined when it names none or another family. */
+export function versionOfModel(model: string | null | undefined, tier: string): string | undefined {
+  const mv = modelVersion(model)
+  return mv && mv.tier === tier ? versionKey(mv.tier, mv.v) : undefined
+}
+
+/** The version a run line's route ran on: its own `model` (a hand-down's helper, else the main chat), else today's ("unknown is current"). */
+const lineVersion = (l: RunLine, tier: string) => versionOfModel(l.model, tier) ?? todayVersion(tier)
+
 const delegateTier = (l: RunLine) => {
   const t = (l.route ?? '').startsWith('delegate:') ? (l.route ?? '').slice('delegate:'.length) : ''
   return isTier(t) ? t : undefined
@@ -49,7 +74,7 @@ const delegateTier = (l: RunLine) => {
 
 type Outcome = { type: TaskType; tier: Tier; miss: boolean }
 /** An outcome, the task it belongs to (a run's task, its own id before 0.8; a feedback's run's; a check is a task of its own), and where it came from. */
-type Counted = [Outcome, string, 'auto' | 'verdict', string]
+type Counted = [Outcome, string, 'auto' | 'verdict', string, string]
 
 /** The model a run's work ran on: a hand-off's subagent, else the main chat. */
 const workedOn = (l: RunLine) => delegateTier(l) ?? (isTier(l.tier) ? l.tier : undefined)
@@ -100,19 +125,23 @@ export function checkTotals(lines: readonly RunLine[]) {
   return { n, agreed }
 }
 
-// Every outcome in the log, in order, with its task.
-function counted(lines: readonly RunLine[]): Counted[] {
+// Every outcome in the log, in order, with its task. With `current`, only outcomes on the version each model family is on now
+// (P-77): the others belong to an older version and say nothing about this one.
+function counted(lines: readonly RunLine[], current?: Versions): Counted[] {
   const out: Counted[] = []
   const runs = new Map<string, RunLine>()
   const verdicts = new Map<string, { value: 'up' | 'down'; at: string }>()
   // A correction counts once per run, and a verdict on that run stands over it.
   const corrected = new Map<string, Counted>()
   const taskOf = (l: RunLine, i: number) => l.task ?? l.id ?? `line ${i}`
+  // A check line names no model of its own: the versions it recorded, else today's.
+  const checkVersion = (l: RunLine, tier: Tier) => l.versions?.[tier] ?? todayVersion(tier)
+  const keep = (c: Counted) => current === undefined || c[4] === currentVersion(current, c[0].tier)
   lines.forEach((l, i) => {
     const kind = l.kind ?? 'run'
     if (kind === 'run') {
       const o = ofRun(l)
-      if (o) out.push([o, taskOf(l, i), 'auto', l.at])
+      if (o) out.push([o, taskOf(l, i), 'auto', l.at, lineVersion(l, o.tier)])
       if (l.id) runs.set(l.id, l)
     } else if (kind === 'feedback') {
       // A person who changed their mind is counted once, on the last verdict.
@@ -122,28 +151,28 @@ function counted(lines: readonly RunLine[]): Counted[] {
       const run = l.ref ? runs.get(l.ref) : undefined
       const tier = run ? workedOn(run) : undefined
       if (run && l.ref && tier && isTaskType(run.type) && (run.change === 'lower' || run.change === 'delegate-down') && !corrected.has(l.ref)) {
-        corrected.set(l.ref, [{ type: run.type, tier, miss: true }, run.task ?? l.ref, 'auto', l.at])
+        corrected.set(l.ref, [{ type: run.type, tier, miss: true }, run.task ?? l.ref, 'auto', l.at, lineVersion(run, tier)])
       }
     } else if (kind === 'check') {
-      for (const o of ofCheck(l)) out.push([o, `check ${i}`, 'auto', l.at])
+      for (const o of ofCheck(l)) out.push([o, `check ${i}`, 'auto', l.at, checkVersion(l, o.tier)])
     }
   })
   for (const [ref, c] of corrected) if (!verdicts.has(ref)) out.push(c)
   for (const [ref, { value, at }] of verdicts) {
     const run = runs.get(ref)
     const tier = run ? workedOn(run) : undefined
-    if (run && tier && isTaskType(run.type)) out.push([{ type: run.type, tier, miss: value === 'down' }, run.task ?? ref, 'verdict', at])
+    if (run && tier && isTaskType(run.type)) out.push([{ type: run.type, tier, miss: value === 'down' }, run.task ?? ref, 'verdict', at, lineVersion(run, tier)])
   }
-  return out
+  return out.filter(keep)
 }
 
 /** Every outcome in the log, in order. */
-export const outcomes = (lines: readonly RunLine[]): Outcome[] => counted(lines).map(([o]) => o)
+export const outcomes = (lines: readonly RunLine[], current?: Versions): Outcome[] => counted(lines, current).map(([o]) => o)
 
 /** Outcomes and misses per task type and model. */
-export function missRates(lines: readonly RunLine[]): Rates {
+export function missRates(lines: readonly RunLine[], current?: Versions): Rates {
   const rates: Rates = {}
-  for (const o of outcomes(lines)) {
+  for (const o of outcomes(lines, current)) {
     const e = (rates[missKey(o.type, o.tier)] ??= { n: 0, misses: 0 })
     e.n += 1
     if (o.miss) e.misses += 1
@@ -155,8 +184,8 @@ export function missRates(lines: readonly RunLine[]): Rates {
  * The rates the pause decision uses: as missRates, but the first automatic miss on each route not in `used` is
  * forgiven (left out). A person's 👎 is never forgiven. `forgiven` lists the routes whose forgiveness this call used.
  */
-export function pauseRates(lines: readonly RunLine[], used: ReadonlySet<string>): { rates: Rates; forgiven: string[] } {
-  const { byKey, forgiven } = routeOutcomes(lines, used)
+export function pauseRates(lines: readonly RunLine[], used: ReadonlySet<string>, current?: Versions): { rates: Rates; forgiven: string[] } {
+  const { byKey, forgiven } = routeOutcomes(lines, used, current)
   const rates: Rates = {}
   for (const [key, list] of Object.entries(byKey)) rates[key] = { n: list.length, misses: list.filter(o => o.miss).length }
   return { rates, forgiven }
@@ -169,10 +198,10 @@ export type RouteOutcome = { miss: boolean; at: string }
  * Every outcome per `${type}:${tier}`, in log order, with the same forgiveness as pauseRates: the first automatic miss
  * on each route not in `used` is left out. What the lowering pause (lowerpause.ts) judges from.
  */
-export function routeOutcomes(lines: readonly RunLine[], used: ReadonlySet<string>): { byKey: Record<string, RouteOutcome[]>; forgiven: string[] } {
+export function routeOutcomes(lines: readonly RunLine[], used: ReadonlySet<string>, current?: Versions): { byKey: Record<string, RouteOutcome[]>; forgiven: string[] } {
   const byKey: Record<string, RouteOutcome[]> = {}
   const forgiven: string[] = []
-  for (const [o, , source, at] of counted(lines)) {
+  for (const [o, , source, at] of counted(lines, current)) {
     const key = missKey(o.type, o.tier)
     if (o.miss && source === 'auto' && !used.has(key) && !forgiven.includes(key)) {
       forgiven.push(key)
@@ -188,9 +217,9 @@ export function routeOutcomes(lines: readonly RunLine[], used: ReadonlySet<strin
  * A key with a research prior (RESEARCH_PRIORS) and fewer than PRIOR_N own outcomes is scored on its own outcomes
  * plus enough prior pseudo-outcomes to make PRIOR_N.
  */
-export function missRate(rates: Rates, type: string, tier: string) {
+export function missRate(rates: Rates, type: string, tier: string, current?: Versions) {
   const own = rates[missKey(type, tier)]
-  const prior = RESEARCH_PRIORS[missKey(type, tier)]
+  const prior = priorFor(missKey(type, tier), current)
   if (prior !== undefined && (own?.n ?? 0) < PRIOR_N) return ((own?.misses ?? 0) + (PRIOR_N - (own?.n ?? 0)) * prior) / PRIOR_N
   if (own && own.n >= MISS_MIN) return own.misses / own.n
   let n = 0
@@ -204,11 +233,11 @@ export function missRate(rates: Rates, type: string, tier: string) {
 }
 
 /** Every task type and model with a rate above zero, for Situation.misses. */
-export function missMap(rates: Rates): Record<string, number> {
+export function missMap(rates: Rates, current?: Versions): Record<string, number> {
   const out: Record<string, number> = {}
   for (const type of TASK_TYPES) {
     for (const tier of TIERS) {
-      const m = missRate(rates, type, tier)
+      const m = missRate(rates, type, tier, current)
       if (m > 0) out[missKey(type, tier)] = m
     }
   }
@@ -216,9 +245,9 @@ export function missMap(rates: Rates): Record<string, number> {
 }
 
 /** The tasks the log itself holds per task type and model: none of them research priors. A task with several outcomes (a run and its 👎) counts once. */
-export function ownTasks(lines: readonly RunLine[]): Record<string, number> {
+export function ownTasks(lines: readonly RunLine[], current?: Versions): Record<string, number> {
   const tasks = new Map<string, Set<string>>()
-  for (const [o, task] of counted(lines)) {
+  for (const [o, task] of counted(lines, current)) {
     const key = missKey(o.type, o.tier)
     const seen = tasks.get(key) ?? new Set<string>()
     seen.add(task)
@@ -232,9 +261,9 @@ export function ownTasks(lines: readonly RunLine[]): Record<string, number> {
  * several outcomes (a run and its 👎) counts once. A key with a research prior counts its PRIOR_N pseudo-tasks
  * until real tasks outnumber them.
  */
-export function missCounts(lines: readonly RunLine[]): Record<string, number> {
-  const out = ownTasks(lines)
-  for (const key of Object.keys(RESEARCH_PRIORS)) out[key] = Math.max(out[key] ?? 0, PRIOR_N)
+export function missCounts(lines: readonly RunLine[], current?: Versions): Record<string, number> {
+  const out = ownTasks(lines, current)
+  for (const key of Object.keys(RESEARCH_PRIORS)) if (priorFor(key, current) !== undefined) out[key] = Math.max(out[key] ?? 0, PRIOR_N)
   return out
 }
 
@@ -245,12 +274,12 @@ export function missCounts(lines: readonly RunLine[]): Record<string, number> {
  * PRIOR_N own tasks: low, from the research and those tasks. PRIOR_N or more: only the person's own log counts: high
  * under 10% missed, else medium.
  */
-export function confidence(type: string, tier: string, own: Readonly<Record<string, number>>, misses: Readonly<Record<string, number>>): { level: 'high' | 'medium' | 'low'; detail: string } {
+export function confidence(type: string, tier: string, own: Readonly<Record<string, number>>, misses: Readonly<Record<string, number>>, current?: Versions): { level: 'high' | 'medium' | 'low'; detail: string } {
   const key = missKey(type, tier)
   const n = own[key] ?? 0
   if (n < PRIOR_N) {
     // Only routes with a research prior start from research; the rest have only this machine's few tasks.
-    if (RESEARCH_PRIORS[key] === undefined) return { level: 'low', detail: n > 0 ? `only ${n} of your tasks` : 'none of your tasks yet' }
+    if (priorFor(key, current) === undefined) return { level: 'low', detail: n > 0 ? `only ${n} of your tasks` : 'none of your tasks yet' }
     return { level: 'low', detail: `from research${n > 0 ? ` and ${n} of your tasks` : ''}` }
   }
   const share = misses[key] ?? 0

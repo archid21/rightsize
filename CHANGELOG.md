@@ -11,6 +11,7 @@
 - **Fewer false "stuck" signs.** Waiting for a test run or a page (Monitor, a `sleep` or `until` poll, a browser wait) no longer counts toward any stuck sign, and the same call counts as going in circles only when it also gets the same result three times in a row: re-reading a page or log that changed is watching progress. Each helper now has its own 2 retries, so one helper's rework rounds no longer leave a later helper in the same task to be sent back at its first sign.
 - **A helper takes work when it costs under 90% of staying (was 70%).** We tested this on real use first: work handed down near the old bar rarely needed redoing and cost about a third of staying. A usage window running hot still moves the bar to 95%, and a route that starts failing is paused as before.
 - **Short tasks can go to a Sonnet helper.** A Sonnet helper used to need a task of 20 steps or more. Once a kind of work has 5 hand-downs to Sonnet behind it, shorter tasks of that kind go too, when the estimate says they save. We tested this on real use first: short hand-downs cost about a third of staying. Newer kinds of work, and Opus helpers, keep the 20-step rule.
+- **A new model version starts with a clean record.** Misses and pauses are now kept per model version. When a new version arrives, work its predecessor failed at is tried again on it, and it is judged on its own results. What rightsize learned about costs carries over. The band says so once when a new version first appears.
 
 ## 0.15.1 (2026-11-16)
 

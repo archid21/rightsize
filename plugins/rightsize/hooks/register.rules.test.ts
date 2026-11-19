@@ -7,8 +7,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
   const LISTING = '{"fit":{"haiku":"low","sonnet":"low","opus":"low","fable":"low"},"type":"search","read":8000,"write":500,"steps":5,"reason":"list call sites"}'
 
-  // Hands off to Haiku at 78% of staying: over the 70% default, under the 85% a hot pace allows.
-  const NEAR = '{"fit":{"haiku":"medium","sonnet":"medium","opus":"medium","fable":"medium"},"size":"small","type":"search","read":20000,"write":1000,"steps":14,"reason":"list call sites"}'
+  // Hands off to Haiku at 92% of staying: over the 90% default, under the 95% a hot pace allows.
+  const NEAR = '{"fit":{"haiku":"medium","sonnet":"medium","opus":"medium","fable":"medium"},"size":"small","type":"search","read":20000,"write":1000,"steps":6,"reason":"list call sites"}'
   const HOUR = 3600_000
   const at = (h: { now: number }, ms: number) => new Date(h.now + ms).toISOString()
 
@@ -151,8 +151,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await settingsText(d)).toContain('Reports: subscription')
   })
 
-  // A hot window, with a rating that hands off to Haiku at 78% of staying: over the default threshold (70%), under
-  // the 85% a hot pace allows. Each row is one session.
+  // A hot window, with a rating that hands off to Haiku at 92% of staying: over the default threshold (90%), under
+  // the 95% a hot pace allows. Each row is one session.
   const handedOffUnder = async (h: ReturnType<typeof engine>, d: ReturnType<typeof drive>, rating = NEAR) => {
     await d.start(surface)
     h.rating = rating
@@ -162,17 +162,17 @@ for (const surface of ['desktop', 'terminal'] as const) {
   // Lowering saves 94% of staying: over the default 90%, under the 97% a hot window allows. On Opus and Fable a free switch lowers on any
   // saving (ADR 0088), so the bar itself is exercised on Sonnet (from high to low), where it still applies; SMALL saves 94% there too.
   const SMALL = '{"level":"low","model":"same","size":"small","type":"lookup","read":2000,"write":50,"steps":1}'
-  // Hands off at 51% of staying: under the default 70%, and over a 50% bar. An underused window never moves the bar to 50%.
+  // Hands off at 51% of staying: under the default 90%, and over a 50% bar. An underused window never moves the bar to 50%.
   const BIG = '{"fit":{"haiku":"medium","sonnet":"medium","opus":"medium","fable":"medium"},"size":"small","type":"search","read":40000,"write":1000,"steps":25,"reason":"list call sites"}'
   const hot = (h: { now: number; rateLimits: unknown }) => void (h.rateLimits = hotWindows(h))
   const cool = (h: { now: number; rateLimits: unknown }) => void (h.rateLimits = [{ kind: 'seven_day', percentUsed: 30, resetsAt: at(h, 6 * HOUR) }])
   const nearlyUsed = (h: { now: number; rateLimits: unknown }) => void (h.rateLimits = [{ kind: 'five_hour', percentUsed: 93, resetsAt: at(h, 4 * HOUR) }])
 
   const HAND_OFF_ROWS: { name: string; windows: (h: { now: number; rateLimits: unknown }) => void; stored: Record<string, string>; rating: string; to: string | undefined }[] = [
-    { name: 'hot, default threshold: moved to 85%, and 78% is under it', windows: hot, stored: {}, rating: NEAR, to: 'haiku' },
-    { name: 'hot, a stored Hand-off threshold of 80% is ignored: moved to 85%, and 78% is under it', windows: hot, stored: { handOff: '80%' }, rating: NEAR, to: 'haiku' },
-    { name: 'cool, default threshold: not moved, and 51% is under 70%', windows: cool, stored: {}, rating: BIG, to: 'haiku' },
-    { name: 'cool, a stored Hand-off threshold of 50% is ignored: 51% is under 70%', windows: cool, stored: { handOff: '50%' }, rating: BIG, to: 'haiku' },
+    { name: 'hot, default threshold: moved to 95%, and 92% is under it', windows: hot, stored: {}, rating: NEAR, to: 'haiku' },
+    { name: 'hot, a stored Hand-off threshold of 80% is ignored: moved to 95%, and 92% is under it', windows: hot, stored: { handOff: '80%' }, rating: NEAR, to: 'haiku' },
+    { name: 'cool, default threshold: not moved, and 51% is under 90%', windows: cool, stored: {}, rating: BIG, to: 'haiku' },
+    { name: 'cool, a stored Hand-off threshold of 50% is ignored: 51% is under 90%', windows: cool, stored: { handOff: '50%' }, rating: BIG, to: 'haiku' },
     { name: 'nearly used up, default threshold: moved to 95%', windows: nearlyUsed, stored: {}, rating: NEAR, to: 'haiku' },
   ]
   for (const row of HAND_OFF_ROWS) {
@@ -233,8 +233,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
   }
 
   const NOTE_ROWS: { name: string; stored: Record<string, string>; band: string | RegExp }[] = [
-    { name: 'the fixed bars moved', stored: {}, band: /^Effort lowered: medium → low .*so rightsize saves harder\. \(hand-off bar 70% → 85%, lowering bar 90% → 97%\)/ },
-    { name: 'stored threshold rows are ignored: the fixed bars moved', stored: { handOff: '70%', lowering: '90%' }, band: /^Effort lowered: medium → low .*so rightsize saves harder\. \(hand-off bar 70% → 85%, lowering bar 90% → 97%\)/ },
+    { name: 'the fixed bars moved', stored: {}, band: /^Effort lowered: medium → low .*so rightsize saves harder\. \(hand-off bar 90% → 95%, lowering bar 90% → 97%\)/ },
+    { name: 'stored threshold rows are ignored: the fixed bars moved', stored: { handOff: '70%', lowering: '90%' }, band: /^Effort lowered: medium → low .*so rightsize saves harder\. \(hand-off bar 90% → 95%, lowering bar 90% → 97%\)/ },
   ]
   for (const row of NOTE_ROWS) {
     test(`the band mentions pacing only when it moved something: ${row.name} (${surface})`, { timeoutMs: 30000, options: { band: 'always', ...row.stored } }, async ($, on) => {
@@ -292,12 +292,12 @@ for (const surface of ['desktop', 'terminal'] as const) {
     {
       name: 'Raising at its default: skipped, nothing asked',
       stored: {},
-      want: { effort: 'medium', asked: [], band: 'Kept medium on Opus instead of raising to high. 93% of the 5-hour window is used, so rightsize saves all it can. (hand-off bar 70% → 95%, lowering bar 90% → 100%)' },
+      want: { effort: 'medium', asked: [], band: 'Kept medium on Opus instead of raising to high. 93% of the 5-hour window is used, so rightsize saves all it can. (hand-off bar 90% → 95%, lowering bar 90% → 100%)' },
     },
     {
       name: 'Raising set in /config to automatic: followed, and the band says how full the window is and the bars that moved',
       stored: { raiseRule: 'raise automatically' },
-      want: { effort: 'high', asked: [], band: 'Effort raised: medium → high for this prompt. Why: Unknown cause. 93% of the 5-hour window is used, so rightsize saves all it can. (hand-off bar 70% → 95%, lowering bar 90% → 100%)' },
+      want: { effort: 'high', asked: [], band: 'Effort raised: medium → high for this prompt. Why: Unknown cause. 93% of the 5-hour window is used, so rightsize saves all it can. (hand-off bar 90% → 95%, lowering bar 90% → 100%)' },
     },
     {
       name: 'Raising kept by an earlier release: moved to its row at the start, and used like a row you set',

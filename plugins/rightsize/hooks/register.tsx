@@ -636,7 +636,7 @@ let boundaryCheck = false
 /** The pace the prompt being rated was decided at. */
 let paceNow: Pace = NORMAL_PACE
 /** The pace note, for a subscription only: it quotes how full a usage window is, and a window share is never shown on the API. */
-/** The band's pacing note, with the bars it moved ("hand-off bar 70% → 85%, lowering 90% → 97%") when it moved them. */
+/** The band's pacing note, with the bars it moved ("hand-off bar 90% → 95%, lowering 90% → 97%") when it moved them. */
 const paceText = (acts: boolean, moved?: { from: Rules; to: Rules }) => {
   if (billing !== 'subscription') return ''
   const note = paceNote(paceNow, acts)

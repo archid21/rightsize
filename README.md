@@ -197,7 +197,7 @@ One rule set, two switches. **Hand-offs** turns helper subagents off (effort sti
 
 | | Default | Row |
 |---|---|---|
-| Moves to a cheaper model when | The rating says it fits and the helper costs under 70% of staying | **Cheaper model** (the 70% bar is fixed) |
+| Moves to a cheaper model when | The rating says it fits and the helper costs under 90% of staying | **Cheaper model** (the 90% bar is fixed) |
 | Lowers effort when | Every prompt on Opus or Fable but a review runs at low; elsewhere when the rating says the lower level fits | **Lowering** |
 | Reviews on Opus | Yes, highest effort | **Stronger model** |
 | Keeps the cache warm while you're away | Only while your own record says it pays | **Before the cache goes cold** |

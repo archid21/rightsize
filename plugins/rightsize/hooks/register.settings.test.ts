@@ -9,8 +9,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
   const LISTING = '{"fit":{"haiku":"low","sonnet":"low","opus":"low","fable":"low"},"type":"search","read":8000,"write":500,"steps":5,"reason":"list call sites"}'
 
-  // Hands off to Haiku at 78% of staying: over the 70% default, under the 85% a hot pace allows.
-  const NEAR = '{"fit":{"haiku":"medium","sonnet":"medium","opus":"medium","fable":"medium"},"size":"small","type":"search","read":20000,"write":1000,"steps":14,"reason":"list call sites"}'
+  // Hands off to Haiku at 92% of staying: over the 90% default, under the 95% a hot pace allows.
+  const NEAR = '{"fit":{"haiku":"medium","sonnet":"medium","opus":"medium","fable":"medium"},"size":"small","type":"search","read":20000,"write":1000,"steps":6,"reason":"list call sites"}'
   const HOUR = 3600_000
   const at = (h: { now: number }, ms: number) => new Date(h.now + ms).toISOString()
 

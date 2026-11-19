@@ -668,8 +668,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.ratings, 'no rating call either').toBe(before)
   })
 
-  // Hands off to Haiku at 78% of staying: over the 70% default, under the 85% a hot pace allows.
-  const NEAR = '{"fit":{"haiku":"medium","sonnet":"medium","opus":"medium","fable":"medium"},"size":"small","type":"search","read":20000,"write":1000,"steps":14,"reason":"list call sites"}'
+  // Hands off to Haiku at 92% of staying: over the 90% default, under the 95% a hot pace allows.
+  const NEAR = '{"fit":{"haiku":"medium","sonnet":"medium","opus":"medium","fable":"medium"},"size":"small","type":"search","read":20000,"write":1000,"steps":6,"reason":"list call sites"}'
   const HOUR = 3600_000
   const at = (h: { now: number }, ms: number) => new Date(h.now + ms).toISOString()
 
@@ -722,7 +722,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.asked.length, 'no raise to ask about').toBe(0)
     await d.step('t1')
     expect(last(h.sent)?.effort).toBe('medium')
-    expect(await bandText($, surface)).toBe('Kept medium on Opus instead of raising to high. 93% of the 5-hour window is used, so rightsize saves all it can. (hand-off bar 70% → 95%, lowering bar 90% → 100%)')
+    expect(await bandText($, surface)).toBe('Kept medium on Opus instead of raising to high. 93% of the 5-hour window is used, so rightsize saves all it can. (hand-off bar 90% → 95%, lowering bar 90% → 100%)')
   })
 
   test(`budget pacing: with Reports set to the API, the band shows no window share (${surface})`, { timeoutMs: 30000, options: { billing: 'api' } }, async ($, on) => {

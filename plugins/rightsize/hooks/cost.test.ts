@@ -261,10 +261,10 @@ test('hands a big mechanical task on Fable down to Haiku', async () => {
   }
 })
 
-test('the hand-off and lowering thresholds follow the settings, 70% and 90% by default', async () => {
-  expect(DEFAULT_RULES).toEqual({ handOff: 0.7, lower: 0.9 })
-  expect(parseShare('50%', 0.7)).toBe(0.5)
-  expect(parseShare('150%', 0.7), 'over 100%: the default').toBe(0.7)
+test('the hand-off and lowering thresholds follow the settings, 90% and 90% by default', async () => {
+  expect(DEFAULT_RULES).toEqual({ handOff: 0.9, lower: 0.9 })
+  expect(parseShare('50%', 0.9)).toBe(0.5)
+  expect(parseShare('150%', 0.9), 'over 100%: the default').toBe(0.9)
   expect(parseShare(undefined, 0.9), 'unset: the default').toBe(0.9)
 
   // Hand-off: the same task passes or not as the threshold moves past its cost ratio.
@@ -758,9 +758,9 @@ test('moves the thresholds by pace', async () => {
     const r = pacedRules(DEFAULT_RULES, { mode })
     return [Math.round(r.handOff * 100), Math.round(r.lower * 100)]
   }
-  expect(at('normal')).toEqual([70, 90])
-  expect(at('hot')).toEqual([85, 97])
-  expect(at('cool'), 'an underused window moves nothing').toEqual([70, 90])
+  expect(at('normal')).toEqual([90, 90])
+  expect(at('hot')).toEqual([95, 97])
+  expect(at('cool'), 'an underused window moves nothing').toEqual([90, 90])
   expect(at('max')).toEqual([95, 100])
 })
 
@@ -1264,7 +1264,7 @@ test('pacing moves the fixed bars: hot loosens both, max loosens them most, cool
     const r = pacedRules(DEFAULT_RULES, { mode })
     return [Math.round(r.handOff * 100), Math.round(r.lower * 100)]
   }
-  expect([at('normal'), at('hot'), at('cool'), at('max')]).toEqual([[70, 90], [85, 97], [70, 90], [95, 100]])
+  expect([at('normal'), at('hot'), at('cool'), at('max')]).toEqual([[90, 90], [95, 97], [90, 90], [95, 100]])
 })
 
 test('the pace note says what pacing did: nothing to say when it moved nothing, except that a window is nearly used up', async () => {

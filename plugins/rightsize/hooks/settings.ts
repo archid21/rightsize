@@ -251,7 +251,7 @@ export type FixedValues = {
 // goes cold: a row you set wins over its fixed value. Stored values for removed rows are ignored.
 export const FIXED: FixedValues = {
   evidence: { minTasks: 0, maxMiss: 0.2 },
-  handOff: 0.7,
+  handOff: 0.9,
   raterEvery: 20,
   chances: 2,
   beforeCold: 'while it pays',

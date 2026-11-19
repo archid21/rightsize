@@ -807,8 +807,8 @@ export type Plan =
   /** The main chat runs this one turn on another model, then goes back: reviews on Opus. */
   | { kind: 'switch'; tier: Tier; level: Level; cost: number; mainCost: number; rule: 'review' | 'haiku' }
 
-/** Hand work down only when the subagent route costs under this share of staying. */
-export const SAVING_RULE = 0.7
+/** Hand work down only when the subagent route costs under this share of staying (P-74, ADR 0090: was 0.7). */
+export const SAVING_RULE = 0.9
 /** Lower effort only when the lower level, cache cost included, costs under this share of staying. */
 export const LOWER_RULE = 0.9
 

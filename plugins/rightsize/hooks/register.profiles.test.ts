@@ -6,8 +6,8 @@ import { LOGS, RUNS_FILE, LOG_PATH, LEGACY_RUNS, LEGACY_SWITCHES, LOOKUP, DEBUG,
 for (const surface of ['desktop', 'terminal'] as const) {
   const readRuns = (h: ReturnType<typeof engine>) => (h.files[RUNS_FILE] ?? '').trim().split('\n').map(l => JSON.parse(l) as Record<string, unknown>)
 
-  // Hands off to Haiku at 78% of staying: over the 70% default, under the 85% a hot pace allows.
-  const NEAR = '{"fit":{"haiku":"medium","sonnet":"medium","opus":"medium","fable":"medium"},"size":"small","type":"search","read":20000,"write":1000,"steps":14,"reason":"list call sites"}'
+  // Hands off to Haiku at 92% of staying: over the 90% default, under the 95% a hot pace allows.
+  const NEAR = '{"fit":{"haiku":"medium","sonnet":"medium","opus":"medium","fable":"medium"},"size":"small","type":"search","read":20000,"write":1000,"steps":6,"reason":"list call sites"}'
   const at = (h: { now: number }, ms: number) => new Date(h.now + ms).toISOString()
 
   const RUNS = LEGACY_RUNS
@@ -266,14 +266,14 @@ for (const surface of ['desktop', 'terminal'] as const) {
     Array.from({ length: n }, (_, i) =>
       JSON.stringify({ at: new Date(h.now - (n - i) * 60_000).toISOString(), kind: 'run', type: 'search', tier: 'opus', route: 'delegate:haiku', change: 'delegate-down', agentCalls: i < missed ? 2 : 1 }),
     ).join('\n') + '\n'
-  /** One prompt rated as NEAR (Haiku at about 78% of staying on Opus): where the hand-off went. */
+  /** One prompt rated as NEAR (Haiku at about 92% of staying on Opus): where the hand-off went. */
   const nearHandOff = async ($: unknown, h: ReturnType<typeof engine>, d: ReturnType<typeof drive>, rating = NEAR) => {
     await d.start(surface)
     h.rating = rating
     await d.submit(SEARCH)
     return handedTo(h)
   }
-  /** A repo-wide search that Haiku does at low: well under the fixed 70% of staying on Opus. */
+  /** A repo-wide search that Haiku does at low: well under the fixed 90% of staying on Opus. */
   const CHEAP = '{"fit":{"haiku":"low","sonnet":"low","opus":"low","fable":"low"},"size":"bulky","type":"search","read":150000,"write":3000,"steps":30,"reason":"repo-wide search"}'
 
   // ---- One setting, two toggles (ADR 0021): the fixed values, Ask before changing, and the rows that replace them ----
@@ -281,7 +281,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   const SONNET = { model: 'claude-sonnet-5-5', effort: 'medium' }
   /** A raise on a Sonnet session: a rated raise is never taken at prompt time on Opus or Fable, and not for debugging on Sonnet. */
   const RAISE_FEATURE = '{"level":"high","model":"same","type":"feature","read":20000,"write":3000,"steps":20,"reason":"unknown cause"}'
-  const IN_USE = 'In use: hand-off threshold 70%, pause at 20% misses, rater check every 20, 2 chances per task'
+  const IN_USE = 'In use: hand-off threshold 90%, pause at 20% misses, rater check every 20, 2 chances per task'
 
   test(`there is no Profile row: Ask before changing is a row of /config, off by default, and /rightsize shows it on its first line with what is in use (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { ...OPUS })
@@ -304,15 +304,15 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(text, 'the fixed values').toContain(IN_USE)
   })
 
-  // The hand-off threshold is fixed at 70%: a cheaper route must cost under that share of staying (NEAR is 78%).
-  test(`the hand-off threshold is 70%: NEAR (78% of staying) goes to no one, and a stored Hand-off threshold of 80% is ignored (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  // The hand-off threshold is fixed at 90%: a cheaper route must cost under that share of staying (NEAR is 92%).
+  test(`the hand-off threshold is 90%: NEAR (92% of staying) goes to no one, and a stored Hand-off threshold of 80% is ignored (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { ...OPUS, store: SEND, stored: { handOff: '80%' } })
     const d = drive($, h)
     expect(await nearHandOff($, h, d)).toBeUndefined()
     expect(await settingsText(d)).not.toContain('Hand-off threshold')
     h.rating = CHEAP
     await d.submit(SEARCH)
-    expect(handedTo(h), 'well under 70%: handed off').toBe('haiku')
+    expect(handedTo(h), 'well under 90%: handed off').toBe('haiku')
   })
 
   // The evidence rule has no minimum of logged tasks: search on Haiku starts from its research prior.

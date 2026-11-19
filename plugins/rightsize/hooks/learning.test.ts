@@ -2,8 +2,8 @@ import { expect, test } from 'claude-code/testing'
 import { DEFAULT_PRICES, plan, type Plan, type Rating, type Situation } from './cost'
 import { learningNote, planLabel } from './learning'
 
-const rating = (over: Partial<Rating>): Rating => ({ level: 'medium', fit: {}, type: 'search', read: 10_000, write: 1000, steps: 40, reason: '', ...over })
-// A hand-off that sits under the 70% line on Opus: about 0.63 of staying. Learning at g -0.2 shrinks the steps and takes it over the line.
+const rating = (over: Partial<Rating>): Rating => ({ level: 'medium', fit: {}, type: 'search', read: 10_000, write: 1000, steps: 20, reason: '', ...over })
+// A hand-off that sits under the 90% line on Opus: about 0.87 of staying. Learning at g -0.2 shrinks the steps and takes it over the line.
 const r = rating({ fit: { haiku: 'medium', sonnet: 'medium', opus: 'medium' } })
 const s: Situation = { tier: 'opus', level: 'medium', context: 20_000, prices: DEFAULT_PRICES, cal: {} }
 

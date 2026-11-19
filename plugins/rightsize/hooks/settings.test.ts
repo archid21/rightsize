@@ -301,14 +301,14 @@ test('Band is a plain row: the six plain rows are Mode, Routing, Hand-offs, Ask 
 })
 
 test('the fixed values are what the Balanced profile held (ADR 0021)', async () => {
-  expect(FIXED).toEqual({ evidence: { minTasks: 0, maxMiss: 0.2 }, handOff: 0.7, raterEvery: 20, chances: 2, beforeCold: 'while it pays', reviewCeiling: 'max' })
+  expect(FIXED).toEqual({ evidence: { minTasks: 0, maxMiss: 0.2 }, handOff: 0.9, raterEvery: 20, chances: 2, beforeCold: 'while it pays', reviewCeiling: 'max' })
 })
 
 test('the fixed values are in use whatever is stored; Before the cache goes cold is the one row that replaces its fixed value', async () => {
   const values = { ...defaults(), beforeCold: 'compact' }
-  expect(inUse(values, set())).toEqual({ handOff: 0.7, minTasks: 0, maxMiss: 0.2, raterEvery: 20, chances: 2, answers: answersOf(false), beforeCold: 'while it pays', reviewCeiling: 'max' })
+  expect(inUse(values, set())).toEqual({ handOff: 0.9, minTasks: 0, maxMiss: 0.2, raterEvery: 20, chances: 2, answers: answersOf(false), beforeCold: 'while it pays', reviewCeiling: 'max' })
   expect(inUse(values, set('beforeCold')).beforeCold).toBe('compact')
-  expect(inUse(values, set('beforeCold', 'floor', 'band'))).toMatchObject({ handOff: 0.7, maxMiss: 0.2, raterEvery: 20, chances: 2, reviewCeiling: 'max' })
+  expect(inUse(values, set('beforeCold', 'floor', 'band'))).toMatchObject({ handOff: 0.9, maxMiss: 0.2, raterEvery: 20, chances: 2, reviewCeiling: 'max' })
 })
 
 test('Before the cache goes cold is a row: eight options, keeping warm while it pays by default, and /config names it', async () => {

@@ -446,7 +446,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     for (let i = 0; i < 3; i++) await d.bash('ls', 'agent-helper')
     await d.step('t1', 3, 'agent-helper')
     expect(last(h.sent)?.effort, 'no third raise').toBe('high')
-    expect(helperLog(h)).toContain('and the task has no retry left')
+    expect(helperLog(h)).toContain('and it has no retry left')
     expect(((await d.bash('ls', 'agent-helper')) as { deny?: string }).deny, 'sent back').toContain('retry budget is used up')
     await d.complete('t1')
     expect((readRuns(h).find(l => l.kind === 'run') as { retries?: number }).retries).toBe(2)

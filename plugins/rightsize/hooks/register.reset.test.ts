@@ -654,7 +654,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     for (let i = 0; i < 3; i++) await d.bash('ls', 'agent-helper')
     await d.step('t1', 3, 'agent-helper')
     expect(last(h.sent)?.effort, 'no third raise').toBe('high')
-    expect(helperLog(h)).toContain('returned helper agent-helper to the main chat at step 4: the same tool call ran 3 times, and the task has no retry left')
+    expect(helperLog(h)).toContain('returned helper agent-helper to the main chat at step 4: the same tool call ran 3 times, and it has no retry left')
     for (let i = 0; i < 2; i++) {
       const denied = (await d.bash('ls', 'agent-helper')) as { deny?: string }
       expect(denied.deny, 'stopped: report back').toContain('stuck')
@@ -682,7 +682,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.bash('fail a', 'agent-helper')
     await d.step('t1', 1, 'agent-helper')
     expect(h.asked.map(a => a.header), 'asked, as for the main chat').toEqual(['Stuck'])
-    expect(h.asked[0]?.question).toContain('It uses one of this task\'s 2 retries. No answer: it goes on at low.')
+    expect(h.asked[0]?.question).toContain('It uses one of this helper\'s 2 retries. No answer: it goes on at low.')
     await settle()
     await d.step('t1', 2, 'agent-helper')
     expect(last(h.sent)?.effort, 'raised on yes, from its next request').toBe('medium')
@@ -742,7 +742,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.bash('fail a', 'agent-helper')
     await d.step('t1', 1, 'agent-helper')
     expect(h.asked.map(a => a.header), 'the dialog: the band is off').toEqual(['Stuck'])
-    expect(h.asked[0]?.question).toContain("It uses one of this task's 2 retries. No answer in 30 seconds: it goes on at low.")
+    expect(h.asked[0]?.question).toContain("It uses one of this helper's 2 retries. No answer in 30 seconds: it goes on at low.")
     expect(h.question, 'not on the band').toBeNull()
     await d.step('t1', 2, 'agent-helper')
     expect(last(h.sent)?.effort, 'not raised').toBe('low')

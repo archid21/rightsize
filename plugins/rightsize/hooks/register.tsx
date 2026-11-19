@@ -157,7 +157,7 @@ import {
 } from './settings'
 import { BRIEF_MAX, cutRequest, parseRating, ratingPrompt, ratingSystem } from './rate'
 import { isApprovalStep } from './approval'
-import { CAP_HARD_X, WINDOW, capStop, HANDBACK, LIMITS, type Signals, type StepUpCause, type Struggle, blockedError, errorKind, callKey, hookFailed, isBookkeeping, isEditTool, helperCap, SPEND_ASK_AT, SPEND_AUTO_MAX, spendMultiple, isTestCommand, noMatchExit, noSignals, noteCall, oneUp, refusedByHook, refusedByPerson, struggle, testsOutcome } from './struggle'
+import { CAP_HARD_X, WINDOW, capStop, HANDBACK, LIMITS, type Signals, type StepUpCause, type Struggle, blockedError, errorKind, callKey, hookFailed, isBookkeeping, isEditTool, isWait, resultMark, helperCap, SPEND_ASK_AT, SPEND_AUTO_MAX, spendMultiple, isTestCommand, noMatchExit, noSignals, noteCall, oneUp, refusedByHook, refusedByPerson, struggle, testsOutcome } from './struggle'
 import { watchCheck, watchRange, type WatchCheck } from './check'
 import { type Change, type HelperLine, type Lifetime, type RunLine, type SwitchLine, type Windows, SESSION_TOTAL, SESSION_TOTAL_FROM, bandShareText, buildReport, costTag, foldLifetime, parseLifetime, parseLines, ratedInSession, sessionTotal, shareMessage, shareOf, usedTag, windowCostText, windowRates } from './report'
 import { CACHE_LIFE_KEY, isTracked, parseChanges, type ChangeLine } from './results'
@@ -188,7 +188,7 @@ import { COMPACT_GAP_MIN, PING_PROMPT, ROW_OF, WRAP_UP, addGap, planLength, alwa
 // estimates. When a turn shows it is struggling (tools failing, the same call
 // failing again or going round, far more steps than rated), effort goes up a
 // level for the rest of the turn (tool.call, turn.step). The cheaper helpers are
-// watched the same way: a struggling one is raised a level from the task's retry budget, or
+// watched the same way: a struggling one is raised a level from its own retry budget, or
 // sent back to the main chat when none is left (watches, escalateHelper). Billing (API or subscription) is read off the rate limits each
 // response carries; the person is asked only when they say nothing. A band
 // above the prompt shows what it did, with buttons to retry it at the original effort or change the rule.
@@ -603,8 +603,8 @@ let counts: Record<string, number> = missCounts([])
 /** The tasks the log itself holds per type and model, research priors left out: what the confidence in the band counts. */
 let ownCounts: Record<string, number> = {}
 /**
- * Chances a task has to retry: a helper raised a level, or the main chat reworking a hand-off. When they
- * are used up, the helper goes back to the main chat and the main chat finishes the task itself.
+ * Chances each helper has to retry (P-79: per helper, not per task): a raise of it, or the main chat reworking it (a message to it,
+ * or another subagent on its model). When they are used up, the helper goes back to the main chat and the main chat finishes the work.
  */
 let chances = FIXED.chances
 /** The first option of each of the four questions. */
@@ -697,7 +697,7 @@ type Watch = {
   kind: 'handoff' | 'moved'
   /** The run whose turn started it: that run's log line lists it. */
   run?: string
-  /** The task whose retry budget it draws on. */
+  /** The task it works for; its retry budget is its own (P-79). */
   task: string
   /** The level it was sent at, and the level of its later steps after a raise. */
   level: Level
@@ -1476,7 +1476,7 @@ async function bandAnswered($: EngineInterface, why: BandWhy, v: unknown) {
       if (v === 'no') return log($, `helper ${id} struggling (${sign.why}): kept at ${cur}, as you chose`)
       // Gone back, or done: nothing left to raise.
       if (!raises || w.returned || watches.get(id) !== w || w.raisedTo === to) return
-      if (!(await useChance($, w.task))) return log($, `helper ${id} not raised: the task has no retry left`)
+      if (!(await useChance($, w.task, id))) return log($, `helper ${id} not raised: it has no retry left`)
       return raiseHelper($, id, w, cur, to, sign)
     }
   }
@@ -3050,10 +3050,10 @@ async function escalateHelper($: EngineInterface, id: string, w: Watch, sign: St
   const to = oneUp(cur, ceiling)
   let why = ''
   const stored = to ? await $.state.get(RETRIES).catch(() => undefined) : undefined
-  const usedNow = usedOf(stored?.value, w.task)
+  const usedNow = usedOf(stored?.value, w.task, id)
   if (!to) why = `${cur} is as high as it goes`
   // No chance left: nothing to ask about.
-  else if (usedNow >= chances) why = 'the task has no retry left'
+  else if (usedNow >= chances) why = 'it has no retry left'
   else if (rule !== 'auto' && (await bandCanAsk($))) {
     if (onBand('Stuck')) return
     const q = { ...qStuck(helperQuestion(sign, cur, to), `Raise to ${to}`, cur), ifNone: `it goes on at ${cur}` }
@@ -3070,7 +3070,7 @@ async function escalateHelper($: EngineInterface, id: string, w: Watch, sign: St
       return
     }
   }
-  if (to && !why && !(await useChance($, w.task))) why = 'the task has no retry left'
+  if (to && !why && !(await useChance($, w.task, id))) why = 'it has no retry left'
   if (to && !why) return raiseHelper($, id, w, cur, to, sign)
   w.returned = true
   w.stall = 'struggling'
@@ -3086,7 +3086,7 @@ async function raiseHelper($: EngineInterface, id: string, w: Watch, cur: Level,
   await log($, `raised helper ${id} ${cur} → ${to} at step ${w.steps}: ${sign.why}`)
 }
 
-const helperQuestion = (sign: Struggle, cur: Level, to: Level) => `${sentence(sign.why)} Raise the helper's effort from ${cur} to ${to}? It uses one of this task's ${chances} retries.`
+const helperQuestion = (sign: Struggle, cur: Level, to: Level) => `${sentence(sign.why)} Raise the helper's effort from ${cur} to ${to}? It uses one of this helper's ${chances} retries.`
 
 // The Stuck question for a helper, in the dialog. A dismissed question is a no, as for the main chat. An answer
 // that comes after the wait is too late: the helper went on at its effort.
@@ -5449,7 +5449,7 @@ const APPROVAL_DENY =
 
 // A stopped helper may still make one call: SubagentHandback, the only way its report reaches the main chat.
 const HELPER_RETURN =
-  'rightsize: stop now. You are stuck, and this task\'s retry budget is used up, so more effort or more tries will not help. Your next and only call must be SubagentHandback with what you tried, what failed, and where you are stuck; any other call is refused. The main chat takes it from here.'
+  'rightsize: stop now. You are stuck, and your retry budget is used up, so more effort or more tries will not help. Your next and only call must be SubagentHandback with what you tried, what failed, and where you are stuck; any other call is refused. The main chat takes it from here.'
 const limitReturn = (limit: number) =>
   `rightsize: stop now. This helper reached its spend limit (${money(limit)}). Your next and only call must be SubagentHandback with what you found, what is left and where you stopped; any other call is refused. The main chat takes it from here.`
 const capReturn = (cap: number) =>
@@ -5460,7 +5460,7 @@ const HELPER_WAIT_CAP_MS = 270_000
 const WAIT_DENY =
   'rightsize: a foreground wait over 4.5 minutes lets this helper\'s 5-minute prompt cache expire, and the next request pays to rewrite it. Run the command with run_in_background and check on it, or use a timeout of 270000 ms or less.'
 const REWORK_DENY =
-  'rightsize: this task\'s retry budget is used up, so the helper gets no more rework rounds. Finish the task yourself in the main chat, from what the helper did.'
+  'rightsize: this helper\'s retry budget is used up, so it gets no more rework rounds. Finish the task yourself in the main chat, from what the helper did.'
 
 // A subagent's step whose id no spawn has answered yet: the engine started it before
 // next(e) settled. Match it to the spawn by what $.agent.list() shows of it.
@@ -5477,13 +5477,28 @@ async function claim($: EngineInterface, id: string) {
 
 const RETRIES = { plugin: 'rightsize', key: 'retries' } as const
 
-/** How many of the task's chances are used, from the stored value; a task that has none recorded has used none. */
-function usedOf(v: { task: string; used: number } | null | undefined, task: string): number {
-  return v && v.task === task ? v.used : 0
+/** The stored retries: the task's total (the run line's `retries`), and per helper what it used (P-79). */
+type Retries = { task: string; used: number; helpers?: Record<string, number> }
+
+/**
+ * Chances used: by one helper when `helper` is given, else the task's total. Each helper has its own `chances` (P-79),
+ * so one helper's rework rounds never leave a later helper in the task without a retry. A task with none recorded has used none.
+ */
+function usedOf(v: Retries | null | undefined, task: string, helper?: string): number {
+  if (!v || v.task !== task) return 0
+  return helper === undefined ? v.used : (v.helpers?.[helper] ?? 0)
 }
 
-/** Uses one of the task's chances; false when none is left. Calls run one after another, so two at once cannot spend the same chance. */
-async function useChance($: EngineInterface, task: string): Promise<boolean> {
+/** The helper a rework call is for: the one a message names, else the task's latest helper; undefined when none is watched. */
+function reworkHelper(task: string, to: unknown): string | undefined {
+  if (typeof to === 'string' && watches.get(to)?.task === task) return to
+  let latest: [string, Watch] | undefined
+  for (const [id, w] of watches) if (w.task === task && (!latest || w.startedAt >= latest[1].startedAt)) latest = [id, w]
+  return latest?.[0]
+}
+
+/** Uses one of the helper's chances (the task's, with no helper known); false when none is left. Calls run one after another, so two at once cannot spend the same chance. */
+async function useChance($: EngineInterface, task: string, helper?: string): Promise<boolean> {
   const before = spending
   let release: () => void = () => undefined
   spending = new Promise<void>(unlock => {
@@ -5492,9 +5507,11 @@ async function useChance($: EngineInterface, task: string): Promise<boolean> {
   try {
     await before.catch(() => undefined)
     const stored = await $.state.get(RETRIES).catch(() => undefined)
-    const used = usedOf(stored?.value, task)
-    if (used >= chances) return false
-    await $.state.set(RETRIES, { task, used: used + 1 }).catch(() => undefined)
+    const v = stored?.value as Retries | undefined
+    if (usedOf(v, task, helper) >= chances) return false
+    const helpers = v?.task === task ? { ...v.helpers } : {}
+    if (helper !== undefined) helpers[helper] = (helpers[helper] ?? 0) + 1
+    await $.state.set(RETRIES, { task, used: usedOf(v, task) + 1, ...(Object.keys(helpers).length ? { helpers } : {}) }).catch(() => undefined)
     return true
   } finally {
     release()
@@ -5662,8 +5679,8 @@ async function noteHelperCall($: EngineInterface, id: string, w: Watch, e: Recor
   const tool = String(e.tool)
   const noMatch = isError && noMatchExit(tool, e, errorText(result))
   if (noMatch) isError = false
-  if (isBookkeeping(tool)) return
-  w.signals = noteCall(w.signals, callKey(tool, e), isError, !noMatch && isTestCommand(tool, e), isEditTool(tool))
+  if (isBookkeeping(tool) || isWait(tool, e)) return
+  w.signals = noteCall(w.signals, callKey(tool, e), isError, !noMatch && isTestCommand(tool, e), isEditTool(tool), resultMark(errorText(result)))
 }
 
 // A moved subagent's answer: what its own requests cost teaches the estimate for its
@@ -7679,11 +7696,12 @@ export const register: Register = (on, options) => {
       const model = (e as { model?: unknown }).model
       const again = String(e.tool) === 'Agent' && active.delegated && tierOf(typeof model === 'string' ? model : undefined) === active.delegate.tier
       if (String(e.tool) === 'SendMessage' || again) {
-        if (!(await useChance($, active.task))) {
-          await log($, `rework refused: the task's retry budget is used up, so the main chat finishes it`)
+        const helper = reworkHelper(active.task, (e as { to?: unknown }).to)
+        if (!(await useChance($, active.task, helper))) {
+          await log($, `rework refused: the helper's retry budget is used up, so the main chat finishes it`)
           return { deny: REWORK_DENY }
         }
-        await log($, `rework round: used one of the task's ${chances} retries`)
+        await log($, `rework round: used one of ${helper ? `helper ${helper}'s` : `the task's`} ${chances} retries`)
       }
     }
     // A main-chat call may outlast the cache: the in-turn keep warm runs while any is open.
@@ -7725,7 +7743,7 @@ export const register: Register = (on, options) => {
       }
       if (!(result as { deny?: string }).deny && !refused && isApprovalStep(String(e.tool), e as Record<string, unknown>)) active.approvalSteps += 1
       // A refused call (a hook's deny, or the person's no) says nothing about the work, and neither does bookkeeping.
-      if (!(result as { deny?: string }).deny && !refused && !blocked && !isBookkeeping(String(e.tool))) active.signals = noteCall(active.signals, callKey(String(e.tool), e as Record<string, unknown>), isError && !noMatch, !noMatch && isTestCommand(String(e.tool), e as Record<string, unknown>), isEditTool(String(e.tool)))
+      if (!(result as { deny?: string }).deny && !refused && !blocked && !isBookkeeping(String(e.tool)) && !isWait(String(e.tool), e as Record<string, unknown>)) active.signals = noteCall(active.signals, callKey(String(e.tool), e as Record<string, unknown>), isError && !noMatch, !noMatch && isTestCommand(String(e.tool), e as Record<string, unknown>), isEditTool(String(e.tool)), resultMark(errorText(result)))
     }
     return result
   }).catch((_, e, next) => next(e))

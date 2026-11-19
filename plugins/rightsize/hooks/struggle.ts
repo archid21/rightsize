@@ -17,7 +17,7 @@ import { LEVELS, levelRank } from './cost'
 export type Signals = {
   errors: number
   /** Per call (tool and arguments), how often it ran and how often it failed; `test` marks a test-runner command. */
-  calls: Record<string, { n: number; errors: number; test?: true }>
+  calls: Record<string, { n: number; errors: number; test?: true; mark?: string; same?: number }>
   /** Kinds that have already raised effort this turn. */
   fired: Kind[]
   /** How the last test run in the turn ended: the objective outcome of the work, where there was one. */
@@ -367,6 +367,24 @@ const BOOKKEEPING = new Set(['TodoWrite', 'TaskCreate', 'TaskUpdate', 'TaskList'
 export const HANDBACK = 'SubagentHandback'
 export const isBookkeeping = (tool: string): boolean => BOOKKEEPING.has(tool) || tool.startsWith('mcp__ccd_turn__')
 
+/**
+ * A wait for something to finish (P-79): Monitor, a Bash sleep or until/while poll, a browser wait. Waiting for a
+ * test run or a page repeats the same call by design, so a wait joins no sign; the wait cap and spend limit bound it.
+ */
+const WAIT_BASH = /(?:^|[;&|(\n]|\bdo)\s*(?:sleep\s+\d|until\b|while\b)/
+export function isWait(tool: string, input: Record<string, unknown>): boolean {
+  if (tool === 'Monitor') return true
+  if (tool === 'Bash') return typeof input.command === 'string' && WAIT_BASH.test(input.command)
+  return tool.endsWith('__computer') && input.action === 'wait'
+}
+
+/** A short mark of a call's result (P-79): the loop sign counts a repeat only when the result is the same as last time. */
+export function resultMark(text: string): string {
+  let h = 5381
+  for (let i = 0; i < text.length; i++) h = ((h << 5) + h + text.charCodeAt(i)) | 0
+  return `${text.length}:${(h >>> 0).toString(36)}`
+}
+
 /** Tools that change a file: a call to one that works is progress. */
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
 export const isEditTool = (tool: string): boolean => EDIT_TOOLS.has(tool)
@@ -376,15 +394,17 @@ export const isEditTool = (tool: string): boolean => EDIT_TOOLS.has(tool)
  * `edit` marks a file edit or write. The call joins the recent window: new or a repeat, and progress
  * when it is an edit that worked or a test run that passed.
  */
-export function noteCall(s: Signals, key: string, isError: boolean, test = false, edit = false): Signals {
+export function noteCall(s: Signals, key: string, isError: boolean, test = false, edit = false, mark?: string): Signals {
   const c = s.calls[key] ?? { n: 0, errors: 0 }
+  // Repeats with the same result in a row; a call whose result changed starts again at 1. No mark: every run is the same.
+  const same = c.n > 0 && c.mark === mark ? (c.same ?? c.n) + 1 : 1
   const isTest = test || c.test === true
   const step = { novel: s.calls[key] === undefined, progress: !isError && (edit || test), ...(isError && !test ? { error: true } : {}) }
   return {
     ...s,
     recent: [...(s.recent ?? []), step].slice(-RECENT_MAX),
     errors: s.errors + (isError && !test ? 1 : 0),
-    calls: { ...s.calls, [key]: { n: c.n + 1, errors: c.errors + (isError ? 1 : 0), ...(isTest ? { test: true as const } : {}) } },
+    calls: { ...s.calls, [key]: { n: c.n + 1, errors: c.errors + (isError ? 1 : 0), ...(isTest ? { test: true as const } : {}), ...(mark !== undefined ? { mark } : {}), same } },
     ...(isTest ? { lastTest: isError ? ('failed' as const) : ('passed' as const) } : {}),
     // A green run ends the count. A red run after an edit since the last red is a failed fix attempt; a red run
     // with no edit between (the same red again, or the first red) is not an attempt. An edit after a red arms the next run.
@@ -418,7 +438,8 @@ export function struggle(s: Signals, step: number, ratedSteps: number, limits: L
   if (recent.length >= limits.window && failed >= limits.errors && !recent.some(r => r.progress))
     found.push({ kind: 'errors', why: `${failed} of the last ${limits.window} tool calls failed and none made progress` })
   // Running the tests again after each change is the normal way to work, not going round.
-  if (calls.some(c => !c.test && c.n >= limits.loop)) found.push({ kind: 'loop', why: `the same tool call ran ${limits.loop} times` })
+  // Only the same result each time is going round: a page or log that changed is work to watch (P-79).
+  if (calls.some(c => !c.test && (c.same ?? c.n) >= limits.loop)) found.push({ kind: 'loop', why: `the same tool call ran ${limits.loop} times` })
   const long = Math.max(limits.longMin, limits.longX * Math.max(1, ratedSteps))
   // Fixes that keep leaving the tests red (ADR 0022): a red run, an edit, a red run again is one failed attempt.
   // How many calls a fix takes does not matter; only a run that is still red after a change counts.

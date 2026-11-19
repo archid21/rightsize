@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { type Signals, CAP_HARD_X, capStop, FAILED_TRIES, ERRORS, helperCap, isBookkeeping, LIMITS, LONG_MIN, LONG_X, LOOP, NOVEL, RECENT_MAX, REPEAT, WINDOW, blockedError, callKey, hookFailed, isEditTool, isTestCommand, noMatchExit, noSignals, noteCall, oneUp, refusedByHook, refusedByPerson, spendMultiple, SPEND_ASK_AT, SPEND_AUTO_MAX, struggle, testsOutcome } from './struggle'
+import { type Signals, CAP_HARD_X, capStop, FAILED_TRIES, ERRORS, helperCap, isBookkeeping, isWait, resultMark, LIMITS, LONG_MIN, LONG_X, LOOP, NOVEL, RECENT_MAX, REPEAT, WINDOW, blockedError, callKey, hookFailed, isEditTool, isTestCommand, noMatchExit, noSignals, noteCall, oneUp, refusedByHook, refusedByPerson, spendMultiple, SPEND_ASK_AT, SPEND_AUTO_MAX, struggle, testsOutcome } from './struggle'
 
 // Claude labels each Bash call afresh, so the description differs between runs of one command.
 const bash = (command: string) => callKey('Bash', { tool: 'Bash', tool_use_id: Math.random().toString(), command, description: `run ${command} (${Math.random()})` })
@@ -463,4 +463,40 @@ test('past its call count a helper stops only when its last calls made no progre
   const busy = edit(reads(noSignals(), 0, 5))
   expect(capStop({ calls: 60, cap: 25, signals: busy }), 'past the count but editing').toBe(false)
   expect(capStop({ calls: 25 * CAP_HARD_X, cap: 25, signals: busy }), 'the hard limit').toBe(true)
+})
+
+// P-79: the 20 loop signs in the run logs were all waits, re-reads of a page or file that had changed, or task-list ticks.
+test('a wait is no sign: Monitor, sleep and until polls, a browser wait', () => {
+  for (const [tool, input] of [
+    ['Monitor', { command: 'until grep -q "Ran .* tests across" /tmp/out.log; do sleep 5; done' }],
+    ['Bash', { command: 'for i in $(seq 1 10); do grep -q "^EXIT" /tmp/run.log && break; sleep 30; done' }],
+    ['Bash', { command: 'sleep 60' }],
+    ['Bash', { command: 'until [ -s /tmp/x ]; do sleep 2; done; cat /tmp/x' }],
+    ['mcp__Claude_Browser__computer', { action: 'wait', duration: 1 }],
+    ['mcp__claude-in-chrome__computer', { action: 'wait', duration: 2 }],
+  ] as const)
+    expect(isWait(tool, input as Record<string, unknown>), `${tool} ${JSON.stringify(input)}`).toBe(true)
+  for (const [tool, input] of [
+    ['Bash', { command: 'npm test' }],
+    ['Bash', { command: 'grep -rn sleep src' }],
+    ['Read', { file_path: '/tmp/x' }],
+    ['mcp__Claude_Browser__computer', { action: 'left_click' }],
+  ] as const)
+    expect(isWait(tool, input as Record<string, unknown>), `${tool} ${JSON.stringify(input)}`).toBe(false)
+})
+
+test('the loop sign counts a repeat only when the result is the same', () => {
+  // A page re-read after each click: the same call, a changed page each time.
+  let s = noSignals()
+  for (const page of ['a', 'b', 'c', 'd']) s = noteCall(s, callKey('mcp__claude-in-chrome__get_page_text', { tabId: 1 }), false, false, false, resultMark(page))
+  expect(struggle(s, 5, 5), 'a page that changed is progress to watch, not a loop').toBeUndefined()
+  // A log tail that grew, then stopped growing: three identical results in a row go round.
+  s = noSignals()
+  for (const out of ['1 pass', '2 pass', '2 pass', '2 pass']) s = noteCall(s, bash('tail -c 300 full.log'), false, false, false, resultMark(out))
+  expect(struggle(s, 5, 5)?.kind, 'the same result three times is a loop').toBe('loop')
+  // Without a result the old rule holds: the same call three times.
+  s = noteCall(noteCall(noteCall(noSignals(), bash('ls'), false), bash('ls'), false), bash('ls'), false)
+  expect(struggle(s, 4, 5)?.kind).toBe('loop')
+  expect(resultMark('x'.repeat(5000)).length, 'a mark is short').toBeLessThan(20)
+  expect(resultMark('a')).not.toBe(resultMark('b'))
 })

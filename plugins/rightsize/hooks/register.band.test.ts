@@ -254,7 +254,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(refused.deny).toContain('retry budget is used up')
     expect(refused.deny).toContain('Finish the task yourself')
     expect(((await d.agent('haiku')) as { deny?: string }).deny, 'a third subagent too').toContain('retry budget is used up')
-    expect(helperLog(h)).toContain("rework refused: the task's retry budget is used up")
+    expect(helperLog(h)).toContain("rework refused: the helper's retry budget is used up")
     // A helper's raise would find no chance left either.
     await d.bash('fail a', 'agent-helper')
     await d.bash('fail a', 'agent-helper')
@@ -354,6 +354,36 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.complete('t1')
     const sub = readRuns(h).find(l => l.kind === 'subagent') as Record<string, unknown>
     expect([sub.errors, sub.blocked, sub.stall, sub.raises]).toEqual([0, 1, 'blocked', undefined])
+  })
+
+  // P-79: one helper's rework rounds used the task's chances, and a later helper in the task was sent back at its first sign.
+  test(`each helper has its own retries: a later helper is raised after an earlier one used its rounds (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const h = engine(on, { model: 'claude-fable-5-2', effort: 'high', store: HELPERS })
+    const d = drive($, h)
+    await d.start(surface)
+    await warm(d, h)
+    h.rating = HAND_OFF()
+    await startHelper(d, h, 't1', 'helper')
+    expect(((await d.send()) as { deny?: string }).deny).toBeUndefined()
+    expect(((await d.send()) as { deny?: string }).deny).toBeUndefined()
+    expect(((await d.send()) as { deny?: string }).deny, 'its own rounds are used up').toContain('retry budget is used up')
+    await d.complete('t1')
+
+    // The follow-up starts a second helper in the same task: its retries are its own.
+    h.rating = HAND_OFF(true)
+    await d.submit(FOLLOW_UP)
+    await d.step('t2', 0)
+    await d.agent('haiku')
+    await d.spawn('second', 'haiku')
+    await d.step('t2', 0, 'agent-second')
+    await d.bash('fail a', 'agent-second')
+    await d.bash('fail a', 'agent-second')
+    await d.step('t2', 1, 'agent-second')
+    expect(last(h.sent)?.effort, 'raised, not sent back').toBe('medium')
+    expect(helperLog(h)).toContain('raised helper agent-second low → medium')
+    expect(((await d.send('agent-second')) as { deny?: string }).deny, 'one round left for it').toBeUndefined()
+    expect(((await d.send('agent-second')) as { deny?: string }).deny).toContain('retry budget is used up')
+    await d.complete('t2')
   })
 
   test(`a new session starts with a fresh retry budget and no helpers watched (${surface})`, { timeoutMs: 30000 }, async ($, on) => {

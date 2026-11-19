@@ -728,7 +728,7 @@ export const drive = (api: unknown, h: ReturnType<typeof engine>) => {
     // A subagent's own answer, in its own loop.
     answer: (agentId: string, isAborted = false) => e.turn.complete({ turnId: `${agentId}-turn`, agentId, answer: '', durationMs: 1, isAborted, reason: isAborted ? 'aborted' : 'answer' }),
     agent: (model: string) => e.tool.call({ tool: 'Agent', description: 'x', prompt: 'brief', model }),
-    send: () => e.tool.call({ tool: 'SendMessage', to: 'agent-helper', message: 'fix the failing test' }),
+    send: (to = 'agent-helper') => e.tool.call({ tool: 'SendMessage', to, message: 'fix the failing test' }),
     /** The app's task list moving to its next step: the same call every time. */
     advance: () => e.tool.call({ tool: 'mcp__ccd_turn__update_plan', advance: true }),
     workflow: (id?: string) => e.tool.call({ tool: 'Workflow', script: 'export const meta = {}', ...(id ? { tool_use_id: id } : {}) }),

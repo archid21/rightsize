@@ -332,6 +332,10 @@ type Run = {
   submittedAt: number
   /** The turn that was running when the prompt was submitted: it was typed over that turn, or delivered into it. Absent when the session was idle. */
   during?: string
+  /** Set once the run's first step has shown the session's real effort (settleStart). */
+  startChecked?: boolean
+  /** What the plan was made from, kept so a stale starting level can be priced again at the real one (settleStart). */
+  start?: { s: Situation; d: Decision; p: Plan }
   /** True from the prompt's submit until the engine has answered it: it can still be dropped, so no idle submit unbinds it. */
   entering?: boolean
   /** The turn this run is bound to, once its turn has started. */
@@ -2476,6 +2480,7 @@ function startRun(r: Rating, s: Situation, d: Decision, p: Plan, base: Level, ov
     escalations: [],
     requests: 0,
     ...('rule' in p && p.rule ? { rule: p.rule } : {}),
+    start: { s, d, p },
   }
 }
 
@@ -6915,6 +6920,49 @@ async function checkOlder($: EngineInterface): Promise<void> {
   await showStatus($)
 }
 
+/**
+ * A prompt planned as an automatic lowering from a starting level that turned out to be stale: the first step shows the session's
+ * real effort. The run is corrected to it. When the real level is the target, nothing changes: no saving, no Retry, a plain
+ * no-change row. Otherwise `normal` is the real level, the costs are priced again from it, and the band and Retry say so.
+ */
+async function settleStart($: EngineInterface, run: Run, real: Level) {
+  const planned = run.normal
+  const target = run.level
+  if (!target || !run.start) return
+  if (real === target) {
+    run.normal = real
+    run.ranAt = real
+    run.level = undefined
+    run.auto = false
+    run.change = 'none'
+    run.offered = 'none'
+    delete run.rule
+    run.rawMain = run.rawStay
+    run.takenMain = run.stay
+    if (lastAuto?.id === run.id) lastAuto = null
+    await log($, `start level was ${planned}, the session is at ${real}: the prompt is not a lowering, nothing is counted as saved`)
+    await setBand($, { text: `No change: ${real} on ${TIER_NAME[run.tier]} fits this prompt.`, acted: false })
+    await showStatus($)
+    return
+  }
+  const { s, d, p } = run.start
+  const at: Situation = { ...s, level: real }
+  const lower = levelRank(target) < levelRank(real)
+  const r = run.rating
+  run.normal = real
+  run.change = lower ? 'lower' : 'raise'
+  run.auto = lower
+  run.stay = mainCost(r, at, real, 0)
+  run.rawStay = rawMainCost(r, at, real)
+  run.rawMain = rawMainCost(r, at, target)
+  run.takenMain = mainCost(r, at, target, lower ? lowerSwitches(r, at) : 2)
+  const band = bandFor(run, { ...d, auto: lower }, p)
+  if (lastAuto?.id === run.id) lastAuto = lower && lastAuto.kind === 'lower' ? { ...lastAuto, normal: real, back: `at ${real}` } : null
+  await log($, `start level was ${planned}, the session is at ${real}: ${lower ? 'lowered' : 'raised'} ${real} → ${target}, priced again from ${real}`)
+  await setBand($, band)
+  await showStatus($)
+}
+
 /** The first main-chat step of a turn: reads the person's effort, and pauses or resumes rightsize by it. */
 async function noteEffort($: EngineInterface, now: Level, model: string | undefined): Promise<void> {
   const prev = await personEffort($)
@@ -7571,6 +7619,12 @@ export const register: Register = (on, options) => {
       await noteEffort($, e.effort, e.model)
     }
     if (isLevel(e.effort)) await $.state.set({ plugin: 'rightsize', key: 'seenEffort' }, e.effort)
+    // The prompt was planned before any request showed the session's real effort (the engine gives a hook no read of it), from a saved
+    // or default level that can be stale. When the lowering aims at the level the request already goes out at, nothing changes.
+    if (run && !run.startChecked) {
+      run.startChecked = true
+      if (manualPause === null && run.auto && run.level && !run.steppedUp && !run.switchTo && !run.delegate && isLevel(e.effort) && run.normal !== e.effort) await settleStart($, run, e.effort)
+    }
     // Held: the step goes as the engine made it, on the person's model and effort. Nothing below rewrites it. A run rated before
     // the pause (this turn's, or one still running when the person stepped up) is dropped: it claims no saving and teaches nothing.
     const held = manualPause !== null

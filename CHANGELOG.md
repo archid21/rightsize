@@ -12,6 +12,7 @@
 - **A helper takes work when it costs under 90% of staying (was 70%).** We tested this on real use first: work handed down near the old bar rarely needed redoing and cost about a third of staying. A usage window running hot still moves the bar to 95%, and a route that starts failing is paused as before.
 - **Short tasks can go to a Sonnet helper.** A Sonnet helper used to need a task of 20 steps or more. Once a kind of work has 5 hand-downs to Sonnet behind it, shorter tasks of that kind go too, when the estimate says they save. We tested this on real use first: short hand-downs cost about a third of staying. Newer kinds of work, and Opus helpers, keep the 20-step rule.
 - **A new model version starts with a clean record.** Misses and pauses are now kept per model version. When a new version arrives, work its predecessor failed at is tried again on it, and it is judged on its own results. What rightsize learned about costs carries over. The band says so once when a new version first appears.
+- **Fix: the first prompt of a session no longer claims a change it did not make.** Before the first request, rightsize could start from an effort saved by an earlier session. A session already on low could then show "Effort lowered: medium → low", count a saving and offer Retry at a level you never chose. Rightsize now corrects the band, the saving and Retry from the real effort at the first step.
 
 ## 0.15.1 (2026-11-16)
 

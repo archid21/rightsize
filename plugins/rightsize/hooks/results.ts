@@ -155,7 +155,7 @@ export function results(lines: readonly RunLine[], changes: readonly ChangeLine[
 const TITLE: Record<string, string> = {
   mode: 'Mode', routing: 'Routing', handOffs: 'Hand-offs', askFirst: 'Ask before changing', cache: 'Cache', floor: 'Lowest effort', ceiling: 'Highest effort',
   lowerRule: 'Lowering', raiseRule: 'Raising', upRule: 'Stronger model', downRule: 'Cheaper model', useHaiku: 'Use Haiku', useFable: 'Use Fable',
-  subagents: "Claude's subagents", workflows: 'Workflows', pacing: 'Budget pacing', escalation: 'Raise when stuck', rater: 'Rater', lowerPause: 'Lowering pause', beforeCold: 'Before the cache goes cold', promptCacheTtl: 'Cache life',
+  subagents: "Claude's subagents", workflows: 'Workflows', pacing: 'Budget pacing', escalation: 'Raise when stuck', rater: 'Rater', lowerPause: 'Lowering pause', lowerUnsure: 'Try lowering when unsure', beforeCold: 'Before the cache goes cold', promptCacheTtl: 'Cache life',
 }
 
 /** A value as the section shows it: Claude Code's cache life in words (5m is 5 minutes), the rest as stored. */

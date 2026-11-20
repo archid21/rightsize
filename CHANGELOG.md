@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **rightsize now tries lowering when the rater is not sure.** Before, a prompt the rater could not judge was always left as it was. Now, when the plan was to lower effort, it lowers one level (never a hand-down to a cheaper model). Unsure prompts keep their own miss count per type of work and model, over the last 10. Over 20% misses pauses it; each prompt left as it is counts as a non-miss, so it tries again after a cooldown. The report's Rater not sure row shows how many were lowered and missed. Turn it off with **Try lowering when unsure** in /config (on by default).
+
 ## 0.16.0 (2026-11-18)
 
 - **The tip to compact on Sonnet shows with whatsnext too.** When rightsize saved a whatsnext handoff before the cache went cold, the tip never showed: it was set up only without whatsnext, and the wrap-up turn's end cancelled it. It now shows when the cache warmed by the wrap-up goes cold, about one cache life after the wrap-up ends, unless you send a prompt first.

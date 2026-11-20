@@ -200,6 +200,15 @@ An "ask" answer opens its own timed dialog (it waits 30 seconds); every other an
 - Default: on
 - on: once a session, when output is a large share of the cost (at least 25%, after 20 requests and $1.00 spent at list prices), rightsize asks whether to use the Concise output style. off: it never asks. This row does not change your output style. To use Concise in every project, set Output style to Concise in your Claude settings.
 
+### Try lowering when unsure
+
+- Key: `lowerUnsure`
+- Options: on · off
+- Default: on
+- on: when the rater says it is not sure how hard a prompt is and the plan was to lower effort, rightsize lowers it by one level, never more. A hand-down to a cheaper model, a model switch and a raise stay off for an unsure prompt, as before. A cut request, a missing last reply or a failing last test run still means no lowering.
+- Unsure lowerings have their own miss record for each kind of work on each model version. A miss means what it means for other lowerings: a tool error that steps the turn back up, a raise mid-turn, a failing last test run, a correction or a 👎. The record reads only the last 10 unsure prompts of that kind of work; with fewer than 10, lowering goes on. When more than 20% of those 10 missed (3 or more; the Pause after misses line), unsure prompts of that kind are left as they are. Each prompt left this way still counts in the 10 as a non-miss, so after enough of them the share falls to 20% or under and unsure lowering starts again. That is a count, not proof that lowering got safer: each retry brings real results. `/rightsize report` shows, on the Rater not sure line, how many were lowered, how many of those missed and any kind of work paused now.
+- off: a prompt the rater is not sure of is left as it is.
+
 ### Big-turn warning
 
 - Key: `bigTurn`

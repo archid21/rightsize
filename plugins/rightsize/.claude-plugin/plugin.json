@@ -287,6 +287,16 @@
         "20 prompts"
       ]
     },
+    "lowerUnsure": {
+      "type": "string",
+      "title": "Advanced · Try lowering when unsure",
+      "description": "on (default): when the rater says it is not sure how hard a prompt is and the plan was to lower effort, lower it one level (never more, never a hand-down to a cheaper model). Unsure lowerings have their own miss record: when more than 20% of the last 10 unsure prompts of a kind of work on a model went wrong, unsure prompts of that kind are left as they are until the window recovers. A cut request, a missing last reply or a failing last test run still means no lowering. off: a prompt the rater is not sure of is left as it is.",
+      "default": "on",
+      "options": [
+        "on",
+        "off"
+      ]
+    },
     "bigTurn": {
       "type": "string",
       "title": "Advanced · Big-turn warning",

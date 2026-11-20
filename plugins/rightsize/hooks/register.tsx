@@ -45,6 +45,7 @@ import {
   isLevel,
   isTaskType,
   levelRank,
+  LEVELS,
   REVIEW_LEVEL,
   LIGHT_REVIEW_LEVEL,
   lightReview,
@@ -122,7 +123,7 @@ import { type FastState, fastGuess, nextFast, speedFromCost, speedSwitchCost, sp
 import { type FreshRun, type HandedOff, NO_STEPS, type StepState, actingExp, mergeSteps, medians, parseStepState, STEP_PROVE, typicalShrink } from './steps'
 import { type LearningNote, learningNote } from './learning'
 import { applyPrices, diffPrices, familiesFound, isDue, parsePricingPage } from './prices'
-import { confidence, currentVersion, missCounts, missMap, ownTasks, pauseRates, routeOutcomes, type Rates, type Versions } from './misses'
+import { confidence, currentVersion, missCounts, missMap, ownTasks, pauseRates, routeOutcomes, unsureKey, unsureOutcomes, unsurePaused, type Rates, type UnsureOutcome, type Versions } from './misses'
 import { type Pauses, capPauses, judge, livePauses, pauseLength, pausedNow, pausesOf, retryRoute, tick } from './lowerpause'
 import { START_CHECK_DAYS, START_MIN_PROMPTS, START_SNOOZE_DAYS, adviseStart, startBlock, startKey, startTip } from './start'
 import {
@@ -398,6 +399,9 @@ type Run = {
   loweredBy?: 'you'
   /** The rating or the task's state says no lowering or hand-down on this prompt (an unsure rating, a red test run): no Lower effort button either. */
   lowerGuard?: true
+  /** The rater was not sure and the plan was "lower effort" (P-83): 'lowered' went down one level, 'paused' was left as it was because its unsure bucket was paused. The run line carries both, with the bucket's key. */
+  unsureTry?: 'lowered' | 'paused'
+  unsureKey?: string
   /** What the turn's responses wrote, main chat and helpers: output tokens and cost split into thinking, text and code written (P-22), and what those requests cost. */
   out: OutputTotals
   /** What effort-switch cache misses cost this turn. */
@@ -673,6 +677,10 @@ let missTable: Rates = {}
 let pauses: Pauses = {}
 /** The prompts a lowering pause lasts (Advanced · Lowering pause). */
 let pausePrompts = pauseLength(undefined)
+/** Try lowering when unsure (P-83): an unsure rating whose plan was "lower effort" is lowered one level, with its own miss bucket. */
+let lowerUnsure = true
+/** The unsure buckets' prompts per `unsure:${type}:${tier}` (misses.ts unsureOutcomes): what the unsure pause reads. */
+let unsureBy: Record<string, UnsureOutcome[]> = {}
 /** Runs already given a 👍 or 👎, so a double press counts once. */
 const ratedRuns = new Set<string>()
 let runSeq = 0
@@ -1010,6 +1018,7 @@ async function refreshMisses($: EngineInterface, announce = false) {
     missTable = rates
     counts = missCounts(measured, versions)
     ownCounts = ownTasks(measured, versions)
+    unsureBy = unsureOutcomes(measured, versions)
     await judgePauses($, routeOutcomes(measured, used, versions).byKey)
     if (!forgiven.length) return
     // Read again just before writing, so the routes another session forgave are kept.
@@ -1903,6 +1912,7 @@ function writeSetting($: EngineInterface, key: SettingKey, value: string): Promi
     case 'priceCheck': return $.config.set({ key: 'rightsize.priceCheck', value: value })
     case 'longHelpers': return $.config.set({ key: 'rightsize.longHelpers', value: value })
     case 'lowerPause': return $.config.set({ key: 'rightsize.lowerPause', value: value })
+    case 'lowerUnsure': return $.config.set({ key: 'rightsize.lowerUnsure', value: value })
     case 'bigTurn': return $.config.set({ key: 'rightsize.bigTurn', value: value })
   }
 }
@@ -2912,6 +2922,7 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
       continues: r.continues === true,
       ...(run.ratedType ? { ratedType: run.ratedType } : {}),
       ...(run.unsure ? { unsure: run.unsure } : {}),
+      ...(run.unsureTry ? { unsureTry: run.unsureTry, ...(run.unsureKey ? { unsureKey: run.unsureKey } : {}) } : {}),
       route: delegated ? `delegate:${run.delegate?.tier}` : 'main',
       tier: run.tier,
       // The model its route ran on (P-77): a hand-down's helper, a switched turn's model, else the main chat's.
@@ -6649,6 +6660,9 @@ function applyOption(key: SettingKey) {
     case 'lowerPause':
       pausePrompts = pauseLength(v)
       return
+    case 'lowerUnsure':
+      lowerUnsure = v !== 'off'
+      return
     case 'bigTurn':
       bigTurnRow = isBigTurnRow(v) ? v : 'off'
       return
@@ -7230,7 +7244,7 @@ export const register: Register = (on, options) => {
       const start = startBlock(adviseStart(runs, await startContext($), now), billing === 'subscription', money)
       // The row's text is the plain report (the terminal, -p, the SDK). Every other surface draws the Markdown form, chosen
       // per surface when the row draws (its CommandOutput hook): $.session.surfaces() here can miss the desktop app.
-      const opts = { now, session: sessionId, subscription: billing === 'subscription', start, pause: missBlock, watching, details: arg === 'report details', trimInstalled: await trimInstalled($), ...(typeof window === 'number' && window > 0 ? { contextWindow: window } : {}), ...(trim ? { trim } : {}), changes, calibration: { cal, ...(typeof calAt === 'string' ? { at: calAt } : {}) }, lowering: { misses, pause: missBlock, minTasks, counts }, ...(lifetime ? { lifetime } : {}), ...(measureFrom ? { measureFrom: new Date(measureFrom).toISOString() } : {}) }
+      const opts = { now, session: sessionId, subscription: billing === 'subscription', start, pause: missBlock, watching, details: arg === 'report details', trimInstalled: await trimInstalled($), ...(typeof window === 'number' && window > 0 ? { contextWindow: window } : {}), ...(trim ? { trim } : {}), changes, calibration: { cal, ...(typeof calAt === 'string' ? { at: calAt } : {}) }, lowering: { misses, pause: missBlock, minTasks, counts }, versions, ...(lifetime ? { lifetime } : {}), ...(measureFrom ? { measureFrom: new Date(measureFrom).toISOString() } : {}) }
       const text = buildReport(runs, switches, opts)
       reportMarkdown.set(text, buildReport(runs, switches, { ...opts, markdown: true }))
       while (reportMarkdown.size > 20) reportMarkdown.delete(reportMarkdown.keys().next().value as string)
@@ -7401,8 +7415,18 @@ export const register: Register = (on, options) => {
         // The task's last turn ended on a failing test run: the work is harder than it looked, so a prompt that continues it is not lowered or handed down either.
         const afterRed = follows && kept.tests === 'failed' && downgrade
         // The rater said it could not tell how hard the work is (P-30): the prompt is left as it is, whichever way the plan went.
-        const raterUnsure = r.unsure === true && fanned.kind !== 'none'
-        const unfanned: Plan = raterUnsure ? { kind: 'none', why: 'the rater was not sure how hard this is' } : noDowngrade ? { kind: 'none', why: 'the context was cut or missing, so no downgrade' } : afterRed ? { kind: 'none', why: 'the last turn of this task ended with a failing test run, so no downgrade' } : fanned
+        const ratedUnsure = r.unsure === true && fanned.kind !== 'none'
+        // Try lowering when unsure (P-83, ADR 0096): a "lower effort" plan on an unsure rating goes down one level at most, unless a cut request, a
+        // missing reply or a failing last test run says no, or the unsure bucket for this work on this model is paused (then the prompt is left as it is).
+        const unsureLowers = ratedUnsure && lowerUnsure && fanned.kind === 'effort' && fanned.dir === 'lower' && !noDowngrade && !afterRed
+        const bucket = unsureKey(r.type, s.tier)
+        const unsureWindow = unsureLowers ? unsurePaused(unsureBy[bucket], missBlock) : undefined
+        const unsureHeld = unsureLowers && unsureWindow?.paused === true
+        // Left as it is, as before: Try lowering when unsure is off, or the plan was not a lowering, or something else says no.
+        const raterUnsure = ratedUnsure && !unsureLowers
+        const oneLevel: Plan | undefined = unsureLowers && fanned.kind === 'effort' ? { ...fanned, level: LEVELS[Math.max(levelRank(fanned.level), levelRank(s.level) - 1)] ?? fanned.level } : undefined
+        const heldWhy = `the rater was not sure how hard this is, and lowering unsure prompts is paused (${unsureWindow?.misses} of the last ${unsureWindow?.n} went wrong)`
+        const unfanned: Plan = unsureHeld ? { kind: 'none', why: heldWhy } : oneLevel ? oneLevel : raterUnsure ? { kind: 'none', why: 'the rater was not sure how hard this is' } : noDowngrade ? { kind: 'none', why: 'the context was cut or missing, so no downgrade' } : afterRed ? { kind: 'none', why: 'the last turn of this task ended with a failing test run, so no downgrade' } : fanned
         // A window nearly used up: nothing that costs more than staying, unless the matching rule
         // (Raising for more effort, Stronger model for a stronger one) is yours: then it follows your rule.
         const costlier = (unfanned.kind === 'effort' && unfanned.dir === 'raise') || unfanned.kind === 'switch' || (unfanned.kind === 'delegate' && unfanned.dir === 'up')
@@ -7443,9 +7467,13 @@ export const register: Register = (on, options) => {
         }
         if (ratedType) run.ratedType = ratedType
         // An unsure rating or a red test run: no downgrade on this prompt, so no Lower effort at a big-turn warning either.
-        if (noDowngrade || afterRed || raterUnsure || r.unsure === true || unsure !== undefined) run.lowerGuard = true
+        if (noDowngrade || afterRed || ratedUnsure || r.unsure === true || unsure !== undefined) run.lowerGuard = true
         if (r.unsure) run.unsure = 'rater'
         else if (unsure) run.unsure = unsure
+        // Only an unsure prompt that was really lowered, or was left because its bucket was paused, belongs to the bucket's window.
+        if (unsureHeld && !watching) run.unsureTry = 'paused'
+        else if (unsureLowers && !watching && run.change === 'lower') run.unsureTry = 'lowered'
+        if (run.unsureTry) run.unsureKey = bucket
         run.rater = by
         run.ratingMs = ratingMs
         // A close call the guide broke: kept on the run for the log.
@@ -7455,6 +7483,8 @@ export const register: Register = (on, options) => {
         const note = paceText(skipped || moved, moved ? { from: was, to: movedRules } : undefined)
         const band = watching
           ? watchBand(run, p, s)
+          : unsureHeld
+          ? { text: `No change: the rater was not sure how hard this is, and lowering unsure prompts is paused (${unsureWindow?.misses} of the last ${unsureWindow?.n} went wrong), so rightsize left it on ${TIER_NAME[s.tier]} at ${s.level}.`, acted: false, skipped: true }
           : raterUnsure
           ? { text: `No change: the rater was not sure how hard this is, so rightsize left it on ${TIER_NAME[s.tier]} at ${s.level}.`, acted: false, skipped: true }
           : noDowngrade
@@ -7472,8 +7502,10 @@ export const register: Register = (on, options) => {
         await setBand($, extras ? { ...band, text: `${band.text} ${extras}`, acted: band.acted || hadIdle } : band, true)
         const did = d.delegate ? `delegate ${d.delegate.tier}` : d.model ? `switch to ${d.model.tier} at ${d.model.level} for the turn` : d.level ? `${d.auto ? 'auto ' : ''}${d.level} for the prompt` : d.session ? `${d.session} for the session` : 'no change'
         const fit = TIERS.map(t => `${t[0]}:${r.fit[t] ?? (r.fit[t] === null ? 'no' : '?')}`).join(' ')
-        if (raterUnsure) await log($, `rater not sure: prompt left alone (the plan was ${fanned.kind}${'dir' in fanned ? ` ${fanned.dir}` : ''})`)
-        else if (r.unsure) await log($, 'rater not sure: no change was planned anyway')
+        if (unsureHeld) await log($, `rater not sure: prompt left alone, lowering unsure prompts is paused for ${bucket} (${unsureWindow?.misses} of the last ${unsureWindow?.n} went wrong)`)
+        else if (run.unsureTry === 'lowered') await log($, `rater not sure: lowered one level to ${p.kind === 'effort' ? p.level : s.level} (${bucket}: ${unsureWindow?.misses ?? 0} of the last ${unsureWindow?.n ?? 0} went wrong)`)
+        else if (raterUnsure) await log($, `rater not sure: prompt left alone (the plan was ${fanned.kind}${'dir' in fanned ? ` ${fanned.dir}` : ''})`)
+        else if (r.unsure && !unsureLowers) await log($, 'rater not sure: no change was planned anyway')
         if (noDowngrade) await log($, `no downgrade: context ${unsure}`)
         if (afterWorkflow !== planned) await log($, `hand-off to ${planned.kind === 'delegate' ? planned.tier : '?'} skipped: a workflow ran this session`)
         if (gated.dropped) await log($, gated.dropped)

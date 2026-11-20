@@ -67,6 +67,15 @@ export function versionOfModel(model: string | null | undefined, tier: string): 
 /** The version a run line's route ran on: its own `model` (a hand-down's helper, else the main chat), else today's ("unknown is current"). */
 const lineVersion = (l: RunLine, tier: string) => versionOfModel(l.model, tier) ?? todayVersion(tier)
 
+// Unsure lowerings (P-83, ADR 0096): a prompt the rater was not sure of, planned as "lower effort", is lowered one level with its
+// own miss bucket, `unsure:${type}:${tier}`. Its run line carries `unsureTry`: 'lowered', or 'paused' when the bucket was paused
+// and the prompt was left as it was. Both enter the bucket's window; neither enters the normal bucket.
+
+/** The prompts an unsure bucket is judged on: the last ten, lowered or left. */
+export const UNSURE_WINDOW = 10
+
+export const unsureKey = (type: string, tier: string) => `unsure:${type}:${tier}`
+
 const delegateTier = (l: RunLine) => {
   const t = (l.route ?? '').startsWith('delegate:') ? (l.route ?? '').slice('delegate:'.length) : ''
   return isTier(t) ? t : undefined
@@ -83,7 +92,8 @@ const workedOn = (l: RunLine) => delegateTier(l) ?? (isTier(l.tier) ? l.tier : u
 // cheaper route (the objective outcome); one that passed is not read as a hit on its own, since rework may have come first.
 function ofRun(l: RunLine): Outcome | undefined {
   // A lowering the person chose at a big-turn warning (P-46) says nothing about the rater.
-  if (l.aborted || l.loweredBy === 'you' || !isTaskType(l.type)) return undefined
+  // An unsure lowering has its own bucket (unsureOutcomes).
+  if (l.aborted || l.loweredBy === 'you' || l.unsureTry || !isTaskType(l.type)) return undefined
   const type = l.type
   const tier = isTier(l.tier) ? l.tier : undefined
   const raised = (l.escalations?.length ?? 0) > 0
@@ -150,7 +160,7 @@ function counted(lines: readonly RunLine[], current?: Versions): Counted[] {
       // The person's next prompt said the reply was wrong: one miss on the cheaper route that made it, however many times it is said.
       const run = l.ref ? runs.get(l.ref) : undefined
       const tier = run ? workedOn(run) : undefined
-      if (run && l.ref && tier && isTaskType(run.type) && (run.change === 'lower' || run.change === 'delegate-down') && !corrected.has(l.ref)) {
+      if (run && l.ref && tier && isTaskType(run.type) && !run.unsureTry && (run.change === 'lower' || run.change === 'delegate-down') && !corrected.has(l.ref)) {
         corrected.set(l.ref, [{ type: run.type, tier, miss: true }, run.task ?? l.ref, 'auto', l.at, lineVersion(run, tier)])
       }
     } else if (kind === 'check') {
@@ -161,9 +171,47 @@ function counted(lines: readonly RunLine[], current?: Versions): Counted[] {
   for (const [ref, { value, at }] of verdicts) {
     const run = runs.get(ref)
     const tier = run ? workedOn(run) : undefined
-    if (run && tier && isTaskType(run.type)) out.push([{ type: run.type, tier, miss: value === 'down' }, run.task ?? ref, 'verdict', at, lineVersion(run, tier)])
+    if (run && tier && isTaskType(run.type) && !run.unsureTry) out.push([{ type: run.type, tier, miss: value === 'down' }, run.task ?? ref, 'verdict', at, lineVersion(run, tier)])
   }
   return out.filter(keep)
+}
+
+/** One unsure prompt in a bucket's window: a miss, when it happened, and whether it was lowered (else left because the bucket was paused). */
+export type UnsureOutcome = RouteOutcome & { lowered: boolean }
+
+/**
+ * The unsure buckets: per `unsure:${type}:${tier}`, every unsure prompt that was lowered or left because the bucket was paused,
+ * in log order. A lowered one is a miss as a normal lowering is (stepped up after a tool error, raised mid-turn, failing last test
+ * run, corrected, or 👎; a person's verdict stands over a correction). A left one is never a miss. With `current`, only
+ * the prompts on the version each family is on now (P-77).
+ */
+export function unsureOutcomes(lines: readonly RunLine[], current?: Versions): Record<string, UnsureOutcome[]> {
+  const corrected = new Set<string>()
+  const verdicts = new Map<string, 'up' | 'down'>()
+  for (const l of lines) {
+    if (l.kind === 'corrected' && l.ref) corrected.add(l.ref)
+    else if (l.kind === 'feedback' && l.ref && (l.value === 'up' || l.value === 'down')) verdicts.set(l.ref, l.value)
+  }
+  const byKey: Record<string, UnsureOutcome[]> = {}
+  for (const l of lines) {
+    if ((l.kind ?? 'run') !== 'run' || !l.unsureTry || l.aborted || !isTaskType(l.type) || !isTier(l.tier)) continue
+    if (current !== undefined && lineVersion(l, l.tier) !== currentVersion(current, l.tier)) continue
+    const lowered = l.unsureTry === 'lowered'
+    const verdict = l.id ? verdicts.get(l.id) : undefined
+    const miss = lowered && (verdict ? verdict === 'down' : (l.id !== undefined && corrected.has(l.id)) || (l.steppedUp === true && l.steppedUpBy !== 'steps') || (l.escalations?.length ?? 0) > 0 || l.tests === 'failed')
+    ;(byKey[unsureKey(l.type, l.tier)] ??= []).push({ miss, at: l.at, lowered })
+  }
+  return byKey
+}
+
+/**
+ * Whether unsure prompts are left as they are now: the bucket's last UNSURE_WINDOW prompts hold more misses than `line` allows.
+ * `line` is the Pause after misses share (null: never pause). With fewer than UNSURE_WINDOW prompts, lowering is allowed.
+ */
+export function unsurePaused(list: readonly RouteOutcome[] | undefined, line: number | null): { paused: boolean; misses: number; n: number } {
+  const last = (list ?? []).slice(-UNSURE_WINDOW)
+  const misses = last.filter(o => o.miss).length
+  return { paused: line !== null && last.length >= UNSURE_WINDOW && misses / last.length > line, misses, n: last.length }
 }
 
 /** Every outcome in the log, in order. */

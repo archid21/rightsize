@@ -363,6 +363,16 @@ for (const surface of ['desktop', 'terminal'] as const) {
       set: '5',
       def: '10',
     },
+    // The rater not sure of a lookup on Opus at high: with the row on (the default) it is lowered one level; off, it is left as it is (P-83).
+    {
+      key: 'lowerUnsure',
+      value: 'off',
+      warm: true,
+      start: { model: 'claude-opus-5-5', effort: 'high', store: { [CAL_STORE]: FREE_SWITCHES }, stored: { ...NO_COLD } },
+      see: c => effortOf(c, LOOKUP, '{"level":"low","model":"same","size":"small","type":"lookup","read":2000,"write":3000,"steps":1,"sure":false,"reason":"unclear"}'),
+      set: 'high',
+      def: 'medium',
+    },
     {
       key: 'bigTurn',
       value: '$1',

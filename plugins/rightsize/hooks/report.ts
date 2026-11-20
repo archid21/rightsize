@@ -2,7 +2,7 @@ import { CAUSE_NAME, rebuildSums } from './rebuild'
 import { type Calibration, MISS_BLOCK, TASK_TYPES, TIER_NAME, calKey, factor, isTier, money } from './cost'
 import { STEP_PROVE } from './steps'
 import type { StepUpCause } from './struggle'
-import { MISS_MIN, checkTotals, missRates, missTotals } from './misses'
+import { MISS_MIN, type Versions, checkTotals, missRates, missTotals, unsureOutcomes, unsurePaused } from './misses'
 import type { StartBlock } from './start'
 import type { TrimSavings, TrimSum } from './trim'
 import { checkRows, savingCheck } from './check'
@@ -115,6 +115,10 @@ export type RunLine = {
   overhead?: number
   /** A run line: why the rater may have seen too little. 'cut': the request was longer than the rater is shown, so its middle was cut. 'missing': a task was in progress but Claude's last reply could not be read. Neither lowers effort or hands work to a cheaper model. */
   unsure?: 'cut' | 'missing' | 'rater'
+  /** A run line (P-83): the rater was not sure and the plan was "lower effort". 'lowered': lowered one level (counted in the unsure bucket, not the normal one). 'paused': left as it was because the unsure bucket was paused (a non-miss in its window). */
+  unsureTry?: 'lowered' | 'paused'
+  /** A run line (P-83): the unsure bucket the prompt belongs to, `unsure:${type}:${tier}`. */
+  unsureKey?: string
   /** An unrated line: why the rating did not come (timeout, unreadable answer, and so on). A dropped or unbound line: why the prompt did not run. */
   reason?: string
   /** What effort-switch cache misses cost. */
@@ -853,13 +857,25 @@ export function calibrationLine(cal: Calibration, at?: string): string | undefin
 }
 
 /** How good the ratings and estimates were: Haiku's misses, Sonnet's checks, what is paused for them, and the estimate error. */
-export function accuracyRows(lines: readonly RunLine[], pause: number | null = MISS_BLOCK, from = 0) {
+export function accuracyRows(lines: readonly RunLine[], pause: number | null = MISS_BLOCK, from = 0, current?: Versions) {
   const { rows, paused, note } = haikuRows(lines, pause, from)
   const calibration = calibrationRow(lines.filter(l => isRun(l) && !l.aborted))
   // The rater's "not sure" (P-30): those prompts were left as they were. A high share would cost savings, so it shows.
   const rated = lines.filter(l => isRun(l) && Date.parse(l.at) >= from)
   const notSure = rated.filter(l => l.unsure === 'rater').length
-  const unsureRow = notSure ? [['Rater not sure', `${notSure} of ${plural(rated.length, 'rated prompt')} (${Math.round((notSure / rated.length) * 100)}%), left as they were`]] : []
+  // With Try lowering when unsure (P-83) some were lowered one level: how many, how many of those missed, and any bucket paused now.
+  const tried = unsureOutcomes(rated, current)
+  const lowered = Object.values(tried).flat().filter(o => o.lowered)
+  const pausedKeys = Object.entries(tried).filter(([, list]) => unsurePaused(list, pause).paused).map(([key]) => key)
+  const named = pausedKeys.map(key => {
+    const [, type, tier] = key.split(':')
+    return `${type === 'other' ? 'unclassified work' : type} on ${isTier(tier) ? TIER_NAME[tier] : tier}`
+  })
+  const sure = `${notSure} of ${plural(rated.length, 'rated prompt')} (${Math.round((notSure / rated.length) * 100)}%)`
+  const unsureText = Object.keys(tried).length
+    ? `${sure}, ${lowered.length} lowered one level (${lowered.filter(o => o.miss).length} missed), ${notSure - lowered.length} left as they were${named.length ? `; unsure lowering paused for ${named.join(', ')}` : ''}`
+    : `${sure}, left as they were`
+  const unsureRow = notSure ? [['Rater not sure', unsureText]] : []
   return { rows: [...rows, ...(calibration ? [calibration] : []), ...unsureRow], ...(paused ? { paused } : {}), ...(note ? { note } : {}) }
 }
 
@@ -1320,7 +1336,7 @@ export function trimRows(trim: TrimSavings | undefined) {
 export function buildReport(
   lines: readonly RunLine[],
   switches: readonly SwitchLine[],
-  opts: { now: number; session: string; subscription: boolean; start?: StartBlock; pause?: number | null; measureFrom?: string; markdown?: boolean; watching?: boolean; lifetime?: Lifetime; details?: boolean; trim?: TrimSavings; changes?: readonly ChangeLine[]; contextWindow?: number; trimInstalled?: boolean; calibration?: { cal: Calibration; at?: string }; lowering?: LoweringState },
+  opts: { now: number; session: string; subscription: boolean; start?: StartBlock; pause?: number | null; measureFrom?: string; markdown?: boolean; watching?: boolean; lifetime?: Lifetime; details?: boolean; trim?: TrimSavings; changes?: readonly ChangeLine[]; contextWindow?: number; trimInstalled?: boolean; calibration?: { cal: Calibration; at?: string }; lowering?: LoweringState; versions?: Versions },
 ) {
   const since = (days: number) => (l: { at: string }) => opts.now - Date.parse(l.at) <= days * DAY
   const month = lines.filter(since(30))
@@ -1338,7 +1354,7 @@ export function buildReport(
   const thirty = stats(month, sub, true)
   const fixed = fixedLine(month, opts.contextWindow, opts.trimInstalled === true)
   const start = opts.start
-  const accuracy = accuracyRows(month, opts.pause, from)
+  const accuracy = accuracyRows(month, opts.pause, from, opts.versions)
   // Today (since local midnight), 7 days, 30 days and lifetime. All are estimates.
   const midnight = new Date(opts.now).setHours(0, 0, 0, 0)
   const cols = [stats(lines.filter(l => Date.parse(l.at) >= midnight), sub), stats(lines.filter(since(7)), sub), thirty, lifetimeStats(opts.lifetime, lines, sub)]

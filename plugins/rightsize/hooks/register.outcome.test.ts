@@ -53,8 +53,9 @@ test('the rater is asked whether it is sure, and "sure": false is read as not su
 const NOT_SURE_LOW = '{"fit":{"haiku":"no","sonnet":"medium","opus":"low","fable":"low"},"type":"lookup","read":2000,"write":3000,"steps":1,"continues":false,"sure":false,"reason":"unclear which config"}'
 
 for (const surface of ['desktop', 'terminal'] as const) {
-  test(`a "not sure" rating leaves the prompt alone, logs it, and marks the run line (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES } })
+  // With Try lowering when unsure off (P-83): on, an unsure "lower effort" plan is lowered one level (register.unsure.test.ts).
+  test(`a "not sure" rating leaves the prompt alone, logs it, and marks the run line (${surface})`, { timeoutMs: 30000, options: { lowerUnsure: 'off' } }, async ($, on) => {
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES }, stored: { lowerUnsure: 'off' } })
     const d = drive($, h)
     await d.start(surface)
     await d.step('t0')

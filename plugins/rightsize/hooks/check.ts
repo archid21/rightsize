@@ -51,7 +51,7 @@ export type Check =
       /** All left-alone and declined prompts, as the 30-day summary counts them (finished or not). */
       untouchedAll: number
       declinedAll: number
-      /** Changes the person undid (Retry at original effort, Run on the current model): left out of everything above. */
+      /** Changes the person undid (Redo at a level, Redo on the current model): left out of everything above. */
       undone: number
       /** The other prompts of the period that finished with a real cost and were not overridden (raised, stepped up, after a workflow, and left alone but not declined), at what they cost. */
       rest: { n: number; cost: number }
@@ -273,7 +273,7 @@ export function checkRows(c: Check, subscription: boolean): { lead: string[]; ta
         : `After checking against real costs, rightsize did not save ${nothing}. ${estimated(saved, c.predicted + extra)}`
   const o = overallCheck(c)
   const overrode = c.declinedAll + c.undone
-  const parts = [c.declinedAll ? `${c.declinedAll.toLocaleString('en-US')} declined` : '', c.undone ? `${c.undone.toLocaleString('en-US')} undone with Retry or Run on your model` : ''].filter(Boolean).join(', ')
+  const parts = [c.declinedAll ? `${c.declinedAll.toLocaleString('en-US')} declined` : '', c.undone ? `${c.undone.toLocaleString('en-US')} undone with Redo` : ''].filter(Boolean).join(', ')
   const lead = [
     head('Overall, rightsize cut the cost of your prompts', rest, 'overall'),
     `That is out of all ${o.prompts.toLocaleString('en-US')} prompts${subscription ? ' (API prices)' : ''}: the ${c.changed.toLocaleString('en-US')} rightsize moved to a cheaper model or lower effort and the ${c.rest.n.toLocaleString('en-US')} it left as they were.${overrode ? ` Left out: the ${overrode.toLocaleString('en-US')} you overrode (${parts}).` : ''}`,
@@ -296,7 +296,7 @@ export function checkRows(c: Check, subscription: boolean): { lead: string[]; ta
             : `Prompts you declined (${count(c.declined.n, c.declinedAll)}): cost ${declinedRate}% of the estimate, ${leftLow ? 'the high end' : 'the low end'}. rightsize wanted to change these, so they are most like the changed prompts.`,
         ]
       : []),
-    `Retry at original effort and Run on your model are logged from rightsize 0.13, so a retry from before that is not known and that prompt still counts as changed.`,
+    `Redo at a level and Redo on a model are logged (as Retry at original effort and Run on your model were from rightsize 0.13), so a retry from before that is not known and that prompt still counts as changed.`,
     `The counts are prompts that finished with both an estimate and a real cost.`,
   ]
   return { lead, table: block(rest), notes, changed: { lead: changedLead, table: block(0) } }

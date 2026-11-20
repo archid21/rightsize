@@ -13,7 +13,7 @@ const WIDTHS = [22, 46] as const
 /** The rows; the first FIRST are the ones to learn first, and a rule follows them. */
 export const ROWS: readonly (readonly [string, string])[] = [
   ['Right model and effort', 'Sonnet rates each prompt in about one second. The cheapest model and effort that fits wins.'],
-  ['Every choice visible', 'The band says what changed and what it cost. Retry undoes it.'],
+  ['Every choice visible', 'The band says what changed and what it cost. Redo undoes it.'],
   ['Savings report', '/rightsize report shows hours of work and 5-hour windows saved on a subscription, and dollars on the API.'],
   ['Try it first', "Set Mode to watch only in /rightsize. rightsize then changes nothing and shows what it would have done."],
   ['More effort when stuck', 'When a turn shows Claude is stuck, effort goes up one level for that turn.'],
@@ -52,7 +52,7 @@ function row(cells: readonly string[]): string[] {
 const INTRO = 'Each prompt runs on the cheapest model and effort that does it well. The band shows every choice, and you can undo it.'
 const STEPS = [
   'Work as usual. The band says what rightsize changed.',
-  'Not happy with a choice? Press **Retry at original effort** on the band.',
+  'Not happy with a choice? Press **Redo** (it names the level or model) on the band.',
   'Run `/rightsize report` to see the hours of work saved.',
 ]
 const plain = (md: string) => md.replace(/\*\*|`/g, '')

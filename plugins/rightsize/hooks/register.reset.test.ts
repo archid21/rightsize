@@ -415,7 +415,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const d = drive($, h)
     await d.start(surface)
     const text = await settingsText(d)
-    expect(text.startsWith('Ask before changing: off\nOn.\n'), 'Ask before changing on the first line').toBe(true)
+    expect(text.startsWith('Changes: Auto\nOn.\n'), 'Changes on the first line').toBe(true)
     expect(text).not.toContain('Rightsize is')
     expect(text).toContain('(list them with claude plugin configure rightsize@archid21)')
   })

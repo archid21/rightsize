@@ -233,8 +233,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
   }
 
   const NOTE_ROWS: { name: string; stored: Record<string, string>; band: string | RegExp }[] = [
-    { name: 'the fixed bars moved', stored: {}, band: /^Effort lowered: medium → low .*so rightsize saves harder\. \(hand-off bar 90% → 95%, lowering bar 90% → 97%\)/ },
-    { name: 'stored threshold rows are ignored: the fixed bars moved', stored: { handOff: '70%', lowering: '90%' }, band: /^Effort lowered: medium → low .*so rightsize saves harder\. \(hand-off bar 90% → 95%, lowering bar 90% → 97%\)/ },
+    { name: 'the fixed bars moved', stored: {}, band: /^Effort lowered: medium → low\. .*so rightsize saves harder\. \(hand-off bar 90% → 95%, lowering bar 90% → 97%\)/ },
+    { name: 'stored threshold rows are ignored: the fixed bars moved', stored: { handOff: '70%', lowering: '90%' }, band: /^Effort lowered: medium → low\. .*so rightsize saves harder\. \(hand-off bar 90% → 95%, lowering bar 90% → 97%\)/ },
   ]
   for (const row of NOTE_ROWS) {
     test(`the band mentions pacing only when it moved something: ${row.name} (${surface})`, { timeoutMs: 30000, options: { band: 'always', ...row.stored } }, async ($, on) => {

@@ -27,11 +27,11 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const opened = (await d.command('')).text ?? ''
     expect(h.paneOpens, 'one pane, focused, Esc closes it, toasts held').toEqual([{ id: PANE_ID, title: 'Rightsize', focus: true, closeOnEscape: true, holdToasts: true }])
     expect(opened).toContain('settings are open in a pane')
-    expect(opened, 'the summary moved').not.toContain('Ask before changing: off')
+    expect(opened, 'the summary moved').not.toContain('Changes: Auto')
     expect(h.asked, 'no question').toEqual([])
     expect(h.paneCloses).toEqual([])
     const status = (await d.command('status')).text ?? ''
-    expect(status.startsWith('Ask before changing: off')).toBe(true)
+    expect(status.startsWith('Changes: Auto')).toBe(true)
     expect(status).toContain(`All ${PANE_KEYS.length} settings are at their defaults`)
     expect(status.endsWith('Commands: /rightsize help')).toBe(true)
     expect(h.paneOpens.length, 'status opens no pane').toBe(1)
@@ -120,7 +120,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await ui.select({ key: 'row-changes', value: 'Ask' })
     expect(await selectOf(ui, 'changes')).toMatchObject({ label: 'Changes (yours)', value: 'Ask' })
     expect(last(h.sets)).toMatchObject({ key: 'rightsize.changes', value: 'Ask' })
-    expect(((await d.command('status')).text ?? '').startsWith('Ask before changing: on')).toBe(true)
+    expect(((await d.command('status')).text ?? '').startsWith('Changes: Ask')).toBe(true)
     // A rule row set to "not set" goes back to unset, not yours.
     await ui.select({ key: 'row-lowerRule', value: 'never lower' })
     expect(await selectOf(ui, 'lowerRule')).toMatchObject({ label: 'Lowering (yours)', value: 'never lower' })

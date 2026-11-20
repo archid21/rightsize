@@ -89,7 +89,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await turnEnd()
     expect(rows(h).length).toBe(1)
     const row = rows(h)[0]!
-    expect(row.options).toEqual(['Turn on', 'Ask before changing', 'Keep watching'])
+    expect(row.options).toEqual(['Turn on', 'Turn on (Changes: Ask)', 'Keep watching'])
     expect(row.question).toContain('Watch only has run for 7 days. rightsize would have cut your cost by about 25%. Turn rightsize on?')
     expect(row.question, 'what no answer does').toContain('No answer: watch only stays on.')
     expect(period(h)?.trialShown).toBe(true)
@@ -102,7 +102,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(rows(h).length).toBe(1)
     expect(rows(h)[0]!.question).toContain('Not enough turns yet to estimate.')
     expect(rows(h)[0]!.question).not.toMatch(/\d%/)
-    expect(rows(h)[0]!.options).toEqual(['Turn on', 'Ask before changing', 'Keep watching'])
+    expect(rows(h)[0]!.options).toEqual(['Turn on', 'Turn on (Changes: Ask)', 'Keep watching'])
   })
 
   test(`the trial-end row shows once per period, whatever the answer or none (${surface})`, { timeoutMs: 30000, ...OPTIONS }, async ($, on) => {
@@ -157,7 +157,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
   test(`Ask before changing: Mode becomes act and Ask before changing goes on (${surface})`, { timeoutMs: 30000, ...OPTIONS }, async ($, on) => {
     const { h, turnEnd } = await begin($, on)
-    h.answers = { [HEADER]: 'Ask before changing' }
+    h.answers = { [HEADER]: 'Turn on (Changes: Ask)' }
     h.now += 7 * DAY
     await turnEnd()
     expect(h.sets.map(s => [s.key, s.value]).sort()).toEqual([['rightsize.changes', 'Ask'], ['rightsize.mode', 'act']])

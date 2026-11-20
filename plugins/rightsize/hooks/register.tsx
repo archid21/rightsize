@@ -226,7 +226,7 @@ type Spawning = { description: string; type: string; run?: Run; size?: Omit<Meas
 type SubagentMode = 'cheaper when it fits' | 'off'
 type Question<V> = { header: string; question: string; options: readonly (readonly [string, V])[]; ifNone?: string }
 
-// The four questions list the answer Ask before changing prefers first, marked (Recommended). The answer's
+// The four questions list the answer Changes prefers first (Ask when the Prompt area asks), marked (Recommended). The answer's
 // value comes from its own option, so it is right whatever the order.
 function recommend<V>(q: Question<V>, first: V): Question<V> {
   const at = q.options.findIndex(o => o[1] === first)
@@ -543,11 +543,15 @@ let lastReqModel: string | undefined
 let lastReqEffort: string | undefined
 let lastReqOurs = false
 /**
- * The last prompt's route, for the band's one-click overrides: a lowering (Retry at original effort) or a hand-off or switch-run (Run on
- * the current model). `back` finishes "run it ...": where the prompt runs once the override is pressed. One slot: a
- * prompt takes one route.
+ * The last prompt's route, for the band's one undo (ADR 0094): a lowering (Redo at <the level it was lowered from>) or a hand-off or
+ * switch-run (Redo on <the current model>). `back` finishes "run it ...": where the prompt runs once the undo is pressed. `line` is the
+ * Prompt row's text, which the undo keeps a row for when a newer band has none. One slot: a prompt takes one route. It lasts until
+ * the next prompt, whatever band rows come after it.
  */
-let lastAuto: { id: string; text: string; back: string; kind: 'lower'; level: Level; normal: Level } | { id: string; text: string; back: string; kind: 'route'; model: string } | null = null
+let lastAuto: { id: string; text: string; back: string; line: string; kind: 'lower'; level: Level; normal: Level } | { id: string; text: string; back: string; line: string; kind: 'route'; model: string } | null = null
+/** The undo on the band now is the first one this person has seen: its label says it runs the prompt again (the store keeps `undoSeen`). */
+let undoFirst = false
+const UNDO_SEEN = 'undoSeen'
 let skipOnce: string | null = null
 /**
  * A workflow ran in this session (ultracode, or asked for). Claude is then fanning
@@ -646,10 +650,12 @@ let watching = false
  */
 let routing = true
 let handOffs = true
+/** Prompt changes is Off (ADR 0094): rightsize makes no prompt change, so Routing and Hand-offs read as off, whatever their rows say. */
+let promptOff = false
 let cacheOn = true
 /** Cache timer in /config: whether the band shows the Cache row's timer line after every main-chat turn. */
 let cacheTimer = true
-/** The cases decided with no rule set for the prompt being rated (the default, or Ask before changing), and those the band has already said so for this session. */
+/** The cases decided with no rule set for the prompt being rated (the default, or Changes: Ask), and those the band has already said so for this session. */
 let profileChose: (keyof Choices)[] = []
 const profileNoted = new Set<keyof Choices>()
 /** A note for the prompt's band: the cache went cold, so this prompt writes the conversation again. */
@@ -2094,15 +2100,15 @@ const sentence = (text: string) => {
 }
 
 
-// The answer for one situation: a rule you set, or the saved answer, else the default (act, or ask while Ask before changing
-// is on). Nothing is saved: a rule row left at "not set" means the default decides, and the band says so the first time each case comes up
+// The answer for one situation: a rule you set, or the saved answer, else the default (act, or ask while the Prompt area asks:
+// Changes is Ask). Nothing is saved: a rule row left at "not set" means the default decides, and the band says so the first time each case comes up
 // in a session, with the other rules in its ⋯ menu. The question itself (`q`) is kept for /rightsize settings.
 async function choice<K extends keyof Choices>($: EngineInterface, key: K, _q: Question<NonNullable<Choices[K]>>) {
   const have = (await choices($))[key]
   if (have) return have
   const v = answers[key] as NonNullable<Choices[K]>
   if (!profileChose.includes(key)) profileChose.push(key)
-  await log($, `${RULE_NAME[key]}: no rule set, ${askFirst ? 'Ask before changing' : 'the default'} decides (${ruleLabel(key, v)})`)
+  await log($, `${RULE_NAME[key]}: no rule set, ${askFirst ? 'Changes: Ask' : 'the default'} decides (${ruleLabel(key, v)})`)
   return v
 }
 
@@ -2698,6 +2704,9 @@ function setBand($: EngineInterface, from: Band | null, rating = false) {
   const band: Band = from
   // A band built from an earlier band's text already carries a total: drop it, and add the current one last.
   let text = band.text.replace(SESSION_TOTAL, '')
+  // The undo stays until the next prompt (ADR 0094): a band with no Prompt row of its own (the cache row alone) keeps the line the undo is on.
+  const keepUndo = lastAuto !== null && text === '' && bandMode !== 'off'
+  if (keepUndo && lastAuto) text = lastAuto.line
   const coldText = band.coldText?.replace(SESSION_TOTAL, '')
   if (bandNote && !text.includes(bandNote)) text = `${text} ${bandNote}`
   // The pause row stays on the band of the prompt it began on, with its Resume button, when a later band of the turn is set.
@@ -2707,7 +2716,20 @@ function setBand($: EngineInterface, from: Band | null, rating = false) {
   // The session's running total is on the status line (P-84), not the band. `rating` is kept for callers.
   void rating
   const { coldText: droppedCold, ...rest } = band
-  return $.state.set(BAND, { ...rest, text, ...(coldText ? { coldText } : {}), ...(held ? { acted: true, canResume: true } : {}) }).catch(() => undefined).then(() => showQuestion($))
+  return $.state.set(BAND, { ...rest, text, ...(keepUndo ? { acted: true } : {}), ...(coldText ? { coldText } : {}), ...(held ? { acted: true, canResume: true } : {}) }).catch(() => undefined).then(() => showQuestion($))
+}
+
+/**
+ * The one undo button of an Auto row (ADR 0094), named for where it goes back to: "Redo at high" after a lowering from high, "Redo on
+ * Opus" after a hand-off or a review switch from Opus. Pressing it is the old Retry or Run on press (retry, runOnCurrent). The first one a person sees says
+ * it runs the prompt again. It lives as long as `lastAuto`: until the next prompt, whatever band rows come between.
+ */
+function autoUndo(): { key: 'retry' | 'stay'; label: string } | null {
+  if (!lastAuto) return null
+  const note = undoFirst ? ' (runs again)' : ''
+  return lastAuto.kind === 'lower'
+    ? { key: 'retry', label: `Redo at ${lastAuto.normal}${note}` }
+    : { key: 'stay', label: `Redo on ${lastAuto.model}${note}` }
 }
 
 async function setBandMode($: EngineInterface, v: BandMode) {
@@ -2750,26 +2772,35 @@ export function bandFor(run: Pick<Run, 'id' | 'tier' | 'normal' | 'auto' | 'dele
     return c ? { sure: `Confidence: ${c.level}, ${c.detail}.` } : {}
   }
   const more = (...parts: string[]) => parts.filter(Boolean).map(x => ` ${x}`).join('')
+  // The Prompt area is Auto (ADR 0094, Group 1): the line says what was done, in the ADR's words; the undo is the band's (autoUndo).
+  const auto = !askFirst
   if (run.switchTo) {
-    return { text: `Running this review on ${TIER_NAME[run.switchTo.tier]} at ${run.switchTo.level} effort, then back to ${cur}. ${bandCost(run.takenMain ?? 0, run.stay, cur)}${more(why)}`, acted: true, rule: 'up', canStay: true }
+    if (auto) {
+      const what = run.rating?.type === 'review' ? 'Review' : 'This prompt'
+      return { text: `${what} ran on ${TIER_NAME[run.switchTo.tier]} for this turn. ${bandCost(run.takenMain ?? 0, run.stay, cur)}${more(why)}`, acted: true, rule: 'up' }
+    }
+    return { text: `Running this review on ${TIER_NAME[run.switchTo.tier]} at ${run.switchTo.level} effort, then back to ${cur}. ${bandCost(run.takenMain ?? 0, run.stay, cur)}${more(why)}`, acted: true, rule: 'up' }
   }
   if (run.delegate) {
     const to = `${TIER_NAME[run.delegate.tier]} subagent at ${run.delegate.level} effort`
     const instead = p.kind === 'delegate' && p.instead && levelRank(p.instead) > levelRank(run.normal) ? ` instead of raising ${cur} to ${p.instead}` : ''
-    return { text: `Sending this to a ${to}${instead}. ${bandCost(run.takenDelegate ?? 0, run.stay, cur)}${more(why, run.delegate.dir === 'down' ? sure(run.delegate.tier) : '')}`, acted: true, rule: run.delegate.dir, canStay: true, ...sureDetail(run.delegate.dir === 'down' ? run.delegate.tier : undefined) }
+    const cost = bandCost(run.takenDelegate ?? 0, run.stay, cur)
+    const text = auto ? `Sent to ${TIER_NAME[run.delegate.tier]} · ${cost.replace(/ of (\w+) usage\.$/, ' of the $1 usage.')}` : `Sending this to a ${to}${instead}. ${cost}`
+    return { text: `${text}${more(why, run.delegate.dir === 'down' ? sure(run.delegate.tier) : '')}`, acted: true, rule: run.delegate.dir, ...sureDetail(run.delegate.dir === 'down' ? run.delegate.tier : undefined) }
   }
   const level = d.level ?? d.session
   if (level) {
     const lower = levelRank(level) < levelRank(run.normal)
     const scope = d.level ? `this prompt${run.auto ? ' (automatically)' : ''}` : 'this session'
+    // An automatic lowering says what was done and no more: "Effort lowered: high → low."
+    const said = run.auto && !!d.level && lower ? `${run.normal} → ${level}` : `${run.normal} → ${level} for ${scope}`
     return {
-      text: `Effort ${lower ? 'lowered' : 'raised'}: ${run.normal} → ${level} for ${scope}.${more(why, lower ? sure(run.tier) : '')}`,
+      text: `Effort ${lower ? 'lowered' : 'raised'}: ${said}.${more(why, lower ? sure(run.tier) : '')}`,
       acted: true,
       rule: lower ? 'lower' : 'raise',
       ...sureDetail(lower ? run.tier : undefined),
       // A lowering can be marked right or wrong: it was a bet on the rating.
       ...(lower ? { rate: run.id } : {}),
-      ...(run.auto && d.level ? { canRetry: true } : {}),
       ...(d.session ? { canClear: true } : {}),
     }
   }
@@ -3129,6 +3160,8 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
       : !delegated
       ? `rightsize: Claude did not hand this to a ${TIER_NAME[run.delegate.tier]} subagent; it ran on ${TIER_NAME[run.tier]} (${cost}).`
       : report({ tier: run.tier, stay: run.stay, delegate: run.delegate }, actual, billing, bandMode !== 'off')
+    // Claude kept the work in the main chat: it ran as typed, so there is nothing to redo on the session's model.
+    if (!delegated && lastAuto?.id === run.id) lastAuto = null
     const detail = delegated && billing === 'subscription' ? { detail: `${money(actual)} vs ${money(run.stay)} on ${TIER_NAME[run.tier]}, API-equivalent.` } : {}
     // The band shows the result in place of a transcript line; with the band off, the line stays.
     if (bandMode === 'off') $.ui.log(text)
@@ -6260,6 +6293,9 @@ async function finishSubagent($: EngineInterface, m: Measured, aborted: boolean,
   await append($, 'runs.jsonl', JSON.stringify(line), RUNS_LOG_MAX)
 }
 
+/** What the Changes row says now, for the status line's first line: Ask, or Auto (a Quality profile an older release stored reads as Ask). */
+const changesNow = () => (areaMode('prompt', { ...cfg, promptMode: 'Same as Changes' }, yours, legacyQuality) === 'ask' ? 'Ask' : 'Auto')
+
 async function summary($: EngineInterface) {
   const c = await choices($)
   const session = await sessionEffort($)
@@ -6279,7 +6315,7 @@ async function summary($: EngineInterface) {
   const n = changed.length
   return [
     // Claude Code shows the output under "rightsize:", so the line leaves the name out.
-    `Ask before changing: ${askFirst ? 'on' : 'off'}${legacyQuality && !yours.has('changes') ? ' (from your old Quality profile)' : ''}`,
+    `Changes: ${changesNow()}${legacyQuality && !yours.has('changes') ? ' (from your old Quality profile)' : ''}`,
     off ? 'Off. Turn it on with /mods.' : 'On.',
     '',
     n
@@ -6298,7 +6334,7 @@ async function summary($: EngineInterface) {
     `  Measured runs: ${runs}`,
     ...(sw ? [`  Effort switches that missed the cache: ${Math.round(sw.ratio * 100)}% of ${sw.n} (each one in ~/.claude/mods-logs/rightsize/<session>/switches.jsonl)`] : []),
     `  Mode: ${watching ? 'watch only (rates and plans every prompt, changes nothing; Mode in /config turns it on)' : 'act'}`,
-    `  Features: Routing ${routing ? 'on' : 'off'} · Hand-offs ${handOffs ? 'on' : 'off'} · Cache ${cacheOn ? 'on' : 'off'}`,
+    `  Features: Routing ${cfg.routing !== 'off' ? 'on' : 'off'} · Hand-offs ${cfg.handOffs !== 'off' ? 'on' : 'off'} · Cache ${cacheOn ? 'on' : 'off'}${promptOff ? ' · Prompt changes off' : ''}`,
     `  Areas: Prompt ${modeOf('prompt')} · Cache ${modeOf('cache')} · Compact ${modeOf('compact')}`,
     '',
     'Commands: /rightsize help',
@@ -6785,7 +6821,7 @@ async function watchRows($: EngineInterface) {
       const q: Question<WatchAnswer> = {
         header: WATCH_HEADER,
         question: `Watch only has run for ${daysText(now - from)}. ${figure} Turn rightsize on?`,
-        options: [['Turn on', 'on'], ['Ask before changing', 'ask'], ['Keep watching', 'keep']],
+        options: [['Turn on', 'on'], ['Turn on (Changes: Ask)', 'ask'], ['Keep watching', 'keep']],
         ifNone: 'watch only stays on',
       }
       await askBand($, q, 'prompt', true, { kind: 'watchTrial' })
@@ -6807,16 +6843,16 @@ async function watchRows($: EngineInterface) {
   }
 }
 
-/** The answer on the trial-end row. Turn on and Ask before changing set Mode to act; Keep watching changes nothing. */
+/** The answer on the trial-end row. Turn on and Turn on (Changes: Ask) set Mode to act; Keep watching changes nothing. */
 async function answerWatchTrial($: EngineInterface, v: unknown) {
   if (v !== 'on' && v !== 'ask' && v !== 'keep') return
   const p = await readWatchPeriod($)
   if (p && !p.until) await writeWatchPeriod($, { ...p, answer: v })
-  await log($, `watch only: trial-end row answered: ${v === 'on' ? 'Turn on' : v === 'ask' ? 'Ask before changing' : 'Keep watching'}`)
+  await log($, `watch only: trial-end row answered: ${v === 'on' ? 'Turn on' : v === 'ask' ? 'Turn on (Changes: Ask)' : 'Keep watching'}`)
   if (v === 'keep') return
   if (v === 'ask') await changeRow($, 'changes', 'Ask')
   await changeRow($, 'mode', 'act')
-  $.ui.toast(v === 'ask' ? 'Rightsize is on, and asks before changing.' : 'Rightsize is on.')
+  $.ui.toast(v === 'ask' ? 'Rightsize is on, with Changes set to Ask.' : 'Rightsize is on.')
 }
 
 // ---- Welcome, tips and the star ask (ADR 0039) ------------------------------------
@@ -7084,11 +7120,20 @@ async function migrateChanges($: EngineInterface, configs: unknown) {
   await $.store.set('changesMigrated', true).catch(() => undefined)
 }
 
+/** Routing and Hand-offs as they act now: their rows, and neither while Prompt changes is Off (it covers every prompt change, mid-turn raising included). */
+function syncFeatures() {
+  routing = cfg.routing !== 'off' && !promptOff
+  handOffs = cfg.handOffs !== 'off' && !promptOff
+}
+
 // Sets what the fixed values govern, each replaced by its row where the row is yours, and the questions' first
-// options from Ask before changing. It runs again whenever one of those rows or `yours` changes, so a change in
-// /config applies at once. A Quality profile stored by an older release reads as Ask before changing on, until the row is yours.
+// options from the Prompt area's mode. It runs again whenever one of those rows or `yours` changes, so a change in
+// /config applies at once. A Quality profile stored by an older release reads as Changes Ask, until the row is yours.
 function applyFixed() {
   askFirst = modeOf('prompt') === 'ask'
+  promptOff = modeOf('prompt') === 'off'
+  syncFeatures()
+  if (promptOff) lastAuto = null
   const u = inUse(cfg, yours, askFirst)
   missBlock = u.maxMiss
   minTasks = u.minTasks
@@ -7119,10 +7164,8 @@ function applyOption(key: SettingKey) {
       watching = watchOnly(v)
       return
     case 'routing':
-      routing = v !== 'off'
-      return
     case 'handOffs':
-      handOffs = v !== 'off'
+      syncFeatures()
       return
     case 'cache':
       cacheOn = v !== 'off'
@@ -7500,7 +7543,7 @@ async function settleStart($: EngineInterface, run: Run, real: Level) {
   run.rawMain = rawMainCost(r, at, target)
   run.takenMain = mainCost(r, at, target, lower ? lowerSwitches(r, at) : 2)
   const band = bandFor(run, { ...d, auto: lower }, p)
-  if (lastAuto?.id === run.id) lastAuto = lower && lastAuto.kind === 'lower' ? { ...lastAuto, normal: real, back: `at ${real}` } : null
+  if (lastAuto?.id === run.id) lastAuto = lower && lastAuto.kind === 'lower' ? { ...lastAuto, normal: real, back: `at ${real}`, line: band.text } : null
   await log($, `start level was ${planned}, the session is at ${real}: ${lower ? 'lowered' : 'raised'} ${real} → ${target}, priced again from ${real}`)
   await setBand($, band)
   await showStatus($)
@@ -7871,9 +7914,10 @@ export const register: Register = (on, options) => {
     // 👍 and 👎 go with the next prompt, whatever it is.
     if (!off && fromPerson(e) && !e.isMeta) await dropRate($)
     if (off || !fromPerson(e) || e.command || e.isMeta) return next(e)
-    // A new prompt replaces the last one's band.
+    // A new prompt replaces the last one's band, and takes its undo away.
     bandNote = null
     pauseRow = null
+    lastAuto = null
     await setBand($, null)
     // Fast mode turned on or off since the last prompt: every band of this prompt says what the re-read costs (P-29).
     if (speedNote) {
@@ -7929,6 +7973,8 @@ export const register: Register = (on, options) => {
     $.ui.status('Rating the prompt...')
     let out = e
     let run: Run | null = null
+    /** The Prompt row's line for this prompt, kept with its undo. */
+    let routeLine = ''
     // The task as it stood before this prompt changed it, and what this prompt wrote: a dropped prompt puts it back.
     let prevTask: Awaited<ReturnType<typeof currentTask>> | undefined
     let wroteTask: { id: string; prompts: number } | undefined
@@ -8047,11 +8093,12 @@ export const register: Register = (on, options) => {
         // The first time a case comes up in a session with no rule set, the band says what decided it.
         const fresh = profileChose.filter(k => !profileNoted.has(k))
         for (const k of fresh) profileNoted.add(k)
-        const byProfile = fresh.length ? `${askFirst ? 'Ask before changing' : 'The default'} decided (${fresh.map(k => RULE_NAME[k]).join(', ')}); ⋯ changes it.` : ''
+        const byProfile = fresh.length ? `${askFirst ? 'Changes: Ask' : 'The default'} decided (${fresh.map(k => RULE_NAME[k]).join(', ')}); ⋯ changes it.` : ''
         const extras = [note, byProfile, idleNote].filter(Boolean).join(' ')
         const hadIdle = idleNote !== ''
         idleNote = ''
-        await setBand($, extras ? { ...band, text: `${band.text} ${extras}`, acted: band.acted || hadIdle } : band, true)
+        routeLine = extras ? `${band.text} ${extras}` : band.text
+        await setBand($, extras ? { ...band, text: routeLine, acted: band.acted || hadIdle } : band, true)
         const did = d.delegate ? `delegate ${d.delegate.tier}` : d.model ? `switch to ${d.model.tier} at ${d.model.level} for the turn` : d.level ? `${d.auto ? 'auto ' : ''}${d.level} for the prompt` : d.session ? `${d.session} for the session` : 'no change'
         const fit = TIERS.map(t => `${t[0]}:${r.fit[t] ?? (r.fit[t] === null ? 'no' : '?')}`).join(' ')
         if (unsureHeld) await log($, `rater not sure: prompt left alone, lowering unsure prompts is paused for ${bucket} (${unsureWindow?.misses} of the last ${unsureWindow?.n} went wrong)`)
@@ -8091,11 +8138,17 @@ export const register: Register = (on, options) => {
     const auto: typeof lastAuto = !run
       ? null
       : run.auto && run.level
-      ? { kind: 'lower', id: run.id, text: e.text, level: run.level, normal: run.normal, back: `at ${run.normal}` }
+      ? { kind: 'lower', id: run.id, text: e.text, level: run.level, normal: run.normal, back: `at ${run.normal}`, line: routeLine }
       : run.delegate || run.switchTo
-      ? { kind: 'route', id: run.id, text: e.text, model: TIER_NAME[run.tier], back: `on ${TIER_NAME[run.tier]} at ${run.normal}` }
+      ? { kind: 'route', id: run.id, text: e.text, model: TIER_NAME[run.tier], back: `on ${TIER_NAME[run.tier]} at ${run.normal}`, line: routeLine }
       : null
     lastAuto = auto
+    // The first undo a person sees says it runs the prompt again and costs again; after that the label is plain.
+    undoFirst = false
+    if (auto && bandMode !== 'off') {
+      undoFirst = (await $.store.get(UNDO_SEEN).catch(() => undefined)) !== true
+      if (undoFirst) await $.store.set(UNDO_SEEN, true).catch(() => undefined)
+    }
     await showStatus($)
     const result = await next(out)
     if (!run) return result
@@ -8490,22 +8543,14 @@ export const register: Register = (on, options) => {
     const rows: Row[] = []
     const buttons: { key: string; label: string; press: () => Promise<unknown> }[] = []
     if (band && shown.route) {
-      if (band.canRetry) {
+      // The one undo (ADR 0094): from the prompt's change until the next prompt, whichever band row shows meanwhile.
+      const undo = autoUndo()
+      if (undo) {
         buttons.push({
-          key: 'retry',
-          label: 'Retry at original effort',
+          key: undo.key,
+          label: undo.label,
           press: async () => {
-            const text = await retry($)
-            return $.ui.toast(text)
-          },
-        })
-      }
-      if (band.canStay && lastAuto?.kind === 'route') {
-        buttons.push({
-          key: 'stay',
-          label: `Run on ${lastAuto.model}`,
-          press: async () => {
-            const text = await runOnCurrent($)
+            const text = await (undo.key === 'retry' ? retry($) : runOnCurrent($))
             return $.ui.toast(text)
           },
         })

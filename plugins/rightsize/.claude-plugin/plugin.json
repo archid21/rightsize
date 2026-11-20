@@ -41,7 +41,7 @@
     "changes": {
       "type": "string",
       "title": "Changes",
-      "description": "Auto (default): rightsize lowers or raises effort, switches a review to Opus and hands work to a helper without asking, and the band says what it did. Ask: every move rightsize would make on its own asks first, in a timed dialog (see Question wait), and nothing changes until you answer. Either way an Advanced rule row you set (Lowering, Raising, Stronger model, Cheaper model) wins for its case, and so does an Advanced area row (Prompt changes, Cache changes, Compact changes) that is not Same as Changes. Replaces Ask before changing: a value stored for it becomes this row once, and a Quality profile saved by an older release reads as Ask until you set this row.",
+      "description": "Auto (default): rightsize lowers or raises effort, switches a review to Opus and hands work to a helper without asking, and the band says what it did. Ask: every move rightsize would make on its own asks first, in a timed dialog (see Question wait), and nothing changes until you answer. Either way an Advanced rule row you set (Lowering, Raising, Stronger model, Cheaper model) wins for its case, and so does an Advanced area row (Prompt changes, Cache changes, Compact changes) that is not Same as Changes. Replaces the old Ask before changing row: a value stored for it becomes this row once, and a Quality profile saved by an older release reads as Ask until you set this row.",
       "default": "Auto",
       "options": [
         "Auto",
@@ -130,7 +130,7 @@
     "lowerRule": {
       "type": "string",
       "title": "Advanced · Lowering",
-      "description": "When a prompt needs less effort. ask me: ask each time. lower automatically: lower without asking. never lower: never. not set (the default): Ask before changing decides (off: done without asking; on: asked first), and the band says so the first time the case comes up in a session, with the other rules in its ⋯ menu. A rule set here is used as it is. The band's ⋯ menu and /rightsize settings set it too; set it back to not set to let Ask before changing decide again.",
+      "description": "When a prompt needs less effort. ask me: ask each time. lower automatically: lower without asking. never lower: never. not set (the default): Changes decides (Auto: done without asking; Ask: asked first), and the band says so the first time the case comes up in a session, with the other rules in its ⋯ menu. A rule set here is used as it is. The band's ⋯ menu and /rightsize settings set it too; set it back to not set to let Changes decide again.",
       "default": "not set",
       "options": [
         "ask me",
@@ -142,7 +142,7 @@
     "raiseRule": {
       "type": "string",
       "title": "Advanced · Raising",
-      "description": "When a prompt needs more effort on the same model. ask me: ask each time. raise automatically: raise without asking. never raise: never. While Raise when stuck is follow Raising, this rule also decides raises mid-turn when Claude looks stuck. not set (the default): Ask before changing decides (off: done without asking; on: asked first), and the band says so the first time the case comes up in a session, with the other rules in its ⋯ menu. A rule set here is used as it is. The band's ⋯ menu and /rightsize settings set it too; set it back to not set to let Ask before changing decide again.",
+      "description": "When a prompt needs more effort on the same model. ask me: ask each time. raise automatically: raise without asking. never raise: never. While Raise when stuck is follow Raising, this rule also decides raises mid-turn when Claude looks stuck. not set (the default): Changes decides (Auto: done without asking; Ask: asked first), and the band says so the first time the case comes up in a session, with the other rules in its ⋯ menu. A rule set here is used as it is. The band's ⋯ menu and /rightsize settings set it too; set it back to not set to let Changes decide again.",
       "default": "not set",
       "options": [
         "ask me",
@@ -154,7 +154,7 @@
     "upRule": {
       "type": "string",
       "title": "Advanced · Stronger model",
-      "description": "When a stronger model than yours would do better, or a review runs on Opus for one turn. ask first: ask before it. always send: do it without asking. stay, raise effort only: stay on your model and raise effort. ask each time: ask what to do each time. not set (the default): Ask before changing decides (off: done without asking; on: asked first), and the band says so the first time the case comes up in a session, with the other rules in its ⋯ menu. A rule set here is used as it is. The band's ⋯ menu and /rightsize settings set it too; set it back to not set to let Ask before changing decide again.",
+      "description": "When a stronger model than yours would do better, or a review runs on Opus for one turn. ask first: ask before it. always send: do it without asking. stay, raise effort only: stay on your model and raise effort. ask each time: ask what to do each time. not set (the default): Changes decides (Auto: done without asking; Ask: asked first), and the band says so the first time the case comes up in a session, with the other rules in its ⋯ menu. A rule set here is used as it is. The band's ⋯ menu and /rightsize settings set it too; set it back to not set to let Changes decide again.",
       "default": "not set",
       "options": [
         "ask first",
@@ -167,7 +167,7 @@
     "downRule": {
       "type": "string",
       "title": "Advanced · Cheaper model",
-      "description": "When a task could run on a cheaper model than yours. ask first: ask before sending it to a subagent on that model. always send: send it without asking. stay, lower effort only: stay on your model and lower effort. ask each time: ask what to do each time. not set (the default): Ask before changing decides (off: done without asking; on: asked first), and the band says so the first time the case comes up in a session, with the other rules in its ⋯ menu. A rule set here is used as it is. The band's ⋯ menu and /rightsize settings set it too; set it back to not set to let Ask before changing decide again.",
+      "description": "When a task could run on a cheaper model than yours. ask first: ask before sending it to a subagent on that model. always send: send it without asking. stay, lower effort only: stay on your model and lower effort. ask each time: ask what to do each time. not set (the default): Changes decides (Auto: done without asking; Ask: asked first), and the band says so the first time the case comes up in a session, with the other rules in its ⋯ menu. A rule set here is used as it is. The band's ⋯ menu and /rightsize settings set it too; set it back to not set to let Changes decide again.",
       "default": "not set",
       "options": [
         "ask first",

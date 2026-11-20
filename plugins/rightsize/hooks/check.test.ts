@@ -66,7 +66,7 @@ test('overall check: left-alone prompts lower the percentage, overridden prompts
   expect(o.lo).toBeGreaterThan(0)
   expect(o.prompts).toBe(52)
   const rows = checkRows(out, false)
-  expect(rows.lead[1]).toContain('Left out: the 7 you overrode (5 declined, 2 undone with Retry or Run on your model).')
+  expect(rows.lead[1]).toContain('Left out: the 7 you overrode (5 declined, 2 undone with Redo).')
   expect(rows.notes.join(' ')).toContain('Prompts you declined (5)')
   // An undone line for a run that is not in the period changes nothing; so does the same run without one.
   const same = savingCheck([...only(40), ...undone])

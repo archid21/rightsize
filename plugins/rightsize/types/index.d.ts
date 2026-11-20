@@ -44,10 +44,6 @@ export type RightsizeBand = {
   skipped?: boolean
   /** The situation whose rule the band's buttons change. */
   rule?: keyof RightsizeChoices
-  /** The prompt was lowered on its own and can be run again at the normal level. */
-  canRetry?: boolean
-  /** The prompt was handed to a subagent on another model, or runs one turn on another model: the band offers "Run on <current model>", which runs this prompt once as it would have without rightsize. The rules stay as they are. */
-  canStay?: boolean
   /** A route (`${type}:${tier}`) whose lowering is paused on misses: the band offers Try lowering again. */
   retryRoute?: string
   /** A session switch can be dropped. */

@@ -14,7 +14,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.submit(LOOKUP)
     expect(h.asked, 'no Lowering question: the profile decides').toEqual([])
     expect(h.files[LOG_PATH] ?? '').toContain('Lowering: no rule set, the default decides (lower automatically)')
-    expect(await bandText($, surface), 'the band says who decided, once').toMatch(/^Effort lowered: medium → low for this prompt \(automatically\)\..* The default decided \(Lowering\); ⋯ changes it\.$/)
+    expect(await bandText($, surface), 'the band says who decided, once').toMatch(/^Effort lowered: medium → low\..* The default decided \(Lowering\); ⋯ changes it\.$/)
     await d.step('t1', 0)
     expect(last(h.sent)?.effort, 'runs low').toBe('low')
     await d.step('t1', 5)
@@ -160,7 +160,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(turn.map(s => s.model), 'every step on Opus').toEqual(['opus', 'opus'])
     expect(turn.map(s => s.effort), 'at high').toEqual(['high', 'high'])
     await d.complete('t1')
-    expect(await bandText($, surface)).toMatch(/^Running this review on Opus at high effort, then back to Sonnet\. \$[\d.]+ vs ~\$[\d.]+ on Sonnet\..* The default decided \(Stronger model\); ⋯ changes it\.$/)
+    expect(await bandText($, surface)).toMatch(/^Review ran on Opus for this turn\. \$[\d.]+ vs ~\$[\d.]+ on Sonnet\..* The default decided \(Stronger model\); ⋯ changes it\.$/)
 
     // The next prompt goes back to the session's model and level.
     h.rating = NO_CHANGE
@@ -497,7 +497,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.files[LOG_PATH] ?? '').not.toContain('Raising: no rule set')
     const note = last(h.submitted)?.context?.join('\n') ?? ''
     expect(note).toContain('model "haiku", effort "high"')
-    expect(await bandText($, surface)).toMatch(/^Sending this to a Haiku subagent at high effort instead of raising Opus to high\. \$[\d.]+ vs ~\$[\d.]+ on Opus\./)
+    expect(await bandText($, surface)).toMatch(/^Sent to Haiku · \$[\d.]+ vs ~\$[\d.]+ on Opus\./)
 
     h.subModel = 'claude-haiku-5-5'
     await d.step('t1', 0)
@@ -1374,7 +1374,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
     h.rating = LOWER
     await d.submit(LOOKUP)
-    expect(await bandText($, surface), 'what was done, why, how confident, and who decided').toBe('Effort lowered: medium → low for this prompt (automatically). Why: One function lookup. Confidence: low. The default decided (Lowering); ⋯ changes it.')
+    expect(await bandText($, surface), 'what was done, why, how confident, and who decided').toBe('Effort lowered: medium → low. Why: One function lookup. Confidence: low. The default decided (Lowering); ⋯ changes it.')
     const ui = await mount($, surface)
     expect((await ui.findAll({ type: 'Button' })).map(b => b.key), '👍 and 👎 are in the ⋯ menu now, not buttons').toEqual(['retry', 'fold', 'mode', 'close'])
 

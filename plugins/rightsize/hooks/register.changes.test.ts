@@ -43,7 +43,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
       expect(asked, 'the Effort dialog').toEqual(c.asks ? ['Effort'] : [])
       if (c.rows.lowerRule === 'never lower') expect(effort, 'never lower: kept').toBe('medium')
       else expect(effort, 'answered or acted: lowered').toBe('low')
-      if (!c.rows.lowerRule && c.asks) expect(h.files[LOG_PATH] ?? '').toContain('Lowering: no rule set, Ask before changing decides (ask me)')
+      if (!c.rows.lowerRule && c.asks) expect(h.files[LOG_PATH] ?? '').toContain('Lowering: no rule set, Changes: Ask decides (ask me)')
       if (!c.rows.lowerRule && !c.asks) expect(h.files[LOG_PATH] ?? '').toContain('Lowering: no rule set, the default decides (lower automatically)')
     })
   }

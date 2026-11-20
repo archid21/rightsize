@@ -855,7 +855,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t2', 1)
     await d.complete('t2')
     expect(await bandText($, surface)).toMatch(/^Sent to Haiku\./)
-    expect(await buttons($), '👍 and 👎 are not buttons').toEqual(['fold', 'mode', 'close'])
+    expect(await buttons($), '👍 and 👎 are not buttons; the undo stays after the result row').toEqual(['stay', 'fold', 'mode', 'close'])
 
     const asks = await markFromMenu($, h, 'Mark this 👎 (wrong call)')
     expect(asks[0]?.options, 'the marks are menu entries').toEqual(expect.arrayContaining(['Mark this 👍 (right call)', 'Mark this 👎 (wrong call)']))
@@ -897,7 +897,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(runLines(h).filter(l => l.kind === 'feedback')).toMatchObject([{ ref: run.id, value: 'up', session: 'sess-1' }])
     expect(last(h.toasts)).toBe('Rightsize: thanks — this tunes its choices on this machine.')
     expect(await buttons($)).toEqual(['retry', 'fold', 'mode', 'close'])
-    expect(await bandText($, surface), 'one rated prompt: no session total yet').toMatch(/^Effort lowered: medium → low for this prompt \(automatically\)\. Why: .+ Confidence: low\./)
+    expect(await bandText($, surface), 'one rated prompt: no session total yet').toMatch(/^Effort lowered: medium → low\. Why: .+ Confidence: low\./)
     // The next lowering has its own id.
     await d.submit(LOOKUP)
     await d.step('t2')
@@ -934,13 +934,13 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.rating = SMALL_FEATURE
     await d.submit(DEBUG)
     const text = await bandText($, surface)
-    expect(text).toMatch(/^Sending this to a Haiku subagent at high effort/)
+    expect(text).toMatch(/^Sent to Haiku · /)
     expect(text).toContain('Why: Small helper with tests.')
     expect(text, 'a fresh log: the research alone').toContain('Confidence: low.')
     expect(await buttons($), 'the rule buttons are in the ⋯ menu').toEqual(['stay', 'fold', 'mode', 'close'])
 
     const ui = await mount($, surface)
-    expect((await ui.find({ type: 'Button', label: 'Run on Opus' }))?.text ?? 'none', 'named for the current model').not.toBe('none')
+    expect((await ui.find({ type: 'Button', label: 'Redo on Opus (runs again)' }))?.text ?? 'none', 'named for the current model').not.toBe('none')
     await ui.press({ key: 'stay' })
     expect(h.filled.at(-1), 'the prompt is back in the box').toBe(DEBUG)
     expect(last(h.toasts) ?? '').toContain('run it on Opus at medium')
@@ -968,7 +968,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.rating = REVIEW
     await d.submit(DEBUG)
     const text = await bandText($, surface)
-    expect(text).toContain('Running this review on Opus at high effort')
+    expect(text).toContain('Review ran on Opus for this turn')
     expect(text).toContain('Why: Subtle bug hunt.')
     expect(text).not.toContain('Confidence')
     await d.step('t1')
@@ -1010,7 +1010,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.complete('t0')
     h.rating = LOWER.replace(',"reason":"one function lookup"', '')
     await d.submit(LOOKUP)
-    expect(await bandText($, surface)).toBe('Effort lowered: medium → low for this prompt (automatically). Confidence: low. The default decided (Lowering); ⋯ changes it.')
+    expect(await bandText($, surface)).toBe('Effort lowered: medium → low. Confidence: low. The default decided (Lowering); ⋯ changes it.')
   })
 
   test(`the band says only the confidence level; the ⋯ menu question carries the counts (${surface})`, { timeoutMs: 30000 }, async ($, on) => {

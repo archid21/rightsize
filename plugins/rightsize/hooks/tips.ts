@@ -23,7 +23,7 @@ export const TIPS: readonly Tip[] = [
   },
   {
     id: 'retry',
-    text: 'A turn ran at lower effort and you want the original? Press Retry at original effort on the band.',
+    text: 'A turn ran at lower effort and you want the original? Press Redo at <the level it was lowered from> on the band (it says which level), and it runs the prompt again.',
     link: `${FEATURES}#seeing-and-controlling-it`,
   },
   {

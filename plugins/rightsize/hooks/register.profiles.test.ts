@@ -288,10 +288,10 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const d = drive($, h)
     await d.start(surface)
     const text = await settingsText(d)
-    expect(text.split('\n')[0]).toBe('Ask before changing: off')
+    expect(text.split('\n')[0]).toBe('Changes: Auto')
     expect(text, 'the fixed values').toContain(IN_USE)
     expect(disagree(h)).toBe(false)
-    expect(text, 'the default is not listed as yours').not.toMatch(/^ {2}Ask before changing:/m)
+    expect(text, 'the default is not listed as yours').not.toMatch(/^ {2}Changes:/m)
     expect(text).not.toContain('Profile')
   })
 
@@ -372,7 +372,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     // The 3rd rated prompt: the status line carries the total, the band does not.
     // A third lowering, then a subagent of Claude's own moved to Haiku: the end-of-turn band is built from the third one's text.
     await d.submit(LOOKUP)
-    expect(await bandText($, surface), 'prompt 3: no total on the band').toMatch(/Effort lowered: medium → low for this prompt \(automatically\)\. Why: .+ Confidence: low\.$/)
+    expect(await bandText($, surface), 'prompt 3: no total on the band').toMatch(/Effort lowered: medium → low\. Why: .+ Confidence: low\.$/)
     h.rating = '{"fit":{"haiku":"low","sonnet":"low","opus":"low","fable":"low"},"size":"small","type":"search","read":8000,"write":500,"steps":5,"reason":"list call sites"}'
     await d.step('t3', 0)
     await d.spawn('lister')
@@ -525,8 +525,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.answers = { Effort: 'Lower for this prompt' }
     await d.submit(LOOKUP)
     expect(h.asked.map(a => a.header), 'Lowering is ask: the Effort dialog').toEqual(['Effort'])
-    expect(h.files[LOG_PATH] ?? '').toContain('Lowering: no rule set, Ask before changing decides (ask me)')
-    expect(await bandText($, surface)).toMatch(/Ask before changing decided \(Lowering\); ⋯ changes it\.$/)
+    expect(h.files[LOG_PATH] ?? '').toContain('Lowering: no rule set, Changes: Ask decides (ask me)')
+    expect(await bandText($, surface)).toMatch(/Changes: Ask decided \(Lowering\); ⋯ changes it\.$/)
     await d.step('t1')
     expect(last(h.sent)?.effort, 'answered Lower for this prompt').toBe('low')
     expect(h.store.choices, 'nothing saved').toBeUndefined()
@@ -542,9 +542,9 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.answers = { Subagent: 'Send it to a Haiku subagent' }
     await d.submit(SEARCH)
     expect(h.asked.map(a => a.header), 'Cheaper model is ask: the Subagent dialog').toEqual(['Subagent'])
-    expect(h.files[LOG_PATH] ?? '').toContain('Cheaper model: no rule set, Ask before changing decides (ask first)')
+    expect(h.files[LOG_PATH] ?? '').toContain('Cheaper model: no rule set, Changes: Ask decides (ask first)')
     expect(handedTo(h), 'answered yes').toBe('haiku')
-    expect(await bandText($, surface)).toMatch(/Ask before changing decided \(Cheaper model\); ⋯ changes it\.$/)
+    expect(await bandText($, surface)).toMatch(/Changes: Ask decided \(Cheaper model\); ⋯ changes it\.$/)
   })
 
   test(`Ask before changing on: Raising asks too, and a rule row you set still wins for its case (${surface})`, { timeoutMs: 30000, options: withRows({ changes: 'Ask', raiseRule: 'raise automatically' }).options }, async ($, on) => {
@@ -562,14 +562,14 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.config('raiseRule', 'not set')
     await d.submit(DEBUG)
     expect(h.asked.map(a => a.header), 'the rule cleared: Ask before changing asks').toEqual(['Effort'])
-    expect(h.files[LOG_PATH] ?? '').toContain('Raising: no rule set, Ask before changing decides (ask me)')
+    expect(h.files[LOG_PATH] ?? '').toContain('Raising: no rule set, Changes: Ask decides (ask me)')
   })
 
   test(`a Quality profile stored by an older release reads as Ask before changing on, the status says so, and the row set in /config wins (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES }, stored: { profile: 'Quality' } })
     const d = drive($, h)
     await d.start(surface)
-    expect((await settingsText(d)).split('\n')[0]).toBe('Ask before changing: on (from your old Quality profile)')
+    expect((await settingsText(d)).split('\n')[0]).toBe('Changes: Ask (from your old Quality profile)')
     expect(disagree(h), 'a stored row the manifest no longer has is not a disagreement').toBe(false)
     await d.step('t0')
     await d.complete('t0')
@@ -580,7 +580,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t1')
     await d.complete('t1')
     await d.config('changes', 'Auto')
-    expect((await settingsText(d)).split('\n')[0], 'the row is yours now: the old profile no longer counts').toBe('Ask before changing: off')
+    expect((await settingsText(d)).split('\n')[0], 'the row is yours now: the old profile no longer counts').toBe('Changes: Auto')
     const asked = h.asked.length
     await d.submit(LOOKUP)
     expect(h.asked.length, 'nothing asked').toBe(asked)
@@ -593,7 +593,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
       const h = engine(on, { ...OPUS, stored: { profile } })
       const d = drive($, h)
       await d.start(surface)
-      expect((await settingsText(d)).split('\n')[0]).toBe('Ask before changing: off')
+      expect((await settingsText(d)).split('\n')[0]).toBe('Changes: Auto')
       expect(await settingsText(d)).toContain(IN_USE)
     })
   }
@@ -640,7 +640,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
     const result = await d.config('changes', 'Ask')
     expect(result.deny).toBeUndefined()
-    expect((await settingsText(d)).split('\n')[0]).toBe('Ask before changing: on')
+    expect((await settingsText(d)).split('\n')[0]).toBe('Changes: Ask')
     expect(await settingsText(d), 'listed as yours').toMatch(/^ {2}Changes: Ask$/m)
     h.answers = { Effort: 'Keep as is' }
     await d.submit(LOOKUP)
@@ -650,7 +650,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.complete('t2')
 
     await d.config('changes', 'Auto')
-    expect((await settingsText(d)).split('\n')[0]).toBe('Ask before changing: off')
+    expect((await settingsText(d)).split('\n')[0]).toBe('Changes: Auto')
     const asked = h.asked.length
     await d.submit(LOOKUP)
     expect(h.asked.length, 'off again: no question').toBe(asked)
@@ -661,9 +661,9 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const d = drive($, h)
     await d.start(surface)
     await d.config('changes', 'Ask', 'plugin')
-    expect((await settingsText(d)).split('\n')[0], 'the value is the row\'s now').toBe('Ask before changing: on')
+    expect((await settingsText(d)).split('\n')[0], 'the value is the row\'s now').toBe('Changes: Ask')
     expect((await d.config('changes', 'maybe')).deny, 'not an option').toBeDefined()
-    expect((await settingsText(d)).split('\n')[0]).toBe('Ask before changing: on')
+    expect((await settingsText(d)).split('\n')[0]).toBe('Changes: Ask')
   })
 
 }

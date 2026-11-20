@@ -73,11 +73,11 @@ A band above the prompt says what rightsize did and why, with buttons to undo it
 
 ![Band: Sending this to a Sonnet subagent at medium effort. That uses about 26% of the usage vs staying on Opus (estimated). Buttons: Ask first, Stay, lower effort only](docs/images/d-sending.png)
 
-![Band: Sent to Sonnet. ~7% of Opus usage ($0.18 vs ~$2.41). Button: Run on Opus](docs/images/d-sent.png)
+![Band: Sent to Sonnet. ~7% of Opus usage ($0.18 vs ~$2.41). Button: Redo on Opus](docs/images/d-sent.png)
 
 **Effort follows the work.** Low for a quick answer; raised mid-turn only when the turn shows trouble.
 
-![Band: Effort lowered: high → low for this prompt. Button: Retry at original effort](docs/images/d-lowered.png)
+![Band: Effort lowered: high → low. Button: Redo at high](docs/images/d-lowered.png)
 
 ![Band: Effort raised mid-turn: low → medium (two fixes in a row left the tests red)](docs/images/d-raised.png)
 

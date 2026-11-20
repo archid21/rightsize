@@ -234,7 +234,7 @@ An "ask" answer opens its own timed dialog (it waits 30 seconds); every other an
 - Key: `tips`
 - Options: on · off
 - Default: on
-- on: the band's Tip row, the Star on GitHub ask and the whatsnext install hint can show. off: none of them show, and rightsize does not ask GitHub whether you starred it. **Stop tips** on a tip and **Don't show again** on the install hint set this row to off; `/rightsize tips` sets it back to on. The star ask's **No thanks** only ends that ask. Stop tips or a hide from an older release moves to this row once, at the next start.
+- on: the band's Tip row, the Star on GitHub ask, the whatsnext install hint and the `whatsnext init` hint can show. off: none of them show, and rightsize does not ask GitHub whether you starred it. **Stop tips** on a tip and **Don't show again** on the install hint set this row to off; `/rightsize tips` sets it back to on. The star ask's **No thanks** only ends that ask. Stop tips or a hide from an older release moves to this row once, at the next start.
 
 ### Big-turn warning
 

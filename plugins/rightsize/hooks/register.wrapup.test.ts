@@ -467,6 +467,15 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
   // ---- The init hint -----------------------------------------------------------------------------------------------
 
+  test(`init hint: Tips off keeps it off the row and keeps no project (${surface})`, { timeoutMs: 30000, options: { tips: 'off' } }, async ($, on) => {
+    const { h, d } = await session($, on, { whatsnext: 'uninitialized', stored: { tips: 'off' } })
+    await turn(d, 't1')
+    await h.advance(5 * MIN)
+    await press($, 'cold-wrap')
+    expect(await cacheRow($)).toBe('Wrapped up: compacted the conversation.')
+    expect(h.store.initHinted).toEqual([])
+  })
+
   test(`init hint: whatsnext installed but not set up, in a git project, after a Wrap up press that compacted: once per project (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const { h, d } = await session($, on, { whatsnext: 'uninitialized' })
     await turn(d, 't1')

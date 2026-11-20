@@ -318,7 +318,7 @@
     "tips": {
       "type": "string",
       "title": "Advanced · Tips",
-      "description": "on: the band shows a short tip at the end of a turn, asks once whether to star rightsize on GitHub, and hints at whatsnext after a compaction that a handoff note would have made cheaper. off: none of these show. The Stop tips and Don't show again buttons on them set this row to off. /rightsize tips sets it back to on.",
+      "description": "on: the band shows a short tip at the end of a turn, asks once whether to star rightsize on GitHub, and hints at whatsnext (install it, or run whatsnext init in this project) after a compaction that a handoff note would have made cheaper. off: none of these show. The Stop tips and Don't show again buttons on them set this row to off. /rightsize tips sets it back to on.",
       "default": "on",
       "options": [
         "on",

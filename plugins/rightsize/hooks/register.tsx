@@ -5484,7 +5484,7 @@ async function installHint($: EngineInterface, saved: number): Promise<string | 
 
 /** The init hint's text when it may show now: whatsnext is installed but not set up here, the folder is a git repository, and it has not shown in this project. */
 async function initHint($: EngineInterface, extra: number): Promise<string | undefined> {
-  if (extra < INIT_HINT_MIN) return undefined
+  if (!tipsOn || extra < INIT_HINT_MIN) return undefined
   const cwd = await $.session.cwd().catch(() => '')
   if (!cwd) return undefined
   const inside = await $.process.run(['git', 'rev-parse', '--is-inside-work-tree'], { cwd }).catch(() => undefined)

@@ -115,3 +115,18 @@ test('the hook also fires for the same compact: still one compactId', { timeoutM
   await turn(d, 't2')
   expect(new Set(compactLines(h).map(l => l.compactId)).size).toBe(1)
 })
+
+test('Compact Now on the Cache row: source button, not keepwarm', { timeoutMs: 30000 }, async ($, on) => {
+  const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
+  h.now = EVENING
+  h.virtual = true
+  h.stepUsage = turnOf(200_000)
+  const d = drive($, h)
+  await d.start('desktop')
+  await turn(d, 't1')
+  const ui = await mount($, 'desktop')
+  await ui.press({ key: 'cold-compact' })
+  await ui.unmount()
+  expect(h.compactions).toBe(1)
+  expect(compactLines(h).at(-1)).toMatchObject({ compactSource: 'button' })
+})

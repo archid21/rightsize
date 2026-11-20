@@ -5552,10 +5552,10 @@ async function saveHandoff($: EngineInterface, c: ColdTurn) {
   }
 }
 
-async function compactNow($: EngineInterface, c?: ColdTurn) {
+async function compactNow($: EngineInterface, c?: ColdTurn, source: CompactSource = 'keepwarm') {
   coldDone = true
-  // Only the cold row and keep warm's gate come here (the size and limit buttons have their own functions): their compact is 'keepwarm'.
-  nextCompactSource = 'keepwarm'
+  // Keep warm's own compact (the gate, a stored row) is 'keepwarm'; a press of Compact Now on the Cache row is 'button'.
+  nextCompactSource = source
   try {
     const base = await hintBase($, c)
     const own = async () => {
@@ -5847,7 +5847,7 @@ async function runCold($: EngineInterface, c: ColdTurn, id: string) {
   cancelCold($, 'a new choice')
   if (id === 'handoff' || id === 'compact') {
     await setBand($, null)
-    await (id === 'handoff' ? saveHandoff($, c) : compactNow($, c))
+    await (id === 'handoff' ? saveHandoff($, c) : compactNow($, c, 'button'))
     return
   }
   const end = c.ends[id]

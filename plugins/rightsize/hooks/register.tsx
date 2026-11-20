@@ -4547,8 +4547,8 @@ async function neighbours($: EngineInterface) {
 let timerRow: { text: string; lead: string; buttons: ColdButton[] } | null = null
 const TIMER_COMPACT: ColdButton = { id: 'compact', label: 'Compact now' }
 const TIMER_HANDOFF: ColdButton = { id: 'handoff', label: 'Save handoff note' }
-/** On the cold row: puts /clear in the prompt box, so the next prompt reads nothing old. */
-const COLD_FRESH: ColdButton = { id: 'fresh', label: 'Start fresh' }
+/** On the cold row (Clear chat): puts /clear in the prompt box, so the next prompt reads nothing old. */
+const COLD_FRESH: ColdButton = { id: 'fresh', label: 'Clear chat' }
 
 /** True when the cache row on `band` is the timer row, still as drawn. */
 const timerIsOn = (band: Band | null | undefined) => timerRow !== null && !!band?.cold?.length && band.coldText === timerRow.text
@@ -4585,7 +4585,7 @@ async function showTimer($: EngineInterface, turn: ColdTurn, idleCompact: boolea
 }
 
 /**
- * When the cache has gone cold on a chat too small for the cold-compact tip: the timer row in the past tense, with Start fresh alone.
+ * When the cache has gone cold on a chat too small for the cold-compact tip: the timer row in the past tense, with Clear chat alone.
  * Compact now and Save handoff note are left off: after cold, each costs the same full reload as the next prompt.
  */
 async function showColdRow($: EngineInterface, c: { tier: Tier; context: number; coldAt: number }) {
@@ -4609,10 +4609,10 @@ async function showColdRow($: EngineInterface, c: { tier: Tier; context: number;
   await showCold($, text, buttons, true)
   await log($, `cache timer: ${text}`)
 }
-/** True while the cold row is on the band: its Save handoff note says so when done, and keeps Start fresh. */
+/** True while the cold row is on the band: its Save handoff note says so when done, and keeps Clear chat. */
 let coldRowOn = false
 
-/** Save handoff note on the cold row: whatsnext's wrap-up, sent now; the row then offers Start fresh. */
+/** Save handoff note on the cold row: whatsnext's wrap-up, sent now; the row then offers Clear chat. */
 async function pressColdHandoff($: EngineInterface) {
   coldRowOn = false
   timerRow = null
@@ -4624,7 +4624,7 @@ async function pressColdHandoff($: EngineInterface) {
       await log($, `cold row: "${WRAP_UP}" was refused (${sent.drop})`)
       return
     }
-    await showCold($, 'Saved a handoff note. New topic? Start fresh.', [COLD_FRESH])
+    await showCold($, 'Saved a handoff note. New topic? Clear chat.', [COLD_FRESH])
     await log($, `cold row: submitted "${WRAP_UP}" to whatsnext after the cache went cold`)
   } catch (err) {
     await log($, `cold row handoff failed: ${err instanceof Error ? err.message : String(err)}`)
@@ -4638,7 +4638,7 @@ async function pressFresh($: EngineInterface) {
   timerRow = null
   coldRowOn = false
   const filled = await $.prompt.fill({ text: '/clear', mode: 'replace' }).catch(() => null)
-  await log($, filled?.ok ? 'cold row: Start fresh put /clear in the prompt box' : 'cold row: Start fresh could not fill the prompt box')
+  await log($, filled?.ok ? 'cold row: Clear chat put /clear in the prompt box' : 'cold row: Clear chat could not fill the prompt box')
 }
 
 let tipTimer: Timer | null = null

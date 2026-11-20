@@ -332,12 +332,12 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
   // ---- The cold row: a small chat once the cache has gone cold ---------------------------------------------------
 
-  const COLD = 'Went cold at 7:00 PM. OK to continue here (~$0.16). New topic? Start fresh.'
+  const COLD = 'Went cold at 7:00 PM. OK to continue here (~$0.16). New topic? Clear chat.'
   const COLD_OFFER = `${COLD} Pausing this work? Save a handoff first.`
-  const COLD_SAVED = 'Went cold at 7:00 PM. OK to continue here (~$0.16). Handoff saved: Start fresh for a new topic.'
+  const COLD_SAVED = 'Went cold at 7:00 PM. OK to continue here (~$0.16). Handoff saved: Clear chat for a new topic.'
   const coldButtons = async ($: unknown) => (await cacheRow($)).buttons.filter(b => String(b[0]).startsWith('cold-'))
 
-  test(`cold row: a small chat's timer row turns past tense when the cache goes cold, with Start fresh alone (${surface})`, { timeoutMs: 30000, options: { beforeCold: 'off' } }, async ($, on) => {
+  test(`cold row: a small chat's timer row turns past tense when the cache goes cold, with Clear chat alone (${surface})`, { timeoutMs: 30000, options: { beforeCold: 'off' } }, async ($, on) => {
     const { h, d } = await session($, on, { stored: { beforeCold: 'off' } })
     await turn(d, 't1')
     await h.advance(59 * MIN)
@@ -346,7 +346,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const r = await cacheRow($)
     expect(r.text).toBe(COLD)
     expect(r.rows).toBe(1)
-    expect(await coldButtons($), 'no Compact now: it would cost the same reload').toEqual([['cold-fresh', 'Start fresh']])
+    expect(await coldButtons($), 'no Compact now: it would cost the same reload').toEqual([['cold-fresh', 'Clear chat']])
     expect(logOf(h)).toContain(`cache timer: ${COLD}`)
     expect(logOf(h)).not.toContain('cold-compact tip: offered')
   })
@@ -357,11 +357,11 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await turn(d, 't1')
     await h.advance(HOUR + MIN)
     expect((await cacheRow($)).text).toBe(COLD_OFFER)
-    expect(await coldButtons($)).toEqual([['cold-fresh', 'Start fresh'], ['cold-handoff', 'Save handoff note']])
+    expect(await coldButtons($)).toEqual([['cold-fresh', 'Clear chat'], ['cold-handoff', 'Save handoff note']])
     expect(h.submitted.length, 'Off: nothing automatic').toBe(0)
   })
 
-  test(`cold row: Save handoff note sends wrap up, then says it is saved and keeps Start fresh (${surface})`, { timeoutMs: 30000, options: { beforeCold: 'off' } }, async ($, on) => {
+  test(`cold row: Save handoff note sends wrap up, then says it is saved and keeps Clear chat (${surface})`, { timeoutMs: 30000, options: { beforeCold: 'off' } }, async ($, on) => {
     const { h, d } = await session($, on, { whatsnext: true, stored: { beforeCold: 'off' } })
     h.wnFresh = { exitCode: 0, stdout: freshAnswer(true) }
     await turn(d, 't1')
@@ -369,8 +369,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await press($, 'cold-handoff')
     expect(h.submitted.map(s => s.text)).toEqual(['wrap up'])
     const r = await cacheRow($)
-    expect(r.text, 'not "before the cache went cold": it already had').toBe('Saved a handoff note. New topic? Start fresh.')
-    expect(await coldButtons($)).toEqual([['cold-fresh', 'Start fresh']])
+    expect(r.text, 'not "before the cache went cold": it already had').toBe('Saved a handoff note. New topic? Clear chat.')
+    expect(await coldButtons($)).toEqual([['cold-fresh', 'Clear chat']])
   })
 
   test(`cold row: when whatsnext says the handoff is already written, no second one is offered (${surface})`, { timeoutMs: 30000, options: { beforeCold: 'off' } }, async ($, on) => {
@@ -379,7 +379,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await turn(d, 't1')
     await h.advance(HOUR + MIN)
     expect((await cacheRow($)).text).toBe(COLD_SAVED)
-    expect(await coldButtons($)).toEqual([['cold-fresh', 'Start fresh']])
+    expect(await coldButtons($)).toEqual([['cold-fresh', 'Clear chat']])
   })
 
   test(`cold row: an older whatsnext that cannot say still gets the offer (${surface})`, { timeoutMs: 30000, options: { beforeCold: 'off' } }, async ($, on) => {
@@ -389,7 +389,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect((await cacheRow($)).text).toBe(COLD_OFFER)
   })
 
-  test(`cold row: Start fresh puts /clear in the prompt box and sends nothing (${surface})`, { timeoutMs: 30000, options: { beforeCold: 'off' } }, async ($, on) => {
+  test(`cold row: Clear chat puts /clear in the prompt box and sends nothing (${surface})`, { timeoutMs: 30000, options: { beforeCold: 'off' } }, async ($, on) => {
     const { h, d } = await session($, on, { stored: { beforeCold: 'off' } })
     await turn(d, 't1')
     await h.advance(HOUR + MIN)
@@ -447,8 +447,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
   test(`reopened: too small to save anything shows the cold row, not the tip (${surface})`, { timeoutMs: 30000, options: {} }, async ($, on) => {
     await session($, on, { store: LAST({ context: 20_000 }) })
     const r = await cacheRow($)
-    expect(r.text).toBe('Went cold at 4:00 PM. OK to continue here (~$0.16). New topic? Start fresh.')
-    expect(r.buttons.filter(b => String(b[0]).startsWith('cold-'))).toEqual([['cold-fresh', 'Start fresh']])
+    expect(r.text).toBe('Went cold at 4:00 PM. OK to continue here (~$0.16). New topic? Clear chat.')
+    expect(r.buttons.filter(b => String(b[0]).startsWith('cold-'))).toEqual([['cold-fresh', 'Clear chat']])
   })
 
   test(`reopened: a chat with no last turn in the store shows nothing (${surface})`, { timeoutMs: 30000, options: {} }, async ($, on) => {

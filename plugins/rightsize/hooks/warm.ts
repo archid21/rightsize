@@ -301,8 +301,8 @@ export function timerText(o: { coldAt: number; cost: string; percent?: number })
  */
 export function coldRowText(o: { coldAt: number; cost: string; handoff: 'offer' | 'saved' | 'none' }) {
   const head = `Went cold at ${clock12(o.coldAt)}. OK to continue here (${o.cost}).`
-  if (o.handoff === 'saved') return `${head} Handoff saved: Start fresh for a new topic.`
-  return `${head} New topic? Start fresh.${o.handoff === 'offer' ? ' Pausing this work? Save a handoff first.' : ''}`
+  if (o.handoff === 'saved') return `${head} Handoff saved: Clear chat for a new topic.`
+  return `${head} New topic? Clear chat.${o.handoff === 'offer' ? ' Pausing this work? Save a handoff first.' : ''}`
 }
 
 /** The same row while Claude Code's idle compact will run by itself: "Claude Code compacts this at about 12:05 AM · context 52%". */

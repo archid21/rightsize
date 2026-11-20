@@ -175,19 +175,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(correctedLines(h), 'no cheaper route made it').toEqual([])
   })
 
-  test(`a session switch the person answered for a dropped prompt stays (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES } })
-    const d = drive($, h)
-    await d.start(surface)
-    h.rating = RAISE_HIGH
-    await d.config('raiseRule', 'ask me')
-    h.answers = { Effort: 'Raise for this session' }
-    h.dropNext = 'refused'
-    await d.submit(DEBUG)
-    expect(readRuns(h).map(l => l.kind)).toEqual(['dropped'])
-    expect(((await d.command('status'))).text ?? '', 'the answer was the person\'s').toContain('Session switch: high')
-  })
-
   test(`a session start clears the line without logging it (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
     const d = drive($, h)
@@ -522,7 +509,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t0')
     await d.complete('t0')
     h.rating = LOWER
-    h.answers = { Effort: 'Lower for this prompt' }
+    h.answers = { Effort: 'Lower effort' }
     await d.submit(LOOKUP)
     expect(h.asked.map(a => a.header), 'Lowering is ask: the Effort dialog').toEqual(['Effort'])
     expect(h.files[LOG_PATH] ?? '').toContain('Lowering: no rule set, Changes: Ask decides (ask me)')
@@ -539,7 +526,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t0')
     await d.complete('t0')
     h.rating = HAIKU_SEARCH
-    h.answers = { Subagent: 'Send it to a Haiku subagent' }
+    h.answers = { Subagent: 'Send to Haiku' }
     await d.submit(SEARCH)
     expect(h.asked.map(a => a.header), 'Cheaper model is ask: the Subagent dialog').toEqual(['Subagent'])
     expect(h.files[LOG_PATH] ?? '').toContain('Cheaper model: no rule set, Changes: Ask decides (ask first)')
@@ -574,7 +561,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t0')
     await d.complete('t0')
     h.rating = LOWER
-    h.answers = { Effort: 'Lower for this prompt' }
+    h.answers = { Effort: 'Lower effort' }
     await d.submit(LOOKUP)
     expect(h.asked.map(a => a.header), 'asks, as Quality did').toEqual(['Effort'])
     await d.step('t1')

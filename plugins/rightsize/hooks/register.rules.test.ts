@@ -52,8 +52,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
   // ---- Your setting wins ----------------------------------------------------------------------------
 
-  const REPORTS_DOLLARS = /About \$[\d.]+ that way/
-  const askAboutFable = { Subagent: 'Send it to a Fable subagent' }
+  const REPORTS_DOLLARS = /Send to a Fable helper\? \$[\d.]+ vs ~\$[\d.]+ on Opus/
+  const askAboutFable = { Subagent: 'Send to Fable' }
 
   test(`Reports set in /config is yours: rate limits that show a subscription change nothing, and /rightsize says they disagree (${surface})`, { timeoutMs: 30000, options: { billing: 'api' } }, async ($, on) => {
     const h = engine(on, { ...OPUS, stored: { billing: 'api' } })
@@ -262,7 +262,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
       const d = drive($, h)
       await d.start(surface)
       h.rating = RAISE_HIGH
-      h.answers = { Effort: 'Keep medium' }
+      h.answers = { Effort: 'Keep as is' }
       await d.submit(DEBUG)
       expect(h.asked.map(a => a.header)).toEqual(['Effort'])
       await d.step('t1')
@@ -280,7 +280,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t1', 0)
     await d.bash('fail make')
     await d.bash('fail make')
-    h.answers = { Stuck: 'Keep medium' }
+    h.answers = { Stuck: 'Keep going' }
     await d.step('t1', 1)
     expect(h.asked.map(a => a.header)).toEqual(['Stuck'])
     expect(last(h.sent)?.effort).toBe('medium')
@@ -308,7 +308,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
         expect(r.band).toContain('Effort raised: medium → high for this prompt. Why: Unknown cause. 93% of the 5-hour window is used, so rightsize saves all it can.')
       },
     },
-    { name: 'Raising set to "ask me": asked', stored: { raiseRule: 'ask me' }, answers: { Effort: 'Raise for this prompt' }, want: r => expect([r.effort, r.asked]).toEqual(['high', ['Effort']]) },
+    { name: 'Raising set to "ask me": asked', stored: { raiseRule: 'ask me' }, answers: { Effort: 'Raise effort' }, want: r => expect([r.effort, r.asked]).toEqual(['high', ['Effort']]) },
     { name: 'Raising set to never: no raise and no question', stored: { raiseRule: 'never raise' }, want: r => expect([r.effort, r.asked]).toEqual(['medium', []]) },
   ]
   for (const row of RAISE_ROWS) {
@@ -331,7 +331,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   const UP_ROWS: { name: string; stored: Record<string, string>; answers?: Record<string, string>; want: Up }[] = [
     { name: 'Stronger model at its default: skipped, nothing asked', stored: {}, want: { to: undefined, asked: [], effort: 'medium' } },
     { name: 'set to "always send": followed', stored: { upRule: 'always send' }, want: { to: 'fable', asked: [], effort: 'medium' } },
-    { name: 'set to "ask first": asked', stored: { upRule: 'ask first' }, answers: { Subagent: 'Send it to a Fable subagent' }, want: { to: 'fable', asked: ['Subagent'], effort: 'medium' } },
+    { name: 'set to "ask first": asked', stored: { upRule: 'ask first' }, answers: { Subagent: 'Send to Fable' }, want: { to: 'fable', asked: ['Subagent'], effort: 'medium' } },
     { name: 'set to "stay, raise effort only", Raising at its default: no hand-off, and the raise is skipped', stored: { upRule: 'stay, raise effort only' }, want: { to: undefined, asked: [], effort: 'medium' } },
     { name: 'set to "stay, raise effort only", Raising set to automatic: raised', stored: { upRule: 'stay, raise effort only', raiseRule: 'raise automatically' }, want: { to: undefined, asked: [], effort: 'high' } },
   ]
@@ -415,7 +415,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
       const d = drive($, h)
       await d.start(surface)
       h.rating = LOWER
-      h.answers = { Effort: 'Keep medium' }
+      h.answers = { Effort: 'Keep as is' }
       await d.submit(LOOKUP)
       await d.step('t1')
       expect({ asked: h.asked.map(a => a.header), effort: last(h.sent)?.effort }).toEqual(row.want)

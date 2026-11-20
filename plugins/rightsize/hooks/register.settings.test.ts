@@ -303,9 +303,9 @@ for (const surface of ['desktop', 'terminal'] as const) {
       start: OPUS,
       see: async c => {
         await c.d.config('upRule', 'ask first')
-        await prompt(c, DEBUG, NEEDS_FABLE, { Subagent: 'Send it to a Fable subagent' })
+        await prompt(c, DEBUG, NEEDS_FABLE, { Subagent: 'Send to Fable' })
         const q = c.h.asked.find(a => a.header === 'Subagent')?.question ?? ''
-        return /That uses/.test(q) ? 'usage' : /About \$/.test(q) ? 'dollars' : q
+        return /the usage/.test(q) ? 'usage' : /\$[\d.]+ vs ~\$/.test(q) ? 'dollars' : q
       },
       set: 'usage',
       def: 'dollars',
@@ -654,26 +654,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(last(h.sent)?.effort).toBe('high')
   })
 
-  test(`Routing off, a session switch made earlier is not applied while it is off (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const h = engine(on, { ...OPUS, store: { remember: true, choices: { raise: 'ask' } } })
-    const d = drive($, h)
-    await d.start(surface)
-    await d.step('t0')
-    await d.complete('t0')
-    h.answers = { Effort: 'Raise for this session' }
-    h.rating = RAISE_HIGH
-    await d.submit(DEBUG)
-    await d.step('t1')
-    expect(last(h.sent)?.effort, 'raised for the session').toBe('high')
-    await d.complete('t1')
-    await d.config('routing', 'off')
-    await d.step('t2')
-    expect(last(h.sent)?.effort, 'the switch is not applied while Routing is off').toBe('medium')
-    await d.config('routing', 'on')
-    await d.step('t3')
-    expect(last(h.sent)?.effort, 'and applies again when Routing is on').toBe('high')
-  })
-
   test(`Hand-offs off, Routing on: a hand-off gives way to the effort-only plan, no note goes to the main chat, and the log says why (${surface})`, { timeoutMs: 30000, options: HANDOFFS_OFF.options }, async ($, on) => {
     const h = engine(on, { ...OPUS, stored: HANDOFFS_OFF.stored })
     const d = drive($, h)
@@ -934,9 +914,9 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.complete('t0')
     h.rating = HAIKU_SEARCH
     await d.config('downRule', 'ask first')
-    h.answers = { Subagent: 'Send it to a Haiku subagent' }
+    h.answers = { Subagent: 'Send to Haiku' }
     await d.submit(SEARCH)
-    expect(h.asked.find(a => a.header === 'Subagent')?.question ?? '').toMatch(/That uses about \d+% of the usage vs staying on Fable \(estimated\)\./)
+    expect(h.asked.find(a => a.header === 'Subagent')?.question ?? '').toMatch(/Send to a Haiku helper\? ~\d+% of the usage\./)
     h.subModel = 'claude-haiku-5-5'
     await d.step('t1', 0)
     await d.agent('haiku')

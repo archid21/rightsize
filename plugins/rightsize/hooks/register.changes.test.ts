@@ -19,7 +19,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.complete('t0')
     await run?.(d, h)
     h.rating = LOWER
-    h.answers = { Effort: 'Lower for this prompt' }
+    h.answers = { Effort: 'Lower effort' }
     await d.submit(LOOKUP)
     await d.step('t1')
     return { h, d, asked: h.asked.map(a => a.header), effort: last(h.sent)?.effort }
@@ -88,7 +88,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
       await d.step('t0')
       await d.complete('t0')
       h.rating = LOWER
-      h.answers = { Effort: 'Lower for this prompt' }
+      h.answers = { Effort: 'Lower effort' }
       await d.submit(LOOKUP)
       expect(h.asked.map(a => a.header), 'behaves as before').toEqual(old === 'on' ? ['Effort'] : [])
     })
@@ -130,7 +130,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t0')
     await d.complete('t0')
     h.rating = LOWER
-    h.answers = { Effort: 'Lower for this prompt' }
+    h.answers = { Effort: 'Lower effort' }
     await d.submit(LOOKUP)
     expect(h.asked.map(a => a.header), 'asks, as Quality did').toEqual(['Effort'])
     await d.config('changes', 'Auto')

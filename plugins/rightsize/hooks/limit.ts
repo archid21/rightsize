@@ -56,6 +56,18 @@ export function limitText(resetAt: number, saving: number, subscription: boolean
   return `Near your 5-hour limit, resets ${clockText(resetAt)}. Compact now to save ${what}.`
 }
 
+/**
+ * The question's line when Compact asks (ADR 0094): "Compact now to save ~$0.59 after reset?". On a subscription the saving is the share
+ * of the next window once runs show the rate, else the dollars, labelled API-equivalent. Undefined when there is no saving.
+ */
+export function limitAskText(saving: number, subscription: boolean, rates: { low: number; high: number } | undefined) {
+  if (!Number.isFinite(saving) || saving <= 0) return undefined
+  const dollars = money(saving)
+  const amount = dollars.startsWith('under') ? dollars : `~${dollars}`
+  const what = !subscription ? amount : rates ? `${bandShareText(shareOf(saving, rates))} of your next window` : `${amount} API-equivalent`
+  return `Compact now to save ${what} after reset?`
+}
+
 // ---- The status line (P-9) ---------------------------------------------------------------------------------
 // At most "Sonnet (M) · limit ~3:45 PM" or "Sonnet (M) · $1.84 session": the model with its effort as a letter, then
 // the limit part (only when on pace to run out before the reset) or, on API billing, the session cost. The cache stays

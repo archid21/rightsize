@@ -88,10 +88,10 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const { h, d } = await stuckAsked($, on)
     const ui = await mount($, surface)
     const options = (await ui.findAll({ type: 'Button' })).filter(b => String(b.props?.key).startsWith('q-'))
-    expect(options.map(b => b.props?.key)).toEqual(['q-0', 'q-1', 'q-2', 'q-3', 'q-close'])
-    expect(options.map(b => (b.props as { hotkey?: string } | undefined)?.hotkey)).toEqual(['1', '2', '3', '4', undefined])
-    expect(options.map(b => b.props?.label)).toEqual(['Raise to medium for this turn', 'Raise when stuck for this session', 'Keep low', 'Always raise when stuck', '×'])
-    expect(await rowText(ui, 'Stuck'), 'the label, then the question').toContain('The same tool call failed twice.')
+    expect(options.map(b => b.props?.key)).toEqual(['q-0', 'q-1', 'q-close'])
+    expect(options.map(b => (b.props as { hotkey?: string } | undefined)?.hotkey)).toEqual(['1', '2', undefined])
+    expect(options.map(b => b.props?.label)).toEqual(['Raise effort', 'Keep going', '×'])
+    expect(await rowText(ui, 'Stuck'), 'the label, then the question').toContain('the same tool call failed twice.')
     expect((await ui.find({ type: 'Text', text: /^No answer:/ }))?.text, 'what happens with no answer, on a line of its own').toBe('No answer: the turn goes on at low.')
     await ui.press({ key: 'q-0' })
     await ui.unmount()
@@ -137,7 +137,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     let release = () => {}
     h.answerGate = { Effort: new Promise<void>(r => (release = r)) }
     h.rating = LOWER
-    h.answers = { Effort: 'Lower for this prompt' }
+    h.answers = { Effort: 'Lower effort' }
     h.sleepEnds = true
     await d.submit(LOOKUP)
     await d.step('t1', 0)
@@ -162,7 +162,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.bash('fail make')
     let release = () => {}
     h.answerGate = { Stuck: new Promise<void>(r => (release = r)) }
-    h.answers = { Stuck: 'Raise to high for this turn' }
+    h.answers = { Stuck: 'Raise effort' }
     h.sleepEnds = true
     await d.step('t1', 1)
     expect(h.question).toBeNull()

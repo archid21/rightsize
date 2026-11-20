@@ -56,28 +56,28 @@ An "ask" answer opens its own timed dialog (it waits 30 seconds); every other an
 - Key: `changes`
 - Options: Auto · Ask
 - Default: Auto
-- Auto (default): rightsize lowers or raises effort, switches a review to Opus and hands work to a helper without asking, and the band says what it did. Ask: every move rightsize would make on its own asks first, in a timed dialog (it waits 30 seconds), and nothing changes until you answer. Either way an Advanced rule row you set (Lowering, Raising, Stronger model, Cheaper model) wins for its case, and so does an area row (Prompt changes, Cache changes, Compact changes) that is not Same as Changes. Replaces Ask before changing: a value stored for it becomes this row once. A Quality profile saved by an older release reads as Ask until you set this row. The Mode row (act or watch only) is a different row and is unchanged.
+- Auto (default): rightsize lowers or raises effort, switches a review to Opus and hands work to a helper without asking, and the band says what it did. Ask: every move rightsize would make on its own asks first, as one question with two buttons (the recommended one first): before a prompt in a timed dialog (it waits 30 seconds, and with no answer the prompt runs as typed), during a turn and for the cache and compact on the band, where nothing waits. Either way an Advanced rule row you set (Lowering, Raising, Stronger model, Cheaper model) wins for its case, and so does an area row (Prompt changes, Cache changes, Compact changes) that is not Same as Changes. Replaces Ask before changing: a value stored for it becomes this row once. A Quality profile saved by an older release reads as Ask until you set this row. The Mode row (act or watch only) is a different row and is unchanged.
 
 ### Prompt changes
 
 - Key: `promptMode`
 - Options: Same as Changes · Auto · Ask · Off
 - Default: Same as Changes
-- What rightsize does before each prompt (lowering or raising effort, a stronger or cheaper model) and when it raises effort mid-turn. Same as Changes: follows Changes. Auto: acts without asking. Ask: asks first. Off: this area does nothing (not wired yet: until the next release Off acts like Auto). A rule row you set (Lowering, Raising, Stronger model, Cheaper model) wins for its case.
+- What rightsize does before each prompt (lowering or raising effort, a stronger or cheaper model) and when it raises effort mid-turn. Same as Changes: follows Changes. Auto: acts without asking. Ask: asks first. Off: this area does nothing. A rule row you set (Lowering, Raising, Stronger model, Cheaper model) wins for its case.
 
 ### Cache changes
 
 - Key: `cacheMode`
 - Options: Same as Changes · Auto · Ask · Off
 - Default: Same as Changes
-- What rightsize does about the cache: keep warm, a handoff note, the offer when the cache is cold. Same as Changes: follows Changes. Auto, Ask and Off are read by `/rightsize status`; the band follows them in a later release.
+- What rightsize does about the cache: keep warm, a handoff note, the offer when the cache is cold. Same as Changes: follows Changes. Auto: keep warm runs by itself where it pays (Before the cache goes cold, while it is not set). Ask: where keeping warm pays, one band question, `Keep warm until 1:00 AM? ~$0.10`, with Keep warm and Save handoff note (Let it go cold when whatsnext cannot write one); it never holds anything, and with no answer whatsnext saves a handoff note before the cache goes cold, or nothing happens without whatsnext. Off: no keep warm, no offer and no handoff note; the Cache timer line follows the Cache timer row, not this. A Before the cache goes cold value you set wins over Auto and Ask.
 
 ### Compact changes
 
 - Key: `compactMode`
 - Options: Same as Changes · Auto · Ask · Off
 - Default: Same as Changes
-- What rightsize does about compacting a long conversation. Same as Changes: follows Changes. Auto, Ask and Off are read by `/rightsize status`; the band follows them in a later release.
+- What rightsize does about compacting a long conversation. Same as Changes: follows Changes. Auto: the usage-limit advice and Compact Now stay as they are. Ask: near the 5-hour limit one band question, `Compact now to save ~$0.59 after reset?`, with Compact now and Not now; it never holds anything, and with no answer nothing is compacted. Off: rightsize never offers or runs its own compact (the usage-limit advice, the context warning's Compact Now, the Cache row's Compact Now button and the cold-compact tip).
 
 ### Cache
 
@@ -175,7 +175,7 @@ An "ask" answer opens its own timed dialog (it waits 30 seconds); every other an
 - Key: `escalation`
 - Options: follow Raising · ask me · raise automatically · off
 - Default: follow Raising
-- When a turn shows Claude is stuck (the same tool call failing twice, 3 of the last 10 tool calls failing with none of the 10 making progress (a `grep`, `rg`, `diff` or `test` that exits 1 found nothing, and a line of read-only lookups that missed a file: neither is a failed call), the same call running 3 times, a turn passing 3x the rated steps (at least 15) with no progress, or 2 fixes in a row leaving the tests red), raise effort one level for the rest of the turn, at most twice, never above Highest effort and never to max. follow Raising (the default): follows your Raising rule, so a raise is automatic when that rule is set to raise automatically, and otherwise asks on the band while the turn goes on. ask me: always asks on the band while the turn goes on (answer once, for this session, or always). raise automatically: raises without asking. off: never raise mid-turn.
+- When a turn shows Claude is stuck (the same tool call failing twice, 3 of the last 10 tool calls failing with none of the 10 making progress (a `grep`, `rg`, `diff` or `test` that exits 1 found nothing, and a line of read-only lookups that missed a file: neither is a failed call), the same call running 3 times, a turn passing 3x the rated steps (at least 15) with no progress, or 2 fixes in a row leaving the tests red), raise effort one level for the rest of the turn, at most twice, never above Highest effort and never to max. follow Raising (the default): follows your Raising rule, so a raise is automatic when that rule is set to raise automatically, and otherwise asks on the band while the turn goes on. ask me: always asks on the band while the turn goes on (`Claude looks stuck: … Raise effort to medium?` with Raise effort and Keep going; for a stuck helper, `Finish on Opus` and `Give it one more try`). raise automatically: raises without asking. off: never raise mid-turn.
 
 ### Start suggestions
 

@@ -113,10 +113,10 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.rating = '{"level":"high","model":"fable","size":"small","type":"debug","read":30000,"write":4000,"steps":12,"reason":"subtle concurrency bug"}'
     // Balanced would send it on its own: the person's rule row says ask first, and that is the one question left.
     await d.config('upRule', 'ask first')
-    h.answers = { Subagent: 'Send it to a Fable subagent' }
+    h.answers = { Subagent: 'Send to Fable' }
     await d.submit(DEBUG)
     expect(h.asked.map(a => a.header), 'only the Subagent question: the rule is already the person\'s').toEqual(['Subagent'])
-    expect(h.asked[0]?.question ?? '', 'the question carries both costs').toMatch(/About \$[\d.]+ that way vs \$[\d.]+ staying on Opus/)
+    expect(h.asked[0]?.question ?? '', 'the question carries both costs').toMatch(/Send to a Fable helper\? \$[\d.]+ vs ~\$[\d.]+ on Opus/)
     const note = last(h.submitted)?.context?.join('\n') ?? ''
     expect(note).toContain('[rightsize]')
     expect(note).toContain('model "fable", effort "high"')
@@ -186,7 +186,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   const readRuns = (h: ReturnType<typeof engine>) => (h.files[RUNS_FILE] ?? '').trim().split('\n').map(l => JSON.parse(l) as Record<string, unknown>)
   const FOLLOW_UP = 'yes that looks right so go ahead and put it in parentheses'
 
-  test(`a Haiku session's switch to Sonnet always asks, even under "always send": nothing switches until the person answers Run it on Sonnet (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`a Haiku session's switch to Sonnet always asks, even under "always send": nothing switches until the person answers Use Sonnet (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { model: 'claude-haiku-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES } })
     const d = drive($, h)
     await d.start(surface)
@@ -199,20 +199,20 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.sleepEnds = true
     await d.submit(DEBUG)
     expect(h.asked.map(a => a.header), 'the band asks').toEqual(['Stronger'])
-    expect(h.asked[0]?.question ?? '').toContain('This is debug work, and Haiku alone usually manages it. Run this prompt on Sonnet at medium, then go back to Haiku? About $')
-    expect(h.asked[0]?.options).toEqual(['Run it on Sonnet', 'Stay on Haiku'])
+    expect(h.asked[0]?.question ?? '').toContain('Run this debug work on Sonnet for one turn?')
+    expect(h.asked[0]?.options).toEqual(['Use Sonnet', 'Stay on Haiku'])
     await d.step('t1')
     expect(last(h.sent)?.model, 'nobody answered: nothing is switched').toBe('claude-haiku-5-5')
     await d.complete('t1')
 
-    // "Stay" keeps Haiku; "Run it on Sonnet" switches the turn and only that turn.
+    // "Stay" keeps Haiku; "Use Sonnet" switches the turn and only that turn.
     h.sleepEnds = false
     h.answers = { Stronger: 'Stay on Haiku' }
     await d.submit(DEBUG)
     await d.step('t2')
     expect(last(h.sent)?.model, 'stay').toBe('claude-haiku-5-5')
     await d.complete('t2')
-    h.answers = { Stronger: 'Run it on Sonnet' }
+    h.answers = { Stronger: 'Use Sonnet' }
     await d.submit(DEBUG)
     expect(h.asked.map(a => a.header), 'asked each time').toEqual(['Stronger', 'Stronger', 'Stronger'])
     await d.step('t3')
@@ -327,7 +327,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(runs.find(l => l.type === 'review')?.switched).toBeUndefined()
   })
 
-  test(`asking: a review's question offers Opus once, for the session, staying, or always, and Opus runs the turn (${surface})`, { timeoutMs: 30000, options: { upRule: 'ask first' } }, async ($, on) => {
+  test(`asking: a review's question offers Opus for one turn or staying, and Opus runs the turn (${surface})`, { timeoutMs: 30000, options: { upRule: 'ask first' } }, async ($, on) => {
     const h = engine(on, { model: 'claude-sonnet-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES }, stored: { upRule: 'ask first' } })
     const d = drive($, h)
     await d.start(surface)
@@ -335,11 +335,11 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.complete('t0')
 
     h.rating = REVIEW
-    h.answers = { Stronger: 'Run it on Opus' }
+    h.answers = { Stronger: 'Use Opus' }
     await d.submit(DEBUG)
     expect(h.asked.map(a => a.header)).toEqual(['Stronger'])
-    expect(h.asked[0]?.question ?? '').toContain('This is a review: reviews run on Opus at high effort or more. Run this prompt on Opus at high, then go back to Sonnet?')
-    expect(h.asked[0]?.options).toEqual(['Run it on Opus', 'Use the stronger model for this session', 'Stay on Sonnet', 'Always use the stronger model'])
+    expect(h.asked[0]?.question ?? '').toContain('Run this review on Opus for one turn?')
+    expect(h.asked[0]?.options).toEqual(['Use Opus', 'Stay on Sonnet'])
     await d.step('t1')
     expect(last(h.sent)).toMatchObject({ model: 'opus', effort: 'high' })
   })
@@ -749,12 +749,12 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.complete('t0')
     h.rating = '{"fit":{"haiku":"no","sonnet":"no","opus":"high","fable":"medium"},"size":"small","type":"review","read":8000,"write":800,"steps":6,"reason":"race"}'
     await d.config('raiseRule', 'ask me')
-    h.answers = { Effort: 'Keep medium' }
+    h.answers = { Effort: 'Keep as is' }
     await d.submit(DEBUG)
     expect(h.asked.map(a => a.header), 'the Raising rule is the person\'s and says ask, so it asks, as it always does').toEqual(['Effort'])
     await d.step('t1')
     expect(last(h.sent)?.effort, 'kept: "Ask" never raises on its own').toBe('medium')
-    expect(last(h.asked)?.question ?? '', 'the question names the raise').toContain('Raise effort from medium to high for this prompt?')
+    expect(last(h.asked)?.question ?? '', 'the question names the raise').toContain('Raise effort to high?')
   })
 
   const AUTO_RAISE = { remember: true, choices: { raise: 'auto' } }
@@ -833,16 +833,16 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t1', 0)
     await d.bash('fail make')
     await d.bash('fail make')
-    h.answers = { Stuck: 'Keep medium' }
+    h.answers = { Stuck: 'Keep going' }
     await d.step('t1', 1)
-    expect(h.asked.map(a => a.question)).toEqual(['The same tool call failed twice. Raise effort from medium to high for the rest of this turn? No answer: the turn goes on at medium.'])
+    expect(h.asked.map(a => a.question)).toEqual(['Claude looks stuck: the same tool call failed twice. Raise effort to high? No answer: the turn goes on at medium.'])
     await settle()
     await d.step('t1', 2)
     expect(last(h.sent)?.effort).toBe('medium')
     expect(h.asked.length, 'the same sign is not asked again').toBe(1)
     await d.bash('fail make test')
     for (let i = 1; i <= 7; i++) await d.bash(`cat f${i}`)
-    h.answers = { Stuck: 'Raise to high for this turn' }
+    h.answers = { Stuck: 'Raise effort' }
     await d.step('t1', 3)
     await settle()
     await d.step('t1', 4)

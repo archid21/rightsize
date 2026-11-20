@@ -170,7 +170,7 @@ import { CACHE_LIFE_KEY, isTracked, parseChanges, type ChangeLine } from './resu
 import { LIFE_DAYS, LIFE_HEADER, LIFE_NO, LIFE_YES, PROBE_RESPONSES, type Provider, adviseLife, lifeEligible, lifeOffer, lifeQuestion, lifeRefusedText, lifeRevertedText, lifeSetText, lifeStuckText, lifeYes, probeRead, providerOf, settingDecides } from './cachelife'
 import { type TrimSavings, isTrim, readTrimSavings } from './trim'
 import { TIP_FILL, TIP_NEXT, TIP_HIDE, TIP_START, TIP_STEPS, TIP_STILL_SONNET, TIP_WHY, TIP_WHY_ID, type TipStep, isTipId, tipCommandAt, tipDue, tipText } from './coldtip'
-import { LIMIT_BUTTON, LIMIT_COMPACT, LIMIT_HIDE, LIMIT_MORE, LIMIT_WHY, LIMIT_WHY_ID, effortTag, isLimitId, limitDue, limitText, modelTag, statusLine } from './limit'
+import { LIMIT_BUTTON, LIMIT_COMPACT, LIMIT_HIDE, LIMIT_MORE, LIMIT_WHY, LIMIT_WHY_ID, effortTag, isLimitId, limitAskText, limitDue, limitText, modelTag, statusLine } from './limit'
 import { SIZE_BUTTON, SIZE_COMPACT, SIZE_FRESH, SIZE_FRESH_BUTTON, SIZE_FRESH_COMPACT, SIZE_FRESH_COPY, SIZE_FRESH_COPY_FAILED, SIZE_FRESH_NOT_NOW, SIZE_FRESH_PASTE_BUTTONS, SIZE_FRESH_SAVING, SIZE_HIDE, SIZE_MORE, SIZE_WHY, SIZE_WHY_FRESH, SIZE_WHY_ID, isSizeId, sizeFreshNotWritten, sizeFreshNotice, sizeFreshPaste, sizeStep, sizeText } from './size'
 import { COMPACT_TEXT, INIT_HINT_MIN, NO_FRESH_HANDOFF, WRAP_HEADROOM, WRAP_TURNS, initHintText, installHintDue, installHintText, isWhatsnext, isWrapUp, noteCost } from './whatsnext'
 import { ME, REPOS, SHARED_PATH, askText, blockedByClaim, parseShared, readStarCheck, reposToAsk, type Shared } from './star'
@@ -653,6 +653,8 @@ let handOffs = true
 /** Prompt changes is Off (ADR 0094): rightsize makes no prompt change, so Routing and Hand-offs read as off, whatever their rows say. */
 let promptOff = false
 let cacheOn = true
+/** Compact changes is Off (ADR 0094): rightsize never offers or runs its own compact (the usage-limit advice, Compact Now, the cold-compact tip). */
+const compactOff = () => modeOf('compact') === 'off'
 /** Cache timer in /config: whether the band shows the Cache row's timer line after every main-chat turn. */
 let cacheTimer = true
 /** The cases decided with no rule set for the prompt being rated (the default, or Changes: Ask), and those the band has already said so for this session. */
@@ -1451,7 +1453,9 @@ type BandWhy =
   | { kind: 'watchTrial' }
   | { kind: 'watchSummary' }
   | { kind: 'stuck'; run: Run; cur: Level; to: Level; sign: Struggle; step: number }
-  | { kind: 'helper'; id: string; w: Watch; cur: Level; to: Level; sign: Struggle }
+  | { kind: 'keepWarm'; turn: ColdTurn; id: string }
+  | { kind: 'limitCompact' }
+  | { kind: 'helper'; id: string; w: Watch; cur: Level; to: Level; sign: Struggle; main: string }
   | { kind: 'spend'; id: string; w: Watch }
   | { kind: 'bigOptIn' }
   | { kind: 'bigAmount'; top: number }
@@ -1496,8 +1500,8 @@ async function askBand<V>($: EngineInterface, q: Question<V>, until: BandAsk['un
 /** What a folded band's marker calls a question: work at risk, costs more, the cache, or a setting (any kind not listed). */
 export function bandKindOf(kind: string): NonNullable<BandQuestion['kind']> {
   if (kind === 'stuck' || kind === 'helper' || kind === 'spend' || kind === 'bigDuring') return 'risk'
-  if (kind === 'billing' || kind === 'bigAmount' || kind === 'bigPick') return 'cost'
-  if (kind === 'cacheLife') return 'cache'
+  if (kind === 'billing' || kind === 'bigAmount' || kind === 'bigPick' || kind === 'limitCompact') return 'cost'
+  if (kind === 'cacheLife' || kind === 'keepWarm') return 'cache'
   return 'setting'
 }
 
@@ -1550,6 +1554,10 @@ async function bandAnswered($: EngineInterface, why: BandWhy, v: unknown) {
     }
     case 'spend':
       return answerSpend($, why.id, why.w, v)
+    case 'keepWarm':
+      return answerKeepWarm($, why, v)
+    case 'limitCompact':
+      return answerLimitCompact($, v)
     case 'bigOptIn':
       return answerBigOptIn($, v)
     case 'bigAmount':
@@ -1561,11 +1569,12 @@ async function bandAnswered($: EngineInterface, why: BandWhy, v: unknown) {
     case 'bigStop':
       return answerBigStop($, v)
     case 'helper': {
-      const { id, w, cur, to, sign } = why
-      const raises = await stuckAnswered($, v)
-      if (v === 'no') return log($, `helper ${id} struggling (${sign.why}): kept at ${cur}, as you chose`)
-      // Gone back, or done: nothing left to raise.
-      if (!raises || w.returned || watches.get(id) !== w || w.raisedTo === to) return
+      const { id, w, cur, to, sign, main } = why
+      // Gone back, or done: nothing left to finish or raise.
+      if (w.returned || watches.get(id) !== w) return
+      if (v === 'finish') return returnHelper($, id, w, sign, `you chose to finish on ${main}`)
+      if (v !== 'retry') return log($, `helper ${id} struggling (${sign.why}): kept at ${cur}, as you chose`)
+      if (w.raisedTo === to) return
       if (!(await useChance($, w.task, id))) return log($, `helper ${id} not raised: it has no retry left`)
       return raiseHelper($, id, w, cur, to, sign)
     }
@@ -1602,6 +1611,10 @@ async function bandUnanswered($: EngineInterface, why: BandWhy) {
       return logUnanswered($, BIG_DURING_HEADER, 'the turn goes on, as it was')
     case 'bigStop':
       return logUnanswered($, BIG_STOP_HEADER, 'warnings during a turn stay on')
+    case 'keepWarm':
+      return logUnanswered($, KEEP_WARM_HEADER, 'nothing changes')
+    case 'limitCompact':
+      return logUnanswered($, LIMIT_ASK_HEADER, 'nothing is compacted')
     case 'spend':
       return logUnanswered($, 'Long helper', canExtend(why.w, why.w.limit ?? 0) ? `helper ${why.id} goes on while it is making progress, up to ${money(SPEND_AUTO_MAX * (why.w.estimate ?? 0))}` : `helper ${why.id} stops at its ${money(why.w.limit ?? 0)} limit`)
   }
@@ -2321,6 +2334,14 @@ const costLine = (d: number, stay: number, cur: string) =>
 const bandCost = (d: number, stay: number, cur: string) =>
   billing === 'api' ? `${money(d)} vs ~${money(stay)} on ${cur}.` : `${usageVs(d, stay, cur)}.`
 
+/** The cost in a helper question: "$0.45 vs ~$1.61 on Opus" on the API, "~26% of the usage" on a subscription. Nothing when the estimate is missing. */
+const askCost = (d: number, stay: number, cur: string) => {
+  if (billing === 'api') return `${money(d)} vs ~${money(stay)} on ${cur}`
+  if (stay <= 0) return ''
+  const x = d / stay
+  return x < 1 ? `~${Math.max(1, Math.round(x * 100))}% of the usage` : `~${x.toFixed(1)}x the usage`
+}
+
 type Decision = { level?: Level; session?: Level; auto?: boolean; delegate?: Run['delegate']; model?: Run['switchTo'] }
 
 /** The effort-only plan a hand-off falls back to (Workflows, Hand-offs off, a declined question): nothing while Routing is off. */
@@ -2346,25 +2367,19 @@ async function resolveEffort($: EngineInterface, p: Plan, r: Rating, s: Situatio
   if (c === 'auto') return { level: p.level, auto: p.dir === 'lower' }
   if (c !== 'ask') return {}
   const verb = p.dir === 'lower' ? 'Lower' : 'Raise'
+  // One question, the recommended answer first (ADR 0094). A lowering is routine work; a raise says why from the rater's reason.
+  const lead = p.dir === 'lower' ? 'Routine work.' : sentence(r.reason) || 'This needs more thought.'
   const a = await askWithin($, withWait({
     header: 'Effort',
-    question: `${sentence(r.reason) || `This looks like a ${p.level}-effort task.`} ${verb} effort from ${s.level} to ${p.level} for this prompt?`,
+    question: `${lead} ${verb} effort to ${p.level}?`,
     options: [
-      [`${verb} for this prompt`, 'prompt'],
-      [`${verb} for this session`, 'session'],
-      [`Keep ${s.level}`, 'keep'],
-      [`Always ${verb.toLowerCase()}`, 'always'],
+      [`${verb} effort`, 'yes'],
+      ['Keep as is', 'keep'],
     ],
   }, 'it stays as it is'))
   if (a === TIMED_OUT) await logTimeout($, 'Effort', `kept ${s.level}`)
-  if (a === 'prompt') return { level: p.level }
-  if (a === 'session') return { session: p.level }
-  // Always: the rule goes to its row, and this prompt follows it as an automatic one does.
-  if (a === 'always') {
-    await alwaysRule($, p.dir, 'auto')
-    return { level: p.level, auto: p.dir === 'lower' }
-  }
-  return {}
+  // Dismissed or no answer: it runs as typed.
+  return a === 'yes' ? { level: p.level } : {}
 }
 
 async function resolve($: EngineInterface, p: Plan, r: Rating, s: Situation): Promise<Decision> {
@@ -2384,21 +2399,18 @@ async function resolve($: EngineInterface, p: Plan, r: Rating, s: Situation): Pr
     if (c === 'auto') return send
     if (c === 'stay') return stay()
     if (c !== 'ask' && c !== 'each') return {}
-    const why = p.rule === 'review' ? (lightReview(r) ? `This is a review of a design or of text: it runs on ${to} at ${LIGHT_REVIEW_LEVEL} effort or more.` : `This is a review: reviews run on ${to} at ${REVIEW_LEVEL} effort or more.`) : `This is ${r.type} work, and ${cur} alone usually manages it.`
-    const question = `${why} Run this prompt on ${to} at ${p.level}, then go back to ${cur}? ${costLine(p.cost, p.mainCost, cur)}`
-    // The Haiku-start switch always asks (ADR 0027), and "ask each time" never remembers: neither offers a rule.
-    const keeps = p.rule !== 'haiku' && c !== 'each'
-    const options: (readonly [string, 'send' | 'session' | 'stay' | 'always'])[] = [
-      [`Run it on ${to}`, 'send'],
-      ...(keeps ? [['Use the stronger model for this session', 'session'] as const] : []),
-      [`Stay on ${cur}`, 'stay'],
-      ...(keeps ? [['Always use the stronger model', 'always'] as const] : []),
-    ]
-    const a = await askWithin($, withWait({ header: 'Stronger', question, options }, 'it stays as it is'))
+    // One question, the recommended answer first (ADR 0094). Stay changes nothing: no second question about effort.
+    const what = p.rule === 'review' ? 'review' : `${r.type} work`
+    const a = await askWithin($, withWait({
+      header: 'Stronger',
+      question: `Run this ${what} on ${to} for one turn?`,
+      options: [
+        [`Use ${to}`, 'send'],
+        [`Stay on ${cur}`, 'stay'],
+      ],
+    }, 'it stays as it is'))
     if (a === TIMED_OUT) await logTimeout($, 'Stronger', `stayed on ${cur}`)
-    if (a === 'session') await sessionRule($, 'up', 'auto')
-    if (a === 'always') await alwaysRule($, 'up', 'auto')
-    return a === 'send' || a === 'session' || a === 'always' ? send : a === 'stay' ? stay() : {}
+    return a === 'send' ? send : {}
   }
   const c = p.dir === 'up' ? await choice($, 'up', qUp(cur, to)) : await choice($, 'down', qDown(cur, to))
   const send: Decision = { delegate: { tier: p.tier, level: p.level, dir: p.dir } }
@@ -2406,31 +2418,21 @@ async function resolve($: EngineInterface, p: Plan, r: Rating, s: Situation): Pr
   if (c === 'auto') return send
   if (c === 'stay') return stay()
   if (c !== 'ask' && c !== 'each') return {}
-  const leadOf = (why: string) => (p.dir === 'up' ? `This needs a stronger model${why}.` : `${to} at ${p.level} effort could do this${why}${p.instead ? `, where ${cur} needs ${p.instead}` : ''}.`)
-  const question = `${leadOf(r.reason ? ` (${r.reason})` : '')} Send it to a ${to} subagent? ${costLine(p.delegateCost, p.mainCost, cur)}`
-  if (c === 'ask') {
-    const reason = sentence(r.reason) || leadOf('')
-    const options: readonly (readonly [string, 'send' | 'session' | 'stay' | 'always'])[] = [
-      [`Send it to a ${to} subagent`, 'send'],
-      [`Send to ${to} subagents for this session`, 'session'],
-      [`Stay on ${cur}`, 'stay'],
-      ['Always send', 'always'],
-    ]
-    const a = await askWithin($, withWait({ header: 'Subagent', question: `${reason} Send it to a ${to} subagent? ${costLine(p.delegateCost, p.mainCost, cur)}`, options }, 'it stays as it is'))
-    if (a === TIMED_OUT) await logTimeout($, 'Subagent', `stayed on ${cur}`)
-    if (a === 'session') await sessionRule($, p.dir, 'auto')
-    if (a === 'always') await alwaysRule($, p.dir, 'auto')
-    return a === 'send' || a === 'session' || a === 'always' ? send : a === 'stay' ? stay() : {}
-  }
+  // One question, the recommended answer first (ADR 0094): the helper, or the session's model with the effort change, if there is one.
   const ep = effortOnly(r, s)
-  const options: (readonly [string, 'send' | 'effort' | 'keep'])[] = [[`Send it to a ${to} subagent`, 'send']]
-  if (ep.kind === 'effort') options.push([`${ep.dir === 'lower' ? 'Lower' : 'Raise'} effort on ${cur} to ${ep.level}`, 'effort'])
-  options.push([ep.kind === 'effort' ? 'Keep as is' : `Stay on ${cur}`, 'keep'])
-  const a = await askWithin($, withWait({ header: 'Subagent', question, options }, 'it stays as it is'))
+  const lead = p.dir === 'up' ? `${sentence(r.reason) || 'This needs a stronger model.'} ` : ''
+  const a = await askWithin($, withWait({
+    header: 'Subagent',
+    // The cost ends the sentence, so the wait line after it reads on.
+    question: `${lead}Send to a ${to} helper? ${askCost(p.delegateCost, p.mainCost, cur)}`.trim().replace(/([^.?!])$/, '$1.'),
+    options: [
+      [`Send to ${to}`, 'send'],
+      [`Keep on ${cur}${ep.kind === 'effort' ? ` (${ep.dir === 'lower' ? 'lower' : 'raise'} effort)` : ''}`, 'keep'],
+    ],
+  }, 'it stays as it is'))
   if (a === TIMED_OUT) await logTimeout($, 'Subagent', `stayed on ${cur}`)
   if (a === 'send') return send
-  if (a === 'effort' && ep.kind === 'effort') return { level: ep.level }
-  return {}
+  return a === 'keep' && ep.kind === 'effort' ? { level: ep.level } : {}
 }
 
 /** Three rules a Haiku helper's brief carries (P-70, ADR 0086): Haiku miscounts, fills gaps and leaves drafts in its answer. */
@@ -3193,7 +3195,7 @@ async function escalate($: EngineInterface, run: Run, sign: Struggle, from: Leve
   }
   if (rule === 'never') return
   if (rule !== 'auto') {
-    const q = qStuck(`${sentence(sign.why)} Raise effort from ${cur} to ${to} for the rest of this turn?`, `Raise to ${to} for this turn`, cur)
+    const q = qStuck(`Claude looks stuck: ${sign.why.trim().replace(/[.\s]+$/, '')}. Raise effort to ${to}?`)
     // The turn goes on at its effort while the band asks; a Raise applies from its next request, while the turn still runs.
     if (await bandCanAsk($)) {
       if (onBand('Stuck')) return
@@ -3210,15 +3212,24 @@ async function escalate($: EngineInterface, run: Run, sign: Struggle, from: Leve
 type StuckAnswer = 'yes' | 'session' | 'no' | 'always'
 const STUCK_RULE = { plugin: 'rightsize', key: 'stuckRule' } as const
 
-/** The Stuck question, for the main chat or a helper: the reason sentence, the question, and the four answers. */
-const qStuck = (question: string, once: string, keep: Level): Question<StuckAnswer> => ({
+/** The Stuck question for the main chat (ADR 0094): the reason, and two answers, the raise first. It never holds the turn. */
+const qStuck = (question: string): Question<StuckAnswer> => ({
   header: 'Stuck',
   question,
   options: [
-    [once, 'yes'],
-    ['Raise when stuck for this session', 'session'],
-    [`Keep ${keep}`, 'no'],
-    ['Always raise when stuck', 'always'],
+    ['Raise effort', 'yes'],
+    ['Keep going', 'no'],
+  ],
+})
+
+/** A stuck helper's two answers: finish its work on the session's model, or give it one more try (one of its retries, at one level up). */
+type HelperAnswer = 'finish' | 'retry'
+const qHelperStuck = (w: Watch, main: string, why: string): Question<HelperAnswer> => ({
+  header: 'Stuck',
+  question: `The ${w.tier ? `${TIER_NAME[w.tier]} ` : ''}helper is stuck: ${why.trim().replace(/[.\s]+$/, '')}. Finish on ${main}?`,
+  options: [
+    [`Finish on ${main}`, 'finish'],
+    ['Give it one more try', 'retry'],
   ],
 })
 
@@ -3277,24 +3288,32 @@ async function escalateHelper($: EngineInterface, id: string, w: Watch, sign: St
   if (!to) why = `${cur} is as high as it goes`
   // No chance left: nothing to ask about.
   else if (usedNow >= chances) why = 'it has no retry left'
-  else if (rule !== 'auto' && (await bandCanAsk($))) {
-    if (onBand('Stuck')) return
-    const q = { ...qStuck(helperQuestion(sign, cur, to), `Raise to ${to}`, cur), ifNone: `it goes on at ${cur}` }
-    return askBand($, q, 'turn', true, { kind: 'helper', id, w, cur, to, sign })
-  } else if (rule !== 'auto') {
-    const a = await askHelper($, sign, cur, to)
+  else if (rule !== 'auto') {
+    const main = TIER_NAME[(await situation($)).tier]
+    const q = qHelperStuck(w, main, sign.why)
+    if (await bandCanAsk($)) {
+      if (onBand('Stuck')) return
+      return askBand($, { ...q, ifNone: `it goes on at ${cur}` }, 'turn', true, { kind: 'helper', id, w, cur, to, sign, main })
+    }
+    const a = await askHelper($, q, cur)
     // No answer: the helper goes on at its effort, as on the band. Sending it back on silence would make a quality risk out of a missed dialog.
     if (a === 'timeout') {
       await log($, `helper ${id} struggling (${sign.why}): no answer in ${questionWait}, goes on at ${cur}`)
       return
     }
-    if (!(await stuckAnswered($, a))) {
+    if (a === 'finish') return returnHelper($, id, w, sign, `you chose to finish on ${main}`)
+    if (a !== 'retry') {
       await log($, `helper ${id} struggling (${sign.why}): kept at ${cur}, as you chose`)
       return
     }
   }
   if (to && !why && !(await useChance($, w.task, id))) why = 'it has no retry left'
   if (to && !why) return raiseHelper($, id, w, cur, to, sign)
+  return returnHelper($, id, w, sign, why)
+}
+
+/** The helper stops and its work goes back to the main chat: its next tool calls are refused. */
+async function returnHelper($: EngineInterface, id: string, w: Watch, sign: Struggle, why: string) {
   w.returned = true
   w.stall = 'struggling'
   await setBand($, { text: `Helper stopped and sent back to the main chat: ${sign.why}, and ${why}.`, acted: true })
@@ -3309,18 +3328,12 @@ async function raiseHelper($: EngineInterface, id: string, w: Watch, cur: Level,
   await log($, `raised helper ${id} ${cur} → ${to} at step ${w.steps}: ${sign.why}`)
 }
 
-const helperQuestion = (sign: Struggle, cur: Level, to: Level) => `${sentence(sign.why)} Raise the helper's effort from ${cur} to ${to}? It uses one of this helper's ${chances} retries.`
-
-// The Stuck question for a helper, in the dialog. A dismissed question is a no, as for the main chat. An answer
+// The Stuck question for a helper, in the dialog (no band to draw it on). A dismissed question is a no, as for the main chat. An answer
 // that comes after the wait is too late: the helper went on at its effort.
-async function askHelper($: EngineInterface, sign: Struggle, cur: Level, to: Level): Promise<StuckAnswer | 'timeout'> {
-  const a = await askWithin(
-    $,
-    withWait(qStuck(helperQuestion(sign, cur, to), `Raise to ${to}`, cur), `it goes on at ${cur}`),
-    late => {
-      if (late !== 'no') $.ui.toast(`rightsize: too late, the helper went on at ${cur}.`)
-    },
-  )
+async function askHelper($: EngineInterface, q: Question<HelperAnswer>, cur: Level): Promise<HelperAnswer | 'no' | 'timeout'> {
+  const a = await askWithin($, withWait(q, `it goes on at ${cur}`), late => {
+    $.ui.toast(`rightsize: too late, the helper went on at ${cur}.`)
+  })
   return a === TIMED_OUT ? 'timeout' : (a ?? 'no')
 }
 
@@ -3945,7 +3958,7 @@ let coldTip: ColdTip | null = null
 
 /** Shows the offer when it is due: the band is on, the tip is not hidden, and compacting on Sonnet saves at least the Idle warning amount. */
 async function showColdTip($: EngineInterface, c: { tier: Tier; context: number }) {
-  if (bandMode === 'off' || mainBusy || !coldTipOn) return
+  if (bandMode === 'off' || mainBusy || !coldTipOn || compactOff()) return
   const saving = tipDue(prices, c.tier, c.context, idleWarning ?? COLD_MIN, summaryNow())
   if (saving === undefined) {
     await log($, `cold-compact tip: not due (${TIER_NAME[c.tier]}, ${Math.round(c.context / 1000)}K tokens)`)
@@ -4056,7 +4069,7 @@ const LIMIT_WINDOW = 'limitAdviceWindow'
 /** The turn ended: shows the advice when it is due. Skipped while rightsize or Cache is off. Watch-only mode logs it. Never throws. */
 async function limitCheck($: EngineInterface) {
   try {
-    if (off || !cacheOn || !limitAdviceOn) return
+    if (off || !cacheOn || !limitAdviceOn || compactOff()) return
     const u = await usageNow($)
     const context = lastContext || u?.context?.tokens
     const now = await $.clock.now()
@@ -4066,12 +4079,21 @@ async function limitCheck($: EngineInterface) {
     const tier = (await situation($)).tier
     const saving = limitSaving(prices, tier, context, summaryNow())
     if (saving <= 0) return
+    const subscription = billing === 'subscription'
+    // Compact asks (ADR 0094): one band question, never held: Compact now, or Not now. No answer compacts nothing.
+    if (modeOf('compact') === 'ask' && !watching && (await bandCanAsk($))) {
+      const question = limitAskText(saving, subscription, subscription ? await windowPerDollar($) : undefined)
+      if (!question) return
+      await $.store.set(LIMIT_WINDOW, due.resetsAt).catch(() => undefined)
+      await askBand($, { header: LIMIT_ASK_HEADER, question, options: [['Compact now', 'compact'], ['Not now', 'no']], ifNone: 'nothing is compacted' }, 'prompt', true, { kind: 'limitCompact' })
+      await log($, `usage-limit advice: asked, compacting now saves ${money(saving)} after the reset (${Math.round(context / 1000)}K tokens on ${TIER_NAME[tier]}, resets ${clockText(due.resetAt)})`)
+      return
+    }
     // An offer up owns the cache row; a keep-warm run takes the advice beside its own line (showAdvice).
     if (coldTurn?.offer || pays?.row === 'countdown' || warming?.note) {
       await log($, 'usage-limit advice: not shown, the cache row is in use')
       return
     }
-    const subscription = billing === 'subscription'
     const text = limitText(due.resetAt, saving, subscription, subscription ? await windowPerDollar($) : undefined)
     if (!text) return
     if (watching) {
@@ -4086,6 +4108,19 @@ async function limitCheck($: EngineInterface) {
   } catch {
     // Advice must never hold up a turn.
   }
+}
+
+const LIMIT_ASK_HEADER = 'Compact'
+
+/** The Compact question's answer: Compact now compacts, as the advice's button did; anything else compacts nothing. */
+async function answerLimitCompact($: EngineInterface, v: unknown) {
+  if (v !== 'compact') return
+  if (mainBusy) {
+    $.ui.toast('Rightsize: a turn is running. Ask again when it ends.')
+    return
+  }
+  nextCompactSource = 'limit'
+  await compactForLimit($)
 }
 
 // ---- Output advice -------------------------------------------------------------------------------------------------
@@ -4338,7 +4373,7 @@ let sizeFreshShown = false
 
 async function sizeCheck($: EngineInterface) {
   try {
-    if (off || !sizeWarningOn) return
+    if (off || !sizeWarningOn || compactOff()) return
     const ctx = (await $.session.usage({ breakdown: 'summary' }).catch(() => undefined))?.context
     const tokens = ctx?.tokens
     const window = ctx?.window
@@ -4663,6 +4698,8 @@ type ColdTurn = {
   offer?: { text: string; first: ColdButton; more: ColdButton[]; args: Omit<Parameters<typeof offerText>[0], 'now'> }
   /** The question the cache row asks instead, until it is answered. */
   ask?: ColdAsk
+  /** The Keep warm question (Cache asks) was answered: its no-answer default no longer applies. */
+  answered?: true
 }
 type ColdButton = { id: string; label: string }
 /** "Always …?" for a choice that has a row value, or whether to stop offering. */
@@ -4843,7 +4880,7 @@ async function showTimer($: EngineInterface, turn: ColdTurn, idleCompact: boolea
     timerArgs = { coldAt, cost, ...pctPart }
   }
   lead = `${lead}.`
-  const buttons = [TIMER_COMPACT, ...(turn.whatsnext ? [TIMER_HANDOFF] : [])]
+  const buttons = [...(compactOff() ? [] : [TIMER_COMPACT]), ...(turn.whatsnext ? [TIMER_HANDOFF] : [])]
   timerRow = { text, lead, buttons }
   await showCold($, text, buttons, true, undefined, undefined, tone)
   await log($, `cache timer: ${text}`)
@@ -4924,7 +4961,7 @@ function cancelTip() {
 async function armTip($: EngineInterface, tier: Tier, context: number, idleCompact: boolean) {
   cancelTip()
   if (off || !cacheOn || bandMode === 'off' || idleCompact) return
-  const due = tipDue(prices, tier, context, idleWarning ?? COLD_MIN, summaryNow()) !== undefined
+  const due = !compactOff() && tipDue(prices, tier, context, idleWarning ?? COLD_MIN, summaryNow()) !== undefined
   // Not due: the cold row takes the timer row's place instead, so it waits only when the timer row is on.
   if (!due && !cacheTimer) return
   const gen = tipGen
@@ -4965,7 +5002,7 @@ async function reopenedTip($: EngineInterface) {
       return
     }
     if ((await $.clock.now()) - last.at <= cacheTtl) return
-    if (tipDue(prices, tier, last.context, idleWarning ?? COLD_MIN, summaryNow()) !== undefined) await showColdTip($, { tier, context: last.context })
+    if (!compactOff() && tipDue(prices, tier, last.context, idleWarning ?? COLD_MIN, summaryNow()) !== undefined) await showColdTip($, { tier, context: last.context })
     else await showColdRow($, { tier, context: last.context, coldAt: last.at + cacheTtl })
   } catch (err) {
     await log($, `cold-compact tip (reopened chat) failed: ${err instanceof Error ? err.message : String(err)}`)
@@ -5020,6 +5057,11 @@ async function coldCheck($: EngineInterface) {
   coldTurn = turn
   await showTimer($, turn, idleCompact)
   if (coldMode === 'off') return
+  // Cache Off (ADR 0094): no keep warm, no offer, no handoff note before the cache goes cold. The timer line above follows Cache timer.
+  if (modeOf('cache') === 'off') {
+    await log($, 'before the cache goes cold: nothing to do, the Cache area is Off')
+    return
+  }
   // Every stretch of idle time is logged, whatever the row does with it (P-40).
   await openStretch($, context, cold)
   if (idleCompact) {
@@ -5037,6 +5079,8 @@ async function coldCheck($: EngineInterface) {
   // The row acts only on a conversation big enough to matter, by the Idle warning amount (COLD_MIN while that is off), and
   // when its action saves something: its own cost taken off coming back cold.
   if (cold < (idleWarning ?? COLD_MIN)) return
+  // Cache asks, and Before the cache goes cold is not the person's own: one question where keep warm would run by itself.
+  if (plan.action === 'pays' && !coldYours && modeOf('cache') === 'ask') return askKeepWarm($, turn)
   const net = netSaving(plan.action, { cold, ping: pingCost(prices[tier], context), compact: idle.compact })
   if (plan.action !== 'off' && net <= 0) {
     await log($, `before the cache goes cold: ${plan.action} skipped, it would cost ${money(cold - net)} against ${money(cold)} cold`)
@@ -5054,6 +5098,75 @@ async function coldCheck($: EngineInterface) {
     // A cache of 1 hour or more has time: the offer waits, so it does not sit on the band while the person reads the answer.
     if (cacheTtl >= 60 * 60_000) await armCold($, gen, offerAt(turn.endedAt, cacheTtl), () => offerCold($, turn))
     else await offerCold($, turn)
+  }
+}
+
+// ---- Keep warm, when the Cache area asks (ADR 0094, group 3) --------------------------------------------------------
+//
+// With Cache set to Ask (and Before the cache goes cold not the person's own), where keep warm would pay the band asks one
+// question: "Keep warm until 1:00 AM? ~$0.10", with Keep warm and Save handoff note. It is a band question: it never holds
+// anything. Without an answer by the time the cache goes cold, whatsnext saves a handoff note; without whatsnext, nothing happens.
+// Where keeping warm would not pay there is no question: the Cache timer row stays alone.
+
+const KEEP_WARM_HEADER = 'Keep warm'
+const KEEP_WARM_NOTE = 'Save handoff note'
+
+async function askKeepWarm($: EngineInterface, turn: ColdTurn) {
+  const now = await $.clock.now()
+  const rates = billing === 'subscription' ? await windowPerDollar($) : undefined
+  const tag = (d: number) => (billing === 'subscription' && rates ? bandShareText(shareOf(d, rates)) : costTag(d, billing === 'subscription', rates))
+  const choices = keepWarmChoices({ ttl: cacheTtl, endedAt: turn.endedAt, cold: turn.cold, ping: pingCost(prices[turn.tier], turn.context), startMinutes: usualStart(runLog, now).minutes, tag })
+  const pick = choices.find(c => c.endsAt !== undefined && c.cost !== undefined)
+  if (!pick || pick.endsAt === undefined || pick.cost === undefined) {
+    await log($, `before the cache goes cold: no question, keeping warm would not pay (${money(turn.cold)} cold)`)
+    return
+  }
+  turn.ends[pick.id] = pick.endsAt
+  const day = (ms: number) => new Date(ms).toDateString()
+  const until = `${clock12(pick.endsAt)}${day(pick.endsAt) === day(turn.endedAt) ? '' : ' tomorrow'}`
+  const cost = billing === 'subscription' ? tag(pick.cost) : `~${tag(pick.cost)}`
+  const second: ColdButton = turn.whatsnext ? { id: 'handoff', label: KEEP_WARM_NOTE } : { id: 'let-go', label: 'Let it go cold' }
+  const q: Question<string> = { header: KEEP_WARM_HEADER, question: `Keep warm until ${until}? ${cost}`, options: [['Keep warm', pick.id], [second.label, second.id]] }
+  const gen = coldGen
+  const deadline = turn.endedAt + cacheTtl - leadMs(cacheTtl)
+  const show = async () => {
+    if (coldTurn !== turn || mainBusy || turn.endedAt + cacheTtl <= (await $.clock.now())) return
+    const sure = turn.whatsnext ? 'a handoff note is saved before the cache goes cold' : 'nothing changes'
+    if (await bandCanAsk($)) await askBand($, { ...q, ifNone: sure }, 'prompt', true, { kind: 'keepWarm', turn, id: pick.id })
+    await log($, `before the cache goes cold: asked to keep warm until ${until} (${cost}); no answer: ${sure}`)
+    await armCold($, gen, deadline, () => keepWarmUnanswered($, turn))
+  }
+  // A cache of 1 hour or more has time: the question waits, as an offer does, so it is not on the band while the answer is read.
+  if (cacheTtl >= 60 * 60_000) await armCold($, gen, offerAt(turn.endedAt, cacheTtl), show)
+  else await show()
+}
+
+/** The cache is about to go cold and the Keep warm question has no answer: its question goes, and with whatsnext a handoff note is saved. */
+async function keepWarmUnanswered($: EngineInterface, turn: ColdTurn) {
+  const at = bandAsks.findIndex(x => x.why.kind === 'keepWarm' && x.why.turn === turn)
+  if (at >= 0) bandAsks.splice(at, 1)
+  await showQuestion($)
+  if (turn.answered) return
+  await logUnanswered($, KEEP_WARM_HEADER, turn.whatsnext ? 'a handoff note is saved' : 'nothing changes')
+  if (turn.whatsnext) await idleHandoff($, turn)
+}
+
+/** The Keep warm answer: keep warm until the time asked, or save the handoff note. Gone stale (a newer turn): nothing. */
+async function answerKeepWarm($: EngineInterface, why: Extract<BandWhy, { kind: 'keepWarm' }>, v: unknown) {
+  const turn = why.turn
+  if (coldTurn !== turn || mainBusy) return
+  if (v === why.id) {
+    turn.answered = true
+    return runCold($, turn, why.id)
+  }
+  if (v === 'handoff' && turn.whatsnext) {
+    turn.answered = true
+    return runCold($, turn, 'handoff')
+  }
+  if (v === 'let-go') {
+    turn.answered = true
+    cancelCold($, 'let it go cold')
+    await log($, 'before the cache goes cold: let it go cold')
   }
 }
 
@@ -5090,7 +5203,7 @@ async function offerCold($: EngineInterface, turn: ColdTurn) {
   const text = offerText({ ...args, now })
   const all: ColdButton[] = [
     ...warmChoices.map(c => ({ id: c.id, label: c.label })),
-    turn.whatsnext ? { id: 'handoff', label: 'Save a handoff' } : { id: 'compact', label: 'Compact now' },
+    ...(turn.whatsnext ? [{ id: 'handoff', label: 'Save a handoff' }] : compactOff() ? [] : [{ id: 'compact', label: 'Compact now' }]),
     { id: 'let-go', label: 'Let it go cold' },
     { id: 'off', label: "Don't offer again" },
   ]
@@ -5691,6 +5804,10 @@ async function saveHandoff($: EngineInterface, c: ColdTurn) {
 }
 
 async function compactNow($: EngineInterface, c?: ColdTurn, source: CompactSource = 'keepwarm') {
+  if (compactOff()) {
+    await log($, 'compact skipped: the Compact area is Off')
+    return
+  }
   coldDone = true
   // Keep warm's own compact (the gate, a stored row) is 'keepwarm'; a press of Compact Now on the Cache row is 'button'.
   nextCompactSource = source

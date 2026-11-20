@@ -668,7 +668,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(run.helpers?.map(x => [x.stall, x.returned, x.raises?.map(r => `${r.from}>${r.to}`)])).toEqual([['struggling', true, ['low>medium', 'medium>high']]])
   })
 
-  test(`a struggling helper is asked about when Raising is not automatic: raised on yes, left alone on keep (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`a struggling helper is asked about when Raising is not automatic: raised on one more try, sent back on Finish (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { model: 'claude-fable-5-2', effort: 'high', store: { remember: true, choices: { down: 'auto' } } })
     const d = drive($, h)
     await d.start(surface)
@@ -676,21 +676,21 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.config('raiseRule', 'ask me')
     await warm(d, h)
     h.rating = HAND_OFF()
-    h.answers = { Stuck: 'Raise to medium' }
+    h.answers = { Stuck: 'Give it one more try' }
     await startHelper(d, h, 't1', 'helper')
     await d.bash('fail a', 'agent-helper')
     await d.bash('fail a', 'agent-helper')
     await d.step('t1', 1, 'agent-helper')
     expect(h.asked.map(a => a.header), 'asked, as for the main chat').toEqual(['Stuck'])
-    expect(h.asked[0]?.question).toContain('It uses one of this helper\'s 2 retries. No answer: it goes on at low.')
+    expect(h.asked[0]?.question).toMatch(/^The Haiku helper is stuck: the same tool call failed twice\. Finish on Fable\? No answer: it goes on at low\.$/)
     await settle()
     await d.step('t1', 2, 'agent-helper')
     expect(last(h.sent)?.effort, 'raised on yes, from its next request').toBe('medium')
     await d.complete('t1')
 
-    // A new task, and a keep: not raised, not sent back.
+    // A new task, and Finish on Fable: not raised, sent back to the main chat.
     h.asked = []
-    h.answers = { Stuck: 'Keep low' }
+    h.answers = { Stuck: 'Finish on Fable' }
     h.rating = HAND_OFF()
     await startHelper(d, h, 't2', 'second')
     await d.bash('fail b', 'agent-second')
@@ -699,9 +699,9 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.asked.map(a => a.header)).toEqual(['Stuck'])
     await settle()
     await d.step('t2', 2, 'agent-second')
-    expect(last(h.sent)?.effort, 'kept').toBe('low')
-    expect(((await d.bash('ls', 'agent-second')) as { deny?: string }).deny, 'not sent back').toBeUndefined()
-    expect(helperLog(h)).toContain('kept at low, as you chose')
+    expect(last(h.sent)?.effort, 'not raised').toBe('low')
+    expect(((await d.bash('ls', 'agent-second')) as { deny?: string }).deny, 'sent back, as chosen').toContain('stuck')
+    expect(helperLog(h)).toContain('you chose to finish on Fable')
     await d.complete('t2')
   })
 
@@ -742,7 +742,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.bash('fail a', 'agent-helper')
     await d.step('t1', 1, 'agent-helper')
     expect(h.asked.map(a => a.header), 'the dialog: the band is off').toEqual(['Stuck'])
-    expect(h.asked[0]?.question).toContain("It uses one of this helper's 2 retries. No answer in 30 seconds: it goes on at low.")
+    expect(h.asked[0]?.question).toMatch(/^The Haiku helper is stuck: the same tool call failed twice\. Finish on Fable\? No answer in 30 seconds: it goes on at low\.$/)
     expect(h.question, 'not on the band').toBeNull()
     await d.step('t1', 2, 'agent-helper')
     expect(last(h.sent)?.effort, 'not raised').toBe('low')
@@ -899,7 +899,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.bash('fail make')
     h.answers = { Stuck: NO_ONE }
     await d.step('t1', 1)
-    expect(h.asked[0]?.question).toBe('The same tool call failed twice. Raise effort from medium to high for the rest of this turn? No answer: the turn goes on at medium.')
+    expect(h.asked[0]?.question).toBe('Claude looks stuck: the same tool call failed twice. Raise effort to high? No answer: the turn goes on at medium.')
     expect(h.question?.header, 'on the band').toBe('Stuck')
     await d.step('t1', 2)
     expect(last(h.sent)?.effort, 'the turn went on, not raised').toBe('medium')
@@ -917,7 +917,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t1', 0)
     await d.bash('fail make')
     await d.bash('fail make')
-    h.answers = { Stuck: 'Raise to high for this turn' }
+    h.answers = { Stuck: 'Raise effort' }
     await d.step('t1', 1)
     await settle()
     await d.step('t1', 2)
@@ -955,7 +955,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     let release = () => {}
     h.answerGate = { Effort: new Promise<void>(r => (release = r)) }
     h.rating = LOWER
-    h.answers = { Effort: 'Lower for this prompt' }
+    h.answers = { Effort: 'Lower effort' }
     h.sleepEnds = true
     await d.submit(LOOKUP)
     await d.step('t1', 0)

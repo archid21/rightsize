@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.16.2 (unreleased)
+## 0.16.2 (2026-11-19)
 
 - **A simpler band.** The Prompt row says one thing in one unit: an unchanged prompt reads `Low on Opus fits.`, and a prompt after the cache went cold reads `Cache was cold: this prompt cost ~2.7% more.` (one figure, not a range; no dollars on a subscription; no "/compact first would have cost"). **Compact now** is now **Compact Now** and **Save handoff note** is **Save Handoff**.
 - **The session total moved to the status line.** From the session's 3rd rated prompt the status line ends with `saved ~0.3%` (or `cost ~0.3% more`, or dollars on the API). The band no longer carries `rightsize so far`.

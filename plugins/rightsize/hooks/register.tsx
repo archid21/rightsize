@@ -3238,6 +3238,34 @@ async function trackCompact($: EngineInterface, trigger: string, tokensBefore: n
   await logCompact($, compactTrack)
 }
 
+/** When rightsize's own compact last began measuring (P-85), and how many tracks the session.compact hook has started: whichever ran first for one compact wins. */
+let pluginCompactAt = 0
+let hookCompactStarts = 0
+const COMPACT_DEDUP_MS = 10_000
+
+/**
+ * Runs one of rightsize's own compacts and, when it went through (no skip, no throw), starts measuring it from here: on Team
+ * logins the session.compact hook never runs, and a /compact command never reaches it in every kit. The hook may also fire for the
+ * same compact (during the run, or a moment after): the one that started a track first is the only one.
+ */
+async function measuredCompact($: EngineInterface, run: () => Promise<string | undefined>): Promise<string | undefined> {
+  const measure = !off
+  const hookStarts = hookCompactStarts
+  const tokensBefore = lastContext
+  const ledgerBefore = measure ? (await usageNow($))?.cost?.usd : undefined
+  const skip = await run()
+  if (!measure || off || skip !== undefined) return skip
+  try {
+    // The hook already started this compact's track while `run` ran: it stands.
+    if (hookCompactStarts !== hookStarts) return skip
+    pluginCompactAt = await $.clock.now()
+    await trackCompact($, 'plugin', tokensBefore, ledgerBefore)
+  } catch (err) {
+    await log($, `compact measure failed: ${err instanceof Error ? err.message : String(err)}`)
+  }
+  return skip
+}
+
 /** The summary size the estimates use: the median of this machine's logged compacts (P-85), the default until there are 3. */
 const summaryNow = () => learnedSummary(loggedSummaries(runLog))
 
@@ -3668,6 +3696,10 @@ let wrapTurns = 0
 
 /** rightsize's own compaction, for when whatsnext is not there or cannot compact: one text for every path. Resolves to the reason when it was skipped. */
 async function ownCompact($: EngineInterface): Promise<string | undefined> {
+  return measuredCompact($, () => ownCompactRun($))
+}
+
+async function ownCompactRun($: EngineInterface): Promise<string | undefined> {
   // In the desktop app and other SDK sessions `$.session.compact` is not available ("not available in a headless (-p / SDK)
   // session yet"): run /compact with the same text the way the person's own would (ADR 0077). Seen as an error or as a skip;
   // any other error or skip stands.
@@ -3714,7 +3746,10 @@ async function whatsnextFallback($: EngineInterface, w: WhatsnextCompact, why: s
  */
 async function submitWhatsnextCompact($: EngineInterface, w: WhatsnextCompact, prompt: string, noFresh?: boolean) {
   try {
-    await $.command.run({ command: 'compact', args: prompt.slice('/compact '.length) })
+    await measuredCompact($, async () => {
+      await $.command.run({ command: 'compact', args: prompt.slice('/compact '.length) })
+      return undefined
+    })
   } catch (err) {
     return whatsnextFallback($, w, `"/compact" could not run: ${err instanceof Error ? err.message : String(err)}`)
   }
@@ -7416,7 +7451,10 @@ export const register: Register = (on, options) => {
     const ledgerBefore = measure ? (await usageNow($))?.cost?.usd : undefined
     const result = await next(e)
     if (off || e.agentId !== undefined || result.skip !== undefined) return result
-    if (measure) await trackCompact($, e.trigger, result.tokensBefore, ledgerBefore).catch(err => log($, `compact measure failed: ${err instanceof Error ? err.message : String(err)}`))
+    if (measure && !(pluginCompactAt > 0 && (await $.clock.now()) - pluginCompactAt < COMPACT_DEDUP_MS && (e.trigger === 'plugin' || e.trigger === 'manual'))) {
+      hookCompactStarts += 1
+      await trackCompact($, e.trigger, result.tokensBefore, ledgerBefore).catch(err => log($, `compact measure failed: ${err instanceof Error ? err.message : String(err)}`))
+    }
     if (e.trigger !== 'precompute') compactedSince = true
     if (e.trigger === 'manual' || e.trigger === 'plugin') {
       manualCompact = true

@@ -1,13 +1,14 @@
 import { type TestBody, expect, test } from 'claude-code/testing'
 import { CAL_STORE } from './cost'
-import { DEBUG, FREE_SWITCHES, LOOKUP, NO_CHANGE, NO_COLD, NO_ONE, REVIEW, SEARCH, LOWER, drive, engine, last, mount, settle } from './testkit'
+import { BIG_TURN, DEBUG, FREE_SWITCHES, LOOKUP, NO_CHANGE, NO_COLD, NO_ONE, REVIEW, SEARCH, LOWER, WHATSNEXT_CMDS, drive, engine, installWhatsnext, last, mount, settle } from './testkit'
 
 // P-81 step 4 (ADR 0094, general rule 4): on the third same answer to a question in a row, the next time it shows it carries a
 // small third button: "Always do this" after three changes, "Stop asking" after three noes. Pressing it answers the question that
 // way and writes the rule row as the person's own. Offered once per case; an answer on the normal buttons instead is a decline,
 // and it never comes back. A different answer breaks the run. The count is kept in the store (`askRuns`), per case.
 //
-// Not covered here, on purpose (the row to hold them is not settled): the helper-stuck, Keep warm and Compact questions.
+// Keep warm offers Always do this only (it sets Cache changes to Auto); three noes offer nothing and do not close the case.
+// Not covered here, on purpose (no row can hold them): the helper-stuck and Compact questions offer nothing.
 
 for (const surface of ['desktop', 'terminal'] as const) {
   const OPUS = { model: 'claude-opus-5-5', effort: 'medium' }
@@ -20,6 +21,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
   const ALWAYS = 'Always do this'
   const STOP = 'Stop asking'
   type Runs = Record<string, { last?: 'yes' | 'no'; n: number; closed?: true }>
+  const MIN = 60_000
+  const HOUR = 60 * MIN
 
   // ---- The dialog cases (before the prompt) ----
 
@@ -268,5 +271,83 @@ for (const surface of ['desktop', 'terminal'] as const) {
   test(`Stuck: an unanswered offer is neither counted nor declined (${surface})`, S, async ($, on) => {
     const { h } = await stuckTurn($, on, { stuck: { last: 'yes', n: 3 } }, NO_ONE)
     expect((h.store.askRuns as Runs).stuck).toEqual({ last: 'yes', n: 3 })
+  })
+
+  // ---- Keep warm (a band question): Always do this only; it sets Cache changes to Auto ----
+
+  /** 18:00 local on Friday 2027-01-15, as the Cache Ask tests start. */
+  const EVENING = new Date(2027, 0, 15, 18, 0, 0, 0).getTime()
+  const KEEP_ROWS = { cacheMode: 'Ask' }
+  const K = { timeoutMs: 30000, options: KEEP_ROWS }
+  const warm = async ($: unknown, on: Parameters<TestBody>[1], runs: Runs, answer: string | typeof NO_ONE) => {
+    const h = engine(on, { ...OPUS, stored: KEEP_ROWS, store: { askRuns: runs } })
+    h.answers = { 'Keep warm': answer }
+    h.now = EVENING
+    h.virtual = true
+    h.stepUsage = BIG_TURN
+    h.commands = WHATSNEXT_CMDS
+    installWhatsnext(h)
+    const d = drive($, h)
+    await d.start(surface)
+    await d.step('t1')
+    await d.complete('t1')
+    await h.advance(5 * MIN)
+    await settle()
+    return { h, d }
+  }
+
+  test(`Keep warm: two Keep warm answers in a row, still two buttons (${surface})`, K, async ($, on) => {
+    const { h } = await warm($, on, { keepWarm: { last: 'yes', n: 2 } }, NO_ONE)
+    expect(h.question?.options).toEqual(['Keep warm', 'Save handoff note'])
+  })
+
+  test(`Keep warm: three Keep warms in a row, ${ALWAYS} is the third button (${surface})`, K, async ($, on) => {
+    const { h } = await warm($, on, { keepWarm: { last: 'yes', n: 3 } }, NO_ONE)
+    expect(h.question?.options).toEqual(['Keep warm', 'Save handoff note', ALWAYS])
+    expect((h.question as unknown as { kind?: string } | null)?.kind).toBe('cache')
+    expect((h.store.askRuns as Runs).keepWarm, 'an unanswered offer is not counted').toEqual({ last: 'yes', n: 3 })
+  })
+
+  test(`Keep warm: three noes in a row offer nothing, and do not close the case (${surface})`, K, async ($, on) => {
+    const { h } = await warm($, on, { keepWarm: { last: 'no', n: 3 } }, NO_ONE)
+    expect(h.question?.options).toEqual(['Keep warm', 'Save handoff note'])
+    expect((h.store.askRuns as Runs).keepWarm).toEqual({ last: 'no', n: 3 })
+  })
+
+  test(`Keep warm: a no after three noes is counted and still closes nothing (${surface})`, K, async ($, on) => {
+    const { h } = await warm($, on, { keepWarm: { last: 'no', n: 3 } }, 'Save handoff note')
+    expect((h.store.askRuns as Runs).keepWarm).toEqual({ last: 'no', n: 4 })
+  })
+
+  test(`Keep warm: ${ALWAYS} keeps warm, sets Cache changes to Auto as the person's, and toasts (${surface})`, K, async ($, on) => {
+    const { h } = await warm($, on, { keepWarm: { last: 'yes', n: 3 } }, ALWAYS)
+    await h.advance(HOUR)
+    expect(h.forks.length, 'it answered Keep warm: the first keep-warm request went out').toBeGreaterThanOrEqual(1)
+    expect(h.stored.cacheMode).toBe('Auto')
+    expect(h.sets.find(x => x.key === 'rightsize.cacheMode')?.value).toBe('Auto')
+    expect(h.toasts.join('\n')).toContain('Cache changes set to Auto. /config changes it.')
+    expect((h.store.askRuns as Runs).keepWarm?.closed, 'offered once').toBe(true)
+  })
+
+  test(`Keep warm: a normal button on the offer declines it, and nothing is written (${surface})`, K, async ($, on) => {
+    const { h } = await warm($, on, { keepWarm: { last: 'yes', n: 3 } }, 'Keep warm')
+    await h.advance(HOUR)
+    expect(h.stored.cacheMode, 'still Ask').toBe('Ask')
+    expect((h.store.askRuns as Runs).keepWarm?.closed).toBe(true)
+  })
+
+  test(`Keep warm: a declined case offers nothing again (${surface})`, K, async ($, on) => {
+    const { h } = await warm($, on, { keepWarm: { last: 'yes', n: 9, closed: true } }, NO_ONE)
+    expect(h.question?.options).toEqual(['Keep warm', 'Save handoff note'])
+  })
+
+  test(`Keep warm: a different answer starts the run again (${surface})`, K, async ($, on) => {
+    const { h } = await warm($, on, { keepWarm: { last: 'yes', n: 2 } }, 'Save handoff note')
+    expect((h.store.askRuns as Runs).keepWarm).toEqual({ last: 'no', n: 1 })
+  })
+
+  test(`Helper stuck and the Compact question never offer a third button (${surface})`, K, async ($, on) => {
+    const { h } = await warm($, on, { helper: { last: 'yes', n: 9 }, limitCompact: { last: 'yes', n: 9 } }, NO_ONE)
+    expect(h.question?.options, 'only Keep warm has an offer, and only after its own run').toEqual(['Keep warm', 'Save handoff note'])
   })
 }

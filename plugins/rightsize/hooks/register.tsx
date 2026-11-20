@@ -1453,7 +1453,7 @@ type BandWhy =
   | { kind: 'watchTrial' }
   | { kind: 'watchSummary' }
   | { kind: 'stuck'; run: Run; cur: Level; to: Level; sign: Struggle; step: number; /** The third button this question carries (ADR 0094, rule 4): the answer it offers to make permanent. */ offer?: Said }
-  | { kind: 'keepWarm'; turn: ColdTurn; id: string }
+  | { kind: 'keepWarm'; turn: ColdTurn; id: string; /** The Always do this button this question carries. */ offer?: Said }
   | { kind: 'limitCompact' }
   | { kind: 'helper'; id: string; w: Watch; cur: Level; to: Level; sign: Struggle; main: string }
   | { kind: 'spend'; id: string; w: Watch }
@@ -2103,8 +2103,9 @@ async function alwaysRule($: EngineInterface, rule: keyof Choices, value: NonNul
 // changes, Stop asking after three noes. Pressing it answers the question that way and writes the setting that decides that case, as
 // the person's own. Offered once per case: any answer on the normal buttons while it was offered is a decline, and it never comes
 // back; a different answer only breaks the run. The counts are kept in the store, so they last across sessions. Not answered (the
-// wait ran out, the row was closed): not counted. Not offered for the questions whose setting is not settled (a stuck helper, Keep
-// warm, the Compact question), nor for a Haiku-start switch, which always asks whatever the rule says.
+// wait ran out, the row was closed): not counted. Keep warm offers Always do this only, which sets Cache changes to Auto; three noes
+// there offer nothing and close nothing. A stuck helper and the Compact question offer nothing (no row can hold them), nor does a
+// Haiku-start switch, which always asks whatever the rule says.
 
 const ASK_RUNS_STORE = 'askRuns'
 const ALWAYS_BUTTON = 'Always do this'
@@ -2113,7 +2114,7 @@ const STOP_BUTTON = 'Stop asking'
 const OFFER_AFTER = 3
 
 /** The questions that can offer it. Both stronger-model questions (a helper, a review switch) write the Stronger model rule. */
-type AskCase = 'lower' | 'raise' | 'up' | 'down' | 'switch' | 'stuck'
+type AskCase = 'lower' | 'raise' | 'up' | 'down' | 'switch' | 'stuck' | 'keepWarm'
 type Said = 'yes' | 'no'
 /** One case's run of the same answer: the answer, how many in a row, and `closed` once the offer was taken or declined. */
 type AskRun = { last?: Said; n: number; closed?: true }
@@ -2121,13 +2122,13 @@ type AskRuns = Partial<Record<AskCase, AskRun>>
 /** What the third button answers with: the value that stands in for the option beside a question's own. */
 type Offered<V> = V | 'always' | 'stop'
 
-const RULE_OF_CASE: Record<Exclude<AskCase, 'stuck'>, keyof Choices> = { lower: 'lower', raise: 'raise', up: 'up', down: 'down', switch: 'up' }
+const RULE_OF_CASE: Record<Exclude<AskCase, 'stuck' | 'keepWarm'>, keyof Choices> = { lower: 'lower', raise: 'raise', up: 'up', down: 'down', switch: 'up' }
 
 async function askRuns($: EngineInterface): Promise<AskRuns> {
   const v = await $.store.get(ASK_RUNS_STORE).catch(() => undefined)
   if (!v || typeof v !== 'object' || Array.isArray(v)) return {}
   const out: AskRuns = {}
-  for (const c of Object.keys(RULE_OF_CASE).concat('stuck') as AskCase[]) {
+  for (const c of Object.keys(RULE_OF_CASE).concat('stuck', 'keepWarm') as AskCase[]) {
     const r = (v as Record<string, unknown>)[c] as Partial<AskRun> | undefined
     if (r && typeof r.n === 'number' && r.n >= 0) out[c] = { ...(r.last === 'yes' || r.last === 'no' ? { last: r.last } : {}), n: r.n, ...(r.closed === true ? { closed: true } : {}) }
   }
@@ -2154,6 +2155,15 @@ async function saveRun($: EngineInterface, c: AskCase, next: AskRun) {
 async function takeOffer($: EngineInterface, c: AskCase, button: 'always' | 'stop') {
   let name: string
   let label: string
+  if (c === 'keepWarm') {
+    // Only Always do this is offered for Keep warm. Cache changes Auto keeps warm by itself while it pays.
+    name = plainTitle(SETTINGS.cacheMode.title)
+    label = 'Auto'
+    await changeRow($, 'cacheMode', label)
+    await log($, `${name}: set to Auto by ${ALWAYS_BUTTON} (Keep warm three times in a row)`)
+    $.ui.toast(`Rightsize: ${name} set to Auto. /config changes it.`)
+    return
+  }
   if (c === 'stuck') {
     name = plainTitle(SETTINGS.escalation.title)
     label = button === 'always' ? 'raise automatically' : 'off'
@@ -5192,12 +5202,14 @@ async function askKeepWarm($: EngineInterface, turn: ColdTurn) {
   const cost = billing === 'subscription' ? tag(pick.cost) : `~${tag(pick.cost)}`
   const second: ColdButton = turn.whatsnext ? { id: 'handoff', label: KEEP_WARM_NOTE } : { id: 'let-go', label: 'Let it go cold' }
   const q: Question<string> = { header: KEEP_WARM_HEADER, question: `Keep warm until ${until}? ${cost}`, options: [['Keep warm', pick.id], [second.label, second.id]] }
+  // Always do this only: after three Keep warms in a row. Three noes offer nothing, and the case stays open.
+  const offer = (await offerOf($, 'keepWarm')) === 'yes' ? ('yes' as const) : undefined
   const gen = coldGen
   const deadline = turn.endedAt + cacheTtl - leadMs(cacheTtl)
   const show = async () => {
     if (coldTurn !== turn || mainBusy || turn.endedAt + cacheTtl <= (await $.clock.now())) return
     const sure = turn.whatsnext ? 'a handoff note is saved before the cache goes cold' : 'nothing changes'
-    if (await bandCanAsk($)) await askBand($, { ...q, ifNone: sure }, 'prompt', true, { kind: 'keepWarm', turn, id: pick.id })
+    if (await bandCanAsk($)) await askBand($, { ...withOffer(q, offer), ifNone: sure }, 'prompt', true, { kind: 'keepWarm', turn, id: pick.id, ...(offer ? { offer } : {}) })
     await log($, `before the cache goes cold: asked to keep warm until ${until} (${cost}); no answer: ${sure}`)
     await armCold($, gen, deadline, () => keepWarmUnanswered($, turn))
   }
@@ -5219,8 +5231,10 @@ async function keepWarmUnanswered($: EngineInterface, turn: ColdTurn) {
 /** The Keep warm answer: keep warm until the time asked, or save the handoff note. Gone stale (a newer turn): nothing. */
 async function answerKeepWarm($: EngineInterface, why: Extract<BandWhy, { kind: 'keepWarm' }>, v: unknown) {
   const turn = why.turn
+  // The answer counts, and the third button's setting stands, even when the question has gone stale.
+  const said = await learnAnswer($, 'keepWarm', why.offer, v as Offered<string> | undefined, why.id)
   if (coldTurn !== turn || mainBusy) return
-  if (v === why.id) {
+  if (said === 'yes') {
     turn.answered = true
     return runCold($, turn, why.id)
   }

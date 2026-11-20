@@ -520,9 +520,8 @@ test('replay: over a person who rarely comes back after the first hour, the rule
   expect(list.length).toBe(380)
   const rule = replayPays(list, o)
   const old = replayOld(list, o)
-  // $1.17 cold, $0.03 a request: the rule sends 126 requests (about $3.78) and saves about $26.91 on the returns it kept warm; the old default
-  // sends 766 (about $22.98) and saves about $42.12.
-  expect(Math.round(rule.net * 100) / 100, 'net about $23.13').toBe(23.13)
+  // $1.17 cold, $0.03 a request. A compaction is a warm cache read plus a summary (P-85), so the rule compacts more often and nets more than the old default.
+  expect(Math.round(rule.net * 100) / 100, 'net about $25.58 (a warm compact costs a cache read and a summary, P-85)').toBe(25.58)
   expect(Math.round(old.net * 100) / 100, 'against about $19.14').toBe(19.14)
   expect(rule.net, 'the rule nets money').toBeGreaterThan(0)
   expect(rule.net, 'and more than the old default').toBeGreaterThan(old.net)

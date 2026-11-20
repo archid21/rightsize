@@ -37,7 +37,7 @@ export type RunLine = {
    * 'idle': one idle stretch that closed (P-40): how long the person was away after a main turn ended (`gapMs`) and how it ended (`ended`: 'warm' they came back before the cache expired, 'cold' after it, 'never' the session ended or died with no return), with the local `hour` and `weekday` the turn ended, the `billing`, the cache life `ttl`, the conversation's `context` and what coming back cold would have cost (`cold`). It carries no cost and is no part of any total or count of runs; keep warm's return chance reads it.
    * `totals` adds the `overhead` of every line, so these pings count as rightsize's own cost and lower Total saved.
    */
-  kind?: 'run' | 'overhead' | 'subagent' | 'check' | 'feedback' | 'corrected' | 'unrated' | 'dropped' | 'unbound' | 'warm' | 'warmSaved' | 'cold' | 'undone' | 'auto' | 'idle' | 'rebuild'
+  kind?: 'run' | 'overhead' | 'subagent' | 'check' | 'feedback' | 'corrected' | 'unrated' | 'dropped' | 'unbound' | 'warm' | 'warmSaved' | 'cold' | 'undone' | 'auto' | 'idle' | 'rebuild' | 'compactSaved'
   /** A 'rebuild' line (P-35): one main request that wrote again what the cache held. `cause` is the likely one (rebuild.ts), `tokens` how many it wrote again, `rebuildCost` what that cost over reading them (dollars, API-equivalent on a subscription), `ours` true when rightsize's own model or effort switch caused it; `tier`, `context` (what the cache held), `gapMs` (since the cache was last refreshed) and `ttl` are the line's own. No part of any total or count of runs. */
   cause?: string
   tokens?: number
@@ -48,6 +48,19 @@ export type RunLine = {
   ended?: 'warm' | 'cold' | 'never'
   /** An 'idle' line made at the first start after the install from the run log's earlier runs (P-42), not seen as it happened: `hour`, `weekday` and `context` come from the run, `cold` is 0, and `ttl` is absent. */
   history?: true
+  /**
+   * A 'compactSaved' line (P-85, ADR 0098): one compact's measured saving so far. Written at each turn end and when counting stops;
+   * the report reads the latest line per `compactId`. `saved` = the tokens cut × the price each later request paid − `compactCost`;
+   * 0 when the cost is unknown. `startedFresh`: the session ended within 3 requests. Dollars, API-equivalent on a subscription.
+   */
+  compactId?: string
+  compactSource?: string
+  ctxBefore?: number
+  ctxAfter?: number
+  cut?: number
+  compactCost?: number
+  stop?: string
+  startedFresh?: boolean
   /** An 'idle' line: the local hour (0-23) and weekday (0-6, Sunday 0) when the turn ended, the cache life in ms, and what a cold return would have cost (dollars, API-equivalent on a subscription too). `billing` and `context` are the line's own. */
   hour?: number
   weekday?: number
@@ -282,6 +295,8 @@ export type Totals = {
   /** Keep-warm returns that held the cache: how many, and what they saved (already in `saved`). */
   returns: number
   keptSaved: number
+  /** What compacts saved (P-85): the latest 'compactSaved' line of each compact. */
+  compactSaved: number
 }
 
 export function totals(lines: readonly RunLine[]): Totals {
@@ -297,8 +312,19 @@ export function totals(lines: readonly RunLine[]): Totals {
     spent: 0,
     returns: 0,
     keptSaved: 0,
+    compactSaved: 0,
   }
+  // A compact's line is written again as it grows: only its latest counts.
+  const latest = latestCompacts(lines)
   for (const l of lines) {
+    if (l.kind === 'compactSaved') {
+      // Only rightsize's own compacts count; the person's /compact and Claude Code's auto-compact show in the Compacts rows only.
+      if (latest.get(l.compactId ?? '') === l && ownCompact(l)) {
+        t.compactSaved += num(l.saved)
+        t.saved += num(l.saved)
+      }
+      continue
+    }
     t.overhead += num(l.overhead)
     // A return to a kept-warm cache: what a cold restart would have cost is saved. The pings stay their own cost lines.
     if (l.kind === 'warmSaved') {
@@ -351,6 +377,7 @@ export function addTotals(a: Totals, b: Totals): Totals {
     spent: a.spent + b.spent,
     returns: a.returns + b.returns,
     keptSaved: a.keptSaved + b.keptSaved,
+    compactSaved: a.compactSaved + b.compactSaved,
   }
 }
 
@@ -383,6 +410,7 @@ export function parseLifetime(v: unknown): Lifetime | undefined {
     spent: num(x.spent),
     returns: num(x.returns),
     keptSaved: num(x.keptSaved),
+    compactSaved: num(x.compactSaved),
     changed: Object.fromEntries(Object.keys(base.changed).map(k => [k, num(changed[k])])) as Record<Change, number>,
   }
   return { since, through, t: out }
@@ -1287,6 +1315,42 @@ export function keepWarm(lines: readonly RunLine[]): KeepWarm | undefined {
   return { runs, returns: t.returns, saved: t.keptSaved, cost, net: t.keptSaved - cost }
 }
 
+/** The latest 'compactSaved' line of each compact, by `compactId`. */
+function latestCompacts(lines: readonly RunLine[]) {
+  const m = new Map<string, RunLine>()
+  for (const l of lines) if (l.kind === 'compactSaved') m.set(l.compactId ?? '', l)
+  return m
+}
+
+/** Compacts rightsize made or advised: its buttons, the size and limit advice, the cold tip and keep warm's gate. */
+const OWN_COMPACT = ['button', 'limit', 'tip', 'keepwarm']
+const ownCompact = (l: RunLine) => OWN_COMPACT.includes(l.compactSource ?? '')
+
+export type CompactCount = { count: number; saved: number; fresh: number }
+
+/** Compacts for the period (P-85): rightsize's (counted in Total saved), the person's own /compact (`manual`) and Claude Code's (`auto`), the last two shown only. */
+export function compacts(lines: readonly RunLine[]): { rightsize: CompactCount; manual: CompactCount; auto: CompactCount } {
+  const out = { rightsize: { count: 0, saved: 0, fresh: 0 }, manual: { count: 0, saved: 0, fresh: 0 }, auto: { count: 0, saved: 0, fresh: 0 } }
+  for (const l of latestCompacts(lines).values()) {
+    const c = ownCompact(l) ? out.rightsize : l.compactSource === 'auto' ? out.auto : out.manual
+    c.count += 1
+    c.saved = Math.round((c.saved + num(l.saved)) * 1e6) / 1e6
+    if (l.startedFresh) c.fresh += 1
+  }
+  return out
+}
+
+/** The Compacts rows: "2 compacts: saved ~$0.30 so far, 1 started fresh". None for a kind with no compacts. */
+function compactRows(lines: readonly RunLine[], subscription: boolean): string[][] {
+  const c = compacts(lines)
+  const row = (label: string, k: CompactCount): string[][] => {
+    if (!k.count) return []
+    const net = Math.abs(k.saved) < 0.005 ? 'about even so far' : k.saved > 0 ? `saved ${tildeMoney(k.saved)} so far` : `cost ${tildeMoney(-k.saved)} more so far`
+    return [[label, `${plural(k.count, 'compact')}: ${net}${k.fresh ? `, ${k.fresh} started fresh` : ''}${subscription ? ' (API prices)' : ''}`]]
+  }
+  return [...row('Compacts (rightsize)', c.rightsize), ...row('Compacts (yours)', c.manual), ...row('Compacts (auto)', c.auto)]
+}
+
 export type LoweringNet = { turns: number; days: number; stay: number; saved: number; miss: number }
 
 /**
@@ -1437,7 +1501,7 @@ export function buildReport(
     // The Saving check on the prompts rightsize changed alone: the headline in the main view counts all prompts.
     const changedOnly = checkRows(savingCheck(month), sub).changed
     if (changedOnly.table.length) out.push('', `SAVING CHECK: CHANGED PROMPTS ONLY (last 30 days${sub ? ', API prices' : ''})`, ...changedOnly.lead.flatMap(n => para(n, md ? '' : '  ')), ...indent(changedOnly.table))
-    const summaryList = summaryRows(thirty, warm, sub)
+    const summaryList = [...summaryRows(thirty, warm, sub), ...compactRows(month, sub)]
     if (summaryList.length) out.push(...section('30-DAY SUMMARY', grid(summaryList)))
     const trimmed = trimRows(opts.trim)
     if (trimmed) out.push(...section('TRIM SAVINGS (tokens, estimated)', grid(trimmed)), ...para(TRIM_NOTE, md ? '' : '  '))

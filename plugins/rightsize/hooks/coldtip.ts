@@ -1,5 +1,5 @@
 import type { RightsizeTier as Tier } from '../types'
-import { COMPACT_SUMMARY_TOKENS, TIER_NAME, type Prices, atPrompt, dollars } from './cost'
+import { COMPACT_SUMMARY_TOKENS, TIER_NAME, type Prices, atPrompt, compactSaving, dollars } from './cost'
 
 // The cold-compact tip (P-47, ADR 0081): a mod cannot send a compaction to another model, and `/model` saves the person's
 // default, so rightsize cannot compact on Sonnet by itself. When the cache has gone cold on a big Opus or Fable conversation,
@@ -17,23 +17,19 @@ export const TIP_STEPS = ['/model sonnet', '/compact', '/model default'] as cons
  * cache on `tier`]. Never below 0.
  */
 export function tipSaving(prices: Prices, tier: Tier, context: number, summary = COMPACT_SUMMARY_TOKENS) {
-  const own = atPrompt(prices[tier], context)
-  const sonnet = atPrompt(prices[TIP_TO], context)
-  const coldWrite = dollars(own, { cacheWrite: context })
-  const compact = dollars(sonnet, { input: context, output: summary })
-  const summaryWrite = dollars(prices[tier], { cacheWrite: summary })
-  return Math.max(0, coldWrite - compact - summaryWrite)
+  // The cache is cold and the compaction runs on Sonnet (P-85: the one estimate formula).
+  return compactSaving(prices, tier, context, { by: TIP_TO, warm: false, summary })
 }
 
 /**
  * Whether the tip is due: an Opus or Fable session whose conversation fits Sonnet's window, and a saving of at least `min`
  * (the Idle warning amount). Returns the saving, or undefined.
  */
-export function tipDue(prices: Prices, tier: Tier, context: number, min: number) {
+export function tipDue(prices: Prices, tier: Tier, context: number, min: number, summary = COMPACT_SUMMARY_TOKENS) {
   if (!TIP_TIERS.includes(tier) || !(context > 0)) return undefined
   const w = prices[TIP_TO].window
   if (w !== undefined && context > w) return undefined
-  const saving = tipSaving(prices, tier, context)
+  const saving = tipSaving(prices, tier, context, summary)
   return saving >= min ? saving : undefined
 }
 

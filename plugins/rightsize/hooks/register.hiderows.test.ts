@@ -280,6 +280,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.commands = []
     h.inGit = true
     h.files[LEGACY_RUNS] = `${rep(20, 300).map((s, i) => JSON.stringify({ at: new Date(EVENING - (i + 1) * HOUR).toISOString(), kind: 'idle', session: 'earlier', gapMs: s.gapMin * MIN, ended: s.ended, hour: 9, weekday: 2, billing: 'api', ttl: HOUR, context: 80_500, cold: 0.6279 })).join('\n')}\n`
+    // Three past compacts with 20K-token summaries: estimates use that size (P-85), so a note would save over the hint's $0.25 here.
+    h.files[LEGACY_RUNS] += [1, 2, 3].map(i => JSON.stringify({ at: new Date(EVENING - i * 24 * HOUR).toISOString(), kind: 'compactSaved', session: 'earlier', compactId: `earlier-${i}`, compactSource: 'button', tier: 'opus', ctxBefore: 150_000, ctxAfter: 20_000, cut: 130_000, compactCost: 0.3, saved: 0.1, requests: 5, stop: 'session end' })).join('\n') + '\n'
     const d = drive($, h)
     await d.start(surface)
     return { h, d }

@@ -29,8 +29,10 @@ for (const surface of ['desktop', 'terminal'] as const) {
     lines?: object[]
     off?: boolean
     inGit?: boolean
+    /** Compacts already logged whose summaries were this many tokens: estimates use their median once there are 3 (P-85). */
+    summary?: number
   }
-  // Opus: 80,500 tokens in the conversation: $0.63 to come back cold, $0.32 to compact, a handoff note about $0.06.
+  // Opus: 80,500 tokens in the conversation: $0.63 to come back cold, $0.14 to compact ($0.42 when past summaries were 20K tokens), a handoff note about $0.06.
   const session = async ($: unknown, on: Parameters<TestBody>[1], over: Over = {}) => {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', ...(over.stored ? { stored: over.stored } : {}), store: { installHintAt: undefined, initHinted: [], ...over.store } })
     h.now = EVENING
@@ -47,6 +49,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     }
     const lines = [
       ...(over.stretches ?? []).map((s, i) => ({ at: new Date(EVENING - (i + 1) * HOUR).toISOString(), kind: 'idle', session: 'earlier', gapMs: s.gapMin * MIN, ended: s.ended, hour: 9, weekday: 2, billing: 'api', ttl: HOUR, context: 80_500, cold: 0.6279 })),
+      ...(over.summary ? [1, 2, 3].map(i => ({ at: new Date(EVENING - i * DAY).toISOString(), kind: 'compactSaved', session: 'earlier', compactId: `earlier-${i}`, compactSource: 'button', tier: 'opus', ctxBefore: 150_000, ctxAfter: over.summary, cut: 150_000 - (over.summary ?? 0), compactCost: 0.3, saved: 0.1, requests: 5, stop: 'session end' })) : []),
       ...(over.lines ?? []),
     ]
     if (lines.length) h.files[LEGACY_RUNS] = `${lines.map(l => JSON.stringify(l)).join('\n')}\n`
@@ -324,13 +327,13 @@ for (const surface of ['desktop', 'terminal'] as const) {
   // ---- The install hint --------------------------------------------------------------------------------------------
 
   test(`install hint: a compaction before the cache goes cold, with whatsnext not installed and a saving of $0.25 or more, says so on the row (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const { h, d } = await session($, on, { stretches: GATE })
+    const { h, d } = await session($, on, { summary: 20_000, stretches: GATE })
     await turn(d, 't1')
     await h.advance(57 * MIN)
     expect(h.compactions).toBe(1)
-    expect(await cacheRow($)).toBe(`Compacted while the cache was warm. ${INSTALL('$0.27')}`)
+    expect(await cacheRow($)).toBe(`Compacted while the cache was warm. ${INSTALL('$0.36')}`)
     expect(h.store.installHintAt, 'the time is kept').toBe(EVENING + 57 * MIN)
-    expect(log(h)).toContain('install hint: shown; a whatsnext handoff note would have saved $0.27')
+    expect(log(h)).toContain('install hint: shown; a whatsnext handoff note would have saved $0.36')
   })
 
   test(`install hint: a saving under $0.25 shows nothing (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -343,7 +346,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   test(`install hint: not twice: the second compaction right after the first says nothing (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const { h, d } = await session($, on, { stretches: GATE })
+    const { h, d } = await session($, on, { summary: 20_000, stretches: GATE })
     await turn(d, 't1')
     await h.advance(57 * MIN)
     expect(await cacheRow($)).toContain('A whatsnext handoff note')
@@ -357,7 +360,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   test(`install hint: within 30 days of the last one nothing shows; after 30 days it shows again (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const { h, d } = await session($, on, { stretches: GATE, store: { installHintAt: EVENING - 29 * DAY } })
+    const { h, d } = await session($, on, { summary: 20_000, stretches: GATE, store: { installHintAt: EVENING - 29 * DAY } })
     await turn(d, 't1')
     await h.advance(57 * MIN)
     expect(h.compactions).toBe(1)
@@ -366,7 +369,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   test(`install hint: 31 days after the last one it shows again (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const { h, d } = await session($, on, { stretches: GATE, store: { installHintAt: EVENING - 31 * DAY } })
+    const { h, d } = await session($, on, { summary: 20_000, stretches: GATE, store: { installHintAt: EVENING - 31 * DAY } })
     await turn(d, 't1')
     await h.advance(57 * MIN)
     expect(await cacheRow($)).toContain('A whatsnext handoff note')
@@ -374,7 +377,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   test(`install hint: Don't show again in the ⋯ menu hides it for good (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const { h, d } = await session($, on, { stretches: GATE })
+    const { h, d } = await session($, on, { summary: 20_000, stretches: GATE })
     await turn(d, 't1')
     await h.advance(57 * MIN)
     const asked = await menu($, h, "Don't show again")
@@ -385,7 +388,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   test(`install hint: never after Don't show again, however long ago the last one was (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const { h, d } = await session($, on, { stretches: GATE, store: { installHintHidden: true, installHintAt: EVENING - 90 * DAY } })
+    const { h, d } = await session($, on, { summary: 20_000, stretches: GATE, store: { installHintHidden: true, installHintAt: EVENING - 90 * DAY } })
     await turn(d, 't1')
     await h.advance(57 * MIN)
     expect(h.compactions).toBe(1)
@@ -393,19 +396,19 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   test(`install hint: a Wrap up press without whatsnext carries it (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const { h, d } = await session($, on, { stretches: RULE })
+    const { h, d } = await session($, on, { summary: 20_000, stretches: RULE })
     await turn(d, 't1')
     await h.advance(5 * MIN)
     await press($, 'cold-wrap')
-    expect(await cacheRow($)).toBe(`Wrapped up: compacted the conversation. ${INSTALL('$0.27')}`)
+    expect(await cacheRow($)).toBe(`Wrapped up: compacted the conversation. ${INSTALL('$0.36')}`)
   })
 
   test(`install hint: a typed wrap up without whatsnext carries it (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const { h, d } = await session($, on)
+    const { h, d } = await session($, on, { summary: 20_000 })
     await turn(d, 't1')
     await d.submit('wrap up')
     await h.advance(0)
-    expect(await cacheRow($)).toBe(`Wrapped up: compacted the conversation. ${INSTALL('$0.27')}`)
+    expect(await cacheRow($)).toBe(`Wrapped up: compacted the conversation. ${INSTALL('$0.36')}`)
   })
 
   test(`install hint: coming back to a cold cache shows it when that turn ends, with the saving over a cold return (${surface})`, { timeoutMs: 30000, options: { ...ASK, cacheTimer: 'off' } }, async ($, on) => {
@@ -477,11 +480,11 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   test(`init hint: whatsnext installed but not set up, in a git project, after a Wrap up press that compacted: once per project (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const { h, d } = await session($, on, { whatsnext: 'uninitialized' })
+    const { h, d } = await session($, on, { summary: 20_000, whatsnext: 'uninitialized' })
     await turn(d, 't1')
     await h.advance(5 * MIN)
     await press($, 'cold-wrap')
-    expect(await cacheRow($)).toBe(`Wrapped up: compacted the conversation. ${INIT('$0.27')}`)
+    expect(await cacheRow($)).toBe(`Wrapped up: compacted the conversation. ${INIT('$0.36')}`)
     expect(h.store.initHinted).toEqual(['/repo'])
     expect(log(h)).toContain('init hint: shown for /repo')
     // The same project again, a later break: no hint.
@@ -497,24 +500,24 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await turn(d, 't3')
     await h.advance(5 * MIN)
     await press($, 'cold-wrap')
-    expect(await cacheRow($)).toBe(`Wrapped up: compacted the conversation. ${INIT('$0.27')}`)
+    expect(await cacheRow($)).toBe(`Wrapped up: compacted the conversation. ${INIT('$0.36')}`)
     expect(h.store.initHinted).toEqual(['/repo', '/other'])
   })
 
   test(`init hint: a typed wrap up carries it (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const { h, d } = await session($, on, { whatsnext: 'uninitialized' })
+    const { h, d } = await session($, on, { summary: 20_000, whatsnext: 'uninitialized' })
     await turn(d, 't1')
     await d.submit('wrap up')
     await h.advance(0)
-    expect(await cacheRow($)).toBe(`Wrapped up: compacted the conversation. ${INIT('$0.27')}`)
+    expect(await cacheRow($)).toBe(`Wrapped up: compacted the conversation. ${INIT('$0.36')}`)
   })
 
   test(`init hint: the compaction before the cache goes cold carries it (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const { h, d } = await session($, on, { whatsnext: 'uninitialized', stretches: GATE })
+    const { h, d } = await session($, on, { summary: 20_000, whatsnext: 'uninitialized', stretches: GATE })
     await turn(d, 't1')
     await h.advance(57 * MIN)
     expect(h.compactions).toBe(1)
-    expect(await cacheRow($)).toBe(`Compacted while the cache was warm. ${INIT('$0.27')}`)
+    expect(await cacheRow($)).toBe(`Compacted while the cache was warm. ${INIT('$0.36')}`)
   })
 
   test(`init hint: not outside a git repository (${surface})`, { timeoutMs: 30000 }, async ($, on) => {

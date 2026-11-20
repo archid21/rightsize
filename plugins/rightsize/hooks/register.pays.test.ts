@@ -28,7 +28,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     /** Lines already in the run log. */
     lines?: object[]
   }
-  // Opus: 80,500 tokens in the conversation, $0.63 to come back cold, $0.016 a request, $0.32 to compact.
+  // Opus: 80,500 tokens in the conversation, $0.63 to come back cold, $0.016 a request, $0.14 to compact.
   const session = async ($: unknown, on: Parameters<TestBody>[1], over: Over = {}) => {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', ...(over.stored ? { stored: over.stored } : {}), ...(over.store ? { store: over.store } : {}) })
     h.now = EVENING
@@ -160,7 +160,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   test(`default: before 20 stretches are on record, one request at the first expiry on a 1-hour cache, then the compaction gate with a 25% chance (${surface})`, { timeoutMs: 30000, options: UNSET.options }, async ($, on) => {
-    const { h, d } = await session($, on, { stretches: rep(19, 30, 'warm'), commands: WHATSNEXT_CMDS })
+    // 70K tokens: with a compaction priced as a cache read plus the summary (P-85) the 25% chance pays only above about 75K, so a chat under it (and over the $0.50 Idle warning bar) is the one that gets a note.
+    const { h, d } = await session($, on, { stretches: rep(19, 30, 'warm'), commands: WHATSNEXT_CMDS, usage: { ...BIG_TURN, cache_read_input_tokens: 69_500 }, fork: { input_tokens: 12, output_tokens: 4, cache_read_input_tokens: 69_500, cache_creation_input_tokens: 0 } })
     await turn(d, 't1')
     await h.advance(56 * MIN)
     expect(h.forks.length).toBe(0)
@@ -171,7 +172,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.submitted, 'no second request; the gate runs at 114 minutes').toEqual([])
     await h.advance(MIN)
     expect(h.forks.length).toBe(1)
-    expect(h.compactions, '25% of the $0.58 a compaction saves is under its $0.32').toBe(0)
+    expect(h.compactions, '25% of the $0.50 a compaction saves is under its $0.13').toBe(0)
     expect(h.submitted.map(s => s.text), 'a handoff note instead (whatsnext)').toEqual(['wrap up'])
     expect(coldLog(h)).toContain('not compacting, a handoff note instead: chance of a later return 25% (starting value, 19 stretches on record)')
   })
@@ -264,7 +265,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   // ---- The compaction gate -------------------------------------------------------------------------------------
 
   test(`gate: when the person usually comes back after the expiry, it compacts 3 minutes before it (${surface})`, { timeoutMs: 30000, options: UNSET.options }, async ($, on) => {
-    // 20 stretches all back at 5 hours: nobody returns in the next hour, so no request; but every one that is still going comes back later: 1 x $0.58 over the $0.32 to compact.
+    // 20 stretches all back at 5 hours: nobody returns in the next hour, so no request; but every one that is still going comes back later: 1 x $0.58 over the $0.14 to compact.
     const { h, d } = await session($, on, { stretches: rep(20, 300) })
     await turn(d, 't1')
     await h.advance(56 * MIN)
@@ -272,7 +273,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await h.advance(MIN)
     expect(h.compactions).toBe(1)
     expect(h.forks.length).toBe(0)
-    expect(coldLog(h)).toContain('compacting 3 min before the expiry: 100% of 20 stretches still going at the expiry came back later; it would save $0.58 on average against $0.32 to compact')
+    expect(coldLog(h)).toContain('compacting 3 min before the expiry: 100% of 20 stretches still going at the expiry came back later; it would save $0.58 on average against $0.14 to compact')
     expect(await bandText($, surface)).toBe('Compacted while the cache was warm.')
   })
 
@@ -282,7 +283,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await h.advance(57 * MIN)
     expect(h.submitted.map(s => s.text)).toEqual(['wrap up'])
     expect(h.compactions).toBe(0)
-    expect(coldLog(h)).toContain('not compacting, a handoff note instead: 0% of 0 stretches still going at the expiry came back later; it would save under $0.01 on average against $0.32 to compact')
+    expect(coldLog(h)).toContain('not compacting, a handoff note instead: 0% of 0 stretches still going at the expiry came back later; it would save under $0.01 on average against $0.14 to compact')
     // The wrap-up's own turn does not start another round.
     await d.turnStart('t2', 'wrap up')
     await turn(d, 't2')

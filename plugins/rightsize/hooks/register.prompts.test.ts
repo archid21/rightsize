@@ -1232,7 +1232,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.submitted.length, 'the prompt entered').toBe(sent + 1)
     expect(h.filled, 'and nothing was put back in the box').toEqual([])
     expect(await bandText($, surface)).toContain('Cache was cold: this prompt cost ~$0.16 more.')
-    expect(h.files[LOG_PATH] ?? '').toContain('idle 2 hours with 20500 tokens: noted on the band ($0.16 to write again; /compact first would have cost $0.08)')
+    expect(h.files[LOG_PATH] ?? '').toContain('idle 2 hours with 20500 tokens: noted on the band ($0.16 to write again; /compact first would have cost $0.12)')
 
     await d.submit('continue')
     expect(await bandText($, surface), 'one note per idle gap').not.toContain('Cache was cold')

@@ -829,9 +829,9 @@ export function parseShare(v: unknown, fallback: number) {
 export const IDLE_MAX_CONTEXT = 200_000
 
 /** Sending into an expired cache: what writing the conversation again costs over reading it warm, and what /compact's read costs. */
-export function idleCost(price: Price, context: number) {
+export function idleCost(price: Price, context: number, summary = COMPACT_SUMMARY_TOKENS) {
   const p = atPrompt(price, context)
-  return { resend: dollars(p, { cacheWrite: context }) - dollars(p, { cacheRead: context }), compact: dollars(p, { input: context }) }
+  return { resend: dollars(p, { cacheWrite: context }) - dollars(p, { cacheRead: context }), compact: dollars(p, { cacheRead: context, output: summary }) }
 }
 
 /** What a Haiku compaction of an idle session is assumed to leave behind: the summary the next prompt re-reads instead of the whole conversation. */
@@ -841,13 +841,32 @@ export const COMPACT_SUMMARY_TOKENS = 6000
 export const coldCost = (prices: Prices, tier: Tier, tokens: number) => idleCost(prices[tier], tokens).resend
 
 /**
+ * What compacting `context` tokens costs: the compacting model (`by`) reads the conversation, from the cache when it is warm or
+ * as input when it is cold, and writes the summary as output. Dollars, API-equivalent on a subscription.
+ */
+export function compactCost(prices: Prices, _tier: Tier, context: number, o: { by: Tier; warm: boolean; summary?: number }) {
+  const p = atPrompt(prices[o.by], context)
+  return dollars(p, { ...(o.warm ? { cacheRead: context } : { input: context }), output: o.summary ?? COMPACT_SUMMARY_TOKENS })
+}
+
+/**
+ * The one estimate of what a compact saves before it runs, for every place that shows one: coming back cold to `context` on
+ * `tier`, less the compaction (compactCost) and less the summary coming back cold. Never below 0.
+ */
+export function compactSaving(prices: Prices, tier: Tier, context: number, o: { by: Tier; warm: boolean; summary?: number }) {
+  const summary = o.summary ?? COMPACT_SUMMARY_TOKENS
+  return Math.max(0, coldCost(prices, tier, context) - compactCost(prices, tier, context, { ...o, summary }) - coldCost(prices, tier, summary))
+}
+
+
+/**
  * What compacting `context` tokens now would save after a 5-hour reset, on `tier`: the cold re-read of the whole conversation
  * after the reset, less [a compaction now, with the cache still warm: the conversation read from the cache and
  * `summaryTokens` written as output, on the session's own model] and less the cold re-read of that summary after the reset.
  * Never below 0 (a small context costs more to compact than to read again).
  */
 export const limitSaving = (prices: Prices, tier: Tier, context: number, summaryTokens = COMPACT_SUMMARY_TOKENS) =>
-  Math.max(0, coldCost(prices, tier, context) - (dollars(atPrompt(prices[tier], context), { cacheRead: context, output: summaryTokens }) + coldCost(prices, tier, summaryTokens)))
+  compactSaving(prices, tier, context, { by: tier, warm: true, summary: summaryTokens })
 
 /** "over $0.50" from /config as 0.5; "off" as null; anything else, the default. */
 export function parseIdleWarning(v: unknown): number | null {

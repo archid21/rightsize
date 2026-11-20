@@ -1,12 +1,12 @@
 import { expect, test } from 'claude-code/testing'
-import { COMPACT_SUMMARY_TOKENS, DEFAULT_PRICES as P, atPrompt, dollars } from './cost'
+import { COMPACT_SUMMARY_TOKENS, DEFAULT_PRICES as P, atPrompt, coldCost, dollars } from './cost'
 import { TIP_STEPS, isTipId, TIP_FILL, TIP_NEXT, TIP_HIDE, TIP_START, TIP_WHY_ID, TIP_WHY, tipCommandAt, tipDue, tipSaving, tipText } from './coldtip'
 
 // ---- The cold-compact tip (P-47): the pure part --------------------------------------------------------------
 
-test('the saving: the cold write on the own model, less a compaction on Sonnet and the summary written back', async () => {
+test('the saving: the cold return on the own model, less a cold compaction on Sonnet and the summary coming back cold (P-85)', async () => {
   const ctx = 150_000
-  const want = dollars(atPrompt(P.opus, ctx), { cacheWrite: ctx }) - dollars(atPrompt(P.sonnet, ctx), { input: ctx, output: COMPACT_SUMMARY_TOKENS }) - dollars(P.opus, { cacheWrite: COMPACT_SUMMARY_TOKENS })
+  const want = coldCost(P, 'opus', ctx) - dollars(atPrompt(P.sonnet, ctx), { input: ctx, output: COMPACT_SUMMARY_TOKENS }) - coldCost(P, 'opus', COMPACT_SUMMARY_TOKENS)
   expect(Math.abs(tipSaving(P, 'opus', ctx) - Math.max(0, want))).toBeLessThan(1e-9)
   expect(tipSaving(P, 'opus', 1000), 'a tiny conversation saves nothing').toBe(0)
 })

@@ -12,7 +12,6 @@ import {
   DEFAULT_LEVEL,
   DEFAULT_PRICES,
   DEFAULT_RULES,
-  COMPACT_SUMMARY_TOKENS,
   NORMAL_PACE,
   SWITCH_KEY,
   TIERS,
@@ -175,6 +174,7 @@ import { STORE_KEY as TIPS_KEY, type Tip, type TipsState, nextTip, parseState, t
 import { WELCOMED_KEY, welcomeMarkdown, welcomeText } from './welcome'
 import { rebuildCause, rebuildTokens } from './rebuild'
 import { OPT_LEAD, OPT_NONE_TICKED, type OptId, type OptInput, type Suggestion, appliedText, optPeriod, optimize, optimizeText, suggestionBody, suggestionHead } from './optimize'
+import { finishCompact, learnedSummary, loggedSummaries, startCompact, stepCompact, type CompactSource, type CompactStop, type CompactTrack } from './compactsave'
 import { COMPACT_GAP_MIN, IDLE_COMPACT_AFTER, PING_PROMPT, clock12, coldBar, idleCompactTimerText, timerText, coldRowText, ROW_OF, WRAP_UP, addGap, planLength, alwaysText, compactBoundary, compactedText, idleCompactState, breakEvenMs, cacheHeld, clockText, coldPlan, ignoredLately, keepWarmChoices, leadMs, learnedChoice, COLD_MIN, breakEvenPings, netSaving, offerAt, offerCountdown, offerText, pingCost, pingEvery, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText, IDLE_CAP, IDLE_GAP_MIN, PAYS_MAX, backfillLines, compactGate, paysCheck, paysSend, stretchesOf, PAYS_MIN_STRETCHES, type Stretch } from './warm'
 
 // Before a prompt is sent, a quick Haiku call rates the effort, the model and
@@ -528,6 +528,12 @@ let lastApplied: Level | undefined
 /** The last main-chat step ran on a model rightsize rewrote. */
 let lastSwitched = false
 let lastContext = 0
+/** The compact being measured (P-85, ADR 0098): its later main requests add to its saving until counting stops. */
+let compactTrack: CompactTrack | null = null
+/** Counts the session's compacts so two on the same millisecond keep their own ids. */
+let compactSeq = 0
+/** What rightsize's own next compact is for, set by the button that starts it; a plugin compact with none set is a button press. */
+let nextCompactSource: CompactSource | null = null
 /** The last main-chat request's model and effort, and whether rightsize chose them (P-35: a rebuild's cause). */
 let lastReqModel: string | undefined
 let lastReqEffort: string | undefined
@@ -3218,8 +3224,57 @@ async function lastTurns($: EngineInterface): Promise<Record<string, LastTurn>> 
   return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, LastTurn>) : {}
 }
 
+/** A compact ran (P-85): close the one before it, and start measuring this one. Its cost is what the session's ledger grew by. */
+async function trackCompact($: EngineInterface, trigger: string, tokensBefore: number | undefined, ledgerBefore: number | undefined) {
+  if (compactTrack) await logCompact($, compactTrack, 'next compact')
+  const ledgerAfter = (await usageNow($))?.cost?.usd
+  const cost = typeof ledgerBefore === 'number' && typeof ledgerAfter === 'number' && ledgerAfter > ledgerBefore ? ledgerAfter - ledgerBefore : undefined
+  // rightsize's own compact may run as a /compact command (trigger 'manual'): the source its button set still wins. The person's own /compact is 'manual', or 'tip' while the cold tip walks them through it.
+  const source: CompactSource = trigger === 'auto' ? 'auto' : (nextCompactSource ?? (trigger === 'manual' ? (coldTip ? 'tip' : 'manual') : 'button'))
+  nextCompactSource = null
+  const now = await $.clock.now()
+  const tier = tierOf(lastReqModel ?? mainModel) ?? 'opus'
+  compactTrack = startCompact({ id: `${sessionId || 'session'}-${now}-${++compactSeq}`, at: now, source, tier, before: tokensBefore ?? lastContext, ...(cost !== undefined ? { cost } : {}), limit: await autoPoint($) })
+  await logCompact($, compactTrack)
+}
+
+/** The summary size the estimates use: the median of this machine's logged compacts (P-85), the default until there are 3. */
+const summaryNow = () => learnedSummary(loggedSummaries(runLog))
+
+/** Writes the compact's line as it stands (`stop`: counting ends here). The report reads the latest line per compact. */
+async function logCompact($: EngineInterface, t: CompactTrack, stop?: CompactStop) {
+  const f = finishCompact(t, stop)
+  const line: RunLine = {
+    at: new Date(await $.clock.now()).toISOString(),
+    kind: 'compactSaved',
+    session: sessionId,
+    compactId: f.id,
+    compactSource: f.source,
+    tier: f.tier,
+    ctxBefore: f.before,
+    ...(f.after !== undefined ? { ctxAfter: f.after } : {}),
+    cut: f.cut,
+    ...(f.cost !== undefined ? { compactCost: round(f.cost) } : {}),
+    saved: round(f.saved),
+    requests: f.requests,
+    ...(f.stop ? { stop: f.stop, startedFresh: f.startedFresh } : {}),
+  }
+  await append($, 'runs.jsonl', JSON.stringify(line), RUNS_LOG_MAX)
+  runLog.push(line)
+}
+
+/** The auto-compact point in tokens: Claude Code's own threshold when the session reports it, else 83.5% of the window. */
+async function autoPoint($: EngineInterface) {
+  const ctx = (await $.session.usage({ breakdown: 'summary' }).catch(() => undefined))?.context
+  const at = ctx?.breakdown?.autoCompactThreshold
+  if (typeof at === 'number' && at > 0) return at
+  return typeof ctx?.window === 'number' && ctx.window > 0 ? 0.835 * ctx.window : Infinity
+}
+
 async function rememberTurn($: EngineInterface) {
   lastTurnAt = await $.clock.now()
+  // P-85: the compact's line as it stands at each turn end, so a session that dies keeps its figure.
+  if (compactTrack) await logCompact($, compactTrack).catch(() => undefined)
   if (!sessionId) return
   const tier = tierOf(mainModel)
   const all = { ...(await lastTurns($)), [sessionId]: { at: lastTurnAt, context: lastContext, ...(tier ? { tier } : {}) } }
@@ -3389,7 +3444,7 @@ async function noteIdle($: EngineInterface) {
   const context = lastContext || last.context
   if (idle < cacheTtl || !context) return
   const s = await situation($)
-  const c = idleCost(prices[s.tier], context)
+  const c = idleCost(prices[s.tier], context, summaryNow())
   if (c.resend < idleWarning) return
   idleWarnedFor = last.at
   const rates = billing === 'subscription' ? await windowPerDollar($) : undefined
@@ -3738,7 +3793,7 @@ let coldTip: ColdTip | null = null
 /** Shows the offer when it is due: the band is on, the tip is not hidden, and compacting on Sonnet saves at least the Idle warning amount. */
 async function showColdTip($: EngineInterface, c: { tier: Tier; context: number }) {
   if (bandMode === 'off' || mainBusy || !coldTipOn) return
-  const saving = tipDue(prices, c.tier, c.context, idleWarning ?? COLD_MIN)
+  const saving = tipDue(prices, c.tier, c.context, idleWarning ?? COLD_MIN, summaryNow())
   if (saving === undefined) {
     await log($, `cold-compact tip: not due (${TIER_NAME[c.tier]}, ${Math.round(c.context / 1000)}K tokens)`)
     return
@@ -3856,7 +3911,7 @@ async function limitCheck($: EngineInterface) {
     if (!due || typeof context !== 'number') return
     if ((await $.store.get(LIMIT_WINDOW).catch(() => undefined)) === due.resetsAt) return
     const tier = (await situation($)).tier
-    const saving = limitSaving(prices, tier, context)
+    const saving = limitSaving(prices, tier, context, summaryNow())
     if (saving <= 0) return
     // An offer up owns the cache row; a keep-warm run takes the advice beside its own line (showAdvice).
     if (coldTurn?.offer || pays?.row === 'countdown' || warming?.note) {
@@ -4185,7 +4240,7 @@ async function pressSize($: EngineInterface, id: string): Promise<void> {
     if (id === SIZE_FRESH_COPY || id === SIZE_FRESH_NOT_NOW) return await answerFresh($, id)
     if (id === SIZE_FRESH_COMPACT) {
       if (mainBusy) {
-        $.ui.toast('Rightsize: a turn is running. Press Compact now again when it ends.')
+        $.ui.toast('Rightsize: a turn is running. Press Compact Now again when it ends.')
         return
       }
       freshHeld = null
@@ -4194,7 +4249,7 @@ async function pressSize($: EngineInterface, id: string): Promise<void> {
     }
     if (id !== SIZE_COMPACT) return
     if (mainBusy) {
-      $.ui.toast('Rightsize: a turn is running. Press Compact now again when it ends.')
+      $.ui.toast('Rightsize: a turn is running. Press Compact Now again when it ends.')
       return
     }
     await compactForSize($)
@@ -4378,9 +4433,10 @@ async function pressLimit($: EngineInterface, id: string): Promise<void> {
     }
     if (id !== LIMIT_COMPACT) return
     if (mainBusy) {
-      $.ui.toast('Rightsize: a turn is running. Press Compact now again when it ends.')
+      $.ui.toast('Rightsize: a turn is running. Press Compact Now again when it ends.')
       return
     }
+    nextCompactSource = 'limit'
     await compactForLimit($)
   } catch (err) {
     await log($, `usage-limit advice failed: ${err instanceof Error ? err.message : String(err)}`)
@@ -4695,7 +4751,7 @@ function cancelTip() {
 async function armTip($: EngineInterface, tier: Tier, context: number, idleCompact: boolean) {
   cancelTip()
   if (off || !cacheOn || bandMode === 'off' || idleCompact) return
-  const due = tipDue(prices, tier, context, idleWarning ?? COLD_MIN) !== undefined
+  const due = tipDue(prices, tier, context, idleWarning ?? COLD_MIN, summaryNow()) !== undefined
   // Not due: the cold row takes the timer row's place instead, so it waits only when the timer row is on.
   if (!due && !cacheTimer) return
   const gen = tipGen
@@ -4736,7 +4792,7 @@ async function reopenedTip($: EngineInterface) {
       return
     }
     if ((await $.clock.now()) - last.at <= cacheTtl) return
-    if (tipDue(prices, tier, last.context, idleWarning ?? COLD_MIN) !== undefined) await showColdTip($, { tier, context: last.context })
+    if (tipDue(prices, tier, last.context, idleWarning ?? COLD_MIN, summaryNow()) !== undefined) await showColdTip($, { tier, context: last.context })
     else await showColdRow($, { tier, context: last.context, coldAt: last.at + cacheTtl })
   } catch (err) {
     await log($, `cold-compact tip (reopened chat) failed: ${err instanceof Error ? err.message : String(err)}`)
@@ -4776,7 +4832,7 @@ async function coldCheck($: EngineInterface) {
   const context = lastContext
   if (!context) return
   const tier = (await situation($)).tier
-  const idle = idleCost(prices[tier], context)
+  const idle = idleCost(prices[tier], context, summaryNow())
   const cold = idle.resend
   // Claude Code compacts this session by itself while it sits idle: no pings (they do not reset its timer and would pay for the
   // uncached summary after it), no offer, no rightsize compact. The row says when it compacts; a handoff note is saved before.
@@ -5287,8 +5343,9 @@ async function endPays($: EngineInterface, p: Pays) {
 async function payGate($: EngineInterface, p: Pays) {
   const c = p.c
   const price = prices[c.tier]
-  const compact = idleCost(price, c.context).compact
-  const summaryCold = coldCost(prices, c.tier, COMPACT_SUMMARY_TOKENS)
+  const summary = summaryNow()
+  const compact = idleCost(price, c.context, summary).compact
+  const summaryCold = coldCost(prices, c.tier, summary)
   const expiry = (p.k - 1) * pingEvery(cacheTtl) + cacheTtl
   const g = compactGate({ stretches: p.stretches, atMs: expiry, cold: c.cold, summaryCold, compact })
   const chance = g.early ? `chance of a later return ${pct(g.p)} (starting value, ${p.stretches.length} stretches on record)` : `${pct(g.p)} of ${g.n} stretches still going at the expiry came back later`
@@ -5462,11 +5519,14 @@ async function saveHandoff($: EngineInterface, c: ColdTurn) {
 
 async function compactNow($: EngineInterface, c?: ColdTurn) {
   coldDone = true
+  // Only the cold row and keep warm's gate come here (the size and limit buttons have their own functions): their compact is 'keepwarm'.
+  nextCompactSource = 'keepwarm'
   try {
     const base = await hintBase($, c)
     const own = async () => {
       const skip = await ownCompact($)
       if (skip !== undefined) {
+        nextCompactSource = null
         await log($, `compact skipped: ${skip}`)
         return
       }
@@ -5525,7 +5585,7 @@ async function hintBase($: EngineInterface, c?: ColdTurn): Promise<{ tier: Tier;
 async function compactHint($: EngineInterface, base: { tier: Tier; context: number } | undefined): Promise<{ text: string; more?: { id: string; label: string }[] } | undefined> {
   try {
     if (off || bandMode === 'off' || !base) return undefined
-    const saved = idleCost(prices[base.tier], base.context).compact - noteCost(prices[base.tier], base.context)
+    const saved = idleCost(prices[base.tier], base.context, summaryNow()).compact - noteCost(prices[base.tier], base.context)
     const installed = await whatsnextInstalled($)
     if (installed === false) {
       const text = await installHint($, saved)
@@ -7352,8 +7412,11 @@ export const register: Register = (on, options) => {
   // A compaction told nothing gets rightsize's handoff text from the classic PreCompact hook (hooks/precompact.py, ADR 0077), not
   // here: on Team and Enterprise logins Claude Code's built-in guard runs first and this hook never runs. Where it does run, it only observes.
   on('session.compact', async ($, e, next) => {
+    const measure = !off && e.agentId === undefined && e.trigger !== 'precompute'
+    const ledgerBefore = measure ? (await usageNow($))?.cost?.usd : undefined
     const result = await next(e)
     if (off || e.agentId !== undefined || result.skip !== undefined) return result
+    if (measure) await trackCompact($, e.trigger, result.tokensBefore, ledgerBefore).catch(err => log($, `compact measure failed: ${err instanceof Error ? err.message : String(err)}`))
     if (e.trigger !== 'precompute') compactedSince = true
     if (e.trigger === 'manual' || e.trigger === 'plugin') {
       manualCompact = true
@@ -7367,6 +7430,10 @@ export const register: Register = (on, options) => {
 
   on('session.end', async ($, e, next) => {
     await closeStretch($, 'end')
+    if (compactTrack) {
+      await logCompact($, compactTrack, 'session end').catch(() => undefined)
+      compactTrack = null
+    }
     // "This session" ends here: the output style goes back to what it was, if it still reads Concise.
     await restoreOutput($, `the session ended (${e.reason})`, false)
     spend = { output: 0, total: 0, requests: 0 }
@@ -7435,6 +7502,9 @@ export const register: Register = (on, options) => {
     compactedAway = null
     manualCompact = false
     compactedSince = false
+    compactTrack = null
+    compactSeq = 0
+    nextCompactSource = null
     returnHint = null
     boundaryCheck = false
     interactive = e.isInteractive !== false
@@ -8020,6 +8090,8 @@ export const register: Register = (on, options) => {
         manualCompact = false
       }
       // A cache rebuild on this request (P-35): one 'rebuild' line with its likely cause and what writing it again cost.
+      // P-85: a later main request of the compact being measured adds its cut tokens at the price it paid.
+      if (compactTrack) compactTrack = stepCompact(compactTrack, u, prices)
       await noteRebuild($, u, { compacted: compactedAway !== null, effort: isLevel(send.effort) ? send.effort : undefined, ours: sw !== undefined || (!held && applied !== undefined && applied !== own) })
       if (!sw && !lastSwitched && !compactedAway && applied && lastApplied && applied !== lastApplied && lastContext > 5000) {
         const missed = u.cache_read_input_tokens < lastContext * 0.5

@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { SESSION_TOTAL, accuracyRows, calibrationLine, addTotals, foldLifetime, parseLifetime, type Lifetime, type RunLine, bandShareText, FIXED_REVIEW_PCT, buildReport, costTag, counterfactual, fixedLine, keepWarmLine, outputShareLine, oneShareText, parseLines, problems, sessionTotal, statusTotal, shareMessage, shareText, span, taskActual, taskEstimated, taskExtra, taskStay, tieCounts, totals, usedTag, watchLine, wholeTaskRows, wholeTasks, windowCostText, windowRates } from './report'
+import { SESSION_TOTAL, accuracyRows, calibrationLine, addTotals, foldLifetime, parseLifetime, type Lifetime, type RunLine, bandShareText, FIXED_REVIEW_PCT, buildReport, costTag, counterfactual, fixedLine, keepWarmLine, compacts, outputShareLine, oneShareText, parseLines, problems, sessionTotal, statusTotal, shareMessage, shareText, span, taskActual, taskEstimated, taskExtra, taskStay, tieCounts, totals, usedTag, watchLine, wholeTaskRows, wholeTasks, windowCostText, windowRates } from './report'
 import { DEFAULT_PRICES, type Calibration } from './cost'
 import { savingCheck } from './check'
 import type { StartBlock } from './start'
@@ -1350,4 +1350,41 @@ test('details: CACHE REBUILDS by cause, most costly first, the compact row last,
   // Rebuild lines are no part of any total or count of runs.
   expect(details([run({})])).not.toContain('CACHE REBUILDS')
   expect(summary([run({}), rb({ at: ago(0), rebuildCost: 50 })])).toBe(summary([run({})]))
+})
+
+// ---- P-85: measured compact savings in the report ------------------------------------------------------------------
+
+const cs = (x: Partial<RunLine>): RunLine => ({ at: ago(0), kind: 'compactSaved', session: 's1', compactId: 'c1', compactSource: 'button', ctxBefore: 200_000, ctxAfter: 50_000, cut: 150_000, compactCost: 0.1, saved: 0.5, requests: 10, ...x })
+
+test('Total saved counts the latest line of each rightsize compact only; an unknown cost counts nothing; the person\'s and auto compacts are left out', () => {
+  const lines = [
+    cs({ saved: 0.1, requests: 2 }),
+    cs({ saved: 0.5, requests: 10 }),
+    cs({ compactId: 'c2', compactSource: 'limit', saved: -0.2, requests: 0, startedFresh: true }),
+    cs({ compactId: 'c3', compactSource: 'keepwarm', compactCost: undefined, saved: 0 }),
+    cs({ compactId: 'c4', compactSource: 'tip', saved: 0.25 }),
+    cs({ compactId: 'c5', compactSource: 'manual', saved: 9 }),
+    cs({ compactId: 'c6', compactSource: 'auto', saved: 7 }),
+  ]
+  expect(Math.abs(totals(lines).saved - 0.55)).toBeLessThan(1e-9)
+  expect(Math.abs(totals(lines).compactSaved - 0.55)).toBeLessThan(1e-9)
+})
+
+test('the Compacts rows: rightsize, yours and auto apart, with saved so far and how many started fresh', () => {
+  const lines = [cs({}), cs({ compactId: 'c2', compactSource: 'limit', saved: -0.2, requests: 0, startedFresh: true }), cs({ compactId: 'c4', compactSource: 'manual', saved: 1 }), cs({ compactId: 'c3', compactSource: 'auto', saved: 2 })]
+  const c = compacts(lines)
+  expect(c.rightsize).toEqual({ count: 2, saved: 0.3, fresh: 1 })
+  expect(c.manual).toEqual({ count: 1, saved: 1, fresh: 0 })
+  expect(c.auto).toEqual({ count: 1, saved: 2, fresh: 0 })
+  const text = details([run({}), ...lines])
+  expect(text).toMatch(/Compacts \(rightsize\)\s+2 compacts: saved ~\$0\.30 so far, 1 started fresh/)
+  expect(text).toMatch(/Compacts \(yours\)\s+1 compact: saved ~\$1\.00 so far/)
+  expect(text).toMatch(/Compacts \(auto\)\s+1 compact: saved ~\$2\.00 so far/)
+})
+
+test('old logs without compactSaved lines still load, with no Compacts rows', () => {
+  const text = details([run({})])
+  expect(text).not.toContain('Compacts')
+  const none = { count: 0, saved: 0, fresh: 0 }
+  expect(compacts([run({})])).toEqual({ rightsize: none, manual: none, auto: none })
 })

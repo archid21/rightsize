@@ -767,7 +767,7 @@ test('moves the thresholds by pace', async () => {
 test('idle resume: the rewrite over a warm read, the cache life, and the warning bar', async () => {
   const c = idleCost(DEFAULT_PRICES.opus, 100_000)
   expect(near(c.resend, 0.78)).toBe(true)
-  expect(near(c.compact, 0.4)).toBe(true)
+  expect(near(c.compact, 0.14), 'a warm compact: 100K read from the cache at 0.20 plus a 6K summary written at 20').toBe(true)
   expect(fileTtl('{"cacheTtl":"5m"}')).toBe('5m')
   expect(fileTtl('{}')).toBeUndefined()
   expect(fileTtl('{"cacheTtl":"2h"}')).toBeUndefined()
@@ -799,7 +799,7 @@ test('Haiku over 100K tokens pays the higher cache prices too, on each request b
   expect(near(usageCost(P, 'claude-sonnet-5-5', u(450_000)), (450_000 * 0.1) / 1e6), 'no tier on other models').toBe(true)
   expect(near(coldCost(P, 'haiku', 200_000), (200_000 * (1 - 0.05)) / 1e6), 'a cold Haiku return over 100K: write 1.00 less read 0.05').toBe(true)
   expect(near(coldCost(P, 'haiku', 50_000), (50_000 * (0.2 - 0.01)) / 1e6), 'under 100K: the base prices').toBe(true)
-  expect(near(idleCost(P.haiku, 200_000).compact, (200_000 * 0.5) / 1e6)).toBe(true)
+  expect(near(idleCost(P.haiku, 200_000).compact, (200_000 * 0.05 + 6000 * 2.5) / 1e6), 'a warm Haiku compact over 100K: read at 0.05, summary at 2.50').toBe(true)
 })
 
 test('a Haiku helper whose prompt grows past 100K pays the higher prices for the requests past it', async () => {

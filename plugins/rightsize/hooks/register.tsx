@@ -175,7 +175,7 @@ import { WELCOMED_KEY, welcomeMarkdown, welcomeText } from './welcome'
 import { rebuildCause, rebuildTokens } from './rebuild'
 import { OPT_LEAD, OPT_NONE_TICKED, type OptId, type OptInput, type Suggestion, appliedText, optPeriod, optimize, optimizeText, suggestionBody, suggestionHead } from './optimize'
 import { finishCompact, learnedSummary, loggedSummaries, startCompact, stepCompact, type CompactSource, type CompactStop, type CompactTrack } from './compactsave'
-import { COMPACT_GAP_MIN, IDLE_COMPACT_AFTER, PING_PROMPT, clock12, coldBar, idleCompactTimerText, timerText, coldRowText, ROW_OF, WRAP_UP, addGap, planLength, alwaysText, compactBoundary, compactedText, idleCompactState, breakEvenMs, cacheHeld, clockText, coldPlan, ignoredLately, keepWarmChoices, leadMs, learnedChoice, COLD_MIN, breakEvenPings, netSaving, offerAt, offerCountdown, offerText, pingCost, pingEvery, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText, IDLE_CAP, IDLE_GAP_MIN, PAYS_MAX, backfillLines, compactGate, paysCheck, paysSend, stretchesOf, PAYS_MIN_STRETCHES, type Stretch } from './warm'
+import { COMPACT_GAP_MIN, IDLE_COMPACT_AFTER, PING_PROMPT, clock12, coldBar, idleCompactTimerText, idleCompactDoneText, timerText, coldRowText, ROW_OF, WRAP_UP, addGap, planLength, alwaysText, compactBoundary, compactedText, idleCompactState, breakEvenMs, cacheHeld, clockText, coldPlan, ignoredLately, keepWarmChoices, leadMs, learnedChoice, COLD_MIN, breakEvenPings, netSaving, offerAt, offerCountdown, offerText, pingCost, pingEvery, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText, IDLE_CAP, IDLE_GAP_MIN, PAYS_MAX, backfillLines, compactGate, paysCheck, paysSend, stretchesOf, PAYS_MIN_STRETCHES, type Stretch } from './warm'
 
 // Before a prompt is sent, a quick Haiku call rates the effort, the model and
 // the work needs on each model, and the cost model prices each route that fits. The first time
@@ -4735,6 +4735,24 @@ const COLD_FRESH: ColdButton = { id: 'fresh', label: 'Clear chat' }
 /** What the timer row's bar is drawn from, so the 3-second timer can redraw it as the cache life runs down (P-84). Null on the idle-compact line. */
 let timerArgs: { coldAt: number; cost: string; percent?: number } | null = null
 
+/** The idle-compact row as drawn, so the 3-second timer can turn it to the past tense once `at` has passed. Null on every other row. */
+let idleArgs: { at: number; percent?: number } | null = null
+
+/** From the 3-second timer: once the idle-compact time has passed, redraws that row in the past tense, without Compact Now (Save Handoff stays). */
+async function tickIdleCompact($: EngineInterface) {
+  const a = idleArgs
+  const row = timerRow
+  if (!a || !row) return
+  if ((await $.clock.now()) < a.at) return
+  if (!timerIsOn((await $.state.get(BAND).catch(() => undefined))?.value)) return
+  idleArgs = null
+  const text = idleCompactDoneText(a)
+  const buttons = row.buttons.filter(b => b !== TIMER_COMPACT)
+  timerRow = { text, lead: `${idleCompactDoneText({ at: a.at })}.`, buttons }
+  await showCold($, text, buttons, true)
+  await log($, `cache timer: ${text}`)
+}
+
 /** From the 3-second timer: redraws the timer row's bar when a cell changes, while the row is still on the band as drawn. The clock time beside it stays right if a redraw is missed. */
 async function tickTimer($: EngineInterface) {
   const a = timerArgs
@@ -4768,8 +4786,10 @@ async function showTimer($: EngineInterface, turn: ColdTurn, idleCompact: boolea
   let text: string
   let tone: Band['coldTone'] | undefined
   timerArgs = null
+  idleArgs = null
   if (idleCompact) {
     const at = (lastRequestAt || turn.endedAt) + IDLE_COMPACT_AFTER
+    idleArgs = { at, ...pctPart }
     text = idleCompactTimerText({ at, ...pctPart })
     lead = idleCompactTimerText({ at })
   } else {
@@ -7716,6 +7736,7 @@ export const register: Register = (on, options) => {
       void tickOffer($)
       void tickPays($)
       void tickTimer($).catch(() => undefined)
+      void tickIdleCompact($).catch(() => undefined)
       void tickColdTip($).catch(() => undefined)
     })
     // After the band is reset above, so the pause line stays (ADR 0032).

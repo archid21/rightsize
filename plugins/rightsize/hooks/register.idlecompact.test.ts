@@ -1,5 +1,5 @@
 import { type TestBody, expect, test } from 'claude-code/testing'
-import { LOG_PATH, BIG_TURN, NO_CHANGE, OLD_PRICES, WHATSNEXT_SCRIPT, bandText, drive, engine, installWhatsnext, WHATSNEXT_CMDS } from './testkit'
+import { LOG_PATH, BIG_TURN, NO_CHANGE, OLD_PRICES, WHATSNEXT_SCRIPT, bandText, drive, engine, installWhatsnext, WHATSNEXT_CMDS, mount, rowText } from './testkit'
 
 // Claude Code's idle auto-compact (ADR 0019): above its threshold rightsize sends no pings, makes no offer and compacts nothing,
 // and it notices the compact when it has happened. Runs on a virtual clock, as the keep-warm tests do.
@@ -56,9 +56,29 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await turn(d, 't1')
     await h.advance(8 * HOUR)
     expect(nothingDone(h)).toEqual(NONE)
-    expect(await bandText($, surface), 'the Cache row says when Claude Code compacts').toBe('Claude Code compacts this at about 6:54 PM · context 100%')
+    expect(await bandText($, surface), 'the compact time (6:54 PM) has passed by 8 hours: the row is in the past tense').toBe('Claude Code compacted this at about 6:54 PM · context 100%')
     expect(logOf(h)).toContain('Claude Code compacts this session by itself 54 minutes after the last request')
     expect(kept(h)).toMatchObject({ on: true, context: 200_000 })
+  })
+
+  test(`the Cache row turns to past tense once the compact time passes, and Compact Now goes (${surface})`, { timeoutMs: 30000, options: KEEP_WARM.options }, async ($, on) => {
+    const { h, d } = await session($, on)
+    await turn(d, 't1')
+    const row = async () => {
+      const ui = await mount($, surface)
+      const text = await rowText(ui, 'Cache')
+      const buttons = (await ui.findAll({ type: 'Button' })).map(b => b.key)
+      await ui.unmount()
+      return { text, buttons }
+    }
+    await h.advance(30 * MIN)
+    const before = await row()
+    expect(before.text).toBe('Claude Code compacts this at about 6:54 PM · context 100%')
+    expect(before.buttons).toContain('cold-compact')
+    await h.advance(25 * MIN)
+    const after = await row()
+    expect(after.text).toBe('Claude Code compacted this at about 6:54 PM · context 100%')
+    expect(after.buttons).not.toContain('cold-compact')
   })
 
   for (const row of ['compact', 'save a handoff', 'ask']) {
@@ -245,7 +265,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.wnConfigRuns[0]?.slice(1)).toEqual([WHATSNEXT_SCRIPT, 'config', 'show', '--json'])
     expect(logOf(h)).toContain('whatsnext saves the handoff note itself (wrapup.autoIdle is on)')
     expect(h.compactions + h.forks.length, 'nothing else runs either').toBe(0)
-    expect(await bandText($, surface), 'the row still says when Claude Code compacts').toBe('Claude Code compacts this at about 6:54 PM · context 125%')
+    expect(await bandText($, surface), 'the compact time has passed: the row is in the past tense').toBe('Claude Code compacted this at about 6:54 PM · context 125%')
   })
 
   test(`whatsnext's autoIdle off: rightsize sends one wrap up at 51 minutes, not before (${surface})`, { timeoutMs: 30000 }, async ($, on) => {

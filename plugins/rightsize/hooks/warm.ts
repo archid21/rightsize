@@ -316,6 +316,11 @@ export function idleCompactTimerText(o: { at: number; percent?: number }) {
   return `Claude Code compacts this at about ${clock12(o.at)}${contextPart(o.percent)}`
 }
 
+/** The idle-compact row once that time has passed: "Claude Code compacted this at about 12:05 AM · context 52%". */
+export function idleCompactDoneText(o: { at: number; percent?: number }) {
+  return `Claude Code compacted this at about ${clock12(o.at)}${contextPart(o.percent)}`
+}
+
 /**
  * The offer's line, under the band's Cache label: "Goes cold in 42 min (14:55) · coming back after costs ~2%". `endedAt`
  * is when the turn ended; the cache goes cold one `ttl` later. `now` sets the minutes left, never below 1 while the cache

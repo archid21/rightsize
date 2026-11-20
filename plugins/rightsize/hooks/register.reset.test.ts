@@ -727,7 +727,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(helperLog(h)).toContain('no answer on the band to Stuck: helper agent-helper kept at low')
   })
 
-  test(`a stuck helper whose Stuck dialog gets no answer (Band set to Never) goes on at its effort: the text says so, and it is not sent back (${surface})`, { timeoutMs: 30000, options: { band: 'off' } }, async ($, on) => {
+  test(`a stuck helper with Band set to Never is not asked at all: no dialog, it goes on at its effort and is not sent back, and a log line says so (${surface})`, { timeoutMs: 30000, options: { band: 'off' } }, async ($, on) => {
     const h = engine(on, { model: 'claude-fable-5-2', effort: 'high', store: { remember: true, choices: { down: 'auto' } } })
     const d = drive($, h)
     await d.start(surface)
@@ -735,19 +735,19 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.config('raiseRule', 'ask me')
     await warm(d, h)
     h.rating = HAND_OFF()
-    h.answers = { Stuck: NO_ONE }
+    h.answers = { Stuck: 'Give it one more try' }
     h.sleepEnds = true
     await startHelper(d, h, 't1', 'helper')
     await d.bash('fail a', 'agent-helper')
     await d.bash('fail a', 'agent-helper')
     await d.step('t1', 1, 'agent-helper')
-    expect(h.asked.map(a => a.header), 'the dialog: the band is off').toEqual(['Stuck'])
-    expect(h.asked[0]?.question).toMatch(/^The Haiku helper is stuck: the same tool call failed twice\. Finish on Fable\? No answer in 30 seconds: it goes on at low\.$/)
+    expect(h.asked, 'no dialog').toEqual([])
+    expect(h.sleeps, 'no wait').toEqual([])
     expect(h.question, 'not on the band').toBeNull()
     await d.step('t1', 2, 'agent-helper')
     expect(last(h.sent)?.effort, 'not raised').toBe('low')
     expect(((await d.bash('ls', 'agent-helper')) as { deny?: string }).deny, 'not sent back to the main chat').toBeUndefined()
-    expect(helperLog(h)).toContain('helper agent-helper struggling (the same tool call failed twice): no answer in 30 seconds, goes on at low')
+    expect(helperLog(h)).toContain('helper agent-helper struggling (the same tool call failed twice): Stuck not asked (the band cannot show it), goes on at low')
     await d.complete('t1')
     const run = readRuns(h).find(l => l.kind === 'run') as { helpers?: HelperEntry[]; retries?: number }
     expect(run.helpers?.map(x => [x.returned, x.raises]), 'neither returned nor raised').toEqual([[undefined, undefined]])

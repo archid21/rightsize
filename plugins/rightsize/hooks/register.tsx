@@ -3197,13 +3197,13 @@ async function escalate($: EngineInterface, run: Run, sign: Struggle, from: Leve
   if (rule !== 'auto') {
     const q = qStuck(`Claude looks stuck: ${sign.why.trim().replace(/[.\s]+$/, '')}. Raise effort to ${to}?`)
     // The turn goes on at its effort while the band asks; a Raise applies from its next request, while the turn still runs.
-    if (await bandCanAsk($)) {
-      if (onBand('Stuck')) return
-      return askBand($, { ...q, ifNone: `the turn goes on at ${cur}` }, 'turn', true, { kind: 'stuck', run, cur, to, sign, step })
+    // A mid-turn question never holds the turn (ADR 0094): where the band cannot draw it (Band off, the mobile app) it is not asked, and the safe default stands.
+    if (!(await bandCanAsk($))) {
+      await log($, `Stuck not asked (the band cannot show it): the turn goes on at ${cur}`)
+      return
     }
-    const a = await askWithin($, withWait(q, `it keeps ${cur}`))
-    if (a === TIMED_OUT) await logTimeout($, 'Stuck', `kept ${cur}`)
-    if (!(await stuckAnswered($, a))) return
+    if (onBand('Stuck')) return
+    return askBand($, { ...q, ifNone: `the turn goes on at ${cur}` }, 'turn', true, { kind: 'stuck', run, cur, to, sign, step })
   }
   await raiseRun($, run, cur, to, sign, step)
 }
@@ -3291,21 +3291,13 @@ async function escalateHelper($: EngineInterface, id: string, w: Watch, sign: St
   else if (rule !== 'auto') {
     const main = TIER_NAME[(await situation($)).tier]
     const q = qHelperStuck(w, main, sign.why)
-    if (await bandCanAsk($)) {
-      if (onBand('Stuck')) return
-      return askBand($, { ...q, ifNone: `it goes on at ${cur}` }, 'turn', true, { kind: 'helper', id, w, cur, to, sign, main })
-    }
-    const a = await askHelper($, q, cur)
-    // No answer: the helper goes on at its effort, as on the band. Sending it back on silence would make a quality risk out of a missed dialog.
-    if (a === 'timeout') {
-      await log($, `helper ${id} struggling (${sign.why}): no answer in ${questionWait}, goes on at ${cur}`)
+    // Never held (ADR 0094): where the band cannot draw it the question is not asked, and the helper goes on at its effort, as with no answer.
+    if (!(await bandCanAsk($))) {
+      await log($, `helper ${id} struggling (${sign.why}): Stuck not asked (the band cannot show it), goes on at ${cur}`)
       return
     }
-    if (a === 'finish') return returnHelper($, id, w, sign, `you chose to finish on ${main}`)
-    if (a !== 'retry') {
-      await log($, `helper ${id} struggling (${sign.why}): kept at ${cur}, as you chose`)
-      return
-    }
+    if (onBand('Stuck')) return
+    return askBand($, { ...q, ifNone: `it goes on at ${cur}` }, 'turn', true, { kind: 'helper', id, w, cur, to, sign, main })
   }
   if (to && !why && !(await useChance($, w.task, id))) why = 'it has no retry left'
   if (to && !why) return raiseHelper($, id, w, cur, to, sign)
@@ -3326,15 +3318,6 @@ async function raiseHelper($: EngineInterface, id: string, w: Watch, cur: Level,
   w.stall = 'struggling'
   await setBand($, { text: `Helper effort raised: ${cur} → ${to} (${sign.why}).`, acted: true, rule: 'raise' })
   await log($, `raised helper ${id} ${cur} → ${to} at step ${w.steps}: ${sign.why}`)
-}
-
-// The Stuck question for a helper, in the dialog (no band to draw it on). A dismissed question is a no, as for the main chat. An answer
-// that comes after the wait is too late: the helper went on at its effort.
-async function askHelper($: EngineInterface, q: Question<HelperAnswer>, cur: Level): Promise<HelperAnswer | 'no' | 'timeout'> {
-  const a = await askWithin($, withWait(q, `it goes on at ${cur}`), late => {
-    $.ui.toast(`rightsize: too late, the helper went on at ${cur}.`)
-  })
-  return a === TIMED_OUT ? 'timeout' : (a ?? 'no')
 }
 
 // ---- Idle resume -------------------------------------------------------------

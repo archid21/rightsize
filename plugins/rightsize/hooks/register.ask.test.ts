@@ -185,6 +185,29 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect((await stuckTurn($, on, 'Keep going')).effort).toBe('medium')
   })
 
+  // A surface that cannot draw the band (the mobile app): a mid-turn question is not asked at all, and the safe default stands.
+  if (surface === 'terminal') {
+    test('Ask, Claude looks stuck on a surface with no band: not asked, no dialog, no raise, and a log line says so', OPEN, async ($, on) => {
+      const h = engine(on, { ...OPUS, stored: { ...NO_COLD, ...ASK, lowerRule: 'never lower' } })
+      const d = drive($, h)
+      await d.start('mobile')
+      h.rating = NO_CHANGE
+      h.answers = { Stuck: 'Raise effort' }
+      h.sleepEnds = true
+      await d.submit(LOOKUP)
+      await d.step('t1', 0)
+      await d.bash('fail make')
+      await d.bash('fail make')
+      await d.step('t1', 1)
+      await settle()
+      await d.step('t1', 2)
+      expect(h.asked).toEqual([])
+      expect(h.sleeps).toEqual([])
+      expect(last(h.sent)?.effort).toBe('medium')
+      expect(log(h)).toContain('Stuck not asked (the band cannot show it): the turn goes on at medium')
+    })
+  }
+
   const HELPER = { timeoutMs: 30000, options: { ...NO_COLD, ...ASK, downRule: 'always send' } }
   const stuckHelper = async ($: unknown, on: Parameters<TestBody>[1], answer: string | typeof NO_ONE) => {
     const h = engine(on, { ...FABLE, stored: { ...NO_COLD, ...ASK, downRule: 'always send' }, store: { [CAL_STORE]: FREE_SWITCHES } })

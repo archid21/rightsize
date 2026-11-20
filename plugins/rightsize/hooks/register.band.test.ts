@@ -149,7 +149,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(last(h.toasts)).toBe('rightsize: that answer came too late; nothing changed.')
   })
 
-  test(`with Band set to Never a late answer in the dialog to a one-time question gets a toast (${surface})`, { timeoutMs: 30000, options: { band: 'off' } }, async ($, on) => {
+  test(`with Band set to Never a mid-turn Stuck question is not asked at all: no dialog, no raise, and a log line says so (${surface})`, { timeoutMs: 30000, options: { band: 'off' } }, async ($, on) => {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
     const d = drive($, h)
     await d.start(surface)
@@ -160,16 +160,16 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t1', 0)
     await d.bash('fail make')
     await d.bash('fail make')
-    let release = () => {}
-    h.answerGate = { Stuck: new Promise<void>(r => (release = r)) }
     h.answers = { Stuck: 'Raise effort' }
     h.sleepEnds = true
     await d.step('t1', 1)
+    await d.step('t1', 2)
+    expect(h.asked, 'no dialog: a mid-turn question never holds the turn').toEqual([])
+    expect(h.sleeps, 'no wait').toEqual([])
     expect(h.question).toBeNull()
-    expect(last(h.sent)?.effort).toBe('medium')
-    release()
-    await until(() => h.toasts.some(t => t.includes('too late')))
-    expect(last(h.toasts)).toBe('rightsize: that answer came too late; nothing changed.')
+    expect(last(h.sent)?.effort, 'the safe default: no raise').toBe('medium')
+    expect(helperLog(h)).toContain('Stuck not asked (the band cannot show it): the turn goes on at medium')
+    await d.complete('t1')
   })
 
   test(`a helper whose task has no retry left goes back without a question (${surface})`, { timeoutMs: 30000 }, async ($, on) => {

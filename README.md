@@ -15,7 +15,7 @@ claude plugin marketplace add archid21/rightsize
 claude plugin install rightsize@archid21 --scope user
 ```
 
-Works with a Claude subscription (Pro, Max, Ultra) or an API key · MIT license · **New in 0.16.0:** more savings on Opus and Fable, fewer false "stuck" signs, and a clean record for each new model version ([changelog](CHANGELOG.md)).
+Works with a Claude subscription (Pro, Max, Ultra) or an API key · MIT license · **New in 0.16.1:** a cache timer after every turn, the compact-on-Sonnet tip on every path, lowering tried when the rater is not sure, and /config rows to bring back hidden items ([changelog](CHANGELOG.md)).
 
 ## Contents
 

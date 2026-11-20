@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.16.1 (unreleased)
+## 0.16.1 (2026-11-19)
 
 - **A Cache row after every turn.** The band now shows, after each turn in your main chat and at any conversation size, when the cache goes cold, what coming back then costs and how full the conversation is: `Goes cold at 11:12 PM · coming back then costs ~$0.40 · context 32%`. It is a clock time, not a countdown, because the terminal band only redraws when something happens. **Compact now** compacts, and **Save handoff note** shows when whatsnext is set up in the project. A keep-warm offer or a running keep-warm replaces this line, and a context warning (40 to 90% full) is added to it, so there is only ever one Cache row.
 - **New setting: Cache timer** (Advanced, on by default). Off hides only that line; keep-warm offers, the context warning and the compact tip still show. **Cache** off still hides everything.

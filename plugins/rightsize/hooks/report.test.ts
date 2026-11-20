@@ -665,12 +665,12 @@ test('statusTotal: the session net for the status line, on its own words', async
   expect(statusTotal([], 's1', false), 'no lines').toBeUndefined()
   expect(statusTotal([saved], '', false), 'no session id').toBeUndefined()
   expect(statusTotal([run({ session: 's2' })], 's1', false), 'only other sessions have lines').toBeUndefined()
-  expect(statusTotal([run({ change: 'lower', offered: 'lower', actual: 0.101, stay: 0.1, taken: 0.05 })], 's1', false)).toBe('rightsize about even')
-  expect(statusTotal([saved], 's1', false)).toBe('rightsize saved ~$0.49')
-  expect(statusTotal([cost], 's1', false)).toBe('rightsize cost ~$0.50 more')
-  expect(statusTotal([saved], 's1', true), 'subscription without window data').toBe('rightsize saved ~$0.49')
-  expect(statusTotal([{ ...saved, ...win }], 's1', true), 'subscription with a window: one share').toMatch(/^rightsize saved (~[\d.]+%|under 0\.1%)$/)
-  expect(statusTotal([{ ...cost, before: { five_hour: 10 }, after: { five_hour: 12 } }], 's1', true)).toMatch(/^rightsize cost (~[\d.]+%|under 0\.1%) more$/)
+  expect(statusTotal([run({ change: 'lower', offered: 'lower', actual: 0.101, stay: 0.1, taken: 0.05 })], 's1', false)).toBe('about even')
+  expect(statusTotal([saved], 's1', false)).toBe('saved ~$0.49')
+  expect(statusTotal([cost], 's1', false)).toBe('cost ~$0.50 more')
+  expect(statusTotal([saved], 's1', true), 'subscription without window data').toBe('saved ~$0.49')
+  expect(statusTotal([{ ...saved, ...win }], 's1', true), 'subscription with a window: one share').toMatch(/^saved (~[\d.]+%|under 0\.1%)$/)
+  expect(statusTotal([{ ...cost, before: { five_hour: 10 }, after: { five_hour: 12 } }], 's1', true)).toMatch(/^cost (~[\d.]+%|under 0\.1%) more$/)
 })
 
 test('sessionTotal puts the session net in plain words, from the same figure as the report', async () => {

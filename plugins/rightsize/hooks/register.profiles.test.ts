@@ -381,7 +381,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const rebuilt = await bandText($, surface)
     expect(rebuilt, 'the earlier text and the new sentence are both there').toMatch(/Effort lowered.*Ran Claude's subagent on Haiku \(low\) instead of Opus\./)
     expect(rebuilt, 'the band never carries the total').not.toContain('rightsize so far')
-    expect(status(), 'the status line has it by the end of the 3rd prompt\'s turn').toMatch(/ · rightsize (saved|cost) ~\$\d+\.\d\d( more)?$/)
+    expect(status(), 'the status line has it by the end of the 3rd prompt\'s turn').toMatch(/ · (saved|cost) ~\$\d+\.\d\d( more)?$/)
   })
 
   // With 10 logged tasks the research prior is gone. The first miss is forgiven, so 2 misses in 10 is 1 in 9: 11%, under the line.

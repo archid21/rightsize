@@ -664,14 +664,14 @@ export function oneShareText(s: Share) {
   return `~${mid < 0.95 ? mid.toFixed(1) : String(Math.round(mid))}%`
 }
 
-/** The session's running net for the status line (P-84): "rightsize saved ~0.3%", "rightsize cost ~0.3% more", "rightsize saved ~$0.12". */
+/** The session's running net for the status line (P-84): "saved ~0.3%", "cost ~0.3% more", "saved ~$0.12". */
 export function statusTotal(lines: readonly RunLine[], session: string, subscription: boolean): string | undefined {
   if (session === '') return undefined
   const { net, empty, kept } = stats(lines.filter(l => l.session === session), subscription)
   if (empty) return undefined
-  if (Math.abs(net) < 0.005) return 'rightsize about even'
-  if (kept) return kept.five.hi > 0 ? `rightsize saved ${oneShareText(kept.five)}` : `rightsize cost ${oneShareText(kept.five)} more`
-  return net > 0 ? `rightsize saved ~${money(net)}` : `rightsize cost ~${money(-net)} more`
+  if (Math.abs(net) < 0.005) return 'about even'
+  if (kept) return kept.five.hi > 0 ? `saved ${oneShareText(kept.five)}` : `cost ${oneShareText(kept.five)} more`
+  return net > 0 ? `saved ~${money(net)}` : `cost ~${money(-net)} more`
 }
 
 /** The label of the band's running total: what rightsize's own changes saved or cost so far this session. */

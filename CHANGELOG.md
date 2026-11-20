@@ -3,7 +3,7 @@
 ## 0.16.2 (unreleased)
 
 - **A simpler band.** The Prompt row says one thing in one unit: an unchanged prompt reads `Low on Opus fits.`, and a prompt after the cache went cold reads `Cache was cold: this prompt cost ~2.7% more.` (one figure, not a range; no dollars on a subscription; no "/compact first would have cost"). **Compact now** is now **Compact Now** and **Save handoff note** is **Save Handoff**.
-- **The session total moved to the status line.** From the session's 3rd rated prompt the status line ends with `rightsize saved ~0.3%` (or `rightsize cost ~0.3% more`, or dollars on the API). The band no longer carries `rightsize so far`.
+- **The session total moved to the status line.** From the session's 3rd rated prompt the status line ends with `saved ~0.3%` (or `cost ~0.3% more`, or dollars on the API). The band no longer carries `rightsize so far`.
 - **The Cache row shows a bar.** `▰▰▰▰▰▰▰▰▰▰ until 11:12 PM · ~$0.40 to come back`: the share of the cache life left, redrawn as it runs down, with the clock time beside it. `· context N%` shows only from 40% full.
 
 ## 0.16.1 (2026-11-19)

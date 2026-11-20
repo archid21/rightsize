@@ -438,7 +438,7 @@ test('on Opus and Fable a free switch lowers on any saving, a small one included
   expect(lowered / now, 'Opus: but a saving').toBeLessThan(1)
   const p = effortPlan(reread, s, 'low')
   expect(p, 'Opus lowers').toMatchObject({ kind: 'effort', dir: 'lower', level: 'low' })
-  if (p.kind === 'effort') expect(near(p.saving, now - lowered)).toBe(true)
+  if (p.kind === 'effort') expect(near(p.saving ?? NaN, now - lowered)).toBe(true)
   // Fable's lower level also takes fewer steps, so its saving is larger; the bar is still "any saving", and it lowers.
   const f = { ...fable, level: 'medium' as const, context: 140_000, cal: freeSwitches }
   expect(lowerBar(reread, f)).toBe(1)
@@ -1421,7 +1421,7 @@ test('every other type ignores subject entirely', async () => {
 // SHORT_ROUTE_RUNS measured hand-downs to Sonnet skips the 20-step floor. A newer route and an Opus helper keep it.
 test('a short task goes to a Sonnet helper once its route has 5 measured hand-downs', async () => {
   expect(SHORT_ROUTE_RUNS).toBe(5)
-  const work = (steps: number, fit = { haiku: null, sonnet: 'low', opus: 'low', fable: 'low' } as const) => rating({ type: 'feature', level: 'low', fit, read: 150_000, write: 3000, steps })
+  const work = (steps: number, fit: Rating['fit'] = { haiku: null, sonnet: 'low', opus: 'low', fable: 'low' }) => rating({ type: 'feature', level: 'low', fit, read: 150_000, write: 3000, steps })
   const to = (r: Rating, s: Situation) => {
     const p = plan(r, s, 'low')
     return p.kind === 'delegate' ? p.tier : p.kind

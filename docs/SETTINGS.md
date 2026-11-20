@@ -200,6 +200,13 @@ An "ask" answer opens its own timed dialog (it waits 30 seconds); every other an
 - Default: on
 - on: once a session, when output is a large share of the cost (at least 25%, after 20 requests and $1.00 spent at list prices), rightsize asks whether to use the Concise output style. off: it never asks. This row does not change your output style. To use Concise in every project, set Output style to Concise in your Claude settings.
 
+### Lowering pause
+
+- Key: `lowerPause`
+- Options: 5 prompts · 10 prompts · 15 prompts · 20 prompts
+- Default: 10 prompts
+- How long lowering and hand-downs pause for a kind of work on a model after the rating was wrong on 2 or more of its last 10 outcomes. Then it comes back on probation: one more wrong rating pauses it again. The band has a Try lowering again button.
+
 ### Try lowering when unsure
 
 - Key: `lowerUnsure`

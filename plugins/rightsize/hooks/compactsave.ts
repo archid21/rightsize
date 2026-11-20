@@ -18,8 +18,8 @@ export const FRESH_MAX = 3
 export const SUMMARY_LAST = 10
 export const SUMMARY_MIN = 3
 
-/** Where a compact came from: rightsize's buttons and advice, the tip on Sonnet, the person's own /compact, or Claude Code's auto-compact. */
-export type CompactSource = 'button' | 'limit' | 'tip' | 'keepwarm' | 'manual' | 'auto'
+/** Where a compact came from: rightsize's buttons and advice, the tip on Sonnet, the person's own /compact typed while rightsize advised one (`advised`), the person's other /compact, or Claude Code's auto-compact. */
+export type CompactSource = 'button' | 'limit' | 'tip' | 'keepwarm' | 'advised' | 'manual' | 'auto'
 export type CompactStop = 'auto-compact point' | 'next compact' | 'session end'
 
 /** One compact being measured. `cost` undefined: its usage could not be read, so it saves nothing in the report. */

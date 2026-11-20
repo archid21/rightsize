@@ -130,3 +130,38 @@ test('Compact Now on the Cache row: source button, not keepwarm', { timeoutMs: 3
   expect(h.compactions).toBe(1)
   expect(compactLines(h).at(-1)).toMatchObject({ compactSource: 'button' })
 })
+
+// A /compact the person types while rightsize is advising a compact counts as rightsize's: source 'advised'. The plain Cache timer row does not.
+
+test('the person types /compact while the size warning is up: source advised', { timeoutMs: 30000, options: { billing: 'api' } }, async ($, on) => {
+  const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', stored: { ...NO_COLD, billing: 'api' } })
+  h.rating = NO_CHANGE
+  h.contextTokens = 120_000
+  h.now = EVENING
+  h.virtual = true
+  h.stepUsage = turnOf(200_000)
+  const d = drive($, h)
+  await d.start('desktop')
+  await d.submit('continue')
+  await d.turnStart('t1', 'continue')
+  await turn(d, 't1')
+  const ui = await mount($, 'desktop')
+  expect(await ui.find({ key: 'cold-size-compact' }), 'the size warning is on the band').toBeTruthy()
+  await ui.unmount()
+  await compactAs($, 'manual')
+  h.stepUsage = turnOf(50_000)
+  await turn(d, 't2')
+  expect(compactLines(h).at(-1)).toMatchObject({ compactSource: 'advised' })
+})
+
+test('the person types /compact with only the Cache timer row up: source manual', { timeoutMs: 30000 }, async ($, on) => {
+  const { h, d } = await session($, on)
+  await turn(d, 't1')
+  const ui = await mount($, 'desktop')
+  expect(await ui.find({ key: 'cold-compact' }), 'the timer row is on the band').toBeTruthy()
+  await ui.unmount()
+  await compactAs($, 'manual')
+  h.stepUsage = turnOf(50_000)
+  await turn(d, 't2')
+  expect(compactLines(h).at(-1)).toMatchObject({ compactSource: 'manual' })
+})

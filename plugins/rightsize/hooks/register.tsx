@@ -3224,13 +3224,20 @@ async function lastTurns($: EngineInterface): Promise<Record<string, LastTurn>> 
   return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, LastTurn>) : {}
 }
 
+/** True while the band shows rightsize's compact advice: the size warning, the usage-limit advice or the keep-warm offer. The plain Cache timer row (always Compact Now) does not count. */
+async function compactAdvised($: EngineInterface): Promise<boolean> {
+  if (coldTurn?.offer) return true
+  const band = (await $.state.get(BAND).catch(() => undefined))?.value
+  return !!band?.cold?.some(b => b.id === SIZE_COMPACT || b.id === LIMIT_COMPACT)
+}
+
 /** A compact ran (P-85): close the one before it, and start measuring this one. Its cost is what the session's ledger grew by. */
 async function trackCompact($: EngineInterface, trigger: string, tokensBefore: number | undefined, ledgerBefore: number | undefined) {
   if (compactTrack) await logCompact($, compactTrack, 'next compact')
   const ledgerAfter = (await usageNow($))?.cost?.usd
   const cost = typeof ledgerBefore === 'number' && typeof ledgerAfter === 'number' && ledgerAfter > ledgerBefore ? ledgerAfter - ledgerBefore : undefined
   // rightsize's own compact may run as a /compact command (trigger 'manual'): the source its button set still wins. The person's own /compact is 'manual', or 'tip' while the cold tip walks them through it.
-  const source: CompactSource = trigger === 'auto' ? 'auto' : (nextCompactSource ?? (trigger === 'manual' ? (coldTip ? 'tip' : 'manual') : 'button'))
+  const source: CompactSource = trigger === 'auto' ? 'auto' : (nextCompactSource ?? (trigger === 'manual' ? (coldTip ? 'tip' : (await compactAdvised($)) ? 'advised' : 'manual') : 'button'))
   nextCompactSource = null
   const now = await $.clock.now()
   const tier = tierOf(lastReqModel ?? mainModel) ?? 'opus'

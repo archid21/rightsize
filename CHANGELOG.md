@@ -5,6 +5,7 @@
 - **Compacts now count in Total saved.** Each compact rightsize makes or advises (Compact Now, the usage-limit advice, the cold-compact tip, keep warm's compact) is measured: every later request in the chat reads fewer tokens, and the report adds up what that saved, less what the compact cost. It is a running figure that stops when Claude Code would have compacted anyway, at the next compact, or when the session ends.
 - **New Compacts rows in the report.** "Compacts (rightsize)" shows count, saved so far and how many started fresh (the session ended within 3 requests). Your own `/compact` and Claude Code's auto-compact are shown on their own rows and are not counted in Total saved.
 - **One compact price everywhere.** A compact done while the cache is warm costs a cache read plus the summary, not the whole chat as input. Keep warm's compact decision now uses it, so it compacts on bigger chats where that pays, and the whatsnext install hint after a compact shows less often. We replayed past sessions to check the formula first.
+- **Your `/compact` counts when rightsize advised it.** Typing `/compact` while rightsize's compact advice is showing (the context-size warning, the usage-limit advice or the keep-warm offer) counts as rightsize's compact. With only the Cache timer row up, it is still yours.
 - **The summary size is learned.** Estimates use the median size of your last compacts' summaries (6,000 tokens until three are logged).
 
 ## 0.16.2 (2026-11-19)

@@ -1363,11 +1363,12 @@ test('Total saved counts the latest line of each rightsize compact only; an unkn
     cs({ compactId: 'c2', compactSource: 'limit', saved: -0.2, requests: 0, startedFresh: true }),
     cs({ compactId: 'c3', compactSource: 'keepwarm', compactCost: undefined, saved: 0 }),
     cs({ compactId: 'c4', compactSource: 'tip', saved: 0.25 }),
+    cs({ compactId: 'c7', compactSource: 'advised', saved: 0.3 }),
     cs({ compactId: 'c5', compactSource: 'manual', saved: 9 }),
     cs({ compactId: 'c6', compactSource: 'auto', saved: 7 }),
   ]
-  expect(Math.abs(totals(lines).saved - 0.55)).toBeLessThan(1e-9)
-  expect(Math.abs(totals(lines).compactSaved - 0.55)).toBeLessThan(1e-9)
+  expect(Math.abs(totals(lines).saved - 0.85)).toBeLessThan(1e-9)
+  expect(Math.abs(totals(lines).compactSaved - 0.85)).toBeLessThan(1e-9)
 })
 
 test('the Compacts rows: rightsize, yours and auto apart, with saved so far and how many started fresh', () => {
@@ -1387,4 +1388,11 @@ test('old logs without compactSaved lines still load, with no Compacts rows', ()
   expect(text).not.toContain('Compacts')
   const none = { count: 0, saved: 0, fresh: 0 }
   expect(compacts([run({})])).toEqual({ rightsize: none, manual: none, auto: none })
+})
+
+test('a period with only an own compact is not "Nothing rated": the headline shows the saving; the person\'s compact alone still is', () => {
+  const text = summary([cs({ saved: 0.5 })])
+  expect(text).not.toContain('Nothing rated')
+  expect(text).toMatch(/saved/i)
+  expect(summary([cs({ compactSource: 'manual', saved: 0.5 })])).toContain('Nothing rated')
 })

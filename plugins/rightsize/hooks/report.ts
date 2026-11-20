@@ -572,7 +572,7 @@ type Stats = { t: Totals; net: number; empty: boolean; kept?: Kept; ties?: { gui
 function stats(lines: readonly RunLine[], subscription: boolean, withTies = false): Stats {
   const t = totals(lines)
   const kept = subscription ? windowKept(lines, t) : undefined
-  return { t, net: t.saved - t.overhead, empty: !t.rated && !t.overhead && !t.subagents && !t.unrated && !t.returns, ...(kept ? { kept } : {}), ...(withTies ? { ties: tieCounts(lines) } : {}) }
+  return { t, net: t.saved - t.overhead, empty: !t.rated && !t.overhead && !t.subagents && !t.unrated && !t.returns && !lines.some(l => l.kind === 'compactSaved' && ownCompact(l)), ...(kept ? { kept } : {}), ...(withTies ? { ties: tieCounts(lines) } : {}) }
 }
 
 /**
@@ -583,7 +583,7 @@ function lifetimeStats(life: Lifetime | undefined, lines: readonly RunLine[], su
   if (!life) return stats(lines, subscription)
   const live = lines.filter(l => Date.parse(l.at) > Date.parse(life.through))
   const t = addTotals(life.t, totals(live))
-  return { t, net: t.saved - t.overhead, empty: !t.rated && !t.overhead && !t.subagents && !t.unrated && !t.returns }
+  return { t, net: t.saved - t.overhead, empty: !t.rated && !t.overhead && !t.subagents && !t.unrated && !t.returns && !t.compactSaved && !live.some(l => l.kind === 'compactSaved' && ownCompact(l)) }
 }
 
 /** The date lifetime counts from: the earlier of the roll-up's first line and the first line still in the logs, in the person's time. */
@@ -1323,7 +1323,7 @@ function latestCompacts(lines: readonly RunLine[]) {
 }
 
 /** Compacts rightsize made or advised: its buttons, the size and limit advice, the cold tip and keep warm's gate. */
-const OWN_COMPACT = ['button', 'limit', 'tip', 'keepwarm']
+const OWN_COMPACT = ['button', 'limit', 'tip', 'keepwarm', 'advised']
 const ownCompact = (l: RunLine) => OWN_COMPACT.includes(l.compactSource ?? '')
 
 export type CompactCount = { count: number; saved: number; fresh: number }

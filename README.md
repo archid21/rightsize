@@ -65,13 +65,11 @@ The report counts rightsize's own cost (the rating calls) against the savings, s
 
 A band above the prompt says what rightsize did and why, with buttons to undo it; ▾ folds it to one line. Pictures of the desktop app; figures are examples.
 
-**The first time, it asks what you want.** You stay in charge.
+**Changes: Auto (the default) acts and says so; Ask asks first.** On Ask, one question with the recommended choice first; after the same answer three times, **Always do this** saves it.
 
-![Question: When a task could run on a cheaper model than Opus (such as Sonnet), what should I do? Send it to a cheaper subagent (Recommended)](docs/images/d-ask.png)
+![Question: Send to a Sonnet helper? ~26% of the usage. Send to Sonnet (Recommended), Keep on Opus (lower effort)](docs/images/d-ask.png)
 
-**A routine task goes to a Sonnet helper,** and the band shows what it saved.
-
-![Band: Sending this to a Sonnet subagent at medium effort. That uses about 26% of the usage vs staying on Opus (estimated). Buttons: Ask first, Stay, lower effort only](docs/images/d-sending.png)
+**A routine task goes to a Sonnet helper,** and the band shows what it saved, with one button to undo it.
 
 ![Band: Sent to Sonnet. ~7% of Opus usage ($0.18 vs ~$2.41). Button: Redo on Opus](docs/images/d-sent.png)
 
@@ -85,7 +83,7 @@ A band above the prompt says what rightsize did and why, with buttons to undo it
 
 ![Band: Goes cold in 55 min (19:10) · coming back after costs about $1.56. Buttons: Keep warm 8 h, Wrap up](docs/images/d-warm.png)
 
-![Band with two rows: Sent to Haiku, $0.04 vs ~$0.31 on Fable; Context is 60% full (120K of 200K tokens), with a Compact Now button](docs/images/d-context.png)
+![Band with two rows: Sent to Haiku, $0.04 vs ~$0.31 on Fable; Context is 60% full (120K of 200K tokens), with Redo on Fable and Compact Now buttons](docs/images/d-context.png)
 
 <details>
 <summary>In the terminal</summary>

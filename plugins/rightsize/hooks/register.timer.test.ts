@@ -1,5 +1,5 @@
 import { type TestBody, expect, test } from 'claude-code/testing'
-import { LOG_PATH, BIG_TURN, NO_CHANGE, engine, drive, mount, rowText, WHATSNEXT_CMDS, installWhatsnext } from './testkit'
+import { LOG_PATH, BIG_TURN, NO_CHANGE, engine, drive, mount, rowText, WHATSNEXT_CMDS, installWhatsnext, freshAnswer } from './testkit'
 
 // P-80 (ADR 0094, group 3): the Cache timer row after every main-chat turn, the cold-compact tip on every path, and the tip for
 // a reopened chat that has gone cold. Runs on a virtual clock, as the keep-warm tests do.
@@ -304,7 +304,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await turn(sonnet.d, 't1')
     await sonnet.h.advance(2 * HOUR)
     expect(logOf(sonnet.h)).not.toContain('cold-compact tip: offered')
-    expect((await cacheRow($)).text, 'the cold row instead').toMatch(/^Went cold at 7:00 PM · next prompt reloads the chat, ~\$/)
+    expect((await cacheRow($)).text, 'the cold row instead').toMatch(/^Went cold at 7:00 PM\. OK to continue here \(~\$/)
     expect(sonnet.h.sleepers.length, 'no timer waits after it').toBe(0)
   })
 
@@ -332,7 +332,9 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
   // ---- The cold row: a small chat once the cache has gone cold ---------------------------------------------------
 
-  const COLD = 'Went cold at 7:00 PM · next prompt reloads the chat, ~$0.16 · context 10%'
+  const COLD = 'Went cold at 7:00 PM. OK to continue here (~$0.16). New topic? Start fresh.'
+  const COLD_OFFER = `${COLD} Pausing this work? Save a handoff first.`
+  const COLD_SAVED = 'Went cold at 7:00 PM. OK to continue here (~$0.16). Handoff saved: Start fresh for a new topic.'
   const coldButtons = async ($: unknown) => (await cacheRow($)).buttons.filter(b => String(b[0]).startsWith('cold-'))
 
   test(`cold row: a small chat's timer row turns past tense when the cache goes cold, with Start fresh alone (${surface})`, { timeoutMs: 30000, options: { beforeCold: 'off' } }, async ($, on) => {
@@ -349,12 +351,42 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(logOf(h)).not.toContain('cold-compact tip: offered')
   })
 
-  test(`cold row: with whatsnext there is still no Save handoff note: a note after cold costs the full reload (${surface})`, { timeoutMs: 30000, options: { beforeCold: 'off' } }, async ($, on) => {
+  test(`cold row: with whatsnext and no handoff yet, it offers Save handoff note, even with Before the cache goes cold off (${surface})`, { timeoutMs: 30000, options: { beforeCold: 'off' } }, async ($, on) => {
+    const { h, d } = await session($, on, { whatsnext: true, stored: { beforeCold: 'off' } })
+    h.wnFresh = { exitCode: 0, stdout: freshAnswer(true) }
+    await turn(d, 't1')
+    await h.advance(HOUR + MIN)
+    expect((await cacheRow($)).text).toBe(COLD_OFFER)
+    expect(await coldButtons($)).toEqual([['cold-fresh', 'Start fresh'], ['cold-handoff', 'Save handoff note']])
+    expect(h.submitted.length, 'Off: nothing automatic').toBe(0)
+  })
+
+  test(`cold row: Save handoff note sends wrap up, then says it is saved and keeps Start fresh (${surface})`, { timeoutMs: 30000, options: { beforeCold: 'off' } }, async ($, on) => {
+    const { h, d } = await session($, on, { whatsnext: true, stored: { beforeCold: 'off' } })
+    h.wnFresh = { exitCode: 0, stdout: freshAnswer(true) }
+    await turn(d, 't1')
+    await h.advance(HOUR + MIN)
+    await press($, 'cold-handoff')
+    expect(h.submitted.map(s => s.text)).toEqual(['wrap up'])
+    const r = await cacheRow($)
+    expect(r.text, 'not "before the cache went cold": it already had').toBe('Saved a handoff note. New topic? Start fresh.')
+    expect(await coldButtons($)).toEqual([['cold-fresh', 'Start fresh']])
+  })
+
+  test(`cold row: when whatsnext says the handoff is already written, no second one is offered (${surface})`, { timeoutMs: 30000, options: { beforeCold: 'off' } }, async ($, on) => {
+    const { h, d } = await session($, on, { whatsnext: true, stored: { beforeCold: 'off' } })
+    h.wnFresh = { exitCode: 0, stdout: freshAnswer(false) }
+    await turn(d, 't1')
+    await h.advance(HOUR + MIN)
+    expect((await cacheRow($)).text).toBe(COLD_SAVED)
+    expect(await coldButtons($)).toEqual([['cold-fresh', 'Start fresh']])
+  })
+
+  test(`cold row: an older whatsnext that cannot say still gets the offer (${surface})`, { timeoutMs: 30000, options: { beforeCold: 'off' } }, async ($, on) => {
     const { h, d } = await session($, on, { whatsnext: true, stored: { beforeCold: 'off' } })
     await turn(d, 't1')
     await h.advance(HOUR + MIN)
-    expect((await cacheRow($)).text).toBe(COLD)
-    expect(await coldButtons($)).toEqual([['cold-fresh', 'Start fresh']])
+    expect((await cacheRow($)).text).toBe(COLD_OFFER)
   })
 
   test(`cold row: Start fresh puts /clear in the prompt box and sends nothing (${surface})`, { timeoutMs: 30000, options: { beforeCold: 'off' } }, async ($, on) => {
@@ -408,14 +440,14 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
   test(`reopened: a chat on Sonnet gets no tip (${surface})`, { timeoutMs: 30000, options: {} }, async ($, on) => {
     const sonnet = await session($, on, { store: LAST(), model: 'claude-sonnet-5-5' })
-    expect((await cacheRow($)).text, 'Sonnet: the cold row, no tip').toMatch(/^Went cold at 4:00 PM · next prompt reloads the chat, ~\$/)
+    expect((await cacheRow($)).text, 'Sonnet: the cold row, no tip').toMatch(/^Went cold at 4:00 PM\. OK to continue here \(~\$/)
     expect(logOf(sonnet.h)).not.toContain('cold-compact tip: offered')
   })
 
   test(`reopened: too small to save anything shows the cold row, not the tip (${surface})`, { timeoutMs: 30000, options: {} }, async ($, on) => {
     await session($, on, { store: LAST({ context: 20_000 }) })
     const r = await cacheRow($)
-    expect(r.text).toBe('Went cold at 4:00 PM · next prompt reloads the chat, ~$0.16')
+    expect(r.text).toBe('Went cold at 4:00 PM. OK to continue here (~$0.16). New topic? Start fresh.')
     expect(r.buttons.filter(b => String(b[0]).startsWith('cold-'))).toEqual([['cold-fresh', 'Start fresh']])
   })
 

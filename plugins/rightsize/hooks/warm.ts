@@ -295,11 +295,14 @@ export function timerText(o: { coldAt: number; cost: string; percent?: number })
 }
 
 /**
- * The timer row once the cache has gone cold, for a chat too small for the cold-compact tip: "Went cold at 11:12 PM · next prompt
- * reloads the chat, ~$0.40 · context 32%". The cost is what the next prompt pays to write the conversation again.
+ * The timer row once the cache has gone cold, for a chat too small for the cold-compact tip, with advice: continuing costs one reload
+ * (`cost`, "~$0.40" or "~2%"), a new topic is a fresh start. `handoff`: whatsnext can save a note (`offer`), already did (`saved`),
+ * or is not here (`none`).
  */
-export function coldRowText(o: { coldAt: number; cost: string; percent?: number }) {
-  return `Went cold at ${clock12(o.coldAt)} · next prompt reloads the chat, ${o.cost}${o.percent === undefined ? '' : ` · context ${o.percent}%`}`
+export function coldRowText(o: { coldAt: number; cost: string; handoff: 'offer' | 'saved' | 'none' }) {
+  const head = `Went cold at ${clock12(o.coldAt)}. OK to continue here (${o.cost}).`
+  if (o.handoff === 'saved') return `${head} Handoff saved: Start fresh for a new topic.`
+  return `${head} New topic? Start fresh.${o.handoff === 'offer' ? ' Pausing this work? Save a handoff first.' : ''}`
 }
 
 /** The same row while Claude Code's idle compact will run by itself: "Claude Code compacts this at about 12:05 AM · context 52%". */

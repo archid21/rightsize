@@ -4595,16 +4595,48 @@ async function showColdRow($: EngineInterface, c: { tier: Tier; context: number;
   if (band?.coldText && !timerIsOn(band)) return
   const rates = billing === 'subscription' ? await windowPerDollar($) : undefined
   const cost = coldCostText(idleCost(prices[c.tier], c.context).resend, rates).replace(/^about /, '~')
-  const percent = await contextPercent($)
-  const text = coldRowText({ coldAt: c.coldAt, cost, ...(percent === undefined ? {} : { percent }) })
-  timerRow = { text, lead: `${coldRowText({ coldAt: c.coldAt, cost })}.`, buttons: [COLD_FRESH] }
-  await showCold($, text, [COLD_FRESH], true)
+  // whatsnext knows whether this session's note is written (any source: rightsize, a typed wrap up, its own idle wrap-up).
+  // An older whatsnext that cannot say gets the offer.
+  let handoff: 'offer' | 'saved' | 'none' = 'none'
+  if ((await neighbours($)).whatsnext) {
+    const got = await whatsnextFresh($)
+    handoff = 'fresh' in got && !got.fresh.wrapUpFirst ? 'saved' : 'offer'
+  }
+  const text = coldRowText({ coldAt: c.coldAt, cost, handoff })
+  const buttons = handoff === 'offer' ? [COLD_FRESH, TIMER_HANDOFF] : [COLD_FRESH]
+  timerRow = { text, lead: text, buttons }
+  coldRowOn = true
+  await showCold($, text, buttons, true)
   await log($, `cache timer: ${text}`)
+}
+/** True while the cold row is on the band: its Save handoff note says so when done, and keeps Start fresh. */
+let coldRowOn = false
+
+/** Save handoff note on the cold row: whatsnext's wrap-up, sent now; the row then offers Start fresh. */
+async function pressColdHandoff($: EngineInterface) {
+  coldRowOn = false
+  timerRow = null
+  coldDone = true
+  coldPrompt = WRAP_UP
+  try {
+    const sent = await $.prompt.submit({ text: WRAP_UP })
+    if (sent.drop !== undefined) {
+      await log($, `cold row: "${WRAP_UP}" was refused (${sent.drop})`)
+      return
+    }
+    await showCold($, 'Saved a handoff note. New topic? Start fresh.', [COLD_FRESH])
+    await log($, `cold row: submitted "${WRAP_UP}" to whatsnext after the cache went cold`)
+  } catch (err) {
+    await log($, `cold row handoff failed: ${err instanceof Error ? err.message : String(err)}`)
+  } finally {
+    coldPrompt = null
+  }
 }
 
 async function pressFresh($: EngineInterface) {
   await setBand($, null)
   timerRow = null
+  coldRowOn = false
   const filled = await $.prompt.fill({ text: '/clear', mode: 'replace' }).catch(() => null)
   await log($, filled?.ok ? 'cold row: Start fresh put /clear in the prompt box' : 'cold row: Start fresh could not fill the prompt box')
 }
@@ -4701,6 +4733,7 @@ async function coldCheck($: EngineInterface) {
   cancelCold($, 'a newer turn ended')
   coldTurn = null
   timerRow = null
+  coldRowOn = false
   // An offer for an earlier turn is stale now: this turn gets its own, or none.
   if ((await $.state.get(BAND).catch(() => undefined))?.value?.cold) await setBand($, null)
   if (off || !cacheOn) return
@@ -5658,6 +5691,7 @@ async function pressCold($: EngineInterface, id: string): Promise<void> {
   if (id === WRAP.id) return pressWrap($)
   if (id === INSTALL_HIDE.id) return hideInstallHint($)
   if (id === COLD_FRESH.id) return pressFresh($)
+  if (id === TIMER_HANDOFF.id && coldRowOn) return pressColdHandoff($)
   await closeOffer($, id)
   if (id === 'off') {
     cancelCold($, 'turned off')
@@ -7532,6 +7566,7 @@ export const register: Register = (on, options) => {
     // The person is back: keep-warm requests, a waiting handoff and a waiting offer stop, and the next big turn's end starts afresh.
     if (!off && fromPerson(e) && !e.command && !e.isMeta) {
       coldDone = false
+      coldRowOn = false
       cancelTip()
       wrapThenCompact = null
       wrapThenFresh = false

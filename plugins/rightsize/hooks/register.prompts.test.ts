@@ -1220,7 +1220,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.now += 30 * MIN
     await d.submit('continue')
     expect(h.asked.length, 'inside the hour the cache lives').toBe(0)
-    expect(await bandText($, surface)).not.toContain('Idle')
+    expect(await bandText($, surface)).not.toContain('Cache was cold')
     await d.step('t1')
     await d.complete('t1')
 
@@ -1231,11 +1231,11 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(out.drop, 'never held').toBeUndefined()
     expect(h.submitted.length, 'the prompt entered').toBe(sent + 1)
     expect(h.filled, 'and nothing was put back in the box').toEqual([])
-    expect(await bandText($, surface)).toContain('Idle 2 hours: the cache went cold, so this prompt writes the conversation (~21K tokens) again, about $0.16 more than warm; /compact first would have cost about $0.08.')
-    expect(h.files[LOG_PATH] ?? '').toContain('idle 2 hours with 20500 tokens: noted on the band ($0.16 to write again)')
+    expect(await bandText($, surface)).toContain('Cache was cold: this prompt cost ~$0.16 more.')
+    expect(h.files[LOG_PATH] ?? '').toContain('idle 2 hours with 20500 tokens: noted on the band ($0.16 to write again; /compact first would have cost $0.08)')
 
     await d.submit('continue')
-    expect(await bandText($, surface), 'one note per idle gap').not.toContain('Idle')
+    expect(await bandText($, surface), 'one note per idle gap').not.toContain('Cache was cold')
     expect(h.asked.length).toBe(0)
   })
 
@@ -1245,7 +1245,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.start(surface)
     h.now += 3 * 24 * 60 * MIN
     const out = (await d.submit('continue')) as { drop?: string }
-    expect(await bandText($, surface)).toContain('Idle 3 days: the cache went cold')
+    expect(await bandText($, surface)).toContain('Cache was cold: this prompt cost')
     expect(await bandText($, surface)).not.toContain('1 minutes')
     expect(out.drop).toBeUndefined()
     expect(last(h.submitted)?.text, 'sent').toBe('continue')
@@ -1278,7 +1278,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.submit('continue')
     expect(h.asked, 'nothing is asked').toEqual([])
     expect(await bandText($, surface)).toContain(
-      'Idle 3 hours: the cache went cold, so this prompt writes the conversation (~21K tokens) again, about $0.16 API-equivalent more than warm; /compact first would have cost about $0.08 API-equivalent.',
+      'Cache was cold: this prompt cost ~$0.16 more.',
     )
     await d.step('t1')
     await d.complete('t1')
@@ -1289,7 +1289,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.now += 3 * 60 * MIN
     await d.submit('continue')
     expect(await bandText($, surface)).toContain(
-      '~0.6–1.0% of your 5-hour window ($0.16 API-equivalent) more than warm; /compact first would have cost ~0.3–0.5% of your 5-hour window ($0.08 API-equivalent).',
+      'Cache was cold: this prompt cost ~0.8% more.',
     )
   })
 
@@ -1297,7 +1297,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const { h, d } = await idleSetup($, on, surface)
     h.now += 3 * 60 * MIN
     await d.submit('continue')
-    expect(await bandText($, surface), '$0.16 is under $0.50').not.toContain('Idle')
+    expect(await bandText($, surface), '$0.16 is under $0.50').not.toContain('Cache was cold')
     h.stepUsage = BIG_TURN
     await d.step('t1')
     await d.complete('t1')
@@ -1305,7 +1305,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const out = (await d.submit('continue')) as { drop?: string }
     expect(out.drop, 'never held').toBeUndefined()
     expect(h.asked, 'nothing asked').toEqual([])
-    expect(await bandText($, surface)).toContain('Idle 3 hours: the cache went cold, so this prompt writes the conversation (~81K tokens) again, about $0.63 more than warm; /compact first would have cost about $0.32.')
+    expect(await bandText($, surface)).toContain('Cache was cold: this prompt cost ~$0.63 more.')
   })
 
   test(`Idle warning in /config sets the bar (${surface})`, { timeoutMs: 30000, options: { idleWarning: 'over $1' } }, async ($, on) => {
@@ -1313,7 +1313,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.now += 3 * 60 * MIN
     await d.submit('continue')
     expect(h.asked.length, '$0.16 is under $1').toBe(0)
-    expect(await bandText($, surface), '$0.16 is under $1: no note').not.toContain('Idle')
+    expect(await bandText($, surface), '$0.16 is under $1: no note').not.toContain('Cache was cold')
   })
 
   test(`a workflow pauses hand-offs and learning for the session, and the report lists it (${surface})`, { timeoutMs: 30000 }, async ($, on) => {

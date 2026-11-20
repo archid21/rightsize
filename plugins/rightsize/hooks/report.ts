@@ -657,6 +657,23 @@ export const SESSION_TOTAL_FROM = 3
 /** How many rated prompts the session has: the figure `SESSION_TOTAL_FROM` is held against. */
 export const ratedInSession = (lines: readonly RunLine[], session: string) => totals(lines.filter(l => l.session === session)).rated
 
+/** One share, not a range: the midpoint of `s`, as the band and status line show it ("~2.7%", "under 0.1%"). Its sign is dropped. */
+export function oneShareText(s: Share) {
+  const mid = Math.abs((s.lo + s.hi) / 2)
+  if (mid < 0.05) return 'under 0.1%'
+  return `~${mid < 0.95 ? mid.toFixed(1) : String(Math.round(mid))}%`
+}
+
+/** The session's running net for the status line (P-84): "rightsize saved ~0.3%", "rightsize cost ~0.3% more", "rightsize saved ~$0.12". */
+export function statusTotal(lines: readonly RunLine[], session: string, subscription: boolean): string | undefined {
+  if (session === '') return undefined
+  const { net, empty, kept } = stats(lines.filter(l => l.session === session), subscription)
+  if (empty) return undefined
+  if (Math.abs(net) < 0.005) return 'rightsize about even'
+  if (kept) return kept.five.hi > 0 ? `rightsize saved ${oneShareText(kept.five)}` : `rightsize cost ${oneShareText(kept.five)} more`
+  return net > 0 ? `rightsize saved ~${money(net)}` : `rightsize cost ~${money(-net)} more`
+}
+
 /** The label of the band's running total: what rightsize's own changes saved or cost so far this session. */
 export const SO_FAR = 'rightsize so far:'
 

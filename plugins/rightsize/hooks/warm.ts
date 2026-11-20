@@ -290,9 +290,15 @@ export const IDLE_COMPACT_AFTER = 54 * MIN
  * time, never a countdown: the terminal band redraws only on events, so a countdown would go stale. `cost` is the cold cost as
  * the caller writes it ("~$0.40", "~2%"); `percent` is how full the conversation is, left out when the window is not known.
  */
-export function timerText(o: { coldAt: number; cost: string; percent?: number }) {
-  return `Goes cold at ${clock12(o.coldAt)} · coming back then costs ${o.cost}${o.percent === undefined ? '' : ` · context ${o.percent}%`}`
+export function timerText(o: { coldAt: number; cost: string; percent?: number; bar?: string }) {
+  return `${o.bar ? `${o.bar} ` : ''}until ${clock12(o.coldAt)} · ${o.cost} to come back${contextPart(o.percent)}`
 }
+
+/** The context share shows on the Cache row only from this percent: below it, compacting saves little (the first context-warning step). */
+export const CONTEXT_SHOWN_FROM = 40
+
+/** " · context 52%" from CONTEXT_SHOWN_FROM up, else nothing. */
+const contextPart = (percent: number | undefined) => (percent === undefined || percent < CONTEXT_SHOWN_FROM ? '' : ` · context ${percent}%`)
 
 /**
  * The timer row once the cache has gone cold, for a chat too small for the cold-compact tip, with advice: continuing costs one reload
@@ -307,7 +313,7 @@ export function coldRowText(o: { coldAt: number; cost: string; handoff: 'offer' 
 
 /** The same row while Claude Code's idle compact will run by itself: "Claude Code compacts this at about 12:05 AM · context 52%". */
 export function idleCompactTimerText(o: { at: number; percent?: number }) {
-  return `Claude Code compacts this at about ${clock12(o.at)}${o.percent === undefined ? '' : ` · context ${o.percent}%`}`
+  return `Claude Code compacts this at about ${clock12(o.at)}${contextPart(o.percent)}`
 }
 
 /**

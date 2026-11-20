@@ -8,7 +8,7 @@ const none = (why: string) => bandFor(run, {} as never, { kind: 'none', why } as
 
 test('the level in use fits: the plain row, not shown under "when it acts"', async () => {
   const b = none(NONE_FITS)
-  expect(b.text).toBe('No change: medium on Opus fits this prompt.')
+  expect(b.text).toBe('Medium on Opus fits.')
   expect(b.acted).toBe(false)
   expect(b.skipped).toBeUndefined()
 })

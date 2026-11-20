@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import { COMPACT_SUMMARY_TOKENS, DEFAULT_PRICES, coldCost, idleCost } from './cost'
-import { COMPACT_GAP_MIN, IDLE_COMPACT_DEFAULT, IDLE_COMPACT_FLOOR, compactBoundary, compactedText, idleCompactState, idleCompactThreshold, COMPACT_VALUE, IDLE_CAP, addGap, compactWorth, idleEstimate, ALWAYS_AFTER, BACK_OFF_AFTER, LEARN_OVER, OFFER_AFTER_MS, DEFAULT_START, ROW_OF, breakEvenMs, coldBar, offerCountdown, COLD_BAR_CELLS, breakEvenPings, clockText, coldPlan, planLength, alwaysText, ignoredLately, keepWarmChoices, leadMs, learnedChoice, netSaving, nextStart, offerAt, offerText, pingCost, pingEvery, pingsFor, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText, WARM_PROOF, cacheHeld, PAYS_MAX, PAYS_MIN_STRETCHES, PAYS_PRIOR, type Stretch, compactGate, laterChance, paysCheck, paysSend, replayOld, replayPays, returnChance, stretchesOf, backfillLines } from './warm'
+import { COMPACT_GAP_MIN, IDLE_COMPACT_DEFAULT, IDLE_COMPACT_FLOOR, compactBoundary, compactedText, idleCompactState, idleCompactThreshold, COMPACT_VALUE, IDLE_CAP, addGap, compactWorth, idleEstimate, ALWAYS_AFTER, BACK_OFF_AFTER, LEARN_OVER, OFFER_AFTER_MS, DEFAULT_START, ROW_OF, breakEvenMs, coldBar, offerCountdown, COLD_BAR_CELLS, CONTEXT_SHOWN_FROM, timerText, idleCompactTimerText, breakEvenPings, clockText, coldPlan, planLength, alwaysText, ignoredLately, keepWarmChoices, leadMs, learnedChoice, netSaving, nextStart, offerAt, offerText, pingCost, pingEvery, pingsFor, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText, WARM_PROOF, cacheHeld, PAYS_MAX, PAYS_MIN_STRETCHES, PAYS_PRIOR, type Stretch, compactGate, laterChance, paysCheck, paysSend, replayOld, replayPays, returnChance, stretchesOf, backfillLines } from './warm'
 
 const MIN = 60_000
 const HOUR = 60 * MIN
@@ -590,4 +590,16 @@ test('backfill: nothing when history lines are already there; the lines it makes
   expect(stretches.length).toBeGreaterThanOrEqual(PAYS_MIN_STRETCHES)
   expect(stretches.filter(s => s.ended === 'never').length).toBe(1)
   expect(stretchesOf(got, 'subscription', now)).toEqual([])
+})
+
+test('timerText: the bar first, the cost to come back, and the context share only from 40%', async () => {
+  const coldAt = local(5, 19)
+  const bar = '▰'.repeat(COLD_BAR_CELLS)
+  expect(CONTEXT_SHOWN_FROM).toBe(40)
+  expect(timerText({ coldAt, cost: '~$0.16', bar })).toBe(`${bar} until 7:00 PM · ~$0.16 to come back`)
+  expect(timerText({ coldAt, cost: '~$0.16' }), 'no bar, no prefix').toBe('until 7:00 PM · ~$0.16 to come back')
+  expect(timerText({ coldAt, cost: '~$0.16', bar, percent: 39 }), '39% is left out').toBe(`${bar} until 7:00 PM · ~$0.16 to come back`)
+  expect(timerText({ coldAt, cost: '~$0.16', bar, percent: 40 })).toBe(`${bar} until 7:00 PM · ~$0.16 to come back · context 40%`)
+  expect(idleCompactTimerText({ at: coldAt, percent: 39 })).toBe('Claude Code compacts this at about 7:00 PM')
+  expect(idleCompactTimerText({ at: coldAt, percent: 52 })).toBe('Claude Code compacts this at about 7:00 PM · context 52%')
 })

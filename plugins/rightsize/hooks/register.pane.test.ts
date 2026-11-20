@@ -82,7 +82,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.rating = NO_CHANGE
     await setBand($, 'always')
     await d.submit(LOOKUP)
-    expect(await bandText($, surface)).toBe('No change: low on Opus fits this prompt.')
+    expect(await bandText($, surface)).toBe('Low on Opus fits.')
     await d.command('')
     const ui = await mountPane($, surface)
     const before = h.sets.length

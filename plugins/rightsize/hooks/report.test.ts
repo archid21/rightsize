@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { SESSION_TOTAL, accuracyRows, calibrationLine, addTotals, foldLifetime, parseLifetime, type Lifetime, type RunLine, bandShareText, FIXED_REVIEW_PCT, buildReport, costTag, counterfactual, fixedLine, keepWarmLine, outputShareLine, parseLines, problems, sessionTotal, shareMessage, shareText, span, taskActual, taskEstimated, taskExtra, taskStay, tieCounts, totals, usedTag, watchLine, wholeTaskRows, wholeTasks, windowCostText, windowRates } from './report'
+import { SESSION_TOTAL, accuracyRows, calibrationLine, addTotals, foldLifetime, parseLifetime, type Lifetime, type RunLine, bandShareText, FIXED_REVIEW_PCT, buildReport, costTag, counterfactual, fixedLine, keepWarmLine, outputShareLine, oneShareText, parseLines, problems, sessionTotal, statusTotal, shareMessage, shareText, span, taskActual, taskEstimated, taskExtra, taskStay, tieCounts, totals, usedTag, watchLine, wholeTaskRows, wholeTasks, windowCostText, windowRates } from './report'
 import { DEFAULT_PRICES, type Calibration } from './cost'
 import { savingCheck } from './check'
 import type { StartBlock } from './start'
@@ -648,6 +648,29 @@ test('share: always writes rightsize in lowercase, with the link, and no exclama
       expect(text).not.toContain('!')
     }
   }
+})
+
+test('oneShareText: one figure from the midpoint of the range, its sign dropped, under 0.1% for next to nothing', async () => {
+  expect(oneShareText({ lo: 0, hi: 0.04 })).toBe('under 0.1%')
+  expect(oneShareText({ lo: 0.2, hi: 0.4 })).toBe('~0.3%')
+  expect(oneShareText({ lo: -0.4, hi: -0.2 }), 'sign dropped').toBe('~0.3%')
+  expect(oneShareText({ lo: 2.4, hi: 3.0 }), 'from 1% up: whole numbers').toBe('~3%')
+  expect(oneShareText({ lo: 9.9, hi: 17.4 })).toBe('~14%')
+})
+
+test('statusTotal: the session net for the status line, on its own words', async () => {
+  const win = { before: { five_hour: 10 }, after: { five_hour: 11 } }
+  const saved = run({ change: 'lower', offered: 'lower', actual: 0.5, stay: 1, taken: 0.5, overhead: 0.01 })
+  const cost = run({ change: 'raise', offered: 'raise', actual: 0.3, stay: 0.1, taken: 0.2, overhead: 0.5 })
+  expect(statusTotal([], 's1', false), 'no lines').toBeUndefined()
+  expect(statusTotal([saved], '', false), 'no session id').toBeUndefined()
+  expect(statusTotal([run({ session: 's2' })], 's1', false), 'only other sessions have lines').toBeUndefined()
+  expect(statusTotal([run({ change: 'lower', offered: 'lower', actual: 0.101, stay: 0.1, taken: 0.05 })], 's1', false)).toBe('rightsize about even')
+  expect(statusTotal([saved], 's1', false)).toBe('rightsize saved ~$0.49')
+  expect(statusTotal([cost], 's1', false)).toBe('rightsize cost ~$0.50 more')
+  expect(statusTotal([saved], 's1', true), 'subscription without window data').toBe('rightsize saved ~$0.49')
+  expect(statusTotal([{ ...saved, ...win }], 's1', true), 'subscription with a window: one share').toMatch(/^rightsize saved (~[\d.]+%|under 0\.1%)$/)
+  expect(statusTotal([{ ...cost, before: { five_hour: 10 }, after: { five_hour: 12 } }], 's1', true)).toMatch(/^rightsize cost (~[\d.]+%|under 0\.1%) more$/)
 })
 
 test('sessionTotal puts the session net in plain words, from the same figure as the report', async () => {

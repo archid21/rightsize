@@ -20,7 +20,7 @@ export function sizeStep(tokens: number | undefined, window: number | undefined,
 export const SIZE_COMPACT = 'size-compact'
 export const SIZE_WHY_ID = 'size-why'
 export const SIZE_HIDE = 'size-hide'
-export const SIZE_BUTTON = { id: SIZE_COMPACT, label: 'Compact now' }
+export const SIZE_BUTTON = { id: SIZE_COMPACT, label: 'Compact Now' }
 export const SIZE_MORE: readonly { id: string; label: string }[] = [
   { id: SIZE_WHY_ID, label: 'Why?' },
   { id: SIZE_HIDE, label: "Don't show again" },

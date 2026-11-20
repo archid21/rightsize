@@ -21,7 +21,7 @@ export const LIMIT_WHY =
 export const LIMIT_COMPACT = 'limit-compact'
 export const LIMIT_WHY_ID = 'limit-why'
 export const LIMIT_HIDE = 'limit-hide'
-export const LIMIT_BUTTON = { id: LIMIT_COMPACT, label: 'Compact now' }
+export const LIMIT_BUTTON = { id: LIMIT_COMPACT, label: 'Compact Now' }
 export const LIMIT_MORE: readonly { id: string; label: string }[] = [
   { id: LIMIT_WHY_ID, label: 'Why?' },
   { id: LIMIT_HIDE, label: "Don't show again" },
@@ -96,8 +96,8 @@ export function limitHit(limits: readonly Limit[], now: number) {
 }
 
 /** The status line: the model part, then "limit ~3:45 PM" when due, else "$1.84 session" on API billing. */
-export function statusLine(model: string, o: { limits: readonly Limit[]; now: number; api: boolean; cost?: number }) {
+export function statusLine(model: string, o: { limits: readonly Limit[]; now: number; api: boolean; cost?: number; total?: string }) {
   const hit = limitHit(o.limits, o.now)
   const extra = hit !== undefined ? `limit ~${clock12(hit)}` : o.api && typeof o.cost === 'number' && o.cost >= 0.01 ? `${money(o.cost)} session` : ''
-  return extra ? `${model} · ${extra}` : model
+  return [model, extra, o.total].filter(Boolean).join(' · ')
 }

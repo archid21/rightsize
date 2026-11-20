@@ -39,7 +39,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect((await row($)).text, 'nothing before a turn ends').toBe('')
     await turn(d, 't1')
     const r = await row($)
-    expect(r.text, 'on the Cache timer row, not a row of its own').toBe('Goes cold at 1:00 AM · coming back then costs ~$0.16. Context is 60% full (120K of 200K tokens). A compact now makes every later turn cheaper.')
+    expect(r.text, 'on the Cache timer row, not a row of its own').toBe('▰▰▰▰▰▰▰▰▰▰ until 1:00 AM · ~$0.16 to come back. Context is 60% full (120K of 200K tokens). A compact now makes every later turn cheaper.')
     expect(r.buttons).toContain('cold-size-compact')
     expect(log(h)).toContain('context warning: shown at 60%')
     expect(h.compactions).toBe(0)

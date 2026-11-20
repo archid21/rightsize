@@ -162,7 +162,7 @@ import { BRIEF_MAX, cutRequest, parseRating, ratingPrompt, ratingSystem } from '
 import { isApprovalStep } from './approval'
 import { CAP_HARD_X, WINDOW, capStop, HANDBACK, LIMITS, type Signals, type StepUpCause, type Struggle, blockedError, errorKind, callKey, hookFailed, isBookkeeping, isEditTool, isWait, resultMark, helperCap, SPEND_ASK_AT, SPEND_AUTO_MAX, spendMultiple, isTestCommand, noMatchExit, noSignals, noteCall, oneUp, refusedByHook, refusedByPerson, struggle, testsOutcome } from './struggle'
 import { watchCheck, watchRange, type WatchCheck } from './check'
-import { type Change, type HelperLine, type Lifetime, type RunLine, type SwitchLine, type Windows, SESSION_TOTAL, SESSION_TOTAL_FROM, bandShareText, buildReport, costTag, foldLifetime, parseLifetime, parseLines, ratedInSession, sessionTotal, shareMessage, shareOf, usedTag, windowCostText, windowRates } from './report'
+import { type Change, type HelperLine, type Lifetime, type RunLine, type SwitchLine, type Windows, SESSION_TOTAL, SESSION_TOTAL_FROM, bandShareText, oneShareText, statusTotal, buildReport, costTag, foldLifetime, parseLifetime, parseLines, ratedInSession, sessionTotal, shareMessage, shareOf, usedTag, windowCostText, windowRates } from './report'
 import { CACHE_LIFE_KEY, isTracked, parseChanges, type ChangeLine } from './results'
 import { LIFE_DAYS, LIFE_HEADER, LIFE_NO, LIFE_YES, PROBE_RESPONSES, type Provider, adviseLife, lifeEligible, lifeOffer, lifeQuestion, lifeRefusedText, lifeRevertedText, lifeSetText, lifeStuckText, lifeYes, probeRead, providerOf, settingDecides } from './cachelife'
 import { type TrimSavings, isTrim, readTrimSavings } from './trim'
@@ -175,7 +175,7 @@ import { STORE_KEY as TIPS_KEY, type Tip, type TipsState, nextTip, parseState, t
 import { WELCOMED_KEY, welcomeMarkdown, welcomeText } from './welcome'
 import { rebuildCause, rebuildTokens } from './rebuild'
 import { OPT_LEAD, OPT_NONE_TICKED, type OptId, type OptInput, type Suggestion, appliedText, optPeriod, optimize, optimizeText, suggestionBody, suggestionHead } from './optimize'
-import { COMPACT_GAP_MIN, IDLE_COMPACT_AFTER, PING_PROMPT, clock12, idleCompactTimerText, timerText, coldRowText, ROW_OF, WRAP_UP, addGap, planLength, alwaysText, compactBoundary, compactedText, idleCompactState, breakEvenMs, cacheHeld, clockText, coldPlan, ignoredLately, keepWarmChoices, leadMs, learnedChoice, COLD_MIN, breakEvenPings, netSaving, offerAt, offerCountdown, offerText, pingCost, pingEvery, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText, IDLE_CAP, IDLE_GAP_MIN, PAYS_MAX, backfillLines, compactGate, paysCheck, paysSend, stretchesOf, PAYS_MIN_STRETCHES, type Stretch } from './warm'
+import { COMPACT_GAP_MIN, IDLE_COMPACT_AFTER, PING_PROMPT, clock12, coldBar, idleCompactTimerText, timerText, coldRowText, ROW_OF, WRAP_UP, addGap, planLength, alwaysText, compactBoundary, compactedText, idleCompactState, breakEvenMs, cacheHeld, clockText, coldPlan, ignoredLately, keepWarmChoices, leadMs, learnedChoice, COLD_MIN, breakEvenPings, netSaving, offerAt, offerCountdown, offerText, pingCost, pingEvery, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText, IDLE_CAP, IDLE_GAP_MIN, PAYS_MAX, backfillLines, compactGate, paysCheck, paysSend, stretchesOf, PAYS_MIN_STRETCHES, type Stretch } from './warm'
 
 // Before a prompt is sent, a quick Haiku call rates the effort, the model and
 // the work needs on each model, and the cost model prices each route that fits. The first time
@@ -2583,7 +2583,10 @@ async function showStatus($: EngineInterface) {
   if (!model) return $.ui.status(undefined)
   const u = await usageNow($)
   const limits = u?.rateLimits ?? []
-  $.ui.status(statusLine(model, { limits, now: await $.clock.now(), api: billingOf(limits) === 'api', cost: u?.cost?.usd }))
+  // The session's running total lives here, not on the band (P-84); not before the 3rd rated prompt.
+  // A prompt being rated now has no run line yet: it counts as one more, as the band's total did.
+  const total = ratedInSession(runLog, sessionId) + (run?.rating && !runLog.some(l => l.id === run.id) ? 1 : 0) >= SESSION_TOTAL_FROM ? statusTotal(runLog, sessionId, billing === 'subscription') : undefined
+  $.ui.status(statusLine(model, { limits, now: await $.clock.now(), api: billingOf(limits) === 'api', cost: u?.cost?.usd, ...(total ? { total } : {}) }))
 }
 
 // ---- Band ------------------------------------------------------------------
@@ -2598,6 +2601,9 @@ function bandRows(band: Band | null | undefined, mode: BandMode) {
   const shows = !!band && mode !== 'off' && (mode === 'when it acts' ? band.acted || !!band.skipped : true)
   return { route: shows && (band.text !== '' || !band.coldText), cold: shows && !!band.coldText }
 }
+
+/** `low` → `Low`: the band's line starts with the level. */
+const cap = (t: string) => (t ? t[0]!.toUpperCase() + t.slice(1) : t)
 
 /** A line every band of this turn carries, so a later band (a hand-off's result) does not hide it: a miss just forgiven. */
 let bandNote: string | null = null
@@ -2614,13 +2620,8 @@ function setBand($: EngineInterface, from: Band | null, rating = false) {
   const row = pauseRow
   const held = row !== null && manualPause !== null
   if (held && !text.includes(row)) text = `${row} ${text}`.trim()
-  // Not before the session's 3rd rated prompt (SESSION_TOTAL_FROM); the report counts from the first.
-  const total = ratedInSession(runLog, sessionId) + (rating ? 1 : 0) >= SESSION_TOTAL_FROM ? sessionTotal(runLog, sessionId, billing === 'subscription') : undefined
-  // The total goes after the route's text only: on the cache row (an offer, a tip) it read as the cost of that offer.
-  const after = (t: string) => `${t}${/[.!?]$/.test(t) ? '' : '.'} ${total}`
-  if (held) {
-    // A pause claims no saving: no total on it.
-  } else if (total && text) text = after(text)
+  // The session's running total is on the status line (P-84), not the band. `rating` is kept for callers.
+  void rating
   const { coldText: droppedCold, ...rest } = band
   return $.state.set(BAND, { ...rest, text, ...(coldText ? { coldText } : {}), ...(held ? { acted: true, canResume: true } : {}) }).catch(() => undefined).then(() => showQuestion($))
 }
@@ -2690,7 +2691,7 @@ export function bandFor(run: Pick<Run, 'id' | 'tier' | 'normal' | 'auto' | 'dele
   }
   if (p.kind === 'none') {
     // Nothing held back, or held back by the person's own setting (Routing off, the Lowest effort floor): the plain row, hidden under "when it acts".
-    if (p.why === NONE_FITS || p.why === ROUTING_OFF || p.why.endsWith(LOWEST_EFFORT)) return { text: `No change: ${run.normal} on ${cur} fits this prompt.`, acted: false }
+    if (p.why === NONE_FITS || p.why === ROUTING_OFF || p.why.endsWith(LOWEST_EFFORT)) return { text: `${cap(run.normal)} on ${cur} fits.`, acted: false }
     // A change was rated to fit and rightsize's own checks kept it: say which check.
     const again = run.rating && p.why.endsWith(MISS_PAUSED) ? `${run.rating.type}:${run.tier}` : undefined
     return { text: `No change: kept ${run.normal} on ${cur}. ${p.why[0]!.toUpperCase()}${p.why.slice(1)}.${more(why, sure(run.tier))}`, acted: false, skipped: true, ...sureDetail(run.tier), ...(again ? { retryRoute: again } : {}) }
@@ -3392,8 +3393,9 @@ async function noteIdle($: EngineInterface) {
   if (c.resend < idleWarning) return
   idleWarnedFor = last.at
   const rates = billing === 'subscription' ? await windowPerDollar($) : undefined
-  idleNote = `Idle ${idleFor(idle)}: the cache went cold, so this prompt writes the conversation (~${Math.round(context / 1000)}K tokens) again, ${usageCostText(c.resend, rates)} more than warm; /compact first would have cost ${usageCostText(c.compact, rates)}.`
-  await log($, `idle ${idleFor(idle)} with ${context} tokens: noted on the band (${money(c.resend)} to write again)`)
+  // One figure only (P-84): the share on a subscription once runs show the rate, else dollars. The /compact hindsight is in the log.
+  idleNote = `Cache was cold: this prompt cost ${billing !== 'api' && rates ? oneShareText(shareOf(c.resend, rates)) : `~${money(c.resend)}`} more.`
+  await log($, `idle ${idleFor(idle)} with ${context} tokens: noted on the band (${money(c.resend)} to write again; /compact first would have cost ${money(c.compact)})`)
 }
 
 // ---- Claude Code's idle auto-compact (ADR 0019) -------------------------------------------------------------------
@@ -4556,10 +4558,28 @@ async function neighbours($: EngineInterface) {
 
 /** The timer row as drawn: its line, the line without the context part (the context warning goes after it) and its buttons. Cleared when another row takes the cache row. */
 let timerRow: { text: string; lead: string; buttons: ColdButton[] } | null = null
-const TIMER_COMPACT: ColdButton = { id: 'compact', label: 'Compact now' }
-const TIMER_HANDOFF: ColdButton = { id: 'handoff', label: 'Save handoff note' }
+const TIMER_COMPACT: ColdButton = { id: 'compact', label: 'Compact Now' }
+const TIMER_HANDOFF: ColdButton = { id: 'handoff', label: 'Save Handoff' }
 /** On the cold row (Clear chat): puts /clear in the prompt box, so the next prompt reads nothing old. */
 const COLD_FRESH: ColdButton = { id: 'fresh', label: 'Clear chat' }
+
+/** What the timer row's bar is drawn from, so the 3-second timer can redraw it as the cache life runs down (P-84). Null on the idle-compact line. */
+let timerArgs: { coldAt: number; cost: string; percent?: number } | null = null
+
+/** From the 3-second timer: redraws the timer row's bar when a cell changes, while the row is still on the band as drawn. The clock time beside it stays right if a redraw is missed. */
+async function tickTimer($: EngineInterface) {
+  const a = timerArgs
+  const row = timerRow
+  if (!a || !row) return
+  const now = await $.clock.now()
+  if (now >= a.coldAt) return
+  const b = coldBar(a.coldAt, now, cacheTtl)
+  const text = timerText({ ...a, bar: b.bar })
+  if (text === row.text) return
+  if (!timerIsOn((await $.state.get(BAND).catch(() => undefined))?.value)) return
+  timerRow = { ...row, text, lead: `${timerText({ coldAt: a.coldAt, cost: a.cost, bar: b.bar })}.` }
+  await showCold($, text, row.buttons, true, undefined, undefined, { text: b.bar, color: b.tone })
+}
 
 /** True when the cache row on `band` is the timer row, still as drawn. */
 const timerIsOn = (band: Band | null | undefined) => timerRow !== null && !!band?.cold?.length && band.coldText === timerRow.text
@@ -4577,6 +4597,8 @@ async function showTimer($: EngineInterface, turn: ColdTurn, idleCompact: boolea
   const pctPart = percent === undefined ? {} : { percent }
   let lead: string
   let text: string
+  let tone: Band['coldTone'] | undefined
+  timerArgs = null
   if (idleCompact) {
     const at = (lastRequestAt || turn.endedAt) + IDLE_COMPACT_AFTER
     text = idleCompactTimerText({ at, ...pctPart })
@@ -4585,13 +4607,16 @@ async function showTimer($: EngineInterface, turn: ColdTurn, idleCompact: boolea
     const rates = billing === 'subscription' ? await windowPerDollar($) : undefined
     const cost = coldCostText(turn.cold, rates).replace(/^about /, '~')
     const coldAt = turn.endedAt + cacheTtl
-    text = timerText({ coldAt, cost, ...pctPart })
-    lead = timerText({ coldAt, cost })
+    const b = coldBar(coldAt, await $.clock.now(), cacheTtl)
+    tone = { text: b.bar, color: b.tone }
+    text = timerText({ coldAt, cost, bar: b.bar, ...pctPart })
+    lead = timerText({ coldAt, cost, bar: b.bar })
+    timerArgs = { coldAt, cost, ...pctPart }
   }
   lead = `${lead}.`
   const buttons = [TIMER_COMPACT, ...(turn.whatsnext ? [TIMER_HANDOFF] : [])]
   timerRow = { text, lead, buttons }
-  await showCold($, text, buttons, true)
+  await showCold($, text, buttons, true, undefined, undefined, tone)
   await log($, `cache timer: ${text}`)
 }
 
@@ -7236,7 +7261,7 @@ async function settleStart($: EngineInterface, run: Run, real: Level) {
     run.takenMain = run.stay
     if (lastAuto?.id === run.id) lastAuto = null
     await log($, `start level was ${planned}, the session is at ${real}: the prompt is not a lowering, nothing is counted as saved`)
-    await setBand($, { text: `No change: ${real} on ${TIER_NAME[run.tier]} fits this prompt.`, acted: false })
+    await setBand($, { text: `${cap(real)} on ${TIER_NAME[run.tier]} fits.`, acted: false })
     await showStatus($)
     return
   }
@@ -7502,6 +7527,7 @@ export const register: Register = (on, options) => {
       })
       void tickOffer($)
       void tickPays($)
+      void tickTimer($).catch(() => undefined)
       void tickColdTip($).catch(() => undefined)
     })
     // After the band is reset above, so the pause line stays (ADR 0032).

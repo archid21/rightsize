@@ -137,7 +137,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
     // "always": the same prompt shows that nothing changed.
     await setBand($, 'always')
-    expect(await bandText($, surface)).toBe('No change: low on Opus fits this prompt.')
+    expect(await bandText($, surface)).toBe('Low on Opus fits.')
 
     // × closes it until the next prompt.
     let ui = await mount($, surface)
@@ -145,7 +145,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await ui.unmount()
     expect(await bandText($, surface)).toBe('')
     await d.submit(LOOKUP)
-    expect(await bandText($, surface)).toContain('No change')
+    expect(await bandText($, surface)).toContain('Low on Opus fits.')
 
     // ⋯ opens the menu; "When the band shows…" asks when the band should show, and saves the answer in /config.
     h.answers = { Options: 'When the band shows…', Band: 'Never (status line only)' }

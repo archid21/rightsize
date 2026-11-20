@@ -170,7 +170,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
         await c.d.step(t)
         await c.d.complete(t)
         // The timer line is on the Cache row after every main turn; with the row off it is not.
-        return (await bandText(c.$, c.surface)).startsWith('Goes cold at ')
+        return (await bandText(c.$, c.surface)).startsWith('▰▰▰▰▰▰▰▰▰▰ until ')
       },
       set: false,
       def: true,
@@ -270,7 +270,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
         c.h.now += 3 * 60 * MIN
         c.h.rating = NO_CHANGE
         await c.d.submit('continue')
-        return (await bandText(c.$, c.surface)).includes('Idle 3 hours')
+        return (await bandText(c.$, c.surface)).includes('Cache was cold')
       },
       set: false,
       def: true,
@@ -316,7 +316,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
         await c.d.submit(LOOKUP)
         return bandText(c.$, c.surface)
       },
-      set: 'No change: low on Opus fits this prompt.',
+      set: 'Low on Opus fits.',
       def: '',
     },
     {
@@ -775,7 +775,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.now += 3 * 60 * MIN
     await d.submit('continue')
     expect(h.ratings, 'nothing was rated').toBe(0)
-    expect(await bandText($, surface)).toMatch(/^Idle 3 hours: the cache went cold, so this prompt writes the conversation \(~81K tokens\) again/)
+    expect(await bandText($, surface)).toMatch(/^Cache was cold: this prompt cost ~\$0\.\d\d more\./)
     expect(logOf(h)).toContain('idle 3 hours with 80500 tokens: noted on the band')
     // And it is said once: the next prompt carries no note.
     await d.submit('and again')

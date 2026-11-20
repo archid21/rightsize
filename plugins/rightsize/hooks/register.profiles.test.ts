@@ -350,7 +350,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await bandText($, surface)).not.toContain('missed once')
   })
 
-  test(`every band ends with the session's running total once the session has rated prompts, and never carries it twice (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`the session's running total is on the status line from the 3rd rated prompt, and never on the band (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', store: { [CAL_STORE]: FREE_SWITCHES } })
     const d = drive($, h)
     h.now = Date.now()
@@ -358,20 +358,21 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t0')
     await d.complete('t0')
 
-    // Prompts 1 and 2: fewer than SESSION_TOTAL_FROM (3) rated prompts, so no total on the band.
+    // Prompts 1 and 2: fewer than SESSION_TOTAL_FROM (3) rated prompts, so no total on the status line.
+    const status = () => last(h.statuses) ?? ''
     h.rating = LOWER
     await d.submit(LOOKUP)
-    expect(await bandText($, surface), 'prompt 1').not.toContain('rightsize so far:')
+    expect(status(), 'prompt 1').not.toContain('rightsize')
     await d.step('t1')
     await d.complete('t1')
     await d.submit(LOOKUP)
-    expect(await bandText($, surface), 'prompt 2: still none').not.toContain('rightsize so far:')
+    expect(status(), 'prompt 2: still none').not.toContain('rightsize')
     await d.step('t2')
     await d.complete('t2')
-    // The 3rd rated prompt: its band ends with the total.
+    // The 3rd rated prompt: the status line carries the total, the band does not.
     // A third lowering, then a subagent of Claude's own moved to Haiku: the end-of-turn band is built from the third one's text.
     await d.submit(LOOKUP)
-    expect(await bandText($, surface), 'prompt 3: the total').toMatch(/Effort lowered: medium → low for this prompt \(automatically\)\. Why: .+ Confidence: low\. rightsize so far: ~\$\d+\.\d\d saved$/)
+    expect(await bandText($, surface), 'prompt 3: no total on the band').toMatch(/Effort lowered: medium → low for this prompt \(automatically\)\. Why: .+ Confidence: low\.$/)
     h.rating = '{"fit":{"haiku":"low","sonnet":"low","opus":"low","fable":"low"},"size":"small","type":"search","read":8000,"write":500,"steps":5,"reason":"list call sites"}'
     await d.step('t3', 0)
     await d.spawn('lister')
@@ -379,8 +380,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.complete('t3')
     const rebuilt = await bandText($, surface)
     expect(rebuilt, 'the earlier text and the new sentence are both there').toMatch(/Effort lowered.*Ran Claude's subagent on Haiku \(low\) instead of Opus\./)
-    expect(rebuilt.match(/rightsize so far:/g), 'one total only').toHaveLength(1)
-    expect(rebuilt, 'and it is last, with the figure as of now').toMatch(/ rightsize so far: ~\$\d+\.\d\d (saved|more)$/)
+    expect(rebuilt, 'the band never carries the total').not.toContain('rightsize so far')
+    expect(status(), 'the status line has it by the end of the 3rd prompt\'s turn').toMatch(/ · rightsize (saved|cost) ~\$\d+\.\d\d( more)?$/)
   })
 
   // With 10 logged tasks the research prior is gone. The first miss is forgiven, so 2 misses in 10 is 1 in 9: 11%, under the line.

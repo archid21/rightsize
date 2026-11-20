@@ -22,7 +22,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(last(h.sent)?.effort, 'goes out at low').toBe('low')
     const text = await bandText($, surface)
     expect(text, 'no lowering was made').not.toMatch(/lowered|medium → low/)
-    expect(text).toMatch(/^No change: low on Opus/)
+    expect(text).toMatch(/^Low on Opus fits\./)
     const ui = await mount($, surface)
     expect((await ui.findAll({ type: 'Button' })).map(b => b.key), 'nothing to retry').not.toContain('retry')
     await ui.unmount()

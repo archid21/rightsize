@@ -105,10 +105,10 @@ for (const surface of ['desktop', 'terminal'] as const) {
   test(`ask: a big Opus session gets the offer 5 minutes after the turn on a 1-hour cache: one line, one button, the other choices in the ⋯ menu; nobody presses, nothing happens (${surface})`, { timeoutMs: 30000, options: ASK }, async ($, on) => {
     const { h, d } = await coldSession($, on)
     await coldTurn(d, 't1')
-    expect(await bandText($, surface), 'at the turn\'s end the Cache timer row stands in for the offer').toBe('Goes cold at 7:00 PM · coming back then costs ~$0.63 · context 40%')
+    expect(await bandText($, surface), 'at the turn\'s end the Cache timer row stands in for the offer').toBe('▰▰▰▰▰▰▰▰▰▰ until 7:00 PM · ~$0.63 to come back · context 40%')
     expect(h.afters, 'the cold row\'s timer at the hour, and the offer\'s 5 minutes after the turn').toEqual([HOUR, 5 * MIN])
     await h.advance(4 * MIN)
-    expect(await bandText($, surface), 'not at 4 minutes: still the timer row').toMatch(/^Goes cold at 7:00 PM/)
+    expect(await bandText($, surface), 'not at 4 minutes: still the timer row').toMatch(/^▰+▱* until 7:00 PM/)
     await h.advance(MIN)
     expect(await bandText($, surface), 'the cache line stands alone: no route text, so it carries the prefix').toBe('Goes cold in 55 min ▰▰▰▰▰▰▰▰▰▱ (19:00) · coming back after costs about $0.63')
     expect(await bandButtons($), 'one button; ⋯ and × follow it').toEqual([
@@ -186,7 +186,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.submit(LOOKUP)
     await d.step('t1')
     await d.complete('t1')
-    expect(await coldRow($), 'not yet: the timer row').toBe('Goes cold at 7:00 PM · coming back then costs ~$0.63 · context 40%')
+    expect(await coldRow($), 'not yet: the timer row').toBe('▰▰▰▰▰▰▰▰▰▰ until 7:00 PM · ~$0.63 to come back · context 40%')
     await h.advance(5 * MIN)
     const ui = await mount($, surface)
     const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text)

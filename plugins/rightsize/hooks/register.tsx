@@ -174,7 +174,7 @@ import { STORE_KEY as TIPS_KEY, type Tip, type TipsState, nextTip, parseState, t
 import { WELCOMED_KEY, welcomeMarkdown, welcomeText } from './welcome'
 import { rebuildCause, rebuildTokens } from './rebuild'
 import { OPT_LEAD, OPT_NONE_TICKED, type OptId, type OptInput, type Suggestion, appliedText, optPeriod, optimize, optimizeText, suggestionBody, suggestionHead } from './optimize'
-import { COMPACT_GAP_MIN, IDLE_COMPACT_AFTER, PING_PROMPT, clock12, idleCompactTimerText, timerText, ROW_OF, WRAP_UP, addGap, planLength, alwaysText, compactBoundary, compactedText, idleCompactState, breakEvenMs, cacheHeld, clockText, coldPlan, ignoredLately, keepWarmChoices, leadMs, learnedChoice, COLD_MIN, breakEvenPings, netSaving, offerAt, offerCountdown, offerText, pingCost, pingEvery, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText, IDLE_CAP, IDLE_GAP_MIN, PAYS_MAX, backfillLines, compactGate, paysCheck, paysSend, stretchesOf, PAYS_MIN_STRETCHES, type Stretch } from './warm'
+import { COMPACT_GAP_MIN, IDLE_COMPACT_AFTER, PING_PROMPT, clock12, idleCompactTimerText, timerText, coldRowText, ROW_OF, WRAP_UP, addGap, planLength, alwaysText, compactBoundary, compactedText, idleCompactState, breakEvenMs, cacheHeld, clockText, coldPlan, ignoredLately, keepWarmChoices, leadMs, learnedChoice, COLD_MIN, breakEvenPings, netSaving, offerAt, offerCountdown, offerText, pingCost, pingEvery, standingChoice, usualStart, warmEndText, warmPlan, warmReturned, warmingText, IDLE_CAP, IDLE_GAP_MIN, PAYS_MAX, backfillLines, compactGate, paysCheck, paysSend, stretchesOf, PAYS_MIN_STRETCHES, type Stretch } from './warm'
 
 // Before a prompt is sent, a quick Haiku call rates the effort, the model and
 // the work needs on each model, and the cost model prices each route that fits. The first time
@@ -4512,6 +4512,8 @@ async function neighbours($: EngineInterface) {
 let timerRow: { text: string; lead: string; buttons: ColdButton[] } | null = null
 const TIMER_COMPACT: ColdButton = { id: 'compact', label: 'Compact now' }
 const TIMER_HANDOFF: ColdButton = { id: 'handoff', label: 'Save handoff note' }
+/** On the cold row: puts /clear in the prompt box, so the next prompt reads nothing old. */
+const COLD_FRESH: ColdButton = { id: 'fresh', label: 'Start fresh' }
 
 /** True when the cache row on `band` is the timer row, still as drawn. */
 const timerIsOn = (band: Band | null | undefined) => timerRow !== null && !!band?.cold?.length && band.coldText === timerRow.text
@@ -4547,6 +4549,31 @@ async function showTimer($: EngineInterface, turn: ColdTurn, idleCompact: boolea
   await log($, `cache timer: ${text}`)
 }
 
+/**
+ * When the cache has gone cold on a chat too small for the cold-compact tip: the timer row in the past tense, with Start fresh alone.
+ * Compact now and Save handoff note are left off: after cold, each costs the same full reload as the next prompt.
+ */
+async function showColdRow($: EngineInterface, c: { tier: Tier; context: number; coldAt: number }) {
+  if (!cacheTimer || bandMode === 'off' || mainBusy) return
+  // It replaces only the stale timer row, or an empty row: a keep-warm result or an offer stays as it is.
+  const band = (await $.state.get(BAND).catch(() => undefined))?.value
+  if (band?.coldText && !timerIsOn(band)) return
+  const rates = billing === 'subscription' ? await windowPerDollar($) : undefined
+  const cost = coldCostText(idleCost(prices[c.tier], c.context).resend, rates).replace(/^about /, '~')
+  const percent = await contextPercent($)
+  const text = coldRowText({ coldAt: c.coldAt, cost, ...(percent === undefined ? {} : { percent }) })
+  timerRow = { text, lead: `${coldRowText({ coldAt: c.coldAt, cost })}.`, buttons: [COLD_FRESH] }
+  await showCold($, text, [COLD_FRESH], true)
+  await log($, `cache timer: ${text}`)
+}
+
+async function pressFresh($: EngineInterface) {
+  await setBand($, null)
+  timerRow = null
+  const filled = await $.prompt.fill({ text: '/clear', mode: 'replace' }).catch(() => null)
+  await log($, filled?.ok ? 'cold row: Start fresh put /clear in the prompt box' : 'cold row: Start fresh could not fill the prompt box')
+}
+
 let tipTimer: Timer | null = null
 /** Every cancel and every new turn bumps this: a tip callback that wakes up under an older number does nothing. */
 let tipGen = 0
@@ -4565,7 +4592,9 @@ function cancelTip() {
 async function armTip($: EngineInterface, tier: Tier, context: number, idleCompact: boolean) {
   cancelTip()
   if (off || !cacheOn || bandMode === 'off' || idleCompact) return
-  if (tipDue(prices, tier, context, idleWarning ?? COLD_MIN) === undefined) return
+  const due = tipDue(prices, tier, context, idleWarning ?? COLD_MIN) !== undefined
+  // Not due: the cold row takes the timer row's place instead, so it waits only when the timer row is on.
+  if (!due && !cacheTimer) return
   const gen = tipGen
   const arm = async (at: number) => {
     const wait = Math.max(0, at - (await $.clock.now()))
@@ -4581,7 +4610,8 @@ async function armTip($: EngineInterface, tier: Tier, context: number, idleCompa
     const coldAt = Math.max(lastTurnAt, lastWarmAt) + cacheTtl
     if ((await $.clock.now()) < coldAt) return arm(coldAt)
     if (coldTip || mainBusy) return
-    await showColdTip($, { tier, context })
+    if (due) await showColdTip($, { tier, context })
+    else await showColdRow($, { tier, context, coldAt })
   }
   await arm(Math.max(lastTurnAt, lastWarmAt) + cacheTtl)
 }
@@ -4603,7 +4633,8 @@ async function reopenedTip($: EngineInterface) {
       return
     }
     if ((await $.clock.now()) - last.at <= cacheTtl) return
-    await showColdTip($, { tier, context: last.context })
+    if (tipDue(prices, tier, last.context, idleWarning ?? COLD_MIN) !== undefined) await showColdTip($, { tier, context: last.context })
+    else await showColdRow($, { tier, context: last.context, coldAt: last.at + cacheTtl })
   } catch (err) {
     await log($, `cold-compact tip (reopened chat) failed: ${err instanceof Error ? err.message : String(err)}`)
   }
@@ -5591,6 +5622,7 @@ async function pressCold($: EngineInterface, id: string): Promise<void> {
   if (id === 'extend') return pressExtend($)
   if (id === WRAP.id) return pressWrap($)
   if (id === INSTALL_HIDE.id) return hideInstallHint($)
+  if (id === COLD_FRESH.id) return pressFresh($)
   await closeOffer($, id)
   if (id === 'off') {
     cancelCold($, 'turned off')

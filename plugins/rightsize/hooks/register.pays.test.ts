@@ -313,7 +313,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await turn(d, 't1')
     await h.advance(5 * HOUR)
     expect(h.forks.length + h.compactions + h.submitted.length).toBe(0)
-    expect(await bandText($, surface), 'and the countdown row is gone').toBe('')
+    expect(await bandText($, surface), 'the countdown row is gone; the cold row says it went cold').toMatch(/^Went cold at 7:00 PM/)
   })
 
   // ---- Stored rows keep their own behaviour --------------------------------------------------------------------

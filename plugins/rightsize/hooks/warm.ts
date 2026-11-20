@@ -294,6 +294,14 @@ export function timerText(o: { coldAt: number; cost: string; percent?: number })
   return `Goes cold at ${clock12(o.coldAt)} · coming back then costs ${o.cost}${o.percent === undefined ? '' : ` · context ${o.percent}%`}`
 }
 
+/**
+ * The timer row once the cache has gone cold, for a chat too small for the cold-compact tip: "Went cold at 11:12 PM · next prompt
+ * reloads the chat, ~$0.40 · context 32%". The cost is what the next prompt pays to write the conversation again.
+ */
+export function coldRowText(o: { coldAt: number; cost: string; percent?: number }) {
+  return `Went cold at ${clock12(o.coldAt)} · next prompt reloads the chat, ${o.cost}${o.percent === undefined ? '' : ` · context ${o.percent}%`}`
+}
+
 /** The same row while Claude Code's idle compact will run by itself: "Claude Code compacts this at about 12:05 AM · context 52%". */
 export function idleCompactTimerText(o: { at: number; percent?: number }) {
   return `Claude Code compacts this at about ${clock12(o.at)}${o.percent === undefined ? '' : ` · context ${o.percent}%`}`

@@ -394,7 +394,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   test(`break-even on a 5-minute cache: only times under it are offered, and the offer says where keeping warm stops paying (${surface})`, { timeoutMs: 30000, options: ASK }, async ($, on) => {
     const { h, d } = await coldSession($, on, FIVE)
     await coldTurn(d, 't1')
-    expect(h.afters, 'a cache under 1 hour shows the offer at the turn\'s end: the one timer is for the cache going cold, 5 minutes on').toEqual([5 * MIN])
+    expect(h.afters, 'a cache under 1 hour shows the offer at the turn\'s end: the timers are the cold row\'s and the offer\'s, both for the cache going cold, 5 minutes on').toEqual([5 * MIN, 5 * MIN])
     expect(await bandText($, surface)).toBe(
       'Goes cold in 5 min ▰▰▰▰▰▰▰▰▰▰ (18:05) · coming back after costs about $0.72. Keeping warm past 19:36 costs more.',
     )

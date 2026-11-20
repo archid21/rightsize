@@ -215,7 +215,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await h.advance(53 * MIN)
     expect(await buttons($), 'the row is gone before the expiry').toEqual([])
     await h.advance(HOUR)
-    expect(await buttons($)).toEqual([])
+    expect((await buttons($)).map(b => b[0]), 'once cold: the cold row, with no Wrap up').toEqual(['cold-fresh', 'mode', 'close'])
   })
 
   test(`wrap up button: never on a 5-minute cache (${surface})`, { timeoutMs: 30000 }, async ($, on) => {

@@ -304,7 +304,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await turn(sonnet.d, 't1')
     await sonnet.h.advance(2 * HOUR)
     expect(logOf(sonnet.h)).not.toContain('cold-compact tip: offered')
-    expect(sonnet.h.sleepers.length, 'no timer waits for a tip that cannot show').toBe(0)
+    expect((await cacheRow($)).text, 'the cold row instead').toMatch(/^Went cold at 7:00 PM · next prompt reloads the chat, ~\$/)
+    expect(sonnet.h.sleepers.length, 'no timer waits after it').toBe(0)
   })
 
   test(`tip: with the band off nothing shows and no timer waits (${surface})`, { timeoutMs: 30000, options: { beforeCold: 'off', band: 'off' } }, async ($, on) => {
@@ -329,6 +330,66 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(logOf(h)).not.toContain('cold-compact tip: offered')
   })
 
+  // ---- The cold row: a small chat once the cache has gone cold ---------------------------------------------------
+
+  const COLD = 'Went cold at 7:00 PM · next prompt reloads the chat, ~$0.16 · context 10%'
+  const coldButtons = async ($: unknown) => (await cacheRow($)).buttons.filter(b => String(b[0]).startsWith('cold-'))
+
+  test(`cold row: a small chat's timer row turns past tense when the cache goes cold, with Start fresh alone (${surface})`, { timeoutMs: 30000, options: { beforeCold: 'off' } }, async ($, on) => {
+    const { h, d } = await session($, on, { stored: { beforeCold: 'off' } })
+    await turn(d, 't1')
+    await h.advance(59 * MIN)
+    expect((await cacheRow($)).text, 'still warm: the timer row').toBe(LOW)
+    await h.advance(2 * MIN)
+    const r = await cacheRow($)
+    expect(r.text).toBe(COLD)
+    expect(r.rows).toBe(1)
+    expect(await coldButtons($), 'no Compact now: it would cost the same reload').toEqual([['cold-fresh', 'Start fresh']])
+    expect(logOf(h)).toContain(`cache timer: ${COLD}`)
+    expect(logOf(h)).not.toContain('cold-compact tip: offered')
+  })
+
+  test(`cold row: with whatsnext there is still no Save handoff note: a note after cold costs the full reload (${surface})`, { timeoutMs: 30000, options: { beforeCold: 'off' } }, async ($, on) => {
+    const { h, d } = await session($, on, { whatsnext: true, stored: { beforeCold: 'off' } })
+    await turn(d, 't1')
+    await h.advance(HOUR + MIN)
+    expect((await cacheRow($)).text).toBe(COLD)
+    expect(await coldButtons($)).toEqual([['cold-fresh', 'Start fresh']])
+  })
+
+  test(`cold row: Start fresh puts /clear in the prompt box and sends nothing (${surface})`, { timeoutMs: 30000, options: { beforeCold: 'off' } }, async ($, on) => {
+    const { h, d } = await session($, on, { stored: { beforeCold: 'off' } })
+    await turn(d, 't1')
+    await h.advance(HOUR + MIN)
+    await press($, 'cold-fresh')
+    expect(h.fills.map(f => f.text)).toEqual(['/clear'])
+    expect(h.submitted.length + h.compactions, 'the person sends it').toBe(0)
+  })
+
+  test(`cold row: a big chat gets the tip, not the cold row (${surface})`, { timeoutMs: 30000, options: { beforeCold: 'off' } }, async ($, on) => {
+    const { h, d } = await session($, on, { tokens: BIG, stored: { beforeCold: 'off' } })
+    await turn(d, 't1')
+    await h.advance(HOUR + MIN)
+    expect((await cacheRow($)).text).toContain(TIP)
+  })
+
+  test(`cold row: Cache timer off shows no cold row and no timer waits (${surface})`, { timeoutMs: 30000, options: { beforeCold: 'off', cacheTimer: 'off' } }, async ($, on) => {
+    const { h, d } = await session($, on, { stored: { beforeCold: 'off', cacheTimer: 'off' } })
+    await turn(d, 't1')
+    await h.advance(HOUR + MIN)
+    expect((await cacheRow($)).text).toBe('')
+    expect(h.sleepers.length).toBe(0)
+  })
+
+  test(`cold row: a prompt before the cache goes cold cancels it (${surface})`, { timeoutMs: 30000, options: { beforeCold: 'off' } }, async ($, on) => {
+    const { h, d } = await session($, on, { stored: { beforeCold: 'off' } })
+    await turn(d, 't1')
+    await h.advance(30 * MIN)
+    await d.submit('continue')
+    await h.advance(2 * HOUR)
+    expect((await cacheRow($)).text).toBe('')
+  })
+
   // ---- A reopened chat that went cold -------------------------------------------------------------------------
 
   const LAST = (over: Record<string, unknown> = {}) => ({ lastTurns: { 'sess-1': { at: EVENING - 3 * HOUR, context: BIG, ...over } } })
@@ -347,13 +408,15 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
   test(`reopened: a chat on Sonnet gets no tip (${surface})`, { timeoutMs: 30000, options: {} }, async ($, on) => {
     const sonnet = await session($, on, { store: LAST(), model: 'claude-sonnet-5-5' })
-    expect((await cacheRow($)).text, 'Sonnet').toBe('')
+    expect((await cacheRow($)).text, 'Sonnet: the cold row, no tip').toMatch(/^Went cold at 4:00 PM · next prompt reloads the chat, ~\$/)
     expect(logOf(sonnet.h)).not.toContain('cold-compact tip: offered')
   })
 
-  test(`reopened: too small to save anything shows no tip (${surface})`, { timeoutMs: 30000, options: {} }, async ($, on) => {
+  test(`reopened: too small to save anything shows the cold row, not the tip (${surface})`, { timeoutMs: 30000, options: {} }, async ($, on) => {
     await session($, on, { store: LAST({ context: 20_000 }) })
-    expect((await cacheRow($)).text).toBe('')
+    const r = await cacheRow($)
+    expect(r.text).toBe('Went cold at 4:00 PM · next prompt reloads the chat, ~$0.16')
+    expect(r.buttons.filter(b => String(b[0]).startsWith('cold-'))).toEqual([['cold-fresh', 'Start fresh']])
   })
 
   test(`reopened: a chat with no last turn in the store shows nothing (${surface})`, { timeoutMs: 30000, options: {} }, async ($, on) => {

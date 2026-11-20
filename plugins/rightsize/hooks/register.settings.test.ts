@@ -128,8 +128,13 @@ for (const surface of ['desktop', 'terminal'] as const) {
   ]
 
   const CASES: Case[] = [
-    // Ask before changing on: the lowering asks in the Effort dialog (answered Keep as is); off: lowered with no question.
-    { key: 'askFirst', value: 'on', start: { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES } }, see: c => asking(c, LOOKUP, LOWER, { Effort: 'Keep as is' }), set: { asked: ['Effort'], effort: 'medium' }, def: { asked: [], effort: 'low' } },
+    // Changes Ask: the lowering asks in the Effort dialog (answered Keep as is); off: lowered with no question.
+    { key: 'changes', value: 'Ask', start: { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES } }, see: c => asking(c, LOOKUP, LOWER, { Effort: 'Keep as is' }), set: { asked: ['Effort'], effort: 'medium' }, def: { asked: [], effort: 'low' } },
+    // Prompt changes Ask: the lowering asks in the Effort dialog; at its default (Same as Changes, which is Auto) it is lowered with no question.
+    { key: 'promptMode', value: 'Ask', start: { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES } }, see: c => asking(c, LOOKUP, LOWER, { Effort: 'Keep as is' }), set: { asked: ['Effort'], effort: 'medium' }, def: { asked: [], effort: 'low' } },
+    // Cache changes and Compact changes Off: /rightsize status says what each area does (nothing reads them yet: ADR 0094 steps 2 and 3).
+    { key: 'cacheMode', value: 'Off', start: OPUS, see: async c => /Areas: Prompt \w+ · Cache (\w+) · Compact \w+/.exec(await settingsText(c.d))?.[1], set: 'off', def: 'auto' },
+    { key: 'compactMode', value: 'Ask', start: OPUS, see: async c => /Areas: Prompt \w+ · Cache \w+ · Compact (\w+)/.exec(await settingsText(c.d))?.[1], set: 'ask', def: 'auto' },
     {
       key: 'mode',
       value: 'watch only',

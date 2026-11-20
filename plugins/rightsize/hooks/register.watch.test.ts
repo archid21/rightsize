@@ -160,7 +160,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.answers = { [HEADER]: 'Ask before changing' }
     h.now += 7 * DAY
     await turnEnd()
-    expect(h.sets.map(s => [s.key, s.value]).sort()).toEqual([['rightsize.askFirst', 'on'], ['rightsize.mode', 'act']])
+    expect(h.sets.map(s => [s.key, s.value]).sort()).toEqual([['rightsize.changes', 'Ask'], ['rightsize.mode', 'act']])
     expect(period(h)).toMatchObject({ answer: 'ask' })
     expect(period(h)?.until).toBeDefined()
   })

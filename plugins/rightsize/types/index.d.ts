@@ -22,6 +22,15 @@ export type RightsizeChoices = {
   down?: 'auto' | 'ask' | 'stay' | 'each'
 }
 
+/** Changes in /config: rightsize acts on its own and says what it did (Auto), or asks first (Ask). */
+export type RightsizeChanges = 'Auto' | 'Ask'
+
+/** The areas the Prompt changes, Cache changes and Compact changes rows override Changes for. Prompt covers the choices before a prompt and raising effort mid-turn. */
+export type RightsizeArea = 'prompt' | 'cache' | 'compact'
+
+/** What an area does once its row and Changes are read together: act, ask first, or nothing (Off). */
+export type RightsizeAreaMode = 'auto' | 'ask' | 'off'
+
 /** When the band above the prompt shows (Band in /config). */
 export type RightsizeBandMode = 'when it acts' | 'always' | 'off'
 

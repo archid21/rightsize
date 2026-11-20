@@ -2,11 +2,13 @@
 
 Every row is a picker in `/config` (rightsize section). In a terminal session a change applies at once. In the desktop app there is no `/config` menu: change values from a terminal (`claude plugin configure rightsize@archid21 --values-stdin <<< '{"floor":"medium"}'`), then quit the app and reopen it. `/rightsize` opens the same list as a pane, and `/rightsize reset <key>` resets one row by its key.
 
-**Mode** is the first row, **Routing**, **Hand-offs** and **Cache** turn one feature each on or off, **Ask before changing** makes every automatic move ask first, and **Band** says when the band shows. These six are the plain rows; `/rightsize` shows them above the rest. Every other row is titled "Advanced · ..." in `/config`; the names below leave that off. **Your setting wins:** a row you set always beats rightsize's own value for it. Budget pacing moves only the fixed bars, never a rule you set. Rows marked "not set" mean Ask before changing decides: off acts, on asks.
+**Mode** is the first row, **Routing**, **Hand-offs** and **Cache** turn one feature each on or off, **Changes** (Auto or Ask) says whether rightsize acts on its own or asks first, and **Band** says when the band shows. These six are the plain rows; `/rightsize` shows them above the rest. Every other row is titled "Advanced · ..." in `/config`; the names below leave that off. **Your setting wins:** a row you set always beats rightsize's own value for it. Budget pacing moves only the fixed bars, never a rule you set. Rows marked "not set" mean the Prompt changes row decides, and while that follows Changes, Changes does: Auto acts, Ask asks.
+
+**Changes** replaced **Ask before changing** in 0.16.3: a value stored for the old row (off or on) becomes Changes (Auto or Ask) once, at the first start, as your own setting, and is never copied over a Changes value you set. Three Advanced rows override Changes for one area each: **Prompt changes** (the choices before a prompt, and raising effort mid-turn), **Cache changes** and **Compact changes**. Each is Same as Changes (the default), Auto, Ask or Off. For a prompt case the order is: its rule row (Lowering, Raising, Stronger model, Cheaper model) when you set it, else Prompt changes, else Changes. Cache changes and Compact changes are read by `/rightsize status` (its Areas line) for now; the band follows them in a later release.
 
 ## One rule set
 
-rightsize has one rule set and no profiles (the Quality, Balanced and Economy profiles of releases before 0.9 are gone; a stored Quality reads as Ask before changing on). These values are fixed; a value stored for a row an earlier release had (Hand-off threshold, Lowering threshold, Explore close calls, Pause after misses, Helper call cap, Rater check) is ignored. Question wait, Price check and Rater have no row in `/config` or in the pane and are not reset by `/rightsize reset`; their values are fixed too. A value an earlier release stored for one of them in `settings.json` is kept and used:
+rightsize has one rule set and no profiles (the Quality, Balanced and Economy profiles of releases before 0.9 are gone; a stored Quality reads as Changes Ask until you set Changes). These values are fixed; a value stored for a row an earlier release had (Hand-off threshold, Lowering threshold, Explore close calls, Pause after misses, Helper call cap, Rater check) is ignored. Question wait, Price check and Rater have no row in `/config` or in the pane and are not reset by `/rightsize reset`; their values are fixed too. A value an earlier release stored for one of them in `settings.json` is kept and used:
 
 | | Fixed value | Row |
 |---|---|---|
@@ -22,7 +24,7 @@ rightsize has one rule set and no profiles (the Quality, Balanced and Economy pr
 | Chances per task for a struggling helper | 2 | none |
 | Before the cache goes cold, while the row is not set | Keep warm while it pays: a request only when your own record of idle breaks says it covers its cost | Before the cache goes cold |
 | A review switched to Opus runs at most at | Highest effort | Highest effort |
-| Lowering, Raising, Stronger model, Cheaper model, while not set | act without asking; with Ask before changing on, ask first | the four rule rows |
+| Lowering, Raising, Stronger model, Cheaper model, while not set | act without asking; with Changes (or Prompt changes) Ask, ask first | the four rule rows |
 
 An "ask" answer opens its own timed dialog (it waits 30 seconds); every other answer acts without asking, and the band says what decided the first time each case comes up in a session. Every rating starts from rightsize's research priors (see [HOW-IT-DECIDES.md](HOW-IT-DECIDES.md)).
 
@@ -33,7 +35,7 @@ An "ask" answer opens its own timed dialog (it waits 30 seconds); every other an
 - Key: `mode`
 - Options: act · watch only
 - Default: act
-- act (default): rightsize changes effort, switches reviews to Opus and hands work to helpers as your rules say. watch only: it rates and plans every prompt, applies nothing, and the band says what it would have done; /rightsize report sums what that would have saved. Use it for a week to see rightsize's calls on your own work before turning it on. rightsize saves the date (UTC) watch only was turned on. Seven full days later, at a turn end, one band row shows what the Saving check says rightsize would have saved, with three answers: **Turn on** (Mode becomes act), **Ask before changing** (Mode becomes act and Ask before changing goes on) and **Keep watching** (nothing changes). It shows once per watch-only period and never holds a prompt. With fewer than 20 rated prompts it says "Not enough turns yet to estimate" instead of a range. When you turn watch only off, the next turn end shows one summary row with the same range for the days it ran, unless you chose Turn on in that row. Turning watch only on again starts a new period.
+- act (default): rightsize changes effort, switches reviews to Opus and hands work to helpers as your rules say. watch only: it rates and plans every prompt, applies nothing, and the band says what it would have done; /rightsize report sums what that would have saved. Use it for a week to see rightsize's calls on your own work before turning it on. rightsize saves the date (UTC) watch only was turned on. Seven full days later, at a turn end, one band row shows what the Saving check says rightsize would have saved, with three answers: **Turn on** (Mode becomes act), **Ask before changing** (Mode becomes act and Changes becomes Ask) and **Keep watching** (nothing changes). It shows once per watch-only period and never holds a prompt. With fewer than 20 rated prompts it says "Not enough turns yet to estimate" instead of a range. When you turn watch only off, the next turn end shows one summary row with the same range for the days it ran, unless you chose Turn on in that row. Turning watch only on again starts a new period.
 
 ### Routing
 
@@ -49,12 +51,33 @@ An "ask" answer opens its own timed dialog (it waits 30 seconds); every other an
 - Default: on
 - on (default): rightsize hands work to a helper subagent (a cheaper model for routine work, a stronger one for hard work) that your main chat briefs and checks, and runs Claude's own subagents on the cheapest model that fits. off: no hand-offs, and Claude's subagents stay on their model; when Routing is on, an effort change replaces the hand-off. With Routing and Hand-offs both off, rightsize rates no prompt and spends nothing on rating (the cache features still work).
 
-### Ask before changing
+### Changes
 
-- Key: `askFirst`
-- Options: off · on
-- Default: off
-- off (default): rightsize lowers or raises effort, switches a review to Opus and hands work to a helper without asking, and the band says what it did. on: every move rightsize would make on its own asks first, in a timed dialog (it waits 30 seconds), and nothing changes until you answer. Either way an Advanced rule row you set (Lowering, Raising, Stronger model, Cheaper model) wins for its case. A Quality profile saved by an older release reads as on until you set this row.
+- Key: `changes`
+- Options: Auto · Ask
+- Default: Auto
+- Auto (default): rightsize lowers or raises effort, switches a review to Opus and hands work to a helper without asking, and the band says what it did. Ask: every move rightsize would make on its own asks first, in a timed dialog (it waits 30 seconds), and nothing changes until you answer. Either way an Advanced rule row you set (Lowering, Raising, Stronger model, Cheaper model) wins for its case, and so does an area row (Prompt changes, Cache changes, Compact changes) that is not Same as Changes. Replaces Ask before changing: a value stored for it becomes this row once. A Quality profile saved by an older release reads as Ask until you set this row. The Mode row (act or watch only) is a different row and is unchanged.
+
+### Prompt changes
+
+- Key: `promptMode`
+- Options: Same as Changes · Auto · Ask · Off
+- Default: Same as Changes
+- What rightsize does before each prompt (lowering or raising effort, a stronger or cheaper model) and when it raises effort mid-turn. Same as Changes: follows Changes. Auto: acts without asking. Ask: asks first. Off: this area does nothing (not wired yet: until the next release Off acts like Auto). A rule row you set (Lowering, Raising, Stronger model, Cheaper model) wins for its case.
+
+### Cache changes
+
+- Key: `cacheMode`
+- Options: Same as Changes · Auto · Ask · Off
+- Default: Same as Changes
+- What rightsize does about the cache: keep warm, a handoff note, the offer when the cache is cold. Same as Changes: follows Changes. Auto, Ask and Off are read by `/rightsize status`; the band follows them in a later release.
+
+### Compact changes
+
+- Key: `compactMode`
+- Options: Same as Changes · Auto · Ask · Off
+- Default: Same as Changes
+- What rightsize does about compacting a long conversation. Same as Changes: follows Changes. Auto, Ask and Off are read by `/rightsize status`; the band follows them in a later release.
 
 ### Cache
 
@@ -88,29 +111,29 @@ An "ask" answer opens its own timed dialog (it waits 30 seconds); every other an
 
 - Key: `lowerRule`
 - Options: ask me · lower automatically · never lower · not set
-- Default: not set. Left at not set, Ask before changing decides.
-- When a prompt needs less effort. ask me: ask each time. lower automatically: lower without asking. never lower: never. not set (the default): Ask before changing decides (off: done without asking; on: asked first), and the band says so the first time the case comes up in a session, with the other rules in its ⋯ menu. A rule set here is used as it is. The band's ⋯ menu and /rightsize settings set it too; set it back to not set to let Ask before changing decide again.
+- Default: not set. Left at not set, Prompt changes decides (which follows Changes unless you set it).
+- When a prompt needs less effort. ask me: ask each time. lower automatically: lower without asking. never lower: never. not set (the default): Prompt changes decides, and Changes when that is Same as Changes (Auto: done without asking; Ask: asked first), and the band says so the first time the case comes up in a session, with the other rules in its ⋯ menu. A rule set here is used as it is. The band's ⋯ menu and /rightsize settings set it too; set it back to not set to let Prompt changes and Changes decide again.
 
 ### Raising
 
 - Key: `raiseRule`
 - Options: ask me · raise automatically · never raise · not set
-- Default: not set. Left at not set, Ask before changing decides.
-- When a prompt needs more effort on the same model. ask me: ask each time. raise automatically: raise without asking. never raise: never. This rule also decides raises mid-turn when Claude looks stuck. not set (the default): Ask before changing decides (off: done without asking; on: asked first), and the band says so the first time the case comes up in a session, with the other rules in its ⋯ menu. A rule set here is used as it is. The band's ⋯ menu and /rightsize settings set it too; set it back to not set to let Ask before changing decide again.
+- Default: not set. Left at not set, Prompt changes decides (which follows Changes unless you set it).
+- When a prompt needs more effort on the same model. ask me: ask each time. raise automatically: raise without asking. never raise: never. This rule also decides raises mid-turn when Claude looks stuck. not set (the default): Prompt changes decides, and Changes when that is Same as Changes (Auto: done without asking; Ask: asked first), and the band says so the first time the case comes up in a session, with the other rules in its ⋯ menu. A rule set here is used as it is. The band's ⋯ menu and /rightsize settings set it too; set it back to not set to let Prompt changes and Changes decide again.
 
 ### Stronger model
 
 - Key: `upRule`
 - Options: ask first · always send · stay, raise effort only · ask each time · not set
-- Default: not set. Left at not set, Ask before changing decides.
-- When a stronger model than yours would do better, or a review runs on Opus for one turn. ask first: ask before it. always send: do it without asking (the one exception is the switch from a Haiku session to Sonnet for debugging, features, refactors and writing, which always asks). stay, raise effort only: stay on your model and raise effort. ask each time: ask what to do each time. not set (the default): Ask before changing decides (off: done without asking; on: asked first), and the band says so the first time the case comes up in a session, with the other rules in its ⋯ menu. A rule set here is used as it is. The band's ⋯ menu and /rightsize settings set it too; set it back to not set to let Ask before changing decide again.
+- Default: not set. Left at not set, Prompt changes decides (which follows Changes unless you set it).
+- When a stronger model than yours would do better, or a review runs on Opus for one turn. ask first: ask before it. always send: do it without asking (the one exception is the switch from a Haiku session to Sonnet for debugging, features, refactors and writing, which always asks). stay, raise effort only: stay on your model and raise effort. ask each time: ask what to do each time. not set (the default): Prompt changes decides, and Changes when that is Same as Changes (Auto: done without asking; Ask: asked first), and the band says so the first time the case comes up in a session, with the other rules in its ⋯ menu. A rule set here is used as it is. The band's ⋯ menu and /rightsize settings set it too; set it back to not set to let Prompt changes and Changes decide again.
 
 ### Cheaper model
 
 - Key: `downRule`
 - Options: ask first · always send · stay, lower effort only · ask each time · not set
-- Default: not set. Left at not set, Ask before changing decides.
-- When a task could run on a cheaper model than yours. ask first: ask before sending it to a subagent on that model. always send: send it without asking. stay, lower effort only: stay on your model and lower effort. ask each time: ask what to do each time. not set (the default): Ask before changing decides (off: done without asking; on: asked first), and the band says so the first time the case comes up in a session, with the other rules in its ⋯ menu. A rule set here is used as it is. The band's ⋯ menu and /rightsize settings set it too; set it back to not set to let Ask before changing decide again.
+- Default: not set. Left at not set, Prompt changes decides (which follows Changes unless you set it).
+- When a task could run on a cheaper model than yours. ask first: ask before sending it to a subagent on that model. always send: send it without asking. stay, lower effort only: stay on your model and lower effort. ask each time: ask what to do each time. not set (the default): Prompt changes decides, and Changes when that is Same as Changes (Auto: done without asking; Ask: asked first), and the band says so the first time the case comes up in a session, with the other rules in its ⋯ menu. A rule set here is used as it is. The band's ⋯ menu and /rightsize settings set it too; set it back to not set to let Prompt changes and Changes decide again.
 
 ### Use Haiku
 

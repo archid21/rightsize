@@ -1,4 +1,4 @@
-import type { RightsizeChoices as Choices, RightsizeLevel as Level } from '../types'
+import type { RightsizeArea, RightsizeAreaMode, RightsizeChanges, RightsizeChoices as Choices, RightsizeLevel as Level } from '../types'
 
 // The settings in /config, in one table: each row's title, its options and its
 // default. plugin.json declares the same rows (every one a string picker), and a
@@ -6,8 +6,7 @@ import type { RightsizeChoices as Choices, RightsizeLevel as Level } from '../ty
 // changed or bypassed by rightsize's own behaviour, so it has to know which
 // values are yours. Claude Code hands the module every value with defaults filled
 // in, so it cannot tell them apart; it reads them off settings.json instead, and
-// follows the changes made in /config. Mode, the three feature switches (Routing, Hand-offs, Cache) and Ask before
-// changing and Band are plain rows; the rest are Advanced, as their titles say, since /config has no groups. Question
+// follows the changes made in /config. Mode, the three feature switches (Routing, Hand-offs, Cache), Changes and Band are plain rows; the rest are Advanced, as their titles say, since /config has no groups. Question
 // wait, Price check and Rater have no row (FIXED_ROWS): their values are fixed, unless settings.json still holds one.
 // The values a profile used to supply (ADR 0021 removed the Profile row) are fixed (FIXED); only Before the cache goes
 // cold has a row. Pure functions, no engine calls.
@@ -29,15 +28,21 @@ const ruleOptions = (rule: keyof Choices) => [...RULE_LABELS[rule].map(l => l[0]
 /** The /config row that holds each rule. */
 export const RULE_KEYS = { lower: 'lowerRule', raise: 'raiseRule', up: 'upRule', down: 'downRule' } as const
 
+/** What an area row holds while it follows Changes (the area rows write it out, as the settings check reads them). */
+export const SAME_AS_CHANGES = 'Same as Changes'
+
 export const SETTINGS = {
   mode: { title: 'Mode', options: ['act', 'watch only'], default: 'act' },
   routing: { title: 'Routing', options: ['on', 'off'], default: 'on' },
   handOffs: { title: 'Hand-offs', options: ['on', 'off'], default: 'on' },
-  askFirst: { title: 'Ask before changing', options: ['off', 'on'], default: 'off' },
+  changes: { title: 'Changes', options: ['Auto', 'Ask'], default: 'Auto' },
   cache: { title: 'Cache', options: ['on', 'off'], default: 'on' },
   band: { title: 'Band', options: ['when it acts', 'always', 'off'], default: 'when it acts' },
   floor: { title: 'Advanced · Lowest effort', options: ['low', 'medium', 'high'], default: 'low' },
   ceiling: { title: 'Advanced · Highest effort', options: ['high', 'xhigh', 'max'], default: 'max' },
+  promptMode: { title: 'Advanced · Prompt changes', options: ['Same as Changes', 'Auto', 'Ask', 'Off'], default: 'Same as Changes' },
+  cacheMode: { title: 'Advanced · Cache changes', options: ['Same as Changes', 'Auto', 'Ask', 'Off'], default: 'Same as Changes' },
+  compactMode: { title: 'Advanced · Compact changes', options: ['Same as Changes', 'Auto', 'Ask', 'Off'], default: 'Same as Changes' },
   lowerRule: { title: 'Advanced · Lowering', options: ruleOptions('lower'), default: NOT_SET },
   raiseRule: { title: 'Advanced · Raising', options: ruleOptions('raise'), default: NOT_SET },
   upRule: { title: 'Advanced · Stronger model', options: ruleOptions('up'), default: NOT_SET },
@@ -67,7 +72,7 @@ export const SETTINGS = {
   bigTurn: { title: 'Advanced · Big-turn warning', options: ['off', 'auto', '$1', '$2', '$5'], default: 'off' },
 } as const satisfies Record<string, Spec>
 
-/** Every row but the first six (Mode, Routing, Hand-offs, Ask before changing, Cache, Band) is titled with this prefix, so /config lists those first and the rest as Advanced. */
+/** Every row but the first six (Mode, Routing, Hand-offs, Changes, Cache, Band) is titled with this prefix, so /config lists those first and the rest as Advanced. */
 export const ADVANCED = 'Advanced · '
 /** The row's title without the prefix: what /rightsize and its messages call it. */
 export const plainTitle = (title: string) => (title.startsWith(ADVANCED) ? title.slice(ADVANCED.length) : title)
@@ -227,7 +232,7 @@ export function rulesOf(values: Readonly<Record<string, string>>): Choices {
 
 // ---- Values the rows stand for -------------------------------------------------
 
-// ---- Fixed values and Ask before changing -----------------------------------------
+// ---- Fixed values, Changes and the area rows -----------------------------------------
 
 /**
  * The evidence a cheaper route needs (a hand-down, a moved subagent, a lowering): the fit the rating
@@ -264,14 +269,40 @@ export const FIXED: FixedValues = {
   reviewCeiling: 'max',
 }
 
-/** Ask before changing: on, every move rightsize would make on its own asks first (while the case's rule row is not set); off, it acts. */
-export const askFirstOn = (v: unknown) => v === 'on'
-/** What the four cases do while their rule rows are not set: all ask, or all act. */
+/** What the four prompt cases do while their rule rows are not set: all ask, or all act. */
 export const answersOf = (askFirst: boolean): Answers => (askFirst ? { lower: 'ask', raise: 'ask', up: 'ask', down: 'ask' } : { lower: 'auto', raise: 'auto', up: 'auto', down: 'auto' })
+
+/** The areas Changes can be overridden for (ADR 0094): Prompt (before-prompt choices and mid-turn raising), Cache and Compact. */
+export type Area = RightsizeArea
+export type AreaMode = RightsizeAreaMode
+/** The /config row that holds each area's override. */
+export const AREA_KEYS = { prompt: 'promptMode', cache: 'cacheMode', compact: 'compactMode' } as const
+
+/**
+ * What an area does: its own row when that is Auto, Ask or Off, else Changes (Same as Changes). Changes is Ask when the
+ * row says so, or while it is not yours and a Quality profile an older release stored is still there. Your setting wins:
+ * an area row, or Changes, that you set is never replaced by that profile. The one place a mode is decided.
+ */
+export function areaMode(area: Area, values: Readonly<Record<string, string>>, yours: ReadonlySet<SettingKey>, legacyQuality = false): AreaMode {
+  const own = values[AREA_KEYS[area]]
+  if (own === 'Auto') return 'auto'
+  if (own === 'Ask') return 'ask'
+  if (own === 'Off') return 'off'
+  return values.changes === 'Ask' || (legacyQuality && !yours.has('changes')) ? 'ask' : 'auto'
+}
+
+/**
+ * The Changes value a release before this row stored as Ask before changing (`askFirst`: off or on) in settings.json:
+ * Auto or Ask. Undefined when none is stored, or the value is not one of its two.
+ */
+export const changesFromStored = (configs: unknown): RightsizeChanges | undefined => {
+  const v = storedOptions(configs)?.askFirst
+  return v === 'on' ? 'Ask' : v === 'off' ? 'Auto' : undefined
+}
 
 /**
  * A Profile row stored by a release before ADR 0021 (`rightsize.profile` in settings.json): Quality asked before
- * lowering effort or using a cheaper model, so it reads as Ask before changing on while that row is not yours.
+ * lowering effort or using a cheaper model, so it reads as Changes Ask while that row is not yours.
  * Balanced and Economy read as the defaults.
  */
 export const legacyAskFirst = (configs: unknown): boolean => storedOptions(configs)?.profile === 'Quality'
@@ -281,9 +312,9 @@ export type InUse = { handOff: number; minTasks: number; maxMiss: number; raterE
 
 /**
  * The values in use: the fixed values, except Before the cache goes cold, where the row you set wins.
- * The questions' first options follow Ask before changing.
+ * The questions' first options follow the Prompt area (`askFirst`: it asks).
  */
-export function inUse(values: Readonly<Record<string, string>>, yours: ReadonlySet<SettingKey>, askFirst = askFirstOn(values.askFirst)): InUse {
+export function inUse(values: Readonly<Record<string, string>>, yours: ReadonlySet<SettingKey>, askFirst = false): InUse {
   const p = FIXED
   return {
     handOff: p.handOff,

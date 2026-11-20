@@ -472,8 +472,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     on: { lowerRule: 'ask me', raiseRule: 'ask me', upRule: 'ask first', downRule: 'ask first' },
   } as const
   for (const ask of ['off', 'on'] as const) {
-    test(`Ask before changing ${ask}: each of the four questions lists its recommended answer first, and answering it sets the matching rule (${surface})`, { timeoutMs: 30000, options: withRows({ askFirst: ask }).options }, async ($, on) => {
-      const h = engine(on, { ...SONNET, stored: withRows({ askFirst: ask }).stored })
+    test(`Ask before changing ${ask}: each of the four questions lists its recommended answer first, and answering it sets the matching rule (${surface})`, { timeoutMs: 30000, options: withRows({ changes: ask === 'on' ? 'Ask' : 'Auto' }).options }, async ($, on) => {
+      const h = engine(on, { ...SONNET, stored: withRows({ changes: ask === 'on' ? 'Ask' : 'Auto' }).stored })
       const d = drive($, h)
       await d.start(surface)
       const [lower, raise, up, down] = FIRST[ask]
@@ -515,8 +515,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.store.choices, 'nothing saved').toBeUndefined()
   })
 
-  test(`Ask before changing on: Lowering asks in the Effort dialog, and the band says Ask before changing decided (${surface})`, { timeoutMs: 30000, options: withRows({ askFirst: 'on' }).options }, async ($, on) => {
-    const h = engine(on, { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES }, stored: withRows({ askFirst: 'on' }).stored })
+  test(`Ask before changing on: Lowering asks in the Effort dialog, and the band says Ask before changing decided (${surface})`, { timeoutMs: 30000, options: withRows({ changes: 'Ask' }).options }, async ($, on) => {
+    const h = engine(on, { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES }, stored: withRows({ changes: 'Ask' }).stored })
     const d = drive($, h)
     await d.start(surface)
     await d.step('t0')
@@ -532,8 +532,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.store.choices, 'nothing saved').toBeUndefined()
   })
 
-  test(`Ask before changing on: Cheaper model asks in the Subagent dialog, and the band says Ask before changing decided (${surface})`, { timeoutMs: 30000, options: withRows({ askFirst: 'on' }).options }, async ($, on) => {
-    const h = engine(on, { model: 'claude-fable-5-2', effort: 'high', store: { [CAL_STORE]: FREE_SWITCHES }, stored: withRows({ askFirst: 'on' }).stored })
+  test(`Ask before changing on: Cheaper model asks in the Subagent dialog, and the band says Ask before changing decided (${surface})`, { timeoutMs: 30000, options: withRows({ changes: 'Ask' }).options }, async ($, on) => {
+    const h = engine(on, { model: 'claude-fable-5-2', effort: 'high', store: { [CAL_STORE]: FREE_SWITCHES }, stored: withRows({ changes: 'Ask' }).stored })
     const d = drive($, h)
     await d.start(surface)
     await d.step('t0')
@@ -547,8 +547,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await bandText($, surface)).toMatch(/Ask before changing decided \(Cheaper model\); ⋯ changes it\.$/)
   })
 
-  test(`Ask before changing on: Raising asks too, and a rule row you set still wins for its case (${surface})`, { timeoutMs: 30000, options: withRows({ askFirst: 'on', raiseRule: 'raise automatically' }).options }, async ($, on) => {
-    const h = engine(on, { ...SONNET, stored: withRows({ askFirst: 'on', raiseRule: 'raise automatically' }).stored })
+  test(`Ask before changing on: Raising asks too, and a rule row you set still wins for its case (${surface})`, { timeoutMs: 30000, options: withRows({ changes: 'Ask', raiseRule: 'raise automatically' }).options }, async ($, on) => {
+    const h = engine(on, { ...SONNET, stored: withRows({ changes: 'Ask', raiseRule: 'raise automatically' }).stored })
     const d = drive($, h)
     await d.start(surface)
     await d.step('t0')
@@ -579,7 +579,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.asked.map(a => a.header), 'asks, as Quality did').toEqual(['Effort'])
     await d.step('t1')
     await d.complete('t1')
-    await d.config('askFirst', 'off')
+    await d.config('changes', 'Auto')
     expect((await settingsText(d)).split('\n')[0], 'the row is yours now: the old profile no longer counts').toBe('Ask before changing: off')
     const asked = h.asked.length
     await d.submit(LOOKUP)
@@ -638,10 +638,10 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(last(h.sent)?.effort).toBe('low')
     await d.complete('t1')
 
-    const result = await d.config('askFirst', 'on')
+    const result = await d.config('changes', 'Ask')
     expect(result.deny).toBeUndefined()
     expect((await settingsText(d)).split('\n')[0]).toBe('Ask before changing: on')
-    expect(await settingsText(d), 'listed as yours').toMatch(/^ {2}Ask before changing: on$/m)
+    expect(await settingsText(d), 'listed as yours').toMatch(/^ {2}Changes: Ask$/m)
     h.answers = { Effort: 'Keep as is' }
     await d.submit(LOOKUP)
     expect(h.asked.map(a => a.header), 'on: the Effort dialog').toEqual(['Effort'])
@@ -649,7 +649,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(last(h.sent)?.effort, 'kept').toBe('medium')
     await d.complete('t2')
 
-    await d.config('askFirst', 'off')
+    await d.config('changes', 'Auto')
     expect((await settingsText(d)).split('\n')[0]).toBe('Ask before changing: off')
     const asked = h.asked.length
     await d.submit(LOOKUP)
@@ -660,9 +660,9 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const h = engine(on, { ...OPUS })
     const d = drive($, h)
     await d.start(surface)
-    await d.config('askFirst', 'on', 'plugin')
+    await d.config('changes', 'Ask', 'plugin')
     expect((await settingsText(d)).split('\n')[0], 'the value is the row\'s now').toBe('Ask before changing: on')
-    expect((await d.config('askFirst', 'maybe')).deny, 'not an option').toBeDefined()
+    expect((await d.config('changes', 'maybe')).deny, 'not an option').toBeDefined()
     expect((await settingsText(d)).split('\n')[0]).toBe('Ask before changing: on')
   })
 

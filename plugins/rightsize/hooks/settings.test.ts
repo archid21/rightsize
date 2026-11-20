@@ -20,7 +20,6 @@ import {
   manifestGaps,
   mark,
   answersOf,
-  askFirstOn,
   legacyAskFirst,
   plainTitle,
   ruleLabel,
@@ -38,7 +37,7 @@ import {
 const set = (...keys: SettingKey[]) => new Set<SettingKey>(keys)
 
 test('every row is a picker: a title, two or more options, and a default among them', async () => {
-  expect(KEYS.length).toBe(35)
+  expect(KEYS.length).toBe(38)
   for (const k of KEYS) {
     const row = SETTINGS[k]
     expect(row.title.length, k).toBeGreaterThan(0)
@@ -237,16 +236,14 @@ test('a reset field is not yours while its stored value is the default, and is a
   expect(fieldsSet(undefined, { floor: 'low', ceiling: 'high' }, ['floor'])).toEqual(set('ceiling'))
 })
 
-test('there is no Profile row (ADR 0021): Ask before changing is the fourth row, off or on, off by default', async () => {
+test('there is no Profile row (ADR 0021): Changes is the fourth row, Auto or Ask, Auto by default (it replaced Ask before changing, P-81)', async () => {
   expect(isKey('profile')).toBe(false)
-  expect(KEYS[3]).toBe('askFirst')
-  expect(SETTINGS.askFirst.title).toBe('Ask before changing')
-  expect([...SETTINGS.askFirst.options]).toEqual(['off', 'on'])
-  expect(SETTINGS.askFirst.default).toBe('off')
-  expect(plainTitle(SETTINGS.askFirst.title)).toBe('Ask before changing')
-  expect(settingNamed('ask before changing')).toBe('askFirst')
-  expect(settingNamed('askFirst')).toBe('askFirst')
-  expect([askFirstOn('on'), askFirstOn('off'), askFirstOn(undefined)]).toEqual([true, false, false])
+  expect(KEYS[3]).toBe('changes')
+  expect(SETTINGS.changes.title).toBe('Changes')
+  expect([...SETTINGS.changes.options]).toEqual(['Auto', 'Ask'])
+  expect(SETTINGS.changes.default).toBe('Auto')
+  expect(plainTitle(SETTINGS.changes.title)).toBe('Changes')
+  expect(settingNamed('changes')).toBe('changes')
   expect(answersOf(false)).toEqual({ lower: 'auto', raise: 'auto', up: 'auto', down: 'auto' })
   expect(answersOf(true)).toEqual({ lower: 'ask', raise: 'ask', up: 'ask', down: 'ask' })
   // A Profile row an older release stored: Quality reads as on, the others and nothing stored as off.
@@ -272,7 +269,7 @@ test('Mode is the first row: act or watch only, act by default, a plain row with
 })
 
 test('Routing, Hand-offs and Cache are rows 2, 3 and 5: on or off, on by default, plain rows without the Advanced prefix', async () => {
-  expect(KEYS.slice(0, 6)).toEqual(['mode', 'routing', 'handOffs', 'askFirst', 'cache', 'band'])
+  expect(KEYS.slice(0, 6)).toEqual(['mode', 'routing', 'handOffs', 'changes', 'cache', 'band'])
   const titles = { routing: 'Routing', handOffs: 'Hand-offs', cache: 'Cache' } as const
   for (const [k, title] of Object.entries(titles) as [keyof typeof titles, string][]) {
     expect(SETTINGS[k].title).toBe(title)
@@ -286,12 +283,12 @@ test('Routing, Hand-offs and Cache are rows 2, 3 and 5: on or off, on by default
   expect(settingNamed('lowering'), 'the Lowering rule row, by its title').toBe('lowerRule')
 })
 
-test('Band is a plain row: the six plain rows are Mode, Routing, Hand-offs, Ask before changing, Cache and Band; every other row is titled Advanced', async () => {
+test('Band is a plain row: the six plain rows are Mode, Routing, Hand-offs, Changes, Cache and Band; every other row is titled Advanced', async () => {
   expect(ADVANCED).toBe('Advanced · ')
   expect(SETTINGS.band.title).toBe('Band')
   expect(plainTitle(SETTINGS.band.title)).toBe('Band')
-  expect(PANE_KEYS.filter(k => !SETTINGS[k].title.startsWith(ADVANCED))).toEqual(['mode', 'routing', 'handOffs', 'askFirst', 'cache', 'band'])
-  for (const k of KEYS.filter(k => !['mode', 'routing', 'handOffs', 'askFirst', 'cache', 'band'].includes(k))) {
+  expect(PANE_KEYS.filter(k => !SETTINGS[k].title.startsWith(ADVANCED))).toEqual(['mode', 'routing', 'handOffs', 'changes', 'cache', 'band'])
+  for (const k of KEYS.filter(k => !['mode', 'routing', 'handOffs', 'changes', 'cache', 'band'].includes(k))) {
     expect(SETTINGS[k].title.startsWith(ADVANCED), k).toBe(true)
     expect(plainTitle(SETTINGS[k].title).length, `${k} has a title after the prefix`).toBeGreaterThan(0)
   }

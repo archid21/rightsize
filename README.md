@@ -108,7 +108,7 @@ The same rows, one line each, with buttons below. Screenshots from a real sessio
 
 | Feature | What it delivers |
 |---|---|
-| Smart routing | Routine work on cheaper models, Opus where it counts. **Ask before changing** in `/config` makes it ask first. |
+| Smart routing | Routine work on cheaper models, Opus where it counts. **Changes** in `/config` (Auto or Ask) makes it ask first. |
 | Effort control | Lower effort for routine prompts; raised mid-turn only when Claude is stuck. |
 | Cheaper helpers | Big routine jobs (the same edit across many files) go to a Haiku or Sonnet helper. Your main chat writes the brief and checks the result. **Run on your model** on the band undoes one. |
 | Opus reviews | Stronger reviews without switching models yourself. |
@@ -131,7 +131,7 @@ Every feature, with the release that added it: [docs/FEATURES.md](docs/FEATURES.
 
 ## Make it yours
 
-Two switches cover most needs. **Hand-offs** turns helper subagents off (effort still changes). **Ask before changing** makes every move ask first.
+Two switches cover most needs. **Hand-offs** turns helper subagents off (effort still changes). **Changes** set to Ask makes every move ask first.
 
 | | Default | Row |
 |---|---|---|
@@ -144,7 +144,7 @@ Two switches cover most needs. **Hand-offs** turns helper subagents off (effort 
 
 - **Opus reviews, but no helpers:** set **Hand-offs** to off.
 - **Just effort, no model changes:** set **Stronger model** and **Cheaper model** to stay.
-- **Ask before anything changes:** set **Ask before changing** to on.
+- **Ask before anything changes:** set **Changes** to Ask.
 
 Every setting, with its options and default: [docs/SETTINGS.md](docs/SETTINGS.md).
 

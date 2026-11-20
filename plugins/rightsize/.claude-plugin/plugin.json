@@ -38,14 +38,14 @@
         "off"
       ]
     },
-    "askFirst": {
+    "changes": {
       "type": "string",
-      "title": "Ask before changing",
-      "description": "off (default): rightsize lowers or raises effort, switches a review to Opus and hands work to a helper without asking, and the band says what it did. on: every move rightsize would make on its own asks first, in a timed dialog (see Question wait), and nothing changes until you answer. Either way an Advanced rule row you set (Lowering, Raising, Stronger model, Cheaper model) wins for its case. A Quality profile saved by an older release reads as on until you set this row.",
-      "default": "off",
+      "title": "Changes",
+      "description": "Auto (default): rightsize lowers or raises effort, switches a review to Opus and hands work to a helper without asking, and the band says what it did. Ask: every move rightsize would make on its own asks first, in a timed dialog (see Question wait), and nothing changes until you answer. Either way an Advanced rule row you set (Lowering, Raising, Stronger model, Cheaper model) wins for its case, and so does an Advanced area row (Prompt changes, Cache changes, Compact changes) that is not Same as Changes. Replaces Ask before changing: a value stored for it becomes this row once, and a Quality profile saved by an older release reads as Ask until you set this row.",
+      "default": "Auto",
       "options": [
-        "off",
-        "on"
+        "Auto",
+        "Ask"
       ]
     },
     "cache": {
@@ -89,6 +89,42 @@
         "high",
         "xhigh",
         "max"
+      ]
+    },
+    "promptMode": {
+      "type": "string",
+      "title": "Advanced · Prompt changes",
+      "description": "What rightsize does before each prompt (lowering or raising effort, a stronger or cheaper model) and when it raises effort mid-turn. A rule row you set (Lowering, Raising, Stronger model, Cheaper model) wins for its case. Same as Changes (default): follows Changes. Auto: acts without asking. Ask: asks first. Off: this area does nothing.",
+      "default": "Same as Changes",
+      "options": [
+        "Same as Changes",
+        "Auto",
+        "Ask",
+        "Off"
+      ]
+    },
+    "cacheMode": {
+      "type": "string",
+      "title": "Advanced · Cache changes",
+      "description": "What rightsize does about the cache: keep warm, a handoff note, the offer when the cache is cold. Same as Changes (default): follows Changes. Auto: acts without asking. Ask: asks first. Off: this area does nothing.",
+      "default": "Same as Changes",
+      "options": [
+        "Same as Changes",
+        "Auto",
+        "Ask",
+        "Off"
+      ]
+    },
+    "compactMode": {
+      "type": "string",
+      "title": "Advanced · Compact changes",
+      "description": "What rightsize does about compacting a long conversation. Same as Changes (default): follows Changes. Auto: acts without asking. Ask: asks first. Off: this area does nothing.",
+      "default": "Same as Changes",
+      "options": [
+        "Same as Changes",
+        "Auto",
+        "Ask",
+        "Off"
       ]
     },
     "lowerRule": {
@@ -164,7 +200,7 @@
     "subagents": {
       "type": "string",
       "title": "Advanced · Claude's subagents",
-      "description": "cheaper when it fits: when Claude starts a general-purpose subagent without naming a model, rate its brief and run it on the cheapest weaker model that fits, at that model's level, under the 70% hand-off bar. off: leave Claude's own subagents on its model.",
+      "description": "cheaper when it fits: when Claude starts a general-purpose subagent without naming a model, rate its brief and run it on the cheapest weaker model that fits, at that model's level, under the 90% hand-off bar. off: leave Claude's own subagents on its model.",
       "default": "cheaper when it fits",
       "options": [
         "cheaper when it fits",
@@ -186,7 +222,7 @@
     "pacing": {
       "type": "string",
       "title": "Advanced · Budget pacing",
-      "description": "on: on a subscription, move the hand-off and lowering bars by how fast the 5-hour and 7-day windows are being used. Running out early: hand off and lower more readily, and the band says which bars moved. Much left near a reset: nothing changes. Over 90% used: save all it can, which skips raises and stronger models while Raising and Stronger model are not set. A rule you set stays as you set it. off: always use the fixed bars (70% for hand-offs, 90% for lowering).",
+      "description": "on: on a subscription, move the hand-off and lowering bars by how fast the 5-hour and 7-day windows are being used. Running out early: hand off and lower more readily, and the band says which bars moved. Much left near a reset: nothing changes. Over 90% used: save all it can, which skips raises and stronger models while Raising and Stronger model are not set. A rule you set stays as you set it. off: always use the fixed bars (90% for hand-offs, 90% for lowering).",
       "default": "on",
       "options": [
         "on",

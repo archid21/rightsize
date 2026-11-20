@@ -138,13 +138,16 @@ import {
   type Values,
   afterSet,
   answersOf,
-  askFirstOn,
   defaults,
   fieldsSet,
   fixedValueOf,
   inOptions,
   inUse,
   legacyAskFirst,
+  changesFromStored,
+  areaMode,
+  type Area,
+  type AreaMode,
   manifestGaps,
   mark,
   plainTitle,
@@ -154,6 +157,7 @@ import {
   rulesOf,
   settingNamed,
   stillReset,
+  storedOptions,
   valuesOf,
   watchOnly,
 } from './settings'
@@ -608,9 +612,9 @@ let declared: Readonly<Record<string, unknown>> = {}
 let ceiling: Level = 'max'
 /** Models rightsize sends no work to (Use Haiku, Use Fable off). The rater is set apart: Rater picks it. */
 let without: Tier[] = []
-/** Ask before changing: on, every move rightsize would make on its own asks first while the case's rule row is not set. */
+/** The Prompt area asks (Changes Ask, or the Prompt row Ask): every prompt case asks first while its rule row is not set. */
 let askFirst = false
-/** A Profile row a release before ADR 0021 stored as Quality: Ask before changing on, while that row is not yours. */
+/** A Profile row a release before ADR 0021 stored as Quality: Changes Ask, while that row is not yours. */
 let legacyQuality = false
 /** /rightsize report's Markdown form, by the plain text its row carries: the last 20 reports, for the row's render hook. */
 const reportMarkdown = new Map<string, string>()
@@ -1910,7 +1914,10 @@ function writeSetting($: EngineInterface, key: SettingKey, value: string): Promi
     case 'mode': return $.config.set({ key: 'rightsize.mode', value: value })
     case 'routing': return $.config.set({ key: 'rightsize.routing', value: value })
     case 'handOffs': return $.config.set({ key: 'rightsize.handOffs', value: value })
-    case 'askFirst': return $.config.set({ key: 'rightsize.askFirst', value: value })
+    case 'changes': return $.config.set({ key: 'rightsize.changes', value: value })
+    case 'promptMode': return $.config.set({ key: 'rightsize.promptMode', value: value })
+    case 'cacheMode': return $.config.set({ key: 'rightsize.cacheMode', value: value })
+    case 'compactMode': return $.config.set({ key: 'rightsize.compactMode', value: value })
     case 'cache': return $.config.set({ key: 'rightsize.cache', value: value })
     case 'floor': return $.config.set({ key: 'rightsize.floor', value: value })
     case 'ceiling': return $.config.set({ key: 'rightsize.ceiling', value: value })
@@ -6272,7 +6279,7 @@ async function summary($: EngineInterface) {
   const n = changed.length
   return [
     // Claude Code shows the output under "rightsize:", so the line leaves the name out.
-    `Ask before changing: ${askFirst ? 'on' : 'off'}${legacyQuality && !yours.has('askFirst') ? ' (from your old Quality profile)' : ''}`,
+    `Ask before changing: ${askFirst ? 'on' : 'off'}${legacyQuality && !yours.has('changes') ? ' (from your old Quality profile)' : ''}`,
     off ? 'Off. Turn it on with /mods.' : 'On.',
     '',
     n
@@ -6292,6 +6299,7 @@ async function summary($: EngineInterface) {
     ...(sw ? [`  Effort switches that missed the cache: ${Math.round(sw.ratio * 100)}% of ${sw.n} (each one in ~/.claude/mods-logs/rightsize/<session>/switches.jsonl)`] : []),
     `  Mode: ${watching ? 'watch only (rates and plans every prompt, changes nothing; Mode in /config turns it on)' : 'act'}`,
     `  Features: Routing ${routing ? 'on' : 'off'} · Hand-offs ${handOffs ? 'on' : 'off'} · Cache ${cacheOn ? 'on' : 'off'}`,
+    `  Areas: Prompt ${modeOf('prompt')} · Cache ${modeOf('cache')} · Compact ${modeOf('compact')}`,
     '',
     'Commands: /rightsize help',
   ].join('\n')
@@ -6806,7 +6814,7 @@ async function answerWatchTrial($: EngineInterface, v: unknown) {
   if (p && !p.until) await writeWatchPeriod($, { ...p, answer: v })
   await log($, `watch only: trial-end row answered: ${v === 'on' ? 'Turn on' : v === 'ask' ? 'Ask before changing' : 'Keep watching'}`)
   if (v === 'keep') return
-  if (v === 'ask') await changeRow($, 'askFirst', 'on')
+  if (v === 'ask') await changeRow($, 'changes', 'Ask')
   await changeRow($, 'mode', 'act')
   $.ui.toast(v === 'ask' ? 'Rightsize is on, and asks before changing.' : 'Rightsize is on.')
 }
@@ -7057,11 +7065,30 @@ async function declineStar($: EngineInterface) {
 
 // ---- Hooks -----------------------------------------------------------------
 
+/** What an area does now: auto, ask or off (settings.ts areaMode). The one place the code reads Changes and the area rows. */
+const modeOf = (area: Area): AreaMode => areaMode(area, cfg, yours, legacyQuality)
+
+// A release before the Changes row stored Ask before changing (`askFirst`): its value becomes Changes once, as the person's
+// own. Never over a value the person has set (a stored Changes, reset or not), and never again: a Changes set afterwards,
+// or reset to Auto, stays while the old value is still in settings.json.
+async function migrateChanges($: EngineInterface, configs: unknown) {
+  if ((await $.store.get('changesMigrated').catch(() => undefined)) === true) return
+  const from = changesFromStored(configs)
+  if (from !== undefined && !yours.has('changes') && storedOptions(configs)?.changes === undefined) {
+    cfg = { ...cfg, changes: from }
+    yours = mark(yours, 'changes', true)
+    applyOption('changes')
+    await writeSetting($, 'changes', from).catch(() => undefined)
+    await log($, `settings: Ask before changing ${from === 'Ask' ? 'on' : 'off'} became Changes ${from}`)
+  }
+  await $.store.set('changesMigrated', true).catch(() => undefined)
+}
+
 // Sets what the fixed values govern, each replaced by its row where the row is yours, and the questions' first
 // options from Ask before changing. It runs again whenever one of those rows or `yours` changes, so a change in
 // /config applies at once. A Quality profile stored by an older release reads as Ask before changing on, until the row is yours.
 function applyFixed() {
-  askFirst = yours.has('askFirst') ? askFirstOn(cfg.askFirst) : askFirstOn(cfg.askFirst) || legacyQuality
+  askFirst = modeOf('prompt') === 'ask'
   const u = inUse(cfg, yours, askFirst)
   missBlock = u.maxMiss
   minTasks = u.minTasks
@@ -7100,7 +7127,10 @@ function applyOption(key: SettingKey) {
     case 'cache':
       cacheOn = v !== 'off'
       return
-    case 'askFirst':
+    case 'changes':
+    case 'promptMode':
+    case 'cacheMode':
+    case 'compactMode':
     case 'beforeCold':
       applyFixed()
       return
@@ -7658,6 +7688,7 @@ export const register: Register = (on, options) => {
       applyOption(key)
     }
     legacyQuality = legacyAskFirst(configs)
+    await migrateChanges($, configs)
     // What the fixed values govern depends on which rows are yours, now known.
     applyFixed()
     resetFields = new Set(stillReset(configs, declared, resetBefore))

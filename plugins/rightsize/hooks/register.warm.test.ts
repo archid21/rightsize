@@ -394,7 +394,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   test(`break-even on a 5-minute cache: only times under it are offered, and the offer says where keeping warm stops paying (${surface})`, { timeoutMs: 30000, options: ASK }, async ($, on) => {
     const { h, d } = await coldSession($, on, FIVE)
     await coldTurn(d, 't1')
-    expect(h.afters, 'a cache under 1 hour shows the offer at the turn\'s end: the one timer is for the cache going cold, 5 minutes on').toEqual([5 * MIN])
+    expect(h.afters, 'a cache under 1 hour shows the offer at the turn\'s end: the timers are the cold row\'s and the offer\'s, both for the cache going cold, 5 minutes on').toEqual([5 * MIN, 5 * MIN])
     expect(await bandText($, surface)).toBe(
       'Goes cold in 5 min ▰▰▰▰▰▰▰▰▰▰ (18:05) · coming back after costs about $0.72. Keeping warm past 19:36 costs more.',
     )
@@ -425,7 +425,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   const HANDOFF = inProfile('Balanced', { beforeCold: 'save a handoff' })
-  test(`save a handoff: with whatsnext it submits "wrap up" once, 3 minutes before expiry, unrated (${surface})`, { timeoutMs: 30000, options: HANDOFF.options }, async ($, on) => {
+  test(`save a handoff: with whatsnext it submits "wrap up" once, 3 minutes before expiry, unrated (${surface})`, { timeoutMs: 30000, options: { ...HANDOFF.options, cacheTimer: 'off' } }, async ($, on) => {
     const { h, d } = await coldSession($, on, { stored: HANDOFF.stored, commands: WHATSNEXT })
     await coldTurn(d, 't1')
     expect(await bandText($, surface), 'nothing to show yet').toBe('')
@@ -475,7 +475,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.compactions).toBe(1)
   })
 
-  test(`compact: a compaction a hook vetoes is logged with its reason and shows nothing (${surface})`, { timeoutMs: 30000, options: COMPACT.options }, async ($, on) => {
+  test(`compact: a compaction a hook vetoes is logged with its reason and shows nothing (${surface})`, { timeoutMs: 30000, options: { ...COMPACT.options, cacheTimer: 'off' } }, async ($, on) => {
     const { h, d } = await coldSession($, on, { stored: COMPACT.stored })
     h.compactSkip = 'a PreCompact hook blocked it'
     await coldTurn(d, 't1')
@@ -640,7 +640,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   /** Before the cache goes cold left unset: the fixed value (keep warm while it pays) applies. */
   const FIXED_COLD = { options: {}, over: { stored: {}, unset: true } }
 
-  test(`the fixed value keeps warm while it pays when the row is not set: nothing at the turn's end, the countdown row with Extend 1 hour after 5 minutes, one request at 57 minutes with no record yet (${surface})`, { timeoutMs: 30000, options: FIXED_COLD.options }, async ($, on) => {
+  test(`the fixed value keeps warm while it pays when the row is not set: nothing at the turn's end, the countdown row with Extend 1 hour after 5 minutes, one request at 57 minutes with no record yet (${surface})`, { timeoutMs: 30000, options: { ...FIXED_COLD.options, cacheTimer: 'off' } }, async ($, on) => {
     const { h, d } = await coldSession($, on, FIXED_COLD.over)
     await coldTurn(d, 't1')
     expect(await bandText($, surface), 'no offer and no status at the turn\'s end').toBe('')
@@ -717,7 +717,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(NOTHING_DONE(h), 'keep warm 2 h, not the profile\'s ask').toEqual({ forks: 2, submitted: 0, compactions: 0 })
   })
 
-  test(`your setting wins: Balanced stays quiet when you say off, and Quality asks when you say ask (${surface})`, { timeoutMs: 30000, options: inProfile('Balanced', { beforeCold: 'off' }).options }, async ($, on) => {
+  test(`your setting wins: Balanced stays quiet when you say off, and Quality asks when you say ask (${surface})`, { timeoutMs: 30000, options: { ...inProfile('Balanced', { beforeCold: 'off' }).options, cacheTimer: 'off' } }, async ($, on) => {
     const { h, d } = await coldSession($, on, { stored: inProfile('Balanced', { beforeCold: 'off' }).stored })
     await coldTurn(d, 't1')
     await h.advance(9 * HOUR)

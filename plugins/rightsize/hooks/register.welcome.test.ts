@@ -141,7 +141,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await tipRow($)).toBe(TIPS[0]!.text)
     await press($, 'tip-stop')
     expect(await tipRow($)).toBe('')
-    expect(last(h.toasts)).toBe('Rightsize: tips are off. /rightsize tips turns them back on.')
+    expect(last(h.toasts)).toBe('Rightsize: tips are off. Turn them back on with Tips in /config, or /rightsize tips.')
     await d.complete('t1')
     expect(await tipRow($), 'off stays off').toBe('')
   })

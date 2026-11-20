@@ -105,10 +105,10 @@ for (const surface of ['desktop', 'terminal'] as const) {
   test(`ask: a big Opus session gets the offer 5 minutes after the turn on a 1-hour cache: one line, one button, the other choices in the ⋯ menu; nobody presses, nothing happens (${surface})`, { timeoutMs: 30000, options: ASK }, async ($, on) => {
     const { h, d } = await coldSession($, on)
     await coldTurn(d, 't1')
-    expect(await bandText($, surface), 'not at the turn\'s end').toBe('')
-    expect(h.afters, 'one timer, for 5 minutes after the turn').toEqual([5 * MIN])
+    expect(await bandText($, surface), 'at the turn\'s end the Cache timer row stands in for the offer').toBe('Goes cold at 7:00 PM · coming back then costs ~$0.63 · context 40%')
+    expect(h.afters, 'the cold row\'s timer at the hour, and the offer\'s 5 minutes after the turn').toEqual([HOUR, 5 * MIN])
     await h.advance(4 * MIN)
-    expect(await bandText($, surface), 'not at 4 minutes').toBe('')
+    expect(await bandText($, surface), 'not at 4 minutes: still the timer row').toMatch(/^Goes cold at 7:00 PM/)
     await h.advance(MIN)
     expect(await bandText($, surface), 'the cache line stands alone: no route text, so it carries the prefix').toBe('Goes cold in 55 min ▰▰▰▰▰▰▰▰▰▱ (19:00) · coming back after costs about $0.63')
     expect(await bandButtons($), 'one button; ⋯ and × follow it').toEqual([
@@ -176,7 +176,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.submit('continue')
     await h.advance(10 * MIN)
     expect(await bandText($, surface), 'no offer for the turn before it').not.toContain('Goes cold')
-    expect(h.afters.length, 'the timer was the only one; it was cancelled before it fired').toBe(1)
+    expect(h.afters.length, 'the offer\'s timer and the cold row\'s; both cancelled before they fired').toBe(2)
   })
 
   test(`ask: with a route band above, the cache line is a second row with the one button, and ⋯ and × go on a header line (${surface})`, { timeoutMs: 30000, options: { ...ASK, lowerRule: 'lower automatically' } }, async ($, on) => {
@@ -186,7 +186,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.submit(LOOKUP)
     await d.step('t1')
     await d.complete('t1')
-    expect(await coldRow($), 'not yet').toBe('')
+    expect(await coldRow($), 'not yet: the timer row').toBe('Goes cold at 7:00 PM · coming back then costs ~$0.63 · context 40%')
     await h.advance(5 * MIN)
     const ui = await mount($, surface)
     const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text)
@@ -225,7 +225,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(coldLog(h)).toContain('offered 2h, 8h, start')
   })
 
-  test(`ask: nothing for a small conversation or for Haiku; Sonnet needs about 128K, and there is no size ceiling (${surface})`, { timeoutMs: 30000, options: ASK }, async ($, on) => {
+  test(`ask: nothing for a small conversation or for Haiku; Sonnet needs about 128K, and there is no size ceiling (${surface})`, { timeoutMs: 30000, options: { ...ASK, cacheTimer: 'off' } }, async ($, on) => {
     const { h, d } = await coldSession($, on, { usage: { ...BIG_TURN, cache_read_input_tokens: 20_000 } })
     await coldTurn(d, 't1')
     expect(await bandText($, surface), '20K tokens on Opus: $0.16 cold').toBe('')
@@ -261,7 +261,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await bandText($, surface)).toContain('Goes cold')
   })
 
-  test(`ask: Idle warning over $1 skips a $0.55 cold return (${surface})`, { timeoutMs: 30000, options: { idleWarning: 'over $1' } }, async ($, on) => {
+  test(`ask: Idle warning over $1 skips a $0.55 cold return (${surface})`, { timeoutMs: 30000, options: { idleWarning: 'over $1', cacheTimer: 'off' } }, async ($, on) => {
     const { h, d } = await coldSession($, on)
     h.model = 'claude-sonnet-5-5'
     h.stepUsage = { ...BIG_TURN, cache_read_input_tokens: 139_500 }
@@ -276,7 +276,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await bandText($, surface)).toBe('')
   })
 
-  test(`Don't offer again saves the row as yours, says where it is, and nothing offers again (${surface})`, { timeoutMs: 30000, options: ASK }, async ($, on) => {
+  test(`Don't offer again saves the row as yours, says where it is, and nothing offers again (${surface})`, { timeoutMs: 30000, options: { ...ASK, cacheTimer: 'off' } }, async ($, on) => {
     const { h, d } = await coldSession($, on)
     await coldOffer(h, d, 't1')
     await openMenu($, h, { ...CACHE_MENU, 'More options': "Don't offer again" }, 2)
@@ -380,12 +380,12 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.asked.length, 'no question').toBe(0)
     expect(await bandText($, surface)).toBe('Warm until 2:00 · $0.00')
     expect(await bandButtons($)).toEqual([['cold-stop', 'Stop keeping warm'], ['mode', '⋯'], ['close', '×']])
-    expect(h.afters, 'one timer, for the first ping: a long wait is an after, not a sleep').toEqual([57 * MIN])
+    expect(h.afters, 'the cold row\'s timer, and the first ping: a long wait is an after, not a sleep').toEqual([HOUR, 57 * MIN])
     await h.advance(56 * MIN)
     expect(h.forks.length).toBe(0)
     await h.advance(MIN)
     expect(h.forks.length, 'the first at 57 minutes: 3 before the cache expires').toBe(1)
-    expect(h.afters, 'the first ping armed the second').toEqual([57 * MIN, 57 * MIN])
+    expect(h.afters, 'the first ping armed the second (after the cold row\'s timer)').toEqual([HOUR, 57 * MIN, 57 * MIN])
     expect(await bandText($, surface)).toBe('Warm until 2:00 · $0.02')
     expect(warmLines(h).length).toBe(1)
     expect(warmLines(h)[0]).toMatchObject({ kind: 'warm', session: 'sess-1', tier: 'opus', context: 80_500, overhead: 0.01613 })
@@ -393,7 +393,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.forks.length, 'eight in eight hours').toBe(8)
     expect(h.forks.every(f => f === 'Reply with the single word OK.')).toBe(true)
     expect(warmLines(h).length).toBe(8)
-    expect(h.afters.length, 'one timer per ping, and none after the last').toBe(8)
+    expect(h.afters.length, 'one timer per ping (8), the cold row\'s first (1), and its move after each ping to the new cold time (8)').toBe(17)
     expect(h.sleeps.every(ms => ms <= 120_000), 'no long sleep').toBe(true)
     expect(await bandText($, surface)).toBe('Kept the cache warm until 2:00 · $0.13.')
     // Nearly 8 hours after the turn ended, but 21 minutes after the last ping: coming back is not an idle return.

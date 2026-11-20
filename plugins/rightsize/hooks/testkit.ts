@@ -1,6 +1,7 @@
 // Shared helpers for the register.*.test.ts files: the engine stand-in, the band and pane drivers and the constants.
 import { type TestBody } from 'claude-code/testing'
 import { KEYS, inOptions } from './settings'
+import { TIPS } from './tips'
 
 declare const setTimeout: (fn: (...a: unknown[]) => void, ms: number) => unknown
 
@@ -124,8 +125,12 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
     /** What a $.prompt.fill answers: not filled, with the engine's refusal (`dialog`, `no_composer`), as under a dialog or headless. */
     fillRefused: undefined as 'dialog' | 'no_composer' | undefined,
     /** startDayOne: the day-one tip was shown already, so a session on Opus does not open with its band (the tests of the tip clear it). */
-    /** welcomed and tips off: the welcome and the tips (ADR 0039) stay out of the way; register.welcome.test.ts clears them. backfilled, installHintHidden and initHinted (P-42): the history stretches are not made and the two hints about whatsnext stay out of the way; register.wrapup.test.ts clears them. */
-    store: { startDayOne: true, welcomed: true, backfilled: true, installHintHidden: true, initHinted: ['/repo'], tips: { tipsOff: true, seen: [] }, ...(start.store ?? {}) } as Record<string, unknown>,
+    /**
+     * welcomed and every tip seen: the welcome and the tips (ADR 0039) stay out of the way; register.welcome.test.ts clears them. backfilled, installHintAt
+     * (a time far ahead: the last hint was under 30 days ago) and initHinted (P-42): the history stretches are not made and the two hints about whatsnext stay out
+     * of the way; register.wrapup.test.ts clears them. No hide flag here: a flag an older release kept moves to its /config row at the start (the Tips row).
+     */
+    store: { startDayOne: true, welcomed: true, backfilled: true, installHintAt: 9e15, initHinted: ['/repo'], tips: { tipsOff: false, seen: TIPS.map(t => t.id) }, ...(start.store ?? {}) } as Record<string, unknown>,
     ratings: 0,
     now: 1_800_000_000_000,
     page: '',
@@ -290,6 +295,11 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
     /** What the next whatsnext.py runs answer, in order; when none is left, `wnReply`. */
     wnReplies: [] as { exitCode: number; stdout: string; stderr?: string }[],
     wnReply: { exitCode: 0, stdout: wnAnswer(false) } as { exitCode: number; stdout: string; stderr?: string },
+    /** Whether whatsnext's `config show --json` says `wrapup.autoIdle` is on (its default is off); `wnConfigReply` replaces the whole answer. */
+    wnAutoIdle: false,
+    wnConfigReply: undefined as { exitCode: number; stdout: string; stderr?: string } | undefined,
+    /** Every `config show` run, as its arguments (kept apart from `wnRuns`, which the compaction tests count). */
+    wnConfigRuns: [] as string[][],
     /** What `fresh-instructions` answers; the default is a whatsnext that does not know the command yet (P-69 is open). */
     wnFresh: { exitCode: 2, stdout: '', stderr: "whatsnext.py: error: argument command: invalid choice: 'fresh-instructions'\n" } as { exitCode: number; stdout: string; stderr?: string },
     /** What the next `fresh-instructions` runs answer, in order; when none is left, `wnFresh`. */
@@ -497,6 +507,12 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
     // Where whatsnext starts: git's top level of the session's folder.
     if (argv[0] === 'git' && argv[1] === 'rev-parse' && argv[2] === '--is-inside-work-tree') return { value: h.inGit ? { exitCode: 0, stdout: 'true\n', stderr: '' } : { exitCode: 128, stdout: '', stderr: 'fatal: not a git repository' } } as never
     if (argv[0] === 'git' && argv[1] === 'rev-parse') return { value: { exitCode: 0, stdout: `${h.cwd}\n`, stderr: '' } } as never
+    if (argv[0] === 'python3' && argv.includes('config')) {
+      h.wnConfigRuns.push(argv)
+      const answer = { 'wrapup.autoIdle': { value: h.wnAutoIdle, source: h.wnAutoIdle ? 'user' : 'default', file: h.wnAutoIdle ? '~/.config/whatsnext/config.json' : null } }
+      const reply = h.wnConfigReply ?? { exitCode: 0, stdout: JSON.stringify(answer, null, 2) }
+      return { value: { exitCode: reply.exitCode, stdout: reply.stdout, stderr: reply.stderr ?? '' } } as never
+    }
     if (argv[0] === 'python3') {
       h.wnRuns.push(argv)
       const reply = argv.includes('fresh-instructions') ? (h.wnFreshReplies.shift() ?? h.wnFresh) : (h.wnReplies.shift() ?? h.wnReply)

@@ -1,7 +1,13 @@
 # Changelog
 
-## Unreleased
+## 0.16.1 (unreleased)
 
+- **A Cache row after every turn.** The band now shows, after each turn in your main chat and at any conversation size, when the cache goes cold, what coming back then costs and how full the conversation is: `Goes cold at 11:12 PM · coming back then costs ~$0.40 · context 32%`. It is a clock time, not a countdown, because the terminal band only redraws when something happens. **Compact now** compacts, and **Save handoff note** shows when whatsnext is set up in the project. A keep-warm offer or a running keep-warm replaces this line, and a context warning (40 to 90% full) is added to it, so there is only ever one Cache row.
+- **New setting: Cache timer** (Advanced, on by default). Off hides only that line; keep-warm offers, the context warning and the compact tip still show. **Cache** off still hides everything.
+- **The compact-on-Sonnet tip shows whichever way the wait went.** It used to show only after a whatsnext handoff, or when no handoff was possible. It now shows once the cache has gone cold on a big Opus or Fable chat after keep warm, an offer nobody answered, a handoff, or nothing at all, unless you send a prompt first.
+- **Reopened chats get the tip too.** When you reopen a chat whose last turn ended more than one cache life ago, the tip is on the band before you type, if compacting on Sonnet would save enough.
+- **When Claude Code compacts an idle chat itself, the Cache row says when** (`Claude Code compacts this at about 12:05 AM`), and with whatsnext set up in the project rightsize saves a handoff note 3 minutes before, so the compact has something to keep. With whatsnext's own auto wrap-up (`wrapup.autoIdle`) on, whatsnext saves it at 45 minutes and rightsize sends none, so there is one note, not two. rightsize still does not keep that chat warm or compact it.
+- **Fix: the docs now say the hand-off bar is 90%.** `docs/SETTINGS.md` said 70%; the code has used 90% since 0.16.0.
 - **rightsize now tries lowering when the rater is not sure.** Before, a prompt the rater could not judge was always left as it was. Now, when the plan was to lower effort, it lowers one level (never a hand-down to a cheaper model). Unsure prompts keep their own miss count per type of work and model, over the last 10. Over 20% misses pauses it; each prompt left as it is counts as a non-miss, so it tries again after a cooldown. The report's Rater not sure row shows how many were lowered and missed. Turn it off with **Try lowering when unsure** in /config (on by default).
 
 ## 0.16.0 (2026-11-18)

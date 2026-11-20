@@ -219,6 +219,13 @@ export function clockText(ms: number) {
   return `${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
+/** "3:45 PM", "12:05 AM": local time, 12-hour clock. */
+export function clock12(ms: number) {
+  const d = new Date(ms)
+  const h = d.getHours() % 12 || 12
+  return `${h}:${String(d.getMinutes()).padStart(2, '0')} ${d.getHours() < 12 ? 'AM' : 'PM'}`
+}
+
 /** True when two times fall on the same local calendar day. */
 const sameDay = (a: number, b: number) => {
   const x = new Date(a)
@@ -271,6 +278,36 @@ export function keepWarmChoices(o: { ttl: number; endedAt: number; cold: number;
     if (next.at - o.endedAt > 2 * HOUR) add('start', next.at - o.endedAt)
   }
   return out
+}
+
+// ---- The Cache timer (ADR 0094, group 3) ---------------------------------------------
+
+/** Claude Code compacts an idle session this long after its last request (measured; see COMPACT_GAP_MIN). */
+export const IDLE_COMPACT_AFTER = 54 * MIN
+
+/**
+ * The Cache row after every main-chat turn: "Goes cold at 11:12 PM · coming back then costs ~$0.40 · context 32%". A clock
+ * time, never a countdown: the terminal band redraws only on events, so a countdown would go stale. `cost` is the cold cost as
+ * the caller writes it ("~$0.40", "~2%"); `percent` is how full the conversation is, left out when the window is not known.
+ */
+export function timerText(o: { coldAt: number; cost: string; percent?: number }) {
+  return `Goes cold at ${clock12(o.coldAt)} · coming back then costs ${o.cost}${o.percent === undefined ? '' : ` · context ${o.percent}%`}`
+}
+
+/**
+ * The timer row once the cache has gone cold, for a chat too small for the cold-compact tip, with advice: continuing costs one reload
+ * (`cost`, "~$0.40" or "~2%"), a new topic is a fresh start. `handoff`: whatsnext can save a note (`offer`), already did (`saved`),
+ * or is not here (`none`).
+ */
+export function coldRowText(o: { coldAt: number; cost: string; handoff: 'offer' | 'saved' | 'none' }) {
+  const head = `Went cold at ${clock12(o.coldAt)}. OK to continue here (${o.cost}).`
+  if (o.handoff === 'saved') return `${head} Handoff saved: Clear chat for a new topic.`
+  return `${head} New topic? Clear chat.${o.handoff === 'offer' ? ' Pausing this work? Save a handoff first.' : ''}`
+}
+
+/** The same row while Claude Code's idle compact will run by itself: "Claude Code compacts this at about 12:05 AM · context 52%". */
+export function idleCompactTimerText(o: { at: number; percent?: number }) {
+  return `Claude Code compacts this at about ${clock12(o.at)}${o.percent === undefined ? '' : ` · context ${o.percent}%`}`
 }
 
 /**

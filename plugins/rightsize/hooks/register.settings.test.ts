@@ -1,7 +1,7 @@
 import { type TestBody, expect, test } from 'claude-code/testing'
 import { CAL_FULL, CAL_STORE, DEFAULT_PRICES, type Calibration, type Rating, type Situation, delegateCost, delegateKeys } from './cost'
 import { FIXED_ROWS, KEYS, PANE_KEYS, SETTINGS, type SettingKey, inOptions, plainTitle } from './settings'
-import { RUNS_FILE, LOG_PATH, LEGACY_RUNS, LOOKUP, DEBUG, NO_ONE, SEARCH, REVIEW, NO_CHANGE, FREE_SWITCHES, NO_COLD, BIG_TURN, engine, drive, flush, settle, untilAsked, DAY, PAGE, OLD_PRICES, last, mount, bandText, LOWER, WHATSNEXT_CMDS, installWhatsnext } from './testkit'
+import { RUNS_FILE, LOG_PATH, LEGACY_RUNS, LOOKUP, DEBUG, NO_ONE, SEARCH, REVIEW, NO_CHANGE, FREE_SWITCHES, NO_COLD, BIG_TURN, engine, drive, flush, settle, untilAsked, DAY, PAGE, OLD_PRICES, last, mount, bandText, LOWER, WHATSNEXT_CMDS, installWhatsnext, rowText } from './testkit'
 
 for (const surface of ['desktop', 'terminal'] as const) {
 
@@ -156,6 +156,21 @@ for (const surface of ['desktop', 'terminal'] as const) {
         // Keep warm while it pays is the default: its countdown row (with Extend 1 hour) shows 5 minutes after a big turn; with Cache off there is none.
         await c.h.advance(5 * 60_000)
         return (await bandText(c.$, c.surface)).startsWith('Goes cold in ')
+      },
+      set: false,
+      def: true,
+    },
+    {
+      key: 'cacheTimer',
+      value: 'off',
+      start: OPUS,
+      see: async c => {
+        c.h.stepUsage = BIG_TURN
+        const t = c.turn()
+        await c.d.step(t)
+        await c.d.complete(t)
+        // The timer line is on the Cache row after every main turn; with the row off it is not.
+        return (await bandText(c.$, c.surface)).startsWith('Goes cold at ')
       },
       set: false,
       def: true,
@@ -387,6 +402,78 @@ for (const surface of ['desktop', 'terminal'] as const) {
       set: 1,
       def: 0,
     },
+    // The four hide rows: each item shows with the row on and never with it off. A cold chat 3 hours after its last turn gets the tip,
+    // a conversation at 60% the warning, a 92% window with a big conversation the advice, a quiet turn after a saving the tip.
+    {
+      key: 'coldTip',
+      value: 'off',
+      // A chat reopened 3 hours after its last turn on a big conversation: the tip is offered at the start with the row on.
+      start: { ...OPUS, store: { lastTurns: { 'sess-1': { at: new Date(2027, 0, 15, 15, 0, 0, 0).getTime(), context: 180_000 } } }, stored: { ...NO_COLD } },
+      setup: h => {
+        h.now = new Date(2027, 0, 15, 18, 0, 0, 0).getTime()
+        h.virtual = true
+      },
+      early: true,
+      see: async c => {
+        await c.d.start(c.surface)
+        return (c.h.files[LOG_PATH] ?? '').includes('cold-compact tip: offered')
+      },
+      set: false,
+      def: true,
+    },
+    {
+      key: 'sizeWarning',
+      value: 'off',
+      start: { ...OPUS, stored: { ...NO_COLD } },
+      setup: h => void (h.contextTokens = 120_000),
+      see: async c => {
+        c.h.rating = NO_CHANGE
+        const t = c.turn()
+        await c.d.submit('continue')
+        await c.d.turnStart(t, 'continue')
+        await c.d.step(t)
+        await c.d.complete(t)
+        return (c.h.files[LOG_PATH] ?? '').includes('context warning: shown at 60%')
+      },
+      set: false,
+      def: true,
+    },
+    {
+      key: 'limitAdvice',
+      value: 'off',
+      start: { ...OPUS, effort: 'low', stored: { ...NO_COLD } },
+      setup: h => {
+        h.stepUsage = { input_tokens: 200, output_tokens: 400, cache_read_input_tokens: 99_500, cache_creation_input_tokens: 300 }
+        h.commands = []
+        h.rateLimits = [{ kind: 'five_hour', percentUsed: 92, resetsAt: new Date(h.now + 3 * HOUR).toISOString() }]
+      },
+      see: async c => {
+        c.h.rating = NO_CHANGE
+        const t = c.turn()
+        await c.d.submit('continue')
+        await c.d.turnStart(t, 'continue')
+        await c.d.step(t)
+        await c.d.complete(t)
+        return (c.h.files[LOG_PATH] ?? '').includes('usage-limit advice: shown')
+      },
+      set: false,
+      def: true,
+    },
+    {
+      key: 'tips',
+      value: 'off',
+      start: { ...OPUS, store: { tips: undefined }, stored: { ...NO_COLD } },
+      setup: h => void (h.files[RUNS_FILE] = JSON.stringify({ at: new Date(h.now - 60_000).toISOString(), kind: 'run', session: 'sess-1', change: 'lower', offered: 'lower', actual: 0.5, stay: 1, taken: 0.5, overhead: 0.01 })),
+      see: async c => {
+        await c.d.complete(c.turn())
+        const ui = await mount(c.$, c.surface)
+        const text = await rowText(ui, 'Tip')
+        await ui.unmount()
+        return text !== ''
+      },
+      set: false,
+      def: true,
+    },
   ]
 
   test(`every setting has a scenario here, and every scenario's value is one of its options (${surface})`, async () => {
@@ -500,7 +587,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   const logOf = (h: ReturnType<typeof engine>) => h.files[LOG_PATH] ?? ''
   const KEEP8 = { beforeCold: 'keep warm 8 h' }
 
-  test(`Routing off: a lowering is not applied, nothing is asked, the band says nothing, and the log says why (${surface})`, { timeoutMs: 30000, options: ROUTING_OFF.options }, async ($, on) => {
+  test(`Routing off: a lowering is not applied, nothing is asked, the band says nothing, and the log says why (${surface})`, { timeoutMs: 30000, options: { ...ROUTING_OFF.options, cacheTimer: 'off' } }, async ($, on) => {
     const h = engine(on, { ...OPUS, store: { [CAL_STORE]: FREE_SWITCHES }, stored: { ...ROUTING_OFF.stored, ...NO_COLD } })
     const d = drive($, h)
     await d.start(surface)
@@ -519,7 +606,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(runLines(h).find(l => l.type === 'lookup')).toMatchObject({ change: 'none' })
   })
 
-  test(`Routing off: a raise, a session switch and a review on Opus are not set either, and a stuck turn is not raised (${surface})`, { timeoutMs: 30000, options: ROUTING_OFF.options }, async ($, on) => {
+  test(`Routing off: a raise, a session switch and a review on Opus are not set either, and a stuck turn is not raised (${surface})`, { timeoutMs: 30000, options: { ...ROUTING_OFF.options, cacheTimer: 'off' } }, async ($, on) => {
     // Raising set to ask: the question would offer a session switch.
     const h = engine(on, { model: 'claude-sonnet-5-5', effort: 'medium', store: { ...AUTO_RAISE, choices: { raise: 'ask' }, [CAL_STORE]: FREE_SWITCHES }, stored: { ...ROUTING_OFF.stored, ...NO_COLD } })
     const d = drive($, h)

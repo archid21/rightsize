@@ -1,7 +1,9 @@
 import type { RightsizeLevel as Level, RightsizeTier as Tier } from '../types'
 import { MAX_USED, PACE_FROM, TIER_NAME, type Limit, money } from './cost'
 import { bandShareText, shareOf } from './report'
-import { clockText } from './warm'
+import { clock12, clockText } from './warm'
+
+export { clock12 }
 
 // The "compact before the usage limit" advice on the band: near the 5-hour limit, with a big conversation and a reset far
 // enough off for the cache to go cold, a compaction now (the cache is warm) leaves a short summary to read after the reset
@@ -91,13 +93,6 @@ export function limitHit(limits: readonly Limit[], now: number) {
     if (first === undefined || hit < first) first = hit
   }
   return first === undefined ? undefined : Math.round(first / QUARTER) * QUARTER
-}
-
-/** "3:45 PM" in local time. */
-export function clock12(ms: number) {
-  const d = new Date(ms)
-  const h = d.getHours() % 12 || 12
-  return `${h}:${String(d.getMinutes()).padStart(2, '0')} ${d.getHours() < 12 ? 'AM' : 'PM'}`
 }
 
 /** The status line: the model part, then "limit ~3:45 PM" when due, else "$1.84 session" on API billing. */

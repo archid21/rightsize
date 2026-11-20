@@ -11,7 +11,7 @@ rightsize has one rule set and no profiles (the Quality, Balanced and Economy pr
 | | Fixed value | Row |
 |---|---|---|
 | Evidence for a cheaper route (hand-down, a Claude subagent moved down, lowering effort) | The rating says it fits; the kind of work pauses at 20% misses, with no minimum of logged tasks | none |
-| Hand-off threshold: a helper must cost under this share of staying | 70% (85% while a usage window runs hot, 95% when nearly used up: Budget pacing) | none |
+| Hand-off threshold: a helper must cost under this share of staying | 90% (95% while a usage window runs hot or is nearly used up: Budget pacing) | none |
 | Lowering threshold: a lower level must cost under this share of staying, counting the cache it may rewrite | 90% (97% hot, 100% nearly used up) | none |
 | Close calls between two models that fit | The task-type guide decides; never explored | none |
 | Helper call count, with no estimate: past it a helper on a cheaper model stops when it is not making progress, and at 4 times it whatever it does | 25 for Haiku, 40 for Sonnet; none for Opus and Fable | none |
@@ -61,7 +61,7 @@ An "ask" answer opens its own timed dialog (it waits 30 seconds); every other an
 - Key: `cache`
 - Options: on · off
 - Default: on
-- on (default): rightsize keeps an eye on the prompt cache: the offer to keep it warm, keep warm itself, a handoff or a compaction before it goes cold, and the idle warning when you return to a cold cache. off: none of those; a keep-warm run in progress stops at once. The rows Idle warning and Before the cache goes cold fine-tune it while Cache is on, and are not used while it is off.
+- on (default): rightsize keeps an eye on the prompt cache: the Cache row after every turn (see Cache timer), the offer to keep it warm, keep warm itself, a handoff or a compaction before it goes cold, the tip to compact on Sonnet when it has gone cold, and the idle warning when you return to a cold cache. off: none of those; a keep-warm run in progress stops at once. The rows Cache timer, Idle warning and Before the cache goes cold fine-tune it while Cache is on, and are not used while it is off.
 
 ### Band
 
@@ -145,7 +145,7 @@ An "ask" answer opens its own timed dialog (it waits 30 seconds); every other an
 - Key: `pacing`
 - Options: on · off
 - Default: on
-- on: on a subscription, move the hand-off and lowering bars by how fast the 5-hour and 7-day windows are being used. Running out early: hand off and lower more readily, and the band says which bars moved. Much left near a reset: nothing changes. Over 90% used: save all it can, which skips raises and stronger models while Raising and Stronger model are not set. A rule you set stays as you set it. off: always use the fixed bars (70% for hand-offs, 90% for lowering).
+- on: on a subscription, move the hand-off and lowering bars by how fast the 5-hour and 7-day windows are being used. Running out early: hand off and lower more readily, and the band says which bars moved. Much left near a reset: nothing changes. Over 90% used: save all it can, which skips raises and stronger models while Raising and Stronger model are not set. A rule you set stays as you set it. off: always use the fixed bars (90% for hand-offs, 90% for lowering).
 
 ### Raise when stuck
 
@@ -174,6 +174,14 @@ An "ask" answer opens its own timed dialog (it waits 30 seconds); every other an
 - Options: while it pays · ask · keep warm 2 h · keep warm 8 h · keep warm until my usual start · save a handoff · compact · off
 - Default: while it pays. A value you set is yours and behaves as it always did.
 - What rightsize does when a session that ends a turn with a big conversation (a cold return would cost at least the Idle warning amount, $0.50 by default and while Idle warning is off, API-equivalent on a subscription) is about to lose its prompt cache. while it pays: send a tiny keep-warm request just before an expiry only when your own record says you are likely enough to come back before the next one to cover its cost (at most 2 requests, and one at the first expiry until rightsize has enough of your idle times to judge); with nothing sent, compact when that pays, else save a whatsnext handoff note; on a 1-hour cache the band shows an Extend 1 hour button. keep warm 2 h, keep warm 8 h, keep warm until my usual start (the time you usually send your first prompt, at most 8 hours): send one tiny request just before each expiry to keep the cache warm until then, with a status row on the band (Stop keeping warm; Don't keep warm again in ⋯), and stop when you type, press Stop, a request fails, or keeping warm would cost more than coming back cold. ask: offer the choices on the band 5 minutes after the turn, each with its cost, and do nothing if you do not pick. save a handoff: run whatsnext's wrap-up once before expiry (compact when whatsnext is not installed or not started in the project). compact: compact once before expiry (with whatsnext, using its instructions). off: nothing. Nothing runs during a turn. Not set here, rightsize uses while it pays.
+
+### Cache timer
+
+- Key: `cacheTimer`
+- Options: on · off
+- Default: on
+- on (default): after every turn in the main chat, at any conversation size, the band shows a Cache row: `Goes cold at 11:12 PM · coming back then costs ~$0.40 · context 32%`. It gives the clock time the cache goes cold (never a countdown), what coming back after that costs, and how full the conversation is. **Compact now** compacts; **Save handoff note** (only where whatsnext is set up in the project) has whatsnext save its note. When Claude Code will compact an idle session by itself, the row says when instead (`Claude Code compacts this at about 12:05 AM`), and with whatsnext set up rightsize saves a handoff note 3 minutes before (not when whatsnext's own `wrapup.autoIdle` is on: it saves one at 45 minutes, so there is only one). A keep-warm offer or a keep-warm run takes the row over from this line, and a context warning (40 to 90% full) joins it, so the band always has one Cache row.
+- off: the line is not shown. Everything else on the Cache row still is: keep-warm offers, the context warning, the tip to compact on Sonnet. Cache off hides all of them, this line too.
 
 ### Reports
 
@@ -215,6 +223,34 @@ An "ask" answer opens its own timed dialog (it waits 30 seconds); every other an
 - on: when the rater says it is not sure how hard a prompt is and the plan was to lower effort, rightsize lowers it by one level, never more. A hand-down to a cheaper model, a model switch and a raise stay off for an unsure prompt, as before. A cut request, a missing last reply or a failing last test run still means no lowering.
 - Unsure lowerings have their own miss record for each kind of work on each model version. A miss means what it means for other lowerings: a tool error that steps the turn back up, a raise mid-turn, a failing last test run, a correction or a 👎. The record reads only the last 10 unsure prompts of that kind of work; with fewer than 10, lowering goes on. When more than 20% of those 10 missed (3 or more; the Pause after misses line), unsure prompts of that kind are left as they are. Each prompt left this way still counts in the 10 as a non-miss, so after enough of them the share falls to 20% or under and unsure lowering starts again. That is a count, not proof that lowering got safer: each retry brings real results. `/rightsize report` shows, on the Rater not sure line, how many were lowered, how many of those missed and any kind of work paused now.
 - off: a prompt the rater is not sure of is left as it is.
+
+### Cold-compact tip
+
+- Key: `coldTip`
+- Options: on · off
+- Default: on
+- on: when the cache has gone cold on a big Opus or Fable chat and compacting on Sonnet would save at least the Idle warning amount, the band walks you through the compaction one command at a time. off: the tip never shows. Its **Don't show again** button sets this row to off, and turning it on here shows the tip again. A hide from an older release moves to this row once, at the next start.
+
+### Context-size warning
+
+- Key: `sizeWarning`
+- Options: on · off
+- Default: on
+- on: when a chat first reaches 40, 50, 60, 70, 80 or 90% of the context window, the band says so with Compact now. off: the warning never shows. Its **Don't show again** button sets this row to off. A hide from an older release moves to this row once, at the next start.
+
+### Usage-limit advice
+
+- Key: `limitAdvice`
+- Options: on · off
+- Default: on
+- on: near your 5-hour usage limit, with a big chat and a reset further off than the cache lives, the band advises compacting now. off: the advice never shows. Its **Don't show again** button sets this row to off. A hide from an older release moves to this row once, at the next start.
+
+### Tips
+
+- Key: `tips`
+- Options: on · off
+- Default: on
+- on: the band's Tip row, the Star on GitHub ask, the whatsnext install hint and the `whatsnext init` hint can show. off: none of them show, and rightsize does not ask GitHub whether you starred it. **Stop tips** on a tip and **Don't show again** on the install hint set this row to off; `/rightsize tips` sets it back to on. The star ask's **No thanks** only ends that ask. Stop tips or a hide from an older release moves to this row once, at the next start.
 
 ### Big-turn warning
 

@@ -148,7 +148,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
   // ---- The new default -----------------------------------------------------------------------------------------
 
-  test(`default: with no stored row a session keeps warm while it pays: nothing at the turn's end, the countdown row with Extend 1 hour from 5 minutes on (${surface})`, { timeoutMs: 30000, options: UNSET.options }, async ($, on) => {
+  test(`default: with no stored row a session keeps warm while it pays: nothing at the turn's end, the countdown row with Extend 1 hour from 5 minutes on (${surface})`, { timeoutMs: 30000, options: { ...UNSET.options, cacheTimer: 'off' } }, async ($, on) => {
     const { h, d } = await session($, on)
     expect(h.stored.beforeCold, 'nothing stored').toBeUndefined()
     await turn(d, 't1')
@@ -176,7 +176,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(coldLog(h)).toContain('not compacting, a handoff note instead: chance of a later return 25% (starting value, 19 stretches on record)')
   })
 
-  test(`default: before 20 stretches are on record a 5-minute cache gets no request (${surface})`, { timeoutMs: 30000, options: UNSET.options }, async ($, on) => {
+  test(`default: before 20 stretches are on record a 5-minute cache gets no request (${surface})`, { timeoutMs: 30000, options: { ...UNSET.options, cacheTimer: 'off' } }, async ($, on) => {
     const { h, d } = await session($, on, { prices: OLD_PRICES, stretches: rep(19, 30, 'warm'), usage: { ...BIG_TURN, cache_read_input_tokens: 150_000 }, fork: { input_tokens: 12, output_tokens: 4, cache_read_input_tokens: 150_000, cache_creation_input_tokens: 0 } })
     await turn(d, 't1')
     expect(await bandText($, surface), 'a short cache has no countdown row').toBe('')
@@ -244,7 +244,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(coldLog(h)).toContain('keep warm stopped: the cache missed')
   })
 
-  test(`default: no Extend on a 5-minute cache: no row at all (${surface})`, { timeoutMs: 30000, options: UNSET.options }, async ($, on) => {
+  test(`default: no Extend on a 5-minute cache: no row at all (${surface})`, { timeoutMs: 30000, options: { ...UNSET.options, cacheTimer: 'off' } }, async ($, on) => {
     const { h, d } = await session($, on, { prices: OLD_PRICES, usage: { ...BIG_TURN, cache_read_input_tokens: 150_000 } })
     await turn(d, 't1')
     await h.advance(3 * MIN)
@@ -313,7 +313,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await turn(d, 't1')
     await h.advance(5 * HOUR)
     expect(h.forks.length + h.compactions + h.submitted.length).toBe(0)
-    expect(await bandText($, surface), 'and the countdown row is gone').toBe('')
+    expect(await bandText($, surface), 'the countdown row is gone; the cold row says it went cold').toMatch(/^Went cold at 7:00 PM/)
   })
 
   // ---- Stored rows keep their own behaviour --------------------------------------------------------------------
@@ -329,7 +329,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(coldLog(h)).not.toContain('keep warm while it pays')
   })
 
-  test(`a stored "off" does nothing, and the stored "ask" offers as before (${surface})`, { timeoutMs: 30000, options: { beforeCold: 'off' } }, async ($, on) => {
+  test(`a stored "off" does nothing, and the stored "ask" offers as before (${surface})`, { timeoutMs: 30000, options: { beforeCold: 'off', cacheTimer: 'off' } }, async ($, on) => {
     const { h, d } = await session($, on, { stored: { beforeCold: 'off' } })
     await turn(d, 't1')
     await h.advance(5 * HOUR)

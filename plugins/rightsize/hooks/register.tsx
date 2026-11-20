@@ -1452,7 +1452,7 @@ type BandWhy =
   | { kind: 'cacheLife'; to: Ttl; from: Ttl; provider: Provider }
   | { kind: 'watchTrial' }
   | { kind: 'watchSummary' }
-  | { kind: 'stuck'; run: Run; cur: Level; to: Level; sign: Struggle; step: number }
+  | { kind: 'stuck'; run: Run; cur: Level; to: Level; sign: Struggle; step: number; /** The third button this question carries (ADR 0094, rule 4): the answer it offers to make permanent. */ offer?: Said }
   | { kind: 'keepWarm'; turn: ColdTurn; id: string }
   | { kind: 'limitCompact' }
   | { kind: 'helper'; id: string; w: Watch; cur: Level; to: Level; sign: Struggle; main: string }
@@ -1546,10 +1546,10 @@ async function bandAnswered($: EngineInterface, why: BandWhy, v: unknown) {
     case 'watchSummary':
       return
     case 'stuck': {
-      const { run, cur, to, sign, step } = why
-      // The rule part of the answer stands, whether or not the turn still runs. A raise applies only while that turn runs, from its next request.
-      const raises = await stuckAnswered($, v)
-      if (!raises || active !== run || run.raisedTo === to) return
+      const { run, cur, to, sign, step, offer } = why
+      // The rule part of the answer (the third button) stands, whether or not the turn still runs. A raise applies only while that turn runs, from its next request.
+      const said = await learnAnswer($, 'stuck', offer, v as Offered<StuckAnswer> | undefined, 'yes')
+      if (said !== 'yes' || active !== run || run.raisedTo === to) return
       return raiseRun($, run, cur, to, sign, step)
     }
     case 'spend':
@@ -2091,19 +2091,102 @@ async function moveHideFlags($: EngineInterface) {
   }
 }
 
-/**
- * "Always" on a question: the rule goes to its /config row, the same write the settings pane makes, and the session follows it at
- * once. `putConfig` runs none of the row's follow-up, so the rule follows here, even when the row already held the value.
- */
+/** Sets a rule's /config row as the person's own and has the session follow it at once. `putConfig` runs none of the row's follow-up, so the rule follows here, even when the row already held the value. */
 async function alwaysRule($: EngineInterface, rule: keyof Choices, value: NonNullable<Choices[keyof Choices]>) {
   const label = ruleLabel(rule, value)
   await putConfig($, RULE_KEYS[rule], label)
   await followRuleRow($, rule, label)
 }
 
-/** "For this session" on a question: the rule changes in this session's choices. Nothing goes to the store or to /config. */
-async function sessionRule($: EngineInterface, rule: keyof Choices, value: NonNullable<Choices[keyof Choices]>) {
-  await $.state.set({ plugin: 'rightsize', key: 'choices' }, { ...(await choices($)), [rule]: value })
+// ---- Always do this and Stop asking (ADR 0094, general rule 4) ---------------------------------------------------------
+// On the third same answer in a row to a question, the next time it shows it has a small third button: Always do this after three
+// changes, Stop asking after three noes. Pressing it answers the question that way and writes the setting that decides that case, as
+// the person's own. Offered once per case: any answer on the normal buttons while it was offered is a decline, and it never comes
+// back; a different answer only breaks the run. The counts are kept in the store, so they last across sessions. Not answered (the
+// wait ran out, the row was closed): not counted. Not offered for the questions whose setting is not settled (a stuck helper, Keep
+// warm, the Compact question), nor for a Haiku-start switch, which always asks whatever the rule says.
+
+const ASK_RUNS_STORE = 'askRuns'
+const ALWAYS_BUTTON = 'Always do this'
+const STOP_BUTTON = 'Stop asking'
+/** The same answer this many times in a row earns the offer. */
+const OFFER_AFTER = 3
+
+/** The questions that can offer it. Both stronger-model questions (a helper, a review switch) write the Stronger model rule. */
+type AskCase = 'lower' | 'raise' | 'up' | 'down' | 'switch' | 'stuck'
+type Said = 'yes' | 'no'
+/** One case's run of the same answer: the answer, how many in a row, and `closed` once the offer was taken or declined. */
+type AskRun = { last?: Said; n: number; closed?: true }
+type AskRuns = Partial<Record<AskCase, AskRun>>
+/** What the third button answers with: the value that stands in for the option beside a question's own. */
+type Offered<V> = V | 'always' | 'stop'
+
+const RULE_OF_CASE: Record<Exclude<AskCase, 'stuck'>, keyof Choices> = { lower: 'lower', raise: 'raise', up: 'up', down: 'down', switch: 'up' }
+
+async function askRuns($: EngineInterface): Promise<AskRuns> {
+  const v = await $.store.get(ASK_RUNS_STORE).catch(() => undefined)
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return {}
+  const out: AskRuns = {}
+  for (const c of Object.keys(RULE_OF_CASE).concat('stuck') as AskCase[]) {
+    const r = (v as Record<string, unknown>)[c] as Partial<AskRun> | undefined
+    if (r && typeof r.n === 'number' && r.n >= 0) out[c] = { ...(r.last === 'yes' || r.last === 'no' ? { last: r.last } : {}), n: r.n, ...(r.closed === true ? { closed: true } : {}) }
+  }
+  return out
+}
+
+/** The answer this case has been given three times in a row and not yet offered a button for; undefined when none. */
+async function offerOf($: EngineInterface, c: AskCase): Promise<Said | undefined> {
+  const r = (await askRuns($))[c]
+  return r && !r.closed && r.last && r.n >= OFFER_AFTER ? r.last : undefined
+}
+
+/** The question with the third button, when one is due. */
+function withOffer<V>(q: Question<V>, offer: Said | undefined): Question<Offered<V>> {
+  if (!offer) return q
+  return { ...q, options: [...q.options, offer === 'yes' ? ([ALWAYS_BUTTON, 'always'] as const) : ([STOP_BUTTON, 'stop'] as const)] }
+}
+
+async function saveRun($: EngineInterface, c: AskCase, next: AskRun) {
+  await $.store.set(ASK_RUNS_STORE, { ...(await askRuns($)), [c]: next }).catch(() => undefined)
+}
+
+/** The third button was pressed: the setting that decides the case becomes the person's, and a toast says which and where to change it. */
+async function takeOffer($: EngineInterface, c: AskCase, button: 'always' | 'stop') {
+  let name: string
+  let label: string
+  if (c === 'stuck') {
+    name = plainTitle(SETTINGS.escalation.title)
+    label = button === 'always' ? 'raise automatically' : 'off'
+    await changeRow($, 'escalation', label)
+  } else {
+    const rule = RULE_OF_CASE[c]
+    const value = button === 'always' ? 'auto' : rule === 'lower' || rule === 'raise' ? 'never' : 'stay'
+    name = RULE_NAME[rule]
+    label = ruleLabel(rule, value)
+    await alwaysRule($, rule, value)
+  }
+  await log($, `${name}: set to "${label}" by ${button === 'always' ? ALWAYS_BUTTON : STOP_BUTTON} (the same answer three times in a row)`)
+  $.ui.toast(`Rightsize: ${name} set to "${label}". /config changes it.`)
+}
+
+/**
+ * A question was answered `a` (its own value, `always` or `stop`; undefined or a timeout: not answered). The third button's answer
+ * sets its rule and counts as the change (Always do this) or the no (Stop asking). Any other answer is counted, and it declines
+ * the offer when one was shown (`offered`). Returns what the answer was, for the caller to act on: yes (the change), no, or undefined.
+ */
+async function learnAnswer<V>($: EngineInterface, c: AskCase, offered: Said | undefined, a: Offered<V> | undefined | typeof TIMED_OUT, yes: V): Promise<Said | undefined> {
+  if (a === undefined || a === TIMED_OUT) return undefined
+  const was = (await askRuns($))[c] ?? { n: 0 }
+  if (a === 'always' || a === 'stop') {
+    if (!offered) return undefined
+    const button = a as 'always' | 'stop'
+    await takeOffer($, c, button)
+    await saveRun($, c, { ...was, closed: true })
+    return button === 'always' ? 'yes' : 'no'
+  }
+  const said: Said = a === yes ? 'yes' : 'no'
+  await saveRun($, c, { last: said, n: was.last === said ? was.n + 1 : 1, ...(was.closed || offered ? { closed: true as const } : {}) })
+  return said
 }
 
 /** The rater's reason, or any fragment ("the same tool call ran 3 times"), as one sentence. */
@@ -2342,7 +2425,7 @@ const askCost = (d: number, stay: number, cur: string) => {
   return x < 1 ? `~${Math.max(1, Math.round(x * 100))}% of the usage` : `~${x.toFixed(1)}x the usage`
 }
 
-type Decision = { level?: Level; session?: Level; auto?: boolean; delegate?: Run['delegate']; model?: Run['switchTo'] }
+type Decision = { level?: Level; auto?: boolean; delegate?: Run['delegate']; model?: Run['switchTo'] }
 
 /** The effort-only plan a hand-off falls back to (Workflows, Hand-offs off, a declined question): nothing while Routing is off. */
 const effortOnly = (r: Rating, s: Situation): Plan => (routing ? effortPlan(r, s, floor) : { kind: 'none', why: ROUTING_OFF })
@@ -2369,17 +2452,19 @@ async function resolveEffort($: EngineInterface, p: Plan, r: Rating, s: Situatio
   const verb = p.dir === 'lower' ? 'Lower' : 'Raise'
   // One question, the recommended answer first (ADR 0094). A lowering is routine work; a raise says why from the rater's reason.
   const lead = p.dir === 'lower' ? 'Routine work.' : sentence(r.reason) || 'This needs more thought.'
-  const a = await askWithin($, withWait({
+  const kase: AskCase = p.dir === 'lower' ? 'lower' : 'raise'
+  const offer = await offerOf($, kase)
+  const a = await askWithin($, withWait(withOffer({
     header: 'Effort',
     question: `${lead} ${verb} effort to ${p.level}?`,
     options: [
       [`${verb} effort`, 'yes'],
       ['Keep as is', 'keep'],
     ],
-  }, 'it stays as it is'))
+  }, offer), 'it stays as it is'))
   if (a === TIMED_OUT) await logTimeout($, 'Effort', `kept ${s.level}`)
   // Dismissed or no answer: it runs as typed.
-  return a === 'yes' ? { level: p.level } : {}
+  return (await learnAnswer($, kase, offer, a, 'yes')) === 'yes' ? { level: p.level } : {}
 }
 
 async function resolve($: EngineInterface, p: Plan, r: Rating, s: Situation): Promise<Decision> {
@@ -2401,16 +2486,19 @@ async function resolve($: EngineInterface, p: Plan, r: Rating, s: Situation): Pr
     if (c !== 'ask' && c !== 'each') return {}
     // One question, the recommended answer first (ADR 0094). Stay changes nothing: no second question about effort.
     const what = p.rule === 'review' ? 'review' : `${r.type} work`
-    const a = await askWithin($, withWait({
+    // The Haiku-start switch always asks, whatever the rule says, so a rule from the third button could not change it: no offer for it.
+    const offer = c === 'each' || p.rule !== 'review' ? undefined : await offerOf($, 'switch')
+    const a = await askWithin($, withWait(withOffer({
       header: 'Stronger',
       question: `Run this ${what} on ${to} for one turn?`,
       options: [
         [`Use ${to}`, 'send'],
         [`Stay on ${cur}`, 'stay'],
       ],
-    }, 'it stays as it is'))
+    }, offer), 'it stays as it is'))
     if (a === TIMED_OUT) await logTimeout($, 'Stronger', `stayed on ${cur}`)
-    return a === 'send' ? send : {}
+    const said = p.rule === 'review' ? await learnAnswer($, 'switch', offer, a, 'send') : a === 'send' ? 'yes' : undefined
+    return said === 'yes' ? send : {}
   }
   const c = p.dir === 'up' ? await choice($, 'up', qUp(cur, to)) : await choice($, 'down', qDown(cur, to))
   const send: Decision = { delegate: { tier: p.tier, level: p.level, dir: p.dir } }
@@ -2421,7 +2509,9 @@ async function resolve($: EngineInterface, p: Plan, r: Rating, s: Situation): Pr
   // One question, the recommended answer first (ADR 0094): the helper, or the session's model with the effort change, if there is one.
   const ep = effortOnly(r, s)
   const lead = p.dir === 'up' ? `${sentence(r.reason) || 'This needs a stronger model.'} ` : ''
-  const a = await askWithin($, withWait({
+  const kase: AskCase = p.dir === 'up' ? 'up' : 'down'
+  const offer = c === 'each' ? undefined : await offerOf($, kase)
+  const a = await askWithin($, withWait(withOffer({
     header: 'Subagent',
     // The cost ends the sentence, so the wait line after it reads on.
     question: `${lead}Send to a ${to} helper? ${askCost(p.delegateCost, p.mainCost, cur)}`.trim().replace(/([^.?!])$/, '$1.'),
@@ -2429,10 +2519,11 @@ async function resolve($: EngineInterface, p: Plan, r: Rating, s: Situation): Pr
       [`Send to ${to}`, 'send'],
       [`Keep on ${cur}${ep.kind === 'effort' ? ` (${ep.dir === 'lower' ? 'lower' : 'raise'} effort)` : ''}`, 'keep'],
     ],
-  }, 'it stays as it is'))
+  }, offer), 'it stays as it is'))
   if (a === TIMED_OUT) await logTimeout($, 'Subagent', `stayed on ${cur}`)
-  if (a === 'send') return send
-  return a === 'keep' && ep.kind === 'effort' ? { level: ep.level } : {}
+  const said = await learnAnswer($, kase, offer, a, 'send')
+  if (said === 'yes') return send
+  return said === 'no' && ep.kind === 'effort' ? { level: ep.level } : {}
 }
 
 /** Three rules a Haiku helper's brief carries (P-70, ADR 0086): Haiku miscounts, fills gaps and leaves drafts in its answer. */
@@ -2500,7 +2591,7 @@ async function noteCorrection($: EngineInterface, task: string) {
 /** `base` is the person's own level, before any session switch rightsize made: the level savings are counted against. */
 function startRun(r: Rating, s: Situation, d: Decision, p: Plan, base: Level, overhead: number, entered: { text: string; at: number; during?: string }): Run {
   const sw = d.model
-  const level = sw?.level ?? d.level ?? d.session ?? s.level
+  const level = sw?.level ?? d.level ?? s.level
   const change: Change = d.delegate
     ? `delegate-${d.delegate.dir}`
     : sw
@@ -2513,8 +2604,8 @@ function startRun(r: Rating, s: Situation, d: Decision, p: Plan, base: Level, ov
   // The turn on another model: its work at that level, plus writing the conversation to that model's cache once.
   const swOn: Situation | undefined = sw ? { ...s, tier: sw.tier } : undefined
   const swCost = sw && swOn ? mainCost(r, swOn, sw.level, 0) + (s.context * atPrompt(s.prices[sw.tier], s.context).cacheWrite) / 1e6 : 0
-  // A per-prompt switch goes and comes back; a session switch goes once.
-  const switches = d.level && d.level !== s.level ? (levelRank(d.level) < levelRank(s.level) ? lowerSwitches(r, s) : 2) : d.session ? 1 : 0
+  // A per-prompt switch goes and comes back.
+  const switches = d.level && d.level !== s.level ? (levelRank(d.level) < levelRank(s.level) ? lowerSwitches(r, s) : 2) : 0
   const id = `${sessionId}:${Date.now()}-${++runSeq}`
   return {
     id,
@@ -2790,12 +2881,12 @@ export function bandFor(run: Pick<Run, 'id' | 'tier' | 'normal' | 'auto' | 'dele
     const text = auto ? `Sent to ${TIER_NAME[run.delegate.tier]} · ${cost.replace(/ of (\w+) usage\.$/, ' of the $1 usage.')}` : `Sending this to a ${to}${instead}. ${cost}`
     return { text: `${text}${more(why, run.delegate.dir === 'down' ? sure(run.delegate.tier) : '')}`, acted: true, rule: run.delegate.dir, ...sureDetail(run.delegate.dir === 'down' ? run.delegate.tier : undefined) }
   }
-  const level = d.level ?? d.session
+  const level = d.level
   if (level) {
     const lower = levelRank(level) < levelRank(run.normal)
-    const scope = d.level ? `this prompt${run.auto ? ' (automatically)' : ''}` : 'this session'
+    const scope = `this prompt${run.auto ? ' (automatically)' : ''}`
     // An automatic lowering says what was done and no more: "Effort lowered: high → low."
-    const said = run.auto && !!d.level && lower ? `${run.normal} → ${level}` : `${run.normal} → ${level} for ${scope}`
+    const said = run.auto && lower ? `${run.normal} → ${level}` : `${run.normal} → ${level} for ${scope}`
     return {
       text: `Effort ${lower ? 'lowered' : 'raised'}: ${said}.${more(why, lower ? sure(run.tier) : '')}`,
       acted: true,
@@ -2803,7 +2894,6 @@ export function bandFor(run: Pick<Run, 'id' | 'tier' | 'normal' | 'auto' | 'dele
       ...sureDetail(lower ? run.tier : undefined),
       // A lowering can be marked right or wrong: it was a bet on the rating.
       ...(lower ? { rate: run.id } : {}),
-      ...(d.session ? { canClear: true } : {}),
     }
   }
   if (p.kind === 'none') {
@@ -3203,14 +3293,14 @@ async function escalate($: EngineInterface, run: Run, sign: Struggle, from: Leve
       return
     }
     if (onBand('Stuck')) return
-    return askBand($, { ...q, ifNone: `the turn goes on at ${cur}` }, 'turn', true, { kind: 'stuck', run, cur, to, sign, step })
+    const offer = await offerOf($, 'stuck')
+    return askBand($, { ...withOffer(q, offer), ifNone: `the turn goes on at ${cur}` }, 'turn', true, { kind: 'stuck', run, cur, to, sign, step, ...(offer ? { offer } : {}) })
   }
   await raiseRun($, run, cur, to, sign, step)
 }
 
-/** A Stuck answer: raise for this turn ('yes'), raise when stuck for this session, keep, or always raise when stuck. */
-type StuckAnswer = 'yes' | 'session' | 'no' | 'always'
-const STUCK_RULE = { plugin: 'rightsize', key: 'stuckRule' } as const
+/** A Stuck answer: raise for this turn ('yes') or keep going ('no'). The third button's answers come with it (`Offered`). */
+type StuckAnswer = 'yes' | 'no'
 
 /** The Stuck question for the main chat (ADR 0094): the reason, and two answers, the raise first. It never holds the turn. */
 const qStuck = (question: string): Question<StuckAnswer> => ({
@@ -3235,23 +3325,15 @@ const qHelperStuck = (w: Watch, main: string, why: string): Question<HelperAnswe
 
 /**
  * The rule that decides a stuck raise now, main chat or helper. Raise when stuck's own rule (ask me, raise automatically) decides when
- * it is set; follow Raising leaves it to the Raising rule, else the default. "For this session" on a Stuck question makes it automatic
- * until the session ends. `set`: a rule of yours decides, so a nearly used usage window does not skip the raise.
+ * it is set; follow Raising leaves it to the Raising rule, else the default. `set`: a rule of yours decides, so a nearly used usage
+ * window does not skip the raise.
  */
 async function stuckRule($: EngineInterface): Promise<{ rule: Raise; set: boolean }> {
-  const session = (await $.state.get(STUCK_RULE).catch(() => undefined))?.value === 'auto'
   if (escalation === 'off') return { rule: 'never', set: true }
-  if (escalation === 'ask me') return { rule: session ? 'auto' : 'ask', set: true }
-  if (escalation === 'raise automatically' || session) return { rule: 'auto', set: true }
+  if (escalation === 'ask me') return { rule: 'ask', set: true }
+  if (escalation === 'raise automatically') return { rule: 'auto', set: true }
   const raise = (await choices($)).raise
   return { rule: raise ?? answers.raise, set: raise !== undefined }
-}
-
-/** What a Stuck answer changes besides this raise: for this session, a session-only rule; always, the row Raise when stuck. True when the answer raises. */
-async function stuckAnswered($: EngineInterface, a: unknown): Promise<boolean> {
-  if (a === 'session') await $.state.set(STUCK_RULE, 'auto').catch(() => undefined)
-  if (a === 'always') await changeRow($, 'escalation', 'raise automatically')
-  return a === 'yes' || a === 'session' || a === 'always'
 }
 
 async function raiseRun($: EngineInterface, run: Run, cur: Level, to: Level, sign: Struggle, step: number) {
@@ -6716,7 +6798,8 @@ async function resetSettings($: EngineInterface, keys: readonly SettingKey[], al
   }
   if (all) {
     await $.state.set({ plugin: 'rightsize', key: 'choices' }, {})
-    await $.state.set(STUCK_RULE, null).catch(() => undefined)
+    // A fresh start for Always do this and Stop asking too: the counts and the once-only offers go.
+    await $.store.set(ASK_RUNS_STORE, null).catch(() => undefined)
   }
   await keepReset($, listed)
   if (!blocked.length) return all ? 'Every setting is back to its default, and the rules you set for this session are cleared.' : `${plainTitle(SETTINGS[keys[0] ?? 'floor'].title)} is back to its default, ${SETTINGS[keys[0] ?? 'floor'].default}.`
@@ -7382,10 +7465,6 @@ async function followRow($: EngineInterface, key: SettingKey, value: string) {
       // Reports set in /config by the person counts as the answer to the billing question.
       if (isBilling(value) && yours.has('billing')) await saveBilling($, value, 'answered')
       return
-    case 'escalation':
-      // The row is the person's word now: a stuck rule held for this session only ends.
-      await $.state.set(STUCK_RULE, null).catch(() => undefined)
-      return
     case 'lowerRule':
       await followRuleRow($, 'lower', value)
       return
@@ -7885,7 +7964,6 @@ export const register: Register = (on, options) => {
     const given = await choices($)
     const followed: Choices = { ...given, ...rulesOf(cfg) }
     await $.state.set({ plugin: 'rightsize', key: 'choices' }, followed)
-    await $.state.set(STUCK_RULE, null).catch(() => undefined)
     stopBlink($)
     await $.state.set(BAND_FOLDED, (await $.store.get(BAND_FOLDED_STORE).catch(() => undefined)) === true).catch(() => undefined)
     // Clearing out old sessions never holds up the start.
@@ -8134,7 +8212,6 @@ export const register: Register = (on, options) => {
         const p: Plan = skipped ? { kind: 'none', why: 'the usage window is nearly used up' } : unfanned
         // Watch only: the plan is made and logged, nothing is applied and nothing is asked.
         const d = watching ? {} : await resolve($, p, r, s)
-        if (d.session) await $.state.set({ plugin: 'rightsize', key: 'sessionEffort' }, d.session)
         if (d.delegate) out = { ...e, context: [...(e.context ?? []), delegateNote(d.delegate, chances)] }
         run = startRun(r, s, d, p, (await seenEffort($)) ?? s.level, overhead, { text, at: submittedAt, ...(e.turnId !== undefined ? { during: e.turnId } : {}) })
         if (watching && p.kind !== 'none') {
@@ -8199,7 +8276,7 @@ export const register: Register = (on, options) => {
         idleNote = ''
         routeLine = extras ? `${band.text} ${extras}` : band.text
         await setBand($, extras ? { ...band, text: routeLine, acted: band.acted || hadIdle } : band, true)
-        const did = d.delegate ? `delegate ${d.delegate.tier}` : d.model ? `switch to ${d.model.tier} at ${d.model.level} for the turn` : d.level ? `${d.auto ? 'auto ' : ''}${d.level} for the prompt` : d.session ? `${d.session} for the session` : 'no change'
+        const did = d.delegate ? `delegate ${d.delegate.tier}` : d.model ? `switch to ${d.model.tier} at ${d.model.level} for the turn` : d.level ? `${d.auto ? 'auto ' : ''}${d.level} for the prompt` : 'no change'
         const fit = TIERS.map(t => `${t[0]}:${r.fit[t] ?? (r.fit[t] === null ? 'no' : '?')}`).join(' ')
         if (unsureHeld) await log($, `rater not sure: prompt left alone, lowering unsure prompts is paused for ${bucket} (${unsureWindow?.misses} of the last ${unsureWindow?.n} went wrong)`)
         else if (run.unsureTry === 'lowered') await log($, `rater not sure: lowered one level to ${p.kind === 'effort' ? p.level : s.level} (${bucket}: ${unsureWindow?.misses ?? 0} of the last ${unsureWindow?.n ?? 0} went wrong)`)

@@ -285,6 +285,46 @@
         "off"
       ]
     },
+    "coldTip": {
+      "type": "string",
+      "title": "Advanced · Cold-compact tip",
+      "description": "on: when the cache has gone cold on a big Opus or Fable chat and compacting on Sonnet would save money, the band walks you through the compaction one command at a time. off: the tip never shows. Its Don't show again button sets this row to off.",
+      "default": "on",
+      "options": [
+        "on",
+        "off"
+      ]
+    },
+    "sizeWarning": {
+      "type": "string",
+      "title": "Advanced · Context-size warning",
+      "description": "on: when the chat first reaches 40, 50, 60, 70, 80 or 90% of the context window, the band says so and offers Compact now. off: the warning never shows. Its Don't show again button sets this row to off.",
+      "default": "on",
+      "options": [
+        "on",
+        "off"
+      ]
+    },
+    "limitAdvice": {
+      "type": "string",
+      "title": "Advanced · Usage-limit advice",
+      "description": "on: when you are near your 5-hour usage limit with a big chat and the reset is further off than the cache lives, the band advises compacting now. off: the advice never shows. Its Don't show again button sets this row to off.",
+      "default": "on",
+      "options": [
+        "on",
+        "off"
+      ]
+    },
+    "tips": {
+      "type": "string",
+      "title": "Advanced · Tips",
+      "description": "on: the band shows a short tip at the end of a turn, asks once whether to star rightsize on GitHub, and hints at whatsnext after a compaction that a handoff note would have made cheaper. off: none of these show. The Stop tips and Don't show again buttons on them set this row to off. /rightsize tips sets it back to on.",
+      "default": "on",
+      "options": [
+        "on",
+        "off"
+      ]
+    },
     "lowerPause": {
       "type": "string",
       "title": "Advanced · Lowering pause",

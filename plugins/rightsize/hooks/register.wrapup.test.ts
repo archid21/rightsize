@@ -32,7 +32,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
   }
   // Opus: 80,500 tokens in the conversation: $0.63 to come back cold, $0.32 to compact, a handoff note about $0.06.
   const session = async ($: unknown, on: Parameters<TestBody>[1], over: Over = {}) => {
-    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', ...(over.stored ? { stored: over.stored } : {}), store: { installHintHidden: false, initHinted: [], ...over.store } })
+    const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', ...(over.stored ? { stored: over.stored } : {}), store: { installHintAt: undefined, initHinted: [], ...over.store } })
     h.now = EVENING
     h.virtual = true
     h.stepUsage = over.usage ?? BIG_TURN
@@ -379,9 +379,9 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await h.advance(57 * MIN)
     const asked = await menu($, h, "Don't show again")
     expect(asked[0]?.options).toEqual(["Don't show again", 'When the band shows…'])
-    expect(h.store.installHintHidden).toBe(true)
+    expect(h.stored.tips, 'the Tips row is off').toBe('off')
     expect(await cacheRow($), 'the hint is gone').toBe('')
-    expect(log(h)).toContain('install hint: hidden for good')
+    expect(log(h)).toContain('install hint: hidden')
   })
 
   test(`install hint: never after Don't show again, however long ago the last one was (${surface})`, { timeoutMs: 30000 }, async ($, on) => {

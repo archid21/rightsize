@@ -1,5 +1,5 @@
 import { type TestBody, expect, test } from 'claude-code/testing'
-import { LOG_PATH, NO_CHANGE, NO_COLD, engine, drive, mount, rowText } from './testkit'
+import { LOG_PATH, NO_CHANGE, NO_COLD, engine, drive, mount, rowText, untilAsked } from './testkit'
 import { COMPACT_TEXT } from './whatsnext'
 
 // ---- The context-size warning (ADR 0013) ----------------------------------------------------------------------
@@ -10,8 +10,8 @@ const OPUS = { model: 'claude-opus-5-5', effort: 'medium' }
 const API = { billing: 'api' }
 
 for (const surface of ['desktop', 'terminal'] as const) {
-  const setup = (on: Parameters<TestBody>[1], tokens: number, auto?: number, stored: Record<string, string> = {}) => {
-    const h = engine(on, { ...OPUS, stored: { ...NO_COLD, ...API, ...stored } })
+  const setup = (on: Parameters<TestBody>[1], tokens: number, auto?: number, stored: Record<string, string> = {}, effort = OPUS.effort) => {
+    const h = engine(on, { ...OPUS, effort, stored: { ...NO_COLD, ...API, ...stored } })
     h.rating = NO_CHANGE
     h.contextTokens = tokens
     if (auto !== undefined) h.breakdown = { autoCompactThreshold: auto, mcpTools: [], memoryFiles: [], agents: [] }
@@ -114,12 +114,17 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   test(`Don't show again hides the warning for good (${surface})`, { timeoutMs: 30000, options: { ...API, cacheTimer: 'off' } }, async ($, on) => {
-    const h = setup(on, 120_000)
+    // Low effort: nothing to lower, so the band has no route row and ⋯ is the cache row's menu alone.
+    const h = setup(on, 120_000, undefined, {}, 'low')
     h.answers = { Options: "Don't show again" }
     const d = drive($, h)
     await d.start(surface)
     await turn(d, 't1')
-    h.store.sizeWarningHidden = true
+    const ui = await mount($, surface)
+    await ui.press({ key: 'mode' })
+    await untilAsked(h, 0)
+    await ui.unmount()
+    expect(h.stored.sizeWarning, 'the Context-size warning row is off').toBe('off')
     h.contextTokens = 190_000
     await turn(d, 't2')
     expect((await row($)).text).toBe('')

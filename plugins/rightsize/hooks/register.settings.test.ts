@@ -1,7 +1,7 @@
 import { type TestBody, expect, test } from 'claude-code/testing'
 import { CAL_FULL, CAL_STORE, DEFAULT_PRICES, type Calibration, type Rating, type Situation, delegateCost, delegateKeys } from './cost'
 import { FIXED_ROWS, KEYS, PANE_KEYS, SETTINGS, type SettingKey, inOptions, plainTitle } from './settings'
-import { RUNS_FILE, LOG_PATH, LEGACY_RUNS, LOOKUP, DEBUG, NO_ONE, SEARCH, REVIEW, NO_CHANGE, FREE_SWITCHES, NO_COLD, BIG_TURN, engine, drive, flush, settle, untilAsked, DAY, PAGE, OLD_PRICES, last, mount, bandText, LOWER, WHATSNEXT_CMDS, installWhatsnext } from './testkit'
+import { RUNS_FILE, LOG_PATH, LEGACY_RUNS, LOOKUP, DEBUG, NO_ONE, SEARCH, REVIEW, NO_CHANGE, FREE_SWITCHES, NO_COLD, BIG_TURN, engine, drive, flush, settle, untilAsked, DAY, PAGE, OLD_PRICES, last, mount, bandText, LOWER, WHATSNEXT_CMDS, installWhatsnext, rowText } from './testkit'
 
 for (const surface of ['desktop', 'terminal'] as const) {
 
@@ -391,6 +391,78 @@ for (const surface of ['desktop', 'terminal'] as const) {
       },
       set: 1,
       def: 0,
+    },
+    // The four hide rows: each item shows with the row on and never with it off. A cold chat 3 hours after its last turn gets the tip,
+    // a conversation at 60% the warning, a 92% window with a big conversation the advice, a quiet turn after a saving the tip.
+    {
+      key: 'coldTip',
+      value: 'off',
+      // A chat reopened 3 hours after its last turn on a big conversation: the tip is offered at the start with the row on.
+      start: { ...OPUS, store: { lastTurns: { 'sess-1': { at: new Date(2027, 0, 15, 15, 0, 0, 0).getTime(), context: 180_000 } } }, stored: { ...NO_COLD } },
+      setup: h => {
+        h.now = new Date(2027, 0, 15, 18, 0, 0, 0).getTime()
+        h.virtual = true
+      },
+      early: true,
+      see: async c => {
+        await c.d.start(c.surface)
+        return (c.h.files[LOG_PATH] ?? '').includes('cold-compact tip: offered')
+      },
+      set: false,
+      def: true,
+    },
+    {
+      key: 'sizeWarning',
+      value: 'off',
+      start: { ...OPUS, stored: { ...NO_COLD } },
+      setup: h => void (h.contextTokens = 120_000),
+      see: async c => {
+        c.h.rating = NO_CHANGE
+        const t = c.turn()
+        await c.d.submit('continue')
+        await c.d.turnStart(t, 'continue')
+        await c.d.step(t)
+        await c.d.complete(t)
+        return (c.h.files[LOG_PATH] ?? '').includes('context warning: shown at 60%')
+      },
+      set: false,
+      def: true,
+    },
+    {
+      key: 'limitAdvice',
+      value: 'off',
+      start: { ...OPUS, effort: 'low', stored: { ...NO_COLD } },
+      setup: h => {
+        h.stepUsage = { input_tokens: 200, output_tokens: 400, cache_read_input_tokens: 99_500, cache_creation_input_tokens: 300 }
+        h.commands = []
+        h.rateLimits = [{ kind: 'five_hour', percentUsed: 92, resetsAt: new Date(h.now + 3 * HOUR).toISOString() }]
+      },
+      see: async c => {
+        c.h.rating = NO_CHANGE
+        const t = c.turn()
+        await c.d.submit('continue')
+        await c.d.turnStart(t, 'continue')
+        await c.d.step(t)
+        await c.d.complete(t)
+        return (c.h.files[LOG_PATH] ?? '').includes('usage-limit advice: shown')
+      },
+      set: false,
+      def: true,
+    },
+    {
+      key: 'tips',
+      value: 'off',
+      start: { ...OPUS, store: { tips: undefined }, stored: { ...NO_COLD } },
+      setup: h => void (h.files[RUNS_FILE] = JSON.stringify({ at: new Date(h.now - 60_000).toISOString(), kind: 'run', session: 'sess-1', change: 'lower', offered: 'lower', actual: 0.5, stay: 1, taken: 0.5, overhead: 0.01 })),
+      see: async c => {
+        await c.d.complete(c.turn())
+        const ui = await mount(c.$, c.surface)
+        const text = await rowText(ui, 'Tip')
+        await ui.unmount()
+        return text !== ''
+      },
+      set: false,
+      def: true,
     },
   ]
 

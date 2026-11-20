@@ -1,6 +1,7 @@
 // Shared helpers for the register.*.test.ts files: the engine stand-in, the band and pane drivers and the constants.
 import { type TestBody } from 'claude-code/testing'
 import { KEYS, inOptions } from './settings'
+import { TIPS } from './tips'
 
 declare const setTimeout: (fn: (...a: unknown[]) => void, ms: number) => unknown
 
@@ -124,8 +125,12 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
     /** What a $.prompt.fill answers: not filled, with the engine's refusal (`dialog`, `no_composer`), as under a dialog or headless. */
     fillRefused: undefined as 'dialog' | 'no_composer' | undefined,
     /** startDayOne: the day-one tip was shown already, so a session on Opus does not open with its band (the tests of the tip clear it). */
-    /** welcomed and tips off: the welcome and the tips (ADR 0039) stay out of the way; register.welcome.test.ts clears them. backfilled, installHintHidden and initHinted (P-42): the history stretches are not made and the two hints about whatsnext stay out of the way; register.wrapup.test.ts clears them. */
-    store: { startDayOne: true, welcomed: true, backfilled: true, installHintHidden: true, initHinted: ['/repo'], tips: { tipsOff: true, seen: [] }, ...(start.store ?? {}) } as Record<string, unknown>,
+    /**
+     * welcomed and every tip seen: the welcome and the tips (ADR 0039) stay out of the way; register.welcome.test.ts clears them. backfilled, installHintAt
+     * (a time far ahead: the last hint was under 30 days ago) and initHinted (P-42): the history stretches are not made and the two hints about whatsnext stay out
+     * of the way; register.wrapup.test.ts clears them. No hide flag here: a flag an older release kept moves to its /config row at the start (the Tips row).
+     */
+    store: { startDayOne: true, welcomed: true, backfilled: true, installHintAt: 9e15, initHinted: ['/repo'], tips: { tipsOff: false, seen: TIPS.map(t => t.id) }, ...(start.store ?? {}) } as Record<string, unknown>,
     ratings: 0,
     now: 1_800_000_000_000,
     page: '',

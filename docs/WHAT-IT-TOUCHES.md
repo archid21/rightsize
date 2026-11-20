@@ -62,7 +62,7 @@ Your prompt, the session's usage and rate limits, your `model` and `effortLevel`
 It makes one web request of its own and one through `gh`, plus the Sonnet and Haiku calls Claude Code makes for it:
 
 - `https://platform.claude.com/docs/en/about-claude/pricing.md`, Anthropic's pricing page, a plain GET every 30 days (**Price check**, can be turned off). It sends nothing of yours.
-- GitHub, through your own `gh` sign-in: whether you starred rightsize (and whatsnext, when installed), at most once a session, only after rightsize has saved you something, and never again once you answer the star ask. **Stop tips** stops it too.
+- GitHub, through your own `gh` sign-in: whether you starred rightsize (and whatsnext, when installed), at most once a session, only after rightsize has saved you something, and never again once you answer the star ask. Setting **Tips** to off (**Stop tips** does) stops it too.
 
 It sends nothing to its author: no analytics, no feedback upload. [PRIVACY.md](PRIVACY.md) has the detail. rightsize makes no request while Claude Code's `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` is set.
 

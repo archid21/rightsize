@@ -212,7 +212,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await turn(d, 't1')
     await menu($, h, "Don't show again")
     expect((await advice($)).text, 'gone now').toBe('')
-    expect(h.store.limitAdviceHidden, 'kept in the store').toBe(true)
+    expect(h.stored.limitAdvice, 'the Usage-limit advice row is off').toBe('off')
     expect(h.compactions).toBe(0)
     h.rateLimits = [{ kind: 'five_hour', percentUsed: 95, resetsAt: new Date(h.now + 8 * HOUR).toISOString() }]
     await turn(d, 't2')

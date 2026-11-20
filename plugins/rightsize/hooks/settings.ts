@@ -58,6 +58,10 @@ export const SETTINGS = {
   priceCheck: { title: 'Advanced · Price check', options: ['monthly', 'off'], default: 'monthly' },
   longHelpers: { title: 'Advanced · Long helpers', options: ['ask', 'continue while making progress', 'stop at the limit'], default: 'ask' },
   outputAdvice: { title: 'Advanced · Output suggestion', options: ['on', 'off'], default: 'on' },
+  coldTip: { title: 'Advanced · Cold-compact tip', options: ['on', 'off'], default: 'on' },
+  sizeWarning: { title: 'Advanced · Context-size warning', options: ['on', 'off'], default: 'on' },
+  limitAdvice: { title: 'Advanced · Usage-limit advice', options: ['on', 'off'], default: 'on' },
+  tips: { title: 'Advanced · Tips', options: ['on', 'off'], default: 'on' },
   lowerPause: { title: 'Advanced · Lowering pause', options: ['5 prompts', '10 prompts', '15 prompts', '20 prompts'], default: '10 prompts' },
   bigTurn: { title: 'Advanced · Big-turn warning', options: ['off', 'auto', '$1', '$2', '$5'], default: 'off' },
 } as const satisfies Record<string, Spec>

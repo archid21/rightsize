@@ -208,6 +208,34 @@ An "ask" answer opens its own timed dialog (it waits 30 seconds); every other an
 - Default: on
 - on: once a session, when output is a large share of the cost (at least 25%, after 20 requests and $1.00 spent at list prices), rightsize asks whether to use the Concise output style. off: it never asks. This row does not change your output style. To use Concise in every project, set Output style to Concise in your Claude settings.
 
+### Cold-compact tip
+
+- Key: `coldTip`
+- Options: on · off
+- Default: on
+- on: when the cache has gone cold on a big Opus or Fable chat and compacting on Sonnet would save at least the Idle warning amount, the band walks you through the compaction one command at a time. off: the tip never shows. Its **Don't show again** button sets this row to off, and turning it on here shows the tip again. A hide from an older release moves to this row once, at the next start.
+
+### Context-size warning
+
+- Key: `sizeWarning`
+- Options: on · off
+- Default: on
+- on: when a chat first reaches 40, 50, 60, 70, 80 or 90% of the context window, the band says so with Compact now. off: the warning never shows. Its **Don't show again** button sets this row to off. A hide from an older release moves to this row once, at the next start.
+
+### Usage-limit advice
+
+- Key: `limitAdvice`
+- Options: on · off
+- Default: on
+- on: near your 5-hour usage limit, with a big chat and a reset further off than the cache lives, the band advises compacting now. off: the advice never shows. Its **Don't show again** button sets this row to off. A hide from an older release moves to this row once, at the next start.
+
+### Tips
+
+- Key: `tips`
+- Options: on · off
+- Default: on
+- on: the band's Tip row, the Star on GitHub ask and the whatsnext install hint can show. off: none of them show, and rightsize does not ask GitHub whether you starred it. **Stop tips** on a tip and **Don't show again** on the install hint set this row to off; `/rightsize tips` sets it back to on. The star ask's **No thanks** only ends that ask. Stop tips or a hide from an older release moves to this row once, at the next start.
+
 ### Big-turn warning
 
 - Key: `bigTurn`

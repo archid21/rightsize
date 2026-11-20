@@ -477,6 +477,11 @@ let billingBy: 'detected' | 'answered' | 'saved' | null = null
 let billingAsked = false
 /** Output suggestion in /config: whether rightsize may suggest the Concise output style. */
 let outputAdvice = true
+/** The hide rows in /config: each item shows only while its row is on. Their hide buttons write the row as off. */
+let coldTipOn = true
+let sizeWarningOn = true
+let limitAdviceOn = true
+let tipsOn = true
 /** What a helper does at 80% of its spend limit while it is making progress (the Long helpers row). */
 let longHelpers: 'ask' | 'continue while making progress' | 'stop at the limit' = 'ask'
 /** Big-turn warning: off, auto (the person's top 1%), or a fixed amount. A row that is not the person's is asked about once the first big turn ends (P-46). */
@@ -1898,6 +1903,10 @@ function writeSetting($: EngineInterface, key: SettingKey, value: string): Promi
     case 'rater': return $.config.set({ key: 'rightsize.rater', value: value })
     case 'startTips': return $.config.set({ key: 'rightsize.startTips', value: value })
     case 'outputAdvice': return $.config.set({ key: 'rightsize.outputAdvice', value: value })
+    case 'coldTip': return $.config.set({ key: 'rightsize.coldTip', value: value })
+    case 'sizeWarning': return $.config.set({ key: 'rightsize.sizeWarning', value: value })
+    case 'limitAdvice': return $.config.set({ key: 'rightsize.limitAdvice', value: value })
+    case 'tips': return $.config.set({ key: 'rightsize.tips', value: value })
     case 'idleWarning': return $.config.set({ key: 'rightsize.idleWarning', value: value })
     case 'beforeCold': return $.config.set({ key: 'rightsize.beforeCold', value: value })
     case 'cacheTimer': return $.config.set({ key: 'rightsize.cacheTimer', value: value })
@@ -2001,6 +2010,34 @@ async function moveSavedChoices($: EngineInterface) {
   }
   if (remember !== undefined && remember !== null) await $.store.set('remember', null).catch(() => undefined)
   if (kept !== undefined && kept !== null) await $.store.set('choices', null).catch(() => undefined)
+}
+
+/**
+ * Once, at the session start: a hide an older release kept in the store (the cold-compact tip, the context-size warning, the
+ * usage-limit advice, the whatsnext install hint, and Stop tips) becomes its /config row set to off, and the flag is cleared.
+ * The row is the only record from then on, so turning it back on in /config shows the item again.
+ */
+async function moveHideFlags($: EngineInterface) {
+  try {
+    const moved: string[] = []
+    const move = async (key: SettingKey) => {
+      await putConfig($, key, 'off')
+      moved.push(plainTitle(SETTINGS[key].title))
+    }
+    for (const [flag, key] of [[TIP_HIDDEN, 'coldTip'], [SIZE_HIDDEN, 'sizeWarning'], [LIMIT_HIDDEN, 'limitAdvice'], [INSTALL_HINT_HIDDEN, 'tips']] as const) {
+      if ((await $.store.get(flag).catch(() => undefined)) !== true) continue
+      await move(key)
+      await $.store.set(flag, null).catch(() => undefined)
+    }
+    const state = await loadTips($)
+    if (state.tipsOff) {
+      if (cfg.tips !== 'off') await move('tips')
+      await saveTips($, { ...state, tipsOff: false })
+    }
+    if (moved.length) await log($, `hide flags moved to their /config rows, now off: ${[...new Set(moved)].join('; ')}`)
+  } catch {
+    // The flags stay where they were; the next start tries again.
+  }
 }
 
 /**
@@ -3673,21 +3710,21 @@ async function resumeCompact($: EngineInterface, w: WhatsnextCompact) {
 // summary instead. rightsize only advises: the row shows at the end of a main turn, once per 5-hour window, and the
 // compaction runs when the person presses "Compact now" and never otherwise. Its figures are limit.ts and cost.ts (limitSaving).
 
-/** The store keys: true once the person hid the advice, and the `resetsAt` of the window it was last shown (or logged) for. */
+/** The store key an older release kept the hide in; the Usage-limit advice row replaced it (moveHideFlags). */
 const LIMIT_HIDDEN = 'limitAdviceHidden'
 
 // ---- The cold-compact tip (P-47, ADR 0081) -------------------------------------
 // After keep warm let the cache go cold on a big Opus or Fable conversation, the band offers to walk the person through a
 // compaction on Sonnet: each step puts the next command in the prompt box, and the tip moves on when the person sends it.
 
+/** The store key an older release kept the hide in; the Cold-compact tip row replaced it (moveHideFlags). */
 const TIP_HIDDEN = 'coldTipHidden'
 type ColdTip = { step: TipStep; tier: Tier; context: number; cost: string; saving: number; /** The model last logged while step 3 waits. */ seen?: string }
 let coldTip: ColdTip | null = null
 
 /** Shows the offer when it is due: the band is on, the tip is not hidden, and compacting on Sonnet saves at least the Idle warning amount. */
 async function showColdTip($: EngineInterface, c: { tier: Tier; context: number }) {
-  if (bandMode === 'off' || mainBusy) return
-  if ((await $.store.get(TIP_HIDDEN).catch(() => undefined)) === true) return
+  if (bandMode === 'off' || mainBusy || !coldTipOn) return
   const saving = tipDue(prices, c.tier, c.context, idleWarning ?? COLD_MIN)
   if (saving === undefined) {
     await log($, `cold-compact tip: not due (${TIER_NAME[c.tier]}, ${Math.round(c.context / 1000)}K tokens)`)
@@ -3726,11 +3763,11 @@ async function pressColdTip($: EngineInterface, id: string): Promise<void> {
       return
     }
     if (id === TIP_HIDE) {
-      await $.store.set(TIP_HIDDEN, true).catch(() => undefined)
+      await changeRow($, 'coldTip', 'off')
       coldTip = null
       await clearColdRow($)
-      $.ui.toast('Rightsize: the cold-compact tip is hidden.')
-      await log($, 'cold-compact tip: hidden for good ("Don\'t show again")')
+      $.ui.toast('Rightsize: the cold-compact tip is hidden. Turn it back on with Cold-compact tip in /config.')
+      await log($, 'cold-compact tip: hidden ("Don\'t show again"); the Cold-compact tip row is off')
       return
     }
     if (!t) return
@@ -3798,8 +3835,7 @@ const LIMIT_WINDOW = 'limitAdviceWindow'
 /** The turn ended: shows the advice when it is due. Skipped while rightsize or Cache is off. Watch-only mode logs it. Never throws. */
 async function limitCheck($: EngineInterface) {
   try {
-    if (off || !cacheOn) return
-    if ((await $.store.get(LIMIT_HIDDEN).catch(() => undefined)) === true) return
+    if (off || !cacheOn || !limitAdviceOn) return
     const u = await usageNow($)
     const context = lastContext || u?.context?.tokens
     const now = await $.clock.now()
@@ -4072,7 +4108,7 @@ async function restoreLifeProbe($: EngineInterface) {
 // (a step that Claude Code's own auto-compaction would reach first is skipped), the cache row says so, with Compact now. It
 // advises: the compaction runs on the button and never otherwise. Once per step per conversation; a compaction starts it over.
 
-/** The store key: true once the person hid the warning. */
+/** The store key an older release kept the hide in; the Context-size warning row replaced it (moveHideFlags). */
 const SIZE_HIDDEN = 'sizeWarningHidden'
 /** The highest step already said in this conversation (0: none). */
 let sizeShown = 0
@@ -4081,8 +4117,7 @@ let sizeFreshShown = false
 
 async function sizeCheck($: EngineInterface) {
   try {
-    if (off) return
-    if ((await $.store.get(SIZE_HIDDEN).catch(() => undefined)) === true) return
+    if (off || !sizeWarningOn) return
     const ctx = (await $.session.usage({ breakdown: 'summary' }).catch(() => undefined))?.context
     const tokens = ctx?.tokens
     const window = ctx?.window
@@ -4121,10 +4156,10 @@ async function pressSize($: EngineInterface, id: string): Promise<void> {
       return
     }
     if (id === SIZE_HIDE) {
-      await $.store.set(SIZE_HIDDEN, true).catch(() => undefined)
+      await changeRow($, 'sizeWarning', 'off')
       await clearAdvice($)
-      $.ui.toast('Rightsize: the context-size warning is hidden.')
-      await log($, 'context warning: hidden for good ("Don\'t show again")')
+      $.ui.toast('Rightsize: the context-size warning is hidden. Turn it back on with Context-size warning in /config.')
+      await log($, 'context warning: hidden ("Don\'t show again"); the Context-size warning row is off')
       return
     }
     if (id === SIZE_FRESH) {
@@ -4322,10 +4357,10 @@ async function pressLimit($: EngineInterface, id: string): Promise<void> {
       return
     }
     if (id === LIMIT_HIDE) {
-      await $.store.set(LIMIT_HIDDEN, true).catch(() => undefined)
+      await changeRow($, 'limitAdvice', 'off')
       await clearAdvice($)
-      $.ui.toast('Rightsize: the usage-limit advice is hidden.')
-      await log($, 'usage-limit advice: hidden for good ("Don\'t show again")')
+      $.ui.toast('Rightsize: the usage-limit advice is hidden. Turn it back on with Usage-limit advice in /config.')
+      await log($, 'usage-limit advice: hidden ("Don\'t show again"); the Usage-limit advice row is off')
       return
     }
     if (id !== LIMIT_COMPACT) return
@@ -5398,6 +5433,7 @@ const WRAP = { id: 'wrap', label: 'Wrap up' }
 const INSTALL_HIDE = { id: 'install-hide', label: "Don't show again" }
 /** The store keys: when the install hint last showed (ms), whether the person hid it for good, and the projects the init hint showed in. */
 const INSTALL_HINT_AT = 'installHintAt'
+/** An older release kept the hide here too; the Tips row replaced it (moveHideFlags). */
 const INSTALL_HINT_HIDDEN = 'installHintHidden'
 const INIT_HINTED = 'initHinted'
 
@@ -5439,9 +5475,8 @@ async function compactHint($: EngineInterface, base: { tier: Tier; context: numb
 /** The install hint's text when it may show now (enough saved, not hidden, not within 30 days of the last); the time is kept as it is returned. */
 async function installHint($: EngineInterface, saved: number): Promise<string | undefined> {
   const now = await $.clock.now()
-  const hidden = (await $.store.get(INSTALL_HINT_HIDDEN).catch(() => undefined)) === true
   const last = await $.store.get(INSTALL_HINT_AT).catch(() => undefined)
-  if (!installHintDue({ saved, hidden, last, now })) return undefined
+  if (!installHintDue({ saved, hidden: !tipsOn, last, now })) return undefined
   await $.store.set(INSTALL_HINT_AT, now).catch(() => undefined)
   await log($, `install hint: shown; a whatsnext handoff note would have saved ${money(saved)}`)
   return installHintText(saved, billing === 'subscription')
@@ -5464,12 +5499,12 @@ async function initHint($: EngineInterface, extra: number): Promise<string | und
   return initHintText(extra, billing === 'subscription')
 }
 
-/** "Don't show again" on the install hint: it never shows again. */
+/** "Don't show again" on the install hint: the Tips row goes off, so it (and the other tips) stop showing. */
 async function hideInstallHint($: EngineInterface) {
-  await $.store.set(INSTALL_HINT_HIDDEN, true).catch(() => undefined)
+  await changeRow($, 'tips', 'off')
   await clearColdRow($)
-  $.ui.toast('Rightsize: the whatsnext hint is hidden.')
-  await log($, 'install hint: hidden for good ("Don\'t show again")')
+  $.ui.toast('Rightsize: the whatsnext hint is hidden. Turn it back on with Tips in /config.')
+  await log($, 'install hint: hidden ("Don\'t show again"); the Tips row is off')
 }
 
 /** A turn ended after a return to a cold cache: the install hint, when nothing else is on the cache row. */
@@ -6617,10 +6652,10 @@ async function gh($: EngineInterface, args: string[]) {
   }
 }
 
-/** Tips can show: the band is on and drawn, rightsize is on, and the person did not stop them. */
+/** Tips can show: the band is on and drawn, rightsize is on, and the Tips row is on. */
 async function tipsCanShow($: EngineInterface) {
-  if (off || !(await bandCanAsk($))) return false
-  return !(await loadTips($)).tipsOff
+  if (off || !tipsOn) return false
+  return bandCanAsk($)
 }
 
 async function showTip($: EngineInterface, tip: ShownTip | null) {
@@ -6689,6 +6724,7 @@ async function tipCheck($: EngineInterface) {
 
 /** /rightsize tips: tips on again, and the first tip shows. */
 async function showTipsAgain($: EngineInterface) {
+  await changeRow($, 'tips', 'on')
   const state = await saveTips($, { tipsOff: false, seen: [] })
   const shared = await readShared($).catch(() => undefined)
   const tip = nextTip(state.seen, undefined, shared?.starred[REPOS[ME]!] ? ['star'] : [])
@@ -6706,9 +6742,9 @@ async function advanceTip($: EngineInterface, tip: Tip) {
 }
 
 async function stopTipsBand($: EngineInterface) {
-  await saveTips($, { ...(await loadTips($)), tipsOff: true })
+  await changeRow($, 'tips', 'off')
   await showTip($, null)
-  $.ui.toast('Rightsize: tips are off. /rightsize tips turns them back on.')
+  $.ui.toast('Rightsize: tips are off. Turn them back on with Tips in /config, or /rightsize tips.')
 }
 
 /** × on a tip: seen, and gone. */
@@ -6831,6 +6867,18 @@ function applyOption(key: SettingKey) {
     case 'outputAdvice':
       outputAdvice = v !== 'off'
       return
+    case 'coldTip':
+      coldTipOn = v !== 'off'
+      return
+    case 'sizeWarning':
+      sizeWarningOn = v !== 'off'
+      return
+    case 'limitAdvice':
+      limitAdviceOn = v !== 'off'
+      return
+    case 'tips':
+      tipsOn = v !== 'off'
+      return
     case 'lowerPause':
       pausePrompts = pauseLength(v)
       return
@@ -6875,6 +6923,10 @@ async function followRow($: EngineInterface, key: SettingKey, value: string) {
       // The row changed: what was waiting or pinging under the old value stops. The next big turn's end follows the new one.
       cancelCold($, 'Before the cache goes cold changed')
       coldTurn = null
+      return
+    case 'tips':
+      // Off takes the tip on the band away now (the other tip surfaces only show at their next chance).
+      if (value === 'off') await showTip($, null)
       return
     case 'cacheTimer':
       // Off takes the timer line off the band now; on, the next turn's end draws it.
@@ -7376,6 +7428,7 @@ export const register: Register = (on, options) => {
     stepState = parseStepState(await $.store.get(STEP_STORE).catch(() => undefined))
     // The rules: this session's, then any rule set in /config. A rule lasts a session or, in its /config row, always.
     await moveSavedChoices($)
+    await moveHideFlags($)
     const given = await choices($)
     const followed: Choices = { ...given, ...rulesOf(cfg) }
     await $.state.set({ plugin: 'rightsize', key: 'choices' }, followed)

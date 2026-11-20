@@ -150,9 +150,9 @@ for (const surface of ['desktop', 'terminal'] as const) {
   test(`wrap up button: beside Extend 1 hour on the countdown row, from 5 minutes on a 1-hour cache (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const { h, d } = await session($, on)
     await turn(d, 't1')
-    expect(await buttons($), 'the Cache timer row until then: no Extend, no Wrap up').toEqual([['cold-compact', 'Compact Now'], ['mode', '⋯'], ['close', '×']])
+    expect(await buttons($), 'the Cache timer row until then: no Extend, no Wrap up').toEqual([['cold-compact', 'Compact Now'], ['fold', '▾'], ['mode', '⋯'], ['close', '×']])
     await h.advance(5 * MIN)
-    expect(await buttons($)).toEqual([['cold-extend', 'Extend 1 hour'], ['cold-wrap', 'Wrap up'], ['mode', '⋯'], ['close', '×']])
+    expect(await buttons($)).toEqual([['cold-extend', 'Extend 1 hour'], ['cold-wrap', 'Wrap up'], ['fold', '▾'], ['mode', '⋯'], ['close', '×']])
   })
 
   test(`wrap up button: with whatsnext it sends wrap up, ends the run, and the row says so (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -163,7 +163,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.submitted.map(s => s.text)).toEqual(['wrap up'])
     expect(h.compactions).toBe(0)
     expect(await cacheRow($)).toBe('Wrapped up: saved a handoff note with whatsnext.')
-    expect(await buttons($)).toEqual([['mode', '⋯'], ['close', '×']])
+    expect(await buttons($)).toEqual([['fold', '▾'], ['mode', '⋯'], ['close', '×']])
     expect(log(h)).toContain('wrap up: Wrap up pressed; submitted "wrap up" to whatsnext before the cache went cold; keep warm ended')
     // The wrap-up's own turn starts no new round, and no request, compaction or second handoff follows.
     await d.turnStart('t2', 'wrap up')
@@ -201,7 +201,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await turn(d, 't1')
     await h.advance(5 * MIN)
     await press($, 'cold-extend')
-    expect(await buttons($)).toEqual([['cold-extend', 'Extend 1 hour'], ['cold-wrap', 'Wrap up'], ['cold-stop', 'Stop keeping warm'], ['mode', '⋯'], ['close', '×']])
+    expect(await buttons($)).toEqual([['cold-extend', 'Extend 1 hour'], ['cold-wrap', 'Wrap up'], ['cold-stop', 'Stop keeping warm'], ['fold', '▾'], ['mode', '⋯'], ['close', '×']])
     await press($, 'cold-wrap')
     expect(h.compactions).toBe(1)
     expect(log(h)).toContain('keep warm stopped (Wrap up pressed)')
@@ -218,14 +218,14 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await h.advance(53 * MIN)
     expect(await buttons($), 'the row is gone before the expiry').toEqual([])
     await h.advance(HOUR)
-    expect((await buttons($)).map(b => b[0]), 'once cold: the cold row, with no Wrap up').toEqual(['cold-fresh', 'mode', 'close'])
+    expect((await buttons($)).map(b => b[0]), 'once cold: the cold row, with no Wrap up').toEqual(['cold-fresh', 'fold', 'mode', 'close'])
   })
 
   test(`wrap up button: never on a 5-minute cache (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const { h, d } = await session($, on, { prices: OLD_PRICES, usage: { ...BIG_TURN, cache_read_input_tokens: 150_000 } })
     await turn(d, 't1')
     await h.advance(3 * MIN)
-    expect(await buttons($), 'the timer row\'s Compact now, and no Wrap up').toEqual([['cold-compact', 'Compact Now'], ['mode', '⋯'], ['close', '×']])
+    expect(await buttons($), 'the timer row\'s Compact now, and no Wrap up').toEqual([['cold-compact', 'Compact Now'], ['fold', '▾'], ['mode', '⋯'], ['close', '×']])
   })
 
   test(`wrap up button: pressed while a turn runs it waits, with a note (${surface})`, { timeoutMs: 30000 }, async ($, on) => {

@@ -237,7 +237,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await h.advance(57 * MIN)
     await pressBand($, 'cold-stop')
     expect(await bandText($, surface)).toBe('Stopped keeping warm · $0.02.')
-    expect((await bandButtons($)).map(b => b[0]), 'no Stop once stopped').toEqual(['mode', 'close'])
+    expect((await bandButtons($)).map(b => b[0]), 'no Stop once stopped').toEqual(['fold', 'mode', 'close'])
     await h.advance(4 * HOUR)
     expect(h.forks.length).toBe(1)
     expect(coldLog(h)).toContain('keep warm stopped (Stop pressed): 1 ping')
@@ -398,7 +398,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await bandText($, surface)).toBe(
       'Goes cold in 5 min ▰▰▰▰▰▰▰▰▰▰ (18:05) · coming back after costs about $0.72. Keeping warm past 19:36 costs more.',
     )
-    expect((await bandButtons($)).map(b => b[1]), 'one button').toEqual(['Keep warm to 18:30 ($0.21)', '⋯', '×'])
+    expect((await bandButtons($)).map(b => b[1]), 'one button').toEqual(['Keep warm to 18:30 ($0.21)', '▾', '⋯', '×'])
     const asks = await openMenu($, h, { Options: 'More…' }, 2)
     expect(asks.map(a => a.options), 'four choices and the band setting: three to a page, then the rest').toEqual([['Keep warm to 19:00 ($0.42)', 'Compact now', 'Let it go cold', 'More…'], ["Don't offer again", 'When the band shows…']])
   })
@@ -647,7 +647,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.asked, 'no question').toEqual([])
     await h.advance(5 * MIN)
     expect(await bandText($, surface)).toContain('Goes cold in 55 min ▰▰▰▰▰▰▰▰▰▱ (19:00) · coming back after costs about $0.63')
-    expect(await bandButtons($)).toEqual([['cold-extend', 'Extend 1 hour'], ['cold-wrap', 'Wrap up'], ['mode', '⋯'], ['close', '×']])
+    expect(await bandButtons($)).toEqual([['cold-extend', 'Extend 1 hour'], ['cold-wrap', 'Wrap up'], ['fold', '▾'], ['mode', '⋯'], ['close', '×']])
     await h.advance(52 * MIN)
     expect(NOTHING_DONE(h), 'one request at the first expiry: no stretch is on record').toEqual({ forks: 1, submitted: 0, compactions: 0 })
     await h.advance(8 * HOUR)
@@ -675,7 +675,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const { h, d } = await coldSession($, on, { stored: WARM8.stored })
     await coldTurn(d, 't1')
     expect(await bandText($, surface), 'no offer, no wait: it starts at the turn\'s end').toBe('Warm until 2:00 · $0.00')
-    expect(await bandButtons($)).toEqual([['cold-stop', 'Stop keeping warm'], ['mode', '⋯'], ['close', '×']])
+    expect(await bandButtons($)).toEqual([['cold-stop', 'Stop keeping warm'], ['fold', '▾'], ['mode', '⋯'], ['close', '×']])
     await h.advance(57 * MIN)
     await pressBand($, 'cold-stop')
     expect(await bandText($, surface)).toBe('Stopped keeping warm · $0.02.')
@@ -846,7 +846,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     // 8 hours three times, 2 hours once, and ignored offers, which are no answer.
     await history(h, d, ['8h', 'ignored', '8h', '2h', 'ignored', '8h'])
     await coldOffer(h, d, 't1')
-    expect(await bandButtons($), 'the one picked most').toEqual([['cold-8h', 'Keep warm to 2:00 tomorrow ($0.13)'], ['mode', '⋯'], ['close', '×']])
+    expect(await bandButtons($), 'the one picked most').toEqual([['cold-8h', 'Keep warm to 2:00 tomorrow ($0.13)'], ['fold', '▾'], ['mode', '⋯'], ['close', '×']])
     expect(await bandText($, surface), 'the line is the same').toBe('Goes cold in 55 min ▰▰▰▰▰▰▰▰▰▱ (19:00) · coming back after costs about $0.63')
     const asks = await openMenu($, h, CACHE_MENU, 2)
     expect(asks.map(a => a.options), 'the others, in the fixed order, without the one on the row').toEqual([
@@ -975,7 +975,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.sets.filter(x => x.key === 'rightsize.beforeCold'), 'rightsize never turns the offer off by itself').toEqual([])
     await coldOffer(h, d, 't6')
     expect(await bandText($, surface)).toBe('Stop offering to keep the cache warm?')
-    expect((await bandButtons($)).map(b => b[1])).toEqual(['Yes', 'No', '⋯', '×'])
+    expect((await bandButtons($)).map(b => b[1])).toEqual(['Yes', 'No', '▾', '⋯', '×'])
     // The menu still has every choice, the one that would have been the button too.
     const asks = await openMenu($, h, CACHE_MENU, 2)
     expect(asks[0]?.options.slice(0, 2)).toEqual(['Keep warm to 6:25 ($0.03)', 'Keep warm to 12:25 ($0.13)'])

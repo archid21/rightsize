@@ -77,6 +77,10 @@ export type RightsizeQuestion = {
   options: string[]
   /** What happens with no answer, drawn dim under the question: "this session only". */
   ifNone?: string
+  /** What a folded band's marker calls it: `risk` (Work at risk, red), `cost` (Costs more, yellow), `cache` (Cache), `setting` (Setting, dim). Missing: `setting`. */
+  kind?: 'risk' | 'cost' | 'cache' | 'setting'
+  /** True when the question holds the prompt: the band then draws unfolded, whatever the stored fold says (the stored fold does not change). Nothing sets it today: band questions never hold the prompt. */
+  blocks?: boolean
 }
 
 declare module 'claude-code' {
@@ -108,6 +112,8 @@ declare module 'claude-code' {
       band: RightsizeBand | null
       /** When the band shows. */
       bandMode: RightsizeBandMode
+      /** True when the band is folded to one line (the ▾ / ▸ button). Kept in the plugin's store too, so a later session starts the same way; false by default. */
+      bandFolded: boolean
       /** The question the band shows now; null when none is waiting. */
       question: RightsizeQuestion | null
       /** Counts the changes made in the /rightsize settings pane: the pane reads it while it draws, so a change draws it again with the new values. */

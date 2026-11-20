@@ -155,7 +155,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await bandText($, surface)).toBe('')
     await h.advance(5 * MIN)
     expect(await bandText($, surface)).toBe('Goes cold in 55 min ▰▰▰▰▰▰▰▰▰▱ (19:00) · coming back after costs about $0.63')
-    expect(await buttons($)).toEqual([['cold-extend', 'Extend 1 hour'], ['cold-wrap', 'Wrap up'], ['mode', '⋯'], ['close', '×']])
+    expect(await buttons($)).toEqual([['cold-extend', 'Extend 1 hour'], ['cold-wrap', 'Wrap up'], ['fold', '▾'], ['mode', '⋯'], ['close', '×']])
     expect(coldLog(h)).toContain('keep warm while it pays: 0 idle stretches on record (api)')
   })
 
@@ -217,7 +217,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await press($, 'cold-extend')
     // The cache is warm to 19:00; one extra request is 57 minutes more.
     expect(await bandText($, surface)).toBe('Warm until 19:57 · $0.00')
-    expect(await buttons($)).toEqual([['cold-extend', 'Extend 1 hour'], ['cold-wrap', 'Wrap up'], ['cold-stop', 'Stop keeping warm'], ['mode', '⋯'], ['close', '×']])
+    expect(await buttons($)).toEqual([['cold-extend', 'Extend 1 hour'], ['cold-wrap', 'Wrap up'], ['cold-stop', 'Stop keeping warm'], ['fold', '▾'], ['mode', '⋯'], ['close', '×']])
     await h.advance(5 * HOUR)
     expect(h.forks.length, 'two from the rule and one from the press').toBe(3)
     expect(coldLog(h)).toContain('request 3 at point 3 (Extend 1 hour)')
@@ -323,7 +323,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const { h, d } = await session($, on, { stored: { beforeCold: 'keep warm 2 h' }, stretches: SHORT })
     await turn(d, 't1')
     expect(await bandText($, surface)).toBe('Warm until 20:00 · $0.00')
-    expect(await buttons($)).toEqual([['cold-stop', 'Stop keeping warm'], ['mode', '⋯'], ['close', '×']])
+    expect(await buttons($)).toEqual([['cold-stop', 'Stop keeping warm'], ['fold', '▾'], ['mode', '⋯'], ['close', '×']])
     await h.advance(5 * HOUR)
     expect(h.forks.length).toBe(2)
     expect(warmLines(h).some(l => l.pays), 'not the rule\'s lines').toBe(false)

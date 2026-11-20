@@ -39,7 +39,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const d = drive($, h)
     await d.start(surface)
     expect(await bandText($, surface)).toBe(DAY_ONE)
-    expect(await buttons($), 'Not now, Switch, then ⋯ and ×').toEqual(['tip-later', 'tip-switch', 'mode', 'close'])
+    expect(await buttons($), 'Not now, Switch, then ⋯ and ×').toEqual(['tip-later', 'tip-switch', 'fold', 'mode', 'close'])
     const ui = await mount($, surface)
     expect((await ui.find({ type: 'Button', key: 'tip-switch' }))?.text, 'the button names the command').toBe('Switch: /model sonnet')
     await ui.unmount()
@@ -845,7 +845,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t1')
     await d.complete('t1')
     await settle()
-    expect(await buttons($), 'no hand-off happened').toEqual(['mode', 'close'])
+    expect(await buttons($), 'no hand-off happened').toEqual(['fold', 'mode', 'close'])
     expect((await markFromMenu($, h)).flatMap(a => a.options), 'no marks in the menu either').not.toContain('Mark this 👍 (right call)')
 
     await d.submit(SEARCH)
@@ -855,7 +855,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t2', 1)
     await d.complete('t2')
     expect(await bandText($, surface)).toMatch(/^Sent to Haiku\./)
-    expect(await buttons($), '👍 and 👎 are not buttons').toEqual(['mode', 'close'])
+    expect(await buttons($), '👍 and 👎 are not buttons').toEqual(['fold', 'mode', 'close'])
 
     const asks = await markFromMenu($, h, 'Mark this 👎 (wrong call)')
     expect(asks[0]?.options, 'the marks are menu entries').toEqual(expect.arrayContaining(['Mark this 👍 (right call)', 'Mark this 👎 (wrong call)']))
@@ -888,7 +888,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.step('t1')
     await d.complete('t1')
     await settle()
-    expect(await buttons($), '👍 and 👎 are not buttons').toEqual(['retry', 'mode', 'close'])
+    expect(await buttons($), '👍 and 👎 are not buttons').toEqual(['retry', 'fold', 'mode', 'close'])
 
     const asks = await markFromMenu($, h, 'Mark this 👍 (right call)')
     expect(asks[0]?.options, 'the marks are menu entries').toEqual(expect.arrayContaining(['Mark this 👍 (right call)', 'Mark this 👎 (wrong call)']))
@@ -896,7 +896,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(run.change).toBe('lower')
     expect(runLines(h).filter(l => l.kind === 'feedback')).toMatchObject([{ ref: run.id, value: 'up', session: 'sess-1' }])
     expect(last(h.toasts)).toBe('Rightsize: thanks — this tunes its choices on this machine.')
-    expect(await buttons($)).toEqual(['retry', 'mode', 'close'])
+    expect(await buttons($)).toEqual(['retry', 'fold', 'mode', 'close'])
     expect(await bandText($, surface), 'one rated prompt: no session total yet').toMatch(/^Effort lowered: medium → low for this prompt \(automatically\)\. Why: .+ Confidence: low\./)
     // The next lowering has its own id.
     await d.submit(LOOKUP)
@@ -918,7 +918,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.rating = '{"level":"high","model":"same","type":"review","read":20000,"write":3000,"steps":8,"reason":"unknown cause"}'
     await d.submit(DEBUG)
     expect(await bandText($, surface)).toContain('Effort raised')
-    expect(await buttons($)).toEqual(['mode', 'close'])
+    expect(await buttons($)).toEqual(['fold', 'mode', 'close'])
   })
 
   // The band says why, and for a move to a cheaper model how confident rightsize is; a hand-off or a switch-run
@@ -937,7 +937,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(text).toMatch(/^Sending this to a Haiku subagent at high effort/)
     expect(text).toContain('Why: Small helper with tests.')
     expect(text, 'a fresh log: the research alone').toContain('Confidence: low.')
-    expect(await buttons($), 'the rule buttons are in the ⋯ menu').toEqual(['stay', 'mode', 'close'])
+    expect(await buttons($), 'the rule buttons are in the ⋯ menu').toEqual(['stay', 'fold', 'mode', 'close'])
 
     const ui = await mount($, surface)
     expect((await ui.find({ type: 'Button', label: 'Run on Opus' }))?.text ?? 'none', 'named for the current model').not.toBe('none')

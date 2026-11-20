@@ -1376,7 +1376,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.submit(LOOKUP)
     expect(await bandText($, surface), 'what was done, why, how confident, and who decided').toBe('Effort lowered: medium → low for this prompt (automatically). Why: One function lookup. Confidence: low. The default decided (Lowering); ⋯ changes it.')
     const ui = await mount($, surface)
-    expect((await ui.findAll({ type: 'Button' })).map(b => b.key), '👍 and 👎 are in the ⋯ menu now, not buttons').toEqual(['retry', 'mode', 'close'])
+    expect((await ui.findAll({ type: 'Button' })).map(b => b.key), '👍 and 👎 are in the ⋯ menu now, not buttons').toEqual(['retry', 'fold', 'mode', 'close'])
 
     // Retry at original effort puts the prompt back in the box and closes the band.
     await ui.press({ key: 'retry' })
@@ -1404,7 +1404,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await bandText($, surface)).toMatch(/Effort raised: medium → high.* The default decided \(Raising\); ⋯ changes it\.$/)
     expect(h.asked, 'nothing asked yet').toEqual([])
     const ui = await mount($, surface)
-    expect((await ui.findAll({ type: 'Button' })).map(b => b.key), 'no marks on a raise').toEqual(['mode', 'close'])
+    expect((await ui.findAll({ type: 'Button' })).map(b => b.key), 'no marks on a raise').toEqual(['fold', 'mode', 'close'])
     h.answers = { Options: 'Ask me each time' }
     let asked = h.asked.length
     await ui.press({ key: 'mode' })
@@ -1456,7 +1456,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.start(surface)
     expect(await bandText($, surface)).toMatch(/^Starting on Sonnet at (medium|high) would have cost ~\d+% less than Opus at medium on your last 60 rated prompts\. Switch with \/model\.$/)
     const ui = await mount($, surface)
-    expect((await ui.findAll({ type: 'Button' })).map(b => b.key), 'Stop suggesting is in the ⋯ menu').toEqual(['tip-later', 'mode', 'close'])
+    expect((await ui.findAll({ type: 'Button' })).map(b => b.key), 'Stop suggesting is in the ⋯ menu').toEqual(['tip-later', 'fold', 'mode', 'close'])
     await ui.press({ key: 'tip-later' })
     await ui.unmount()
     expect(await bandText($, surface)).toBe('')

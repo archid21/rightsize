@@ -509,7 +509,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await bandText($, surface)).toMatch(/^Watching: would lower effort to low on Opus\. (\$[\d.]+ vs ~\$[\d.]+ on Opus|~\d+% of Opus usage)\. Mode in \/config turns it on\.$/)
     await d.step('t1')
     expect(last(h.sent)?.effort, 'not lowered').toBe('medium')
-    expect(await buttons($), 'no Retry: nothing was changed').toEqual(['mode', 'close'])
+    expect(await buttons($), 'no Retry: nothing was changed').toEqual(['fold', 'mode', 'close'])
     await d.complete('t1')
     // A lookup rated medium on Opus at medium is lowered to low too (ADR 0021): watched, not applied.
     h.rating = NO_CHANGE

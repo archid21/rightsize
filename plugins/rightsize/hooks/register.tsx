@@ -1472,15 +1472,23 @@ async function bandCanAsk($: EngineInterface) {
 }
 
 /** Puts a question on the band; `now` false waits for the main chat's turn to end. */
-async function askBand<V>($: EngineInterface, q: Question<V>, until: BandAsk['until'], now: boolean, why: BandWhy) {
+async function askBand<V>($: EngineInterface, q: Question<V>, until: BandAsk['until'], now: boolean, why: BandWhy, blocks = false) {
   bandAsks.push({
-    q: { id: ++questionIds, header: q.header, question: q.question, options: q.options.map(o => o[0]), ...(q.ifNone ? { ifNone: q.ifNone } : {}) },
+    q: { id: ++questionIds, header: q.header, question: q.question, options: q.options.map(o => o[0]), kind: bandKindOf(why.kind), ...(blocks ? { blocks: true } : {}), ...(q.ifNone ? { ifNone: q.ifNone } : {}) },
     values: q.options.map(o => o[1]),
     until,
     ready: now,
     why,
   })
   await showQuestion($)
+}
+
+/** What a folded band's marker calls a question: work at risk, costs more, the cache, or a setting (any kind not listed). */
+export function bandKindOf(kind: string): NonNullable<BandQuestion['kind']> {
+  if (kind === 'stuck' || kind === 'helper' || kind === 'spend' || kind === 'bigDuring') return 'risk'
+  if (kind === 'billing' || kind === 'bigAmount' || kind === 'bigPick') return 'cost'
+  if (kind === 'cacheLife') return 'cache'
+  return 'setting'
 }
 
 /** True when a question with this header waits on the band. */
@@ -1602,6 +1610,7 @@ async function showQuestion($: EngineInterface) {
   const ask = bandAsks.find(x => x.ready && (!full || x.until === 'turn'))
   if (ask) ask.shown = true
   await $.state.set(QUESTION, ask?.q ?? null).catch(() => undefined)
+  await syncBlink($)
 }
 
 /** One log line for a band question that went unanswered. */
@@ -2599,6 +2608,68 @@ async function showStatus($: EngineInterface) {
 
 const BAND = { plugin: 'rightsize', key: 'band' } as const
 const BAND_MODE = { plugin: 'rightsize', key: 'bandMode' } as const
+
+const BAND_FOLDED = { plugin: 'rightsize', key: 'bandFolded' } as const
+/** The store key that remembers the fold across sessions. */
+const BAND_FOLDED_STORE = 'bandFolded'
+const BLINK_MS = 500
+/** The longest summary a folded band shows from the route row. */
+const FOLD_MAX = 60
+/** A folded band's marker: its word and theme color, by the question's kind. */
+const KIND_LOOK = {
+  risk: { word: 'Work at risk', color: 'error' },
+  cost: { word: 'Costs more', color: 'warning' },
+  cache: { word: 'Cache', color: 'suggestion' },
+  setting: { word: 'Setting', color: 'subtle' },
+} as const
+const BLINK_FOR_MS = 10_000
+
+/** Folds or unfolds the band: remembered in the store, mirrored in state for the render. */
+async function setFolded($: EngineInterface, folded: boolean) {
+  await $.state.set(BAND_FOLDED, folded).catch(() => undefined)
+  await $.store.set(BAND_FOLDED_STORE, folded).catch(() => undefined)
+  await syncBlink($)
+}
+
+// The dot of a question that shows on a folded band blinks for 10 seconds from when the question first shows, then stays lit.
+// One 500 ms timer, only while that question waits on a folded band: answered, gone, unfolded or 10 seconds old, it is cancelled.
+let blink: { timer: Timer; id: number; since: number } | null = null
+/** The last question that blinked: it does not blink again when the band is folded a second time. */
+let blinked = 0
+/** The dot is drawn lit (true) or hidden (false) now. */
+let dotLit = true
+
+function stopBlink($: EngineInterface) {
+  const was = blink
+  blink?.timer.cancel()
+  blink = null
+  dotLit = true
+  if (was) $.ui.invalidate('ui.render')
+}
+
+/** Starts or stops the blinking to match the band: a question waits, it does not block, the band is folded. */
+async function syncBlink($: EngineInterface) {
+  const folded = (await $.state.get(BAND_FOLDED).catch(() => undefined))?.value === true
+  const q = (await $.state.get(QUESTION).catch(() => undefined))?.value
+  if (!folded || !q || q.blocks) return stopBlink($)
+  if (blink?.id === q.id) return
+  if (blink) stopBlink($)
+  if (q.id === blinked) return
+  blinked = q.id
+  dotLit = true
+  const since = await $.clock.now()
+  const mine = { id: q.id, since, timer: $.clock.every(BLINK_MS, () => void tickBlink($, q.id)) }
+  blink = mine
+}
+
+async function tickBlink($: EngineInterface, id: number) {
+  if (blink?.id !== id) return
+  const now = await $.clock.now()
+  if (blink?.id !== id) return
+  if (now - blink.since >= BLINK_FOR_MS) return stopBlink($)
+  dotLit = !dotLit
+  $.ui.invalidate('ui.render')
+}
 
 const isBandMode = (v: unknown): v is BandMode => v === 'when it acts' || v === 'always' || v === 'off'
 
@@ -7621,6 +7692,8 @@ export const register: Register = (on, options) => {
     const followed: Choices = { ...given, ...rulesOf(cfg) }
     await $.state.set({ plugin: 'rightsize', key: 'choices' }, followed)
     await $.state.set(STUCK_RULE, null).catch(() => undefined)
+    stopBlink($)
+    await $.state.set(BAND_FOLDED, (await $.store.get(BAND_FOLDED_STORE).catch(() => undefined)) === true).catch(() => undefined)
     // Clearing out old sessions never holds up the start.
     void rollUpLifetime($).finally(() => pruneSessions($))
     runLog = await readRuns($)
@@ -8354,6 +8427,8 @@ export const register: Register = (on, options) => {
     const mode = (await $.state.get(BAND_MODE).catch(() => undefined))?.value ?? bandMode
     const band = (await $.state.get(BAND).catch(() => undefined))?.value
     const shown = bandRows(band, mode)
+    // Folded: one line. A question that holds the prompt shows unfolded, whatever the stored fold says.
+    const folded = (await $.state.get(BAND_FOLDED).catch(() => undefined))?.value === true && !question?.blocks
     // A tip: on its own row, never while a turn runs, and only when the band says nothing else that matters.
     const shownTipNow = (await $.state.get(TIP).catch(() => undefined))?.value as ShownTip | null | undefined
     const tip = shownTipNow && mode !== 'off' && !e.props.isWorking && !question && !(shown.cold && !timerIsOn(band)) && !(shown.route && band?.acted) ? tipById(shownTipNow.id) : undefined
@@ -8432,10 +8507,11 @@ export const register: Register = (on, options) => {
         const n = ++keys
         return <Button key={b.key} label={b.label} {...(n <= 9 ? { hotkey: String(n) } : {})} onPress={() => void b.press()} />
       })
-    if (band && shown.route) rows.push({ key: 'route', label: 'Prompt', text: band.text, buttons: numbered(buttons) })
+    // Folded, the rows' own buttons are hidden: the number keys then run down the question's options only.
+    if (band && shown.route) rows.push({ key: 'route', label: 'Prompt', text: band.text, buttons: folded ? [] : numbered(buttons) })
     if (band && shown.cold && band.coldText) {
       const cold = (band.cold ?? []).map(c => ({ key: `cold-${c.id}`, label: c.label, press: () => pressCold($, c.id) }))
-      rows.push({ key: 'cold', label: 'Cache', text: band.coldText, buttons: numbered(cold), ...(band.coldLink ? { link: band.coldLink } : {}), ...(band.coldTone ? { tone: band.coldTone } : {}) })
+      rows.push({ key: 'cold', label: 'Cache', text: band.coldText, buttons: folded ? [] : numbered(cold), ...(band.coldLink ? { link: band.coldLink } : {}), ...(band.coldTone ? { tone: band.coldTone } : {}) })
     }
     if (question) {
       const options = question.options.map((label, i) => ({ key: `q-${i}`, label, press: () => answerBand($, question.id, i) }))
@@ -8453,7 +8529,7 @@ export const register: Register = (on, options) => {
               { key: 'tip-next', label: 'Next tip', press: () => advanceTip($, tip) },
               { key: 'tip-stop', label: 'Stop tips', press: () => stopTipsBand($) },
             ]
-      rows.push({ key: 'tip', label: 'Tip', text: tip.action === 'star' ? askText(repos) : tip.text, buttons: numbered(tipButtons), link: { label: 'More', href: tip.action === 'star' ? `https://github.com/${repos[0]}` : tip.link } })
+      rows.push({ key: 'tip', label: 'Tip', text: tip.action === 'star' ? askText(repos) : tip.text, buttons: folded ? [] : numbered(tipButtons), link: { label: 'More', href: tip.action === 'star' ? `https://github.com/${repos[0]}` : tip.link } })
     }
     // × closes every row: a question closed this way gets its no-answer default. A question alone has no ⋯.
     const close = async () => {
@@ -8464,6 +8540,7 @@ export const register: Register = (on, options) => {
       if (tip) await closeTip($, tip)
     }
     const ends = [
+      ...(question?.blocks ? [] : [<Button key="fold" label={folded ? '▸' : '▾'} onPress={() => void setFolded($, !folded)} />]),
       ...(band && (shown.route || shown.cold) ? [<Button key="mode" label="⋯" onPress={() => void bandMenu($, band)} />] : []),
       <Button key={(question || tip) && !shown.route && !shown.cold ? (question ? 'q-close' : 'tip-close') : 'close'} label="×" role="dismiss" onPress={() => void close()} />,
     ]
@@ -8480,6 +8557,34 @@ export const register: Register = (on, options) => {
           <Text color={tone.color}>{tone.text}</Text>
           {text.slice(at + tone.text.length)}
         </Text>
+      )
+    }
+    if (folded) {
+      // The first sentence of what rightsize did, cut to fit; a Tip alone stands in when nothing else shows.
+      const short = (t: string) => {
+        const one = t.split(/(?<=[.!?])\s/)[0] ?? t
+        return one.length > FOLD_MAX ? `${one.slice(0, FOLD_MAX - 1).trimEnd()}…` : one
+      }
+      const route = rows.find(r => r.key === 'route') ?? (rows.some(r => r.key === 'cold') ? undefined : rows.find(r => r.key === 'tip'))
+      const cold = rows.find(r => r.key === 'cold')
+      const q = rows.find(r => r.key === 'question')
+      const kind = KIND_LOOK[question?.kind ?? 'setting']
+      return (
+        <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
+          <Text dimColor>rightsize ·</Text>
+          {question && q ? (
+            <Box key="marker" flexDirection="row" flexShrink={0}>
+              <Text color={kind.color}>{dotLit ? '●' : ' '}</Text>
+              <Text> </Text>
+              <Text color={kind.color}>{kind.word}</Text>
+              <Text>{`: ${question.header}`}</Text>
+            </Box>
+          ) : null}
+          {route ? <Text>{short(route.text)}</Text> : null}
+          {cold ? toned(`${route ? '· ' : ''}Cache ${cold.text.split(' · ')[0]}`, cold.tone) : null}
+          {q?.buttons}
+          {ends}
+        </Box>
       )
     }
     const drawRow = (r: Row) => (

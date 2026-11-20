@@ -113,7 +113,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await bandText($, surface), 'the cache line stands alone: no route text, so it carries the prefix').toBe('Goes cold in 55 min ▰▰▰▰▰▰▰▰▰▱ (19:00) · coming back after costs about $0.63')
     expect(await bandButtons($), 'one button; ⋯ and × follow it').toEqual([
       ['cold-2h', 'Keep warm to 20:00 ($0.03)'],
-      ['mode', '⋯'],
+      ['fold', '▾'], ['mode', '⋯'],
       ['close', '×'],
     ])
     // $.ui.ask takes 4 options at most: the menu is one list, the cache choices and then the band setting, three to a page with More….
@@ -194,7 +194,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await rowText(ui, 'Prompt'), 'row 1 is the route text alone').toMatch(/^Effort lowered/)
     expect(await coldRow($)).toBe('Goes cold in 55 min ▰▰▰▰▰▰▰▰▰▱ (19:00) · coming back after costs about $0.63')
     await ui.unmount()
-    expect((await bandButtons($)).map(b => b[0]), '⋯ and × on the header; the route buttons; then the cache button').toEqual(['mode', 'close', 'retry', 'cold-2h'])
+    expect((await bandButtons($)).map(b => b[0]), '⋯ and × on the header; the route buttons; then the cache button').toEqual(['fold', 'mode', 'close', 'retry', 'cold-2h'])
   })
 
   test(`ask: with a route band above, the ⋯ menu lists the rule options first, then the cache choices, then the band setting, paged (${surface})`, { timeoutMs: 30000, options: { ...ASK, raiseRule: 'raise automatically' } }, async ($, on) => {
@@ -207,7 +207,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await d.complete('t1')
     await h.advance(5 * MIN)
     expect(await coldRow($)).toBe('Goes cold in 55 min ▰▰▰▰▰▰▰▰▰▱ (19:00) · coming back after costs about $0.63')
-    expect((await bandButtons($)).map(b => b[0]), '⋯ and × on the header, then the cache button').toEqual(['mode', 'close', 'cold-2h'])
+    expect((await bandButtons($)).map(b => b[0]), '⋯ and × on the header, then the cache button').toEqual(['fold', 'mode', 'close', 'cold-2h'])
     expect((await openMenu($, h))[0]?.options, 'the rule options, then the cache choices, three to a page').toEqual(['Ask me each time', 'Never raise', 'Keep warm to 2:00 tomorrow ($0.13)', 'More…'])
   })
 
@@ -218,7 +218,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     h.files[LEGACY_RUNS] = `${[1, 2, 3, 4, 5, 6].map(day).join('\n')}\n`
     await d.start(surface)
     await coldOffer(h, d, 't1')
-    expect((await bandButtons($)).map(b => b[1])).toEqual(['Keep warm to 20:00 ($0.03)', '⋯', '×'])
+    expect((await bandButtons($)).map(b => b[1])).toEqual(['Keep warm to 20:00 ($0.03)', '▾', '⋯', '×'])
     const asks = await openMenu($, h, CACHE_MENU, 2)
     expect(asks[0]?.options).toEqual(['Keep warm to 2:00 tomorrow ($0.13)', 'Keep warm to 8:30 tomorrow ($0.24)', 'Save a handoff', 'More…'])
     expect(asks[1]?.options).toEqual(['Let it go cold', "Don't offer again", 'When the band shows…'])
@@ -338,7 +338,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await h.advance(10 * MIN)
     await pressBand($, 'cold-2h')
     expect(await bandText($, surface)).toBe('Warm until 20:00 · $0.00')
-    expect(await bandButtons($)).toEqual([['cold-stop', 'Stop keeping warm'], ['mode', '⋯'], ['close', '×']])
+    expect(await bandButtons($)).toEqual([['cold-stop', 'Stop keeping warm'], ['fold', '▾'], ['mode', '⋯'], ['close', '×']])
     await h.advance(46 * MIN)
     expect(h.forks.length, '56 minutes after the turn ended').toBe(0)
     await h.advance(MIN)
@@ -379,7 +379,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await coldTurn(d, 't1')
     expect(h.asked.length, 'no question').toBe(0)
     expect(await bandText($, surface)).toBe('Warm until 2:00 · $0.00')
-    expect(await bandButtons($)).toEqual([['cold-stop', 'Stop keeping warm'], ['mode', '⋯'], ['close', '×']])
+    expect(await bandButtons($)).toEqual([['cold-stop', 'Stop keeping warm'], ['fold', '▾'], ['mode', '⋯'], ['close', '×']])
     expect(h.afters, 'the cold row\'s timer, and the first ping: a long wait is an after, not a sleep').toEqual([HOUR, 57 * MIN])
     await h.advance(56 * MIN)
     expect(h.forks.length).toBe(0)

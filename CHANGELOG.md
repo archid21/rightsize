@@ -7,6 +7,7 @@
 - **One compact price everywhere.** A compact done while the cache is warm costs a cache read plus the summary, not the whole chat as input. Keep warm's compact decision now uses it, so it compacts on bigger chats where that pays, and the whatsnext install hint after a compact shows less often. We replayed past sessions to check the formula first.
 - **Your `/compact` counts when rightsize advised it.** Typing `/compact` while rightsize's compact advice is showing (the context-size warning, the usage-limit advice or the keep-warm offer) counts as rightsize's compact. With only the Cache timer row up, it is still yours.
 - **The summary size is learned.** Estimates use the median size of your last compacts' summaries (6,000 tokens until three are logged).
+- **The band can fold.** A ▾ button before ⋯ and × folds the band to one line (what rightsize did, the cache countdown, then ▸ ⋯ ×); ▸ unfolds it, and the choice is remembered across sessions. While folded, a waiting question shows as a blinking ● (10 seconds, then steady) with its kind (Work at risk, Costs more, Cache, Setting) and keeps its number keys.
 
 ## 0.16.2 (2026-11-19)
 

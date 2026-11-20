@@ -63,7 +63,7 @@ The report counts rightsize's own cost (the rating calls) against the savings, s
 
 ## What you'll see
 
-A band above the prompt says what rightsize did and why, with buttons to undo it. Pictures of the desktop app; figures are examples.
+A band above the prompt says what rightsize did and why, with buttons to undo it; ▾ folds it to one line. Pictures of the desktop app; figures are examples.
 
 **The first time, it asks what you want.** You stay in charge.
 

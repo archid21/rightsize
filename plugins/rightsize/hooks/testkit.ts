@@ -315,6 +315,10 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
     afters: [] as number[],
     /** Every repeating timer the plugin asked $.clock.every for, in ms. */
     everies: [] as number[],
+    /** How many times the plugin asked the engine to draw again ($.ui.invalidate). */
+    invalidations: 0,
+    /** Fields a test merges into a plugin state value as the plugin writes it, by key (`band`, `question`). */
+    patch: {} as Record<string, Record<string, unknown>>,
     /** True: the repeating timer fires on the virtual clock. Off by default: a long advance would run every 3-second tick. */
     ticks: false,
     /** Moves the virtual clock on by `ms`, ending each sleep that comes due on the way and letting the plugin run before the next. */
@@ -346,6 +350,10 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
   })
   reg('ui.close', async ($, e) => {
     h.paneCloses.push((e as { id: string }).id)
+    return { value: undefined } as never
+  })
+  reg('ui.invalidate', async () => {
+    h.invalidations++
     return { value: undefined } as never
   })
   reg('command.register', async () => ({ value: undefined }) as never)
@@ -588,7 +596,10 @@ export function engine(reg: LooseOn & LooseStep & Parameters<TestBody>[1], start
     return { result: { questions: e.questions, answers: { [q?.question ?? '']: answer } } }
   })
   // A timed question on the band, answered from `answers` as the dialog's are.
-  reg('state.set', async ($, e, next) => {
+  reg('state.set', async ($, e0, next) => {
+    const at = (e0 as { key: string; value: unknown }).value
+    const over = h.patch[(e0 as { key: string }).key]
+    const e = over && at && typeof at === 'object' ? { ...e0, value: { ...at, ...over } } : e0
     const result = await next(e)
     const { key, value, plugin } = e as { key: string; value: unknown; plugin?: string }
     h.stateWrites.push({ key, ...(plugin ? { plugin } : {}), value })

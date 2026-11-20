@@ -8540,7 +8540,7 @@ export const register: Register = (on, options) => {
       if (tip) await closeTip($, tip)
     }
     const ends = [
-      ...(question?.blocks ? [] : [<Button key="fold" label={folded ? '▸' : '▾'} onPress={() => void setFolded($, !folded)} />]),
+      ...(question?.blocks ? [] : [<Button key="fold" label={folded ? '▴' : '▾'} onPress={() => void setFolded($, !folded)} />]),
       ...(band && (shown.route || shown.cold) ? [<Button key="mode" label="⋯" onPress={() => void bandMenu($, band)} />] : []),
       <Button key={(question || tip) && !shown.route && !shown.cold ? (question ? 'q-close' : 'tip-close') : 'close'} label="×" role="dismiss" onPress={() => void close()} />,
     ]

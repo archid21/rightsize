@@ -2,8 +2,8 @@ import { type TestBody, expect, test } from 'claude-code/testing'
 import { LOOKUP, LOWER, NO_CHANGE, NO_ONE, drive, engine, last, mount } from './testkit'
 import { bandKindOf } from './register'
 
-// The band's fold: one button, ▾ to fold and ▸ to unfold, remembered in the store. A folded band is one line: the
-// summary, a marker for a waiting question, the question's own buttons, then ▸ ⋯ ×.
+// The band's fold: one button, ▾ to fold and ▴ to unfold, remembered in the store. A folded band is one line: the
+// summary, a marker for a waiting question, the question's own buttons, then ▴ ⋯ ×.
 
 const COLD = 'Goes cold in 55 min ▰▰▰▰▰▰▰▰▰▱ (19:00) · coming back after costs about $0.63'
 const COLD_TONE = { text: '55 min ▰▰▰▰▰▰▰▰▰▱', color: 'success' }
@@ -56,7 +56,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     return r
   }
 
-  test(`the fold button is ▾ when unfolded, has no number key, and folds with a press; ▸ unfolds (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`the fold button is ▾ when unfolded, has no number key, and folds with a press; ▴ unfolds (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const { h } = await lowered($, on)
     let v = await view($)
     const fold = v.buttons.find(b => b.key === 'fold')
@@ -69,7 +69,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(h.store.bandFolded, 'remembered in the store').toBe(true)
     expect(h.stateWrites.some(w => w.key === 'bandFolded' && w.value === true), 'and in plugin state').toBe(true)
     v = await view($)
-    expect(v.buttons.find(b => b.key === 'fold')?.label).toBe('▸')
+    expect(v.buttons.find(b => b.key === 'fold')?.label).toBe('▴')
     await v.ui.press({ key: 'fold' })
     await v.ui.unmount()
     expect(h.store.bandFolded).toBe(false)
@@ -81,11 +81,11 @@ for (const surface of ['desktop', 'terminal'] as const) {
   test(`the fold lasts across sessions: a later session starts folded (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     await lowered($, on, { folded: true })
     const v = await view($)
-    expect(v.buttons.find(b => b.key === 'fold')?.label).toBe('▸')
+    expect(v.buttons.find(b => b.key === 'fold')?.label).toBe('▴')
     await v.ui.unmount()
   })
 
-  test(`a folded band is one line: the first sentence of the route, the cache countdown in its color, then ▸ ⋯ × (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`a folded band is one line: the first sentence of the route, the cache countdown in its color, then ▴ ⋯ × (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const { text } = await lowered($, on, { folded: true, patch: { band: { coldText: COLD, coldTone: COLD_TONE } } })
     const v = await view($)
     const t = v.texts
@@ -96,7 +96,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(t.some(x => x.text.includes('coming back after')), 'without the offer text').toBe(false)
     expect(t.find(x => x.color === 'success')?.text, 'the countdown keeps its color').toBe('55 min ▰▰▰▰▰▰▰▰▰▱')
     expect(t.some(x => x.text === 'Prompt' || x.text === 'rightsize · Prompt'), 'no row labels').toBe(false)
-    expect(v.buttons.map(b => b.label), 'the route row buttons are hidden').toEqual(['▸', '⋯', '×'])
+    expect(v.buttons.map(b => b.label), 'the route row buttons are hidden').toEqual(['▴', '⋯', '×'])
     await v.ui.unmount()
   })
 

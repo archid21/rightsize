@@ -112,7 +112,7 @@ declare module 'claude-code' {
       band: RightsizeBand | null
       /** When the band shows. */
       bandMode: RightsizeBandMode
-      /** True when the band is folded to one line (the ▾ / ▸ button). Kept in the plugin's store too, so a later session starts the same way; false by default. */
+      /** True when the band is folded to one line (the ▾ / ▴ button). Kept in the plugin's store too, so a later session starts the same way; false by default. */
       bandFolded: boolean
       /** The question the band shows now; null when none is waiting. */
       question: RightsizeQuestion | null

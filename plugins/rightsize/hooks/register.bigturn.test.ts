@@ -1,6 +1,6 @@
 import { type TestBody, expect, test } from 'claude-code/testing'
 import { CAL_STORE, REESTIMATE_AFTER } from './cost'
-import { FALSE_ALARM_NOTE, FINISH_UP_TEXT, PLAN_FIRST_TEXT, STOPPED_TEXT, STOP_REPORT_TEXT } from './bigturn'
+import { FALSE_ALARM_NOTE, PLAN_FIRST_TEXT, STOPPED_TEXT, STOP_REPORT_TEXT } from './bigturn'
 import { missRates } from './misses'
 import type { RunLine } from './report'
 import { DAY, LOG_PATH, NO_COLD, NO_ONE, REVIEW, RUNS_FILE, bandText, drive, engine, last, settle } from './testkit'
@@ -367,8 +367,9 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const q = asked(h, DURING)
     expect(q.length, 'once per turn').toBe(1)
     const stop = surface === 'desktop' ? 'click Stop to stop it now' : 'Esc stops it now'
-    expect(q[0]?.question).toMatch(new RegExp(`^Turn estimate \\$[\\d.]+–\\$[\\d.]+ \\(\\$[\\d.]+ spent so far\\)\\. Finish up drafts a message to end this turn; ${stop}\\.$`))
+    expect(q[0]?.question).toMatch(new RegExp(`^Turn estimate \\$[\\d.]+–\\$[\\d.]+ \\(\\$[\\d.]+ spent so far\\)\\. Finish up ends this turn with a report; ${stop}\\.$`))
     expect(q[0]?.question, 'the old up-front sentence is gone').not.toContain('wrap-up message for you to send')
+    expect(q[0]?.question, 'the prompt-box wording is gone').not.toContain('drafts a message')
     expect(q[0]?.options, 'no Lower effort during a turn').toEqual(['Keep going', 'Finish up'])
     // Every request went out as it was: the turn is never stopped, and the effort is unchanged.
     expect(h.sent.length).toBe(REESTIMATE_AFTER + 5)
@@ -439,55 +440,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(asked(h, STOP).length).toBe(1)
   })
 
-  test(`during: Finish up puts the message in the prompt box, and the row says how to send it (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const { h, d } = await during($, on)
-    h.answers[DURING] = 'Finish up'
-    h.rating = LONG
-    await d.submit(PROMPT)
-    await steps(d, 't1', REESTIMATE_AFTER)
-    expect(h.fills).toEqual([{ text: FINISH_UP_TEXT, mode: 'replace' }])
-    expect(FINISH_UP_TEXT).toBe("Finish the current step, then report what you've done and what's left.")
-    const row = await bandText($, surface)
-    expect(row).toContain(
-      surface === 'desktop'
-        ? 'The message is in your prompt box. Click Send now to send it at once, or press Enter to send it after the current step.'
-        : 'The message is in your prompt box. Send it now with Ctrl+Enter, or press Enter to send it after the current step.',
-    )
-    // Nothing was sent: no prompt, no abort, and the turn goes on.
-    expect(h.submitted.length).toBe(1)
-    await steps(d, 't1', REESTIMATE_AFTER + 3, REESTIMATE_AFTER)
-    expect(h.sent.length).toBe(REESTIMATE_AFTER + 3)
-    await d.complete('t1')
-    expect(runLines(h)[0]?.bigTurn?.during?.answer).toBe('finish')
-    expect(logOf(h)).toContain('big-turn answer: Finish up; the message is in the prompt box for you to send')
-    expect(h.fills.length, 'a turn that finishes by itself drafts nothing more').toBe(1)
-  })
-
-  test(`during: Finish up keeps a draft the person has typed, adding the message after a blank line (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const { h, d } = await during($, on)
-    h.draft = 'and also the docs'
-    h.answers[DURING] = 'Finish up'
-    h.rating = LONG
-    await d.submit(PROMPT)
-    await steps(d, 't1', REESTIMATE_AFTER)
-    expect(h.fills).toEqual([{ text: `\n\n${FINISH_UP_TEXT}`, mode: 'append' }])
-    expect(h.draft).toBe(`and also the docs\n\n${FINISH_UP_TEXT}`)
-  })
-
-  test(`during: Finish up with the box refusing the text says to type it yourself (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
-    const { h, d } = await during($, on)
-    h.fillRefused = 'dialog'
-    h.answers[DURING] = 'Finish up'
-    h.rating = LONG
-    await d.submit(PROMPT)
-    await steps(d, 't1', REESTIMATE_AFTER)
-    const row = await bandText($, surface)
-    expect(row).toContain(`Type it yourself: ${FINISH_UP_TEXT}`)
-    expect(row).not.toContain('The message is in your prompt box')
-    expect(logOf(h)).toContain('big-turn answer: Finish up; the prompt box could not be filled')
-    await d.complete('t1')
-  })
-
   test(`during: there is no Lower effort for the rest, on any kind of work (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const { h, d } = await during($, on)
     h.answers[DURING] = NO_ONE
@@ -534,7 +486,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
   test(`during: stopping after Finish up was pressed adds no second draft (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const { h } = await stopAfterWarning($, on, 'Finish up')
-    expect(h.fills, 'only the Finish up message').toEqual([{ text: FINISH_UP_TEXT, mode: 'replace' }])
+    expect(h.fills, 'Finish up drafts nothing, and the stop adds no draft after it').toEqual([])
     expect(await bandText($, surface)).not.toBe(STOPPED_TEXT)
     expect(logOf(h)).not.toContain('you stopped the turn')
   })

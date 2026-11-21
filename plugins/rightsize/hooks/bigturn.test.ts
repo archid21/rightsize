@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import { CAL_FULL, DEFAULT_PRICES, DEFAULT_RULES, LEVELS, type Rating, type Situation, canLowerNow, effortPlan, plan } from './cost'
-import { FINISH_UP_TEXT, STOPPED_TEXT, STOP_REPORT_TEXT, typeItYourself, BIG_TURN_FLOOR, BIG_TURN_MIN_TURNS, BIG_TURN_RECOMPUTE_MS, BIG_TURN_START, DURING_HIGH, DURING_LOW, PLAN_FIRST_TEXT, amountText, autoAmount, autoAmountNow, bigTurnRange, draftedText, duringRange, duringText, headsUpText, optInText, parseStoredAmount, percentile, rangeText, stillLearning, turnCosts, withPlanFirst } from './bigturn'
+import { OVER_BUDGET_REASON, STOPPED_TEXT, STOP_REPORT_TEXT, isOverBudgetRow, BIG_TURN_FLOOR, BIG_TURN_MIN_TURNS, BIG_TURN_RECOMPUTE_MS, BIG_TURN_START, DURING_HIGH, DURING_LOW, PLAN_FIRST_TEXT, amountText, autoAmount, autoAmountNow, bigTurnRange, duringRange, duringText, headsUpText, optInText, parseStoredAmount, percentile, rangeText, stillLearning, turnCosts, withPlanFirst } from './bigturn'
 import type { RunLine } from './report'
 
 const near = (a: number, b: number) => expect(Math.abs(a - b) < 1e-6, `${a} is not ${b}`).toBe(true)
@@ -143,16 +143,15 @@ test('the words: dollars on the API, a window share on a subscription, labelled 
   expect(amountText(2, unknown)).toBe('$2.00 API-equivalent')
   expect(rangeText(2, 2, api)).toBe('$2.00')
   expect(optInText(3.5, api)).toBe('That turn cost ~$3.50, more than 99% of your turns. Warn you before a prompt that looks this expensive?')
-  expect(duringText({ lo: 4, hi: 5, spent: 1.5, desktop: false }, api)).toBe('Turn estimate $4.00–$5.00 ($1.50 spent so far). Finish up drafts a message to end this turn; Esc stops it now.')
-  expect(duringText({ lo: 4, hi: 5, spent: 1.5, desktop: true }, api)).toBe('Turn estimate $4.00–$5.00 ($1.50 spent so far). Finish up drafts a message to end this turn; click Stop to stop it now.')
-  expect(duringText({ lo: 1, hi: 2, spent: 0.5, desktop: false }, sub)).toBe('Turn estimate ~2–8% of your 5-hour window (~1–2% of your 5-hour window spent so far). Finish up drafts a message to end this turn; Esc stops it now.')
-  expect(duringText({ lo: 1, hi: 2, spent: 0.5, desktop: false }, unknown)).toBe('Turn estimate $1.00–$2.00 API-equivalent ($0.50 API-equivalent spent so far). Finish up drafts a message to end this turn; Esc stops it now.')
-  expect(draftedText(false)).toBe('The message is in your prompt box. Send it now with Ctrl+Enter, or press Enter to send it after the current step.')
-  expect(draftedText(true)).toBe('The message is in your prompt box. Click Send now to send it at once, or press Enter to send it after the current step.')
-  expect(FINISH_UP_TEXT).toBe("Finish the current step, then report what you've done and what's left.")
+  expect(duringText({ lo: 4, hi: 5, spent: 1.5, desktop: false }, api)).toBe('Turn estimate $4.00–$5.00 ($1.50 spent so far). Finish up ends this turn with a report; Esc stops it now.')
+  expect(duringText({ lo: 4, hi: 5, spent: 1.5, desktop: true }, api)).toBe('Turn estimate $4.00–$5.00 ($1.50 spent so far). Finish up ends this turn with a report; click Stop to stop it now.')
+  expect(duringText({ lo: 1, hi: 2, spent: 0.5, desktop: false }, sub)).toBe('Turn estimate ~2–8% of your 5-hour window (~1–2% of your 5-hour window spent so far). Finish up ends this turn with a report; Esc stops it now.')
+  expect(duringText({ lo: 1, hi: 2, spent: 0.5, desktop: false }, unknown)).toBe('Turn estimate $1.00–$2.00 API-equivalent ($0.50 API-equivalent spent so far). Finish up ends this turn with a report; Esc stops it now.')
+  expect(OVER_BUDGET_REASON).toBe('Budget reached: stop here and report what is done and what is left.')
+  expect(isOverBudgetRow('Keep going') && isOverBudgetRow('Finish up')).toBe(true)
+  expect(isOverBudgetRow('keep going') || isOverBudgetRow(undefined) || isOverBudgetRow('')).toBe(false)
   expect(STOP_REPORT_TEXT).toBe("Report what you've done so far and what's left.")
   expect(STOPPED_TEXT).toBe('Stopped. A report request is in your prompt box: send it if you want one.')
-  expect(typeItYourself()).toBe("Could not fill your prompt box. Type it yourself: Finish the current step, then report what you've done and what's left.")
 })
 
 test('Plan first appends its request after a blank line', () => {

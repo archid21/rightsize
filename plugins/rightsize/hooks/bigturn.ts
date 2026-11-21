@@ -46,8 +46,13 @@ export const KEEP_GOING_ASK_AFTER = 3
 
 /** Plan first appends this after a blank line. */
 export const PLAN_FIRST_TEXT = 'Before doing the work, propose a short plan and wait for my go-ahead.'
-/** Finish up puts this in the prompt box, for the person to send into the running turn. */
-export const FINISH_UP_TEXT = "Finish the current step, then report what you've done and what's left."
+/** Finish up (P-82): the reason every tool call of the turn is refused with from then on, so Claude ends with a report. */
+export const OVER_BUDGET_REASON = 'Budget reached: stop here and report what is done and what is left.'
+/** The band's line when that refusal starts. */
+export const OVER_BUDGET_BAND = 'Budget reached. Tool calls are refused for the rest of this turn, so Claude reports what is done and what is left.'
+/** Over budget, no answer (Advanced): what no answer to the during-turn row does. Keep going is the default. */
+export type OverBudgetRow = 'Keep going' | 'Finish up'
+export const isOverBudgetRow = (v: unknown): v is OverBudgetRow => v === 'Keep going' || v === 'Finish up'
 /** A turn that showed the during-turn warning and was stopped by the person: this goes in the prompt box, never sent. */
 export const STOP_REPORT_TEXT = "Report what you've done so far and what's left."
 /** The band's line after that draft. */
@@ -182,7 +187,7 @@ export function headsUpText(o: { lo: number; hi: number; top: number; learning: 
  * turn now: Esc in the terminal, the Stop button on the desktop app.
  */
 export function duringText(o: { lo: number; hi: number; spent: number; desktop: boolean }, u: Units): string {
-  return `Turn estimate ${rangeText(o.lo, o.hi, u)} (${rangeText(o.spent, o.spent, u)} spent so far). Finish up drafts a message to end this turn; ${o.desktop ? 'click Stop to stop it now' : 'Esc stops it now'}.`
+  return `Turn estimate ${rangeText(o.lo, o.hi, u)} (${rangeText(o.spent, o.spent, u)} spent so far). Finish up ends this turn with a report; ${o.desktop ? 'click Stop to stop it now' : 'Esc stops it now'}.`
 }
 
 /** The opt-in question. */
@@ -192,13 +197,3 @@ export function optInText(cost: number, u: Units): string {
 
 /** The sentence every amount choice carries. */
 export const FALSE_ALARM_NOTE = 'rightsize learns as you go: early warnings can be false alarms.'
-
-/** After Finish up filled the box: how to send it. The desktop app has a Send now button, the terminal Ctrl+Enter. */
-export function draftedText(desktop: boolean): string {
-  return desktop
-    ? 'The message is in your prompt box. Click Send now to send it at once, or press Enter to send it after the current step.'
-    : 'The message is in your prompt box. Send it now with Ctrl+Enter, or press Enter to send it after the current step.'
-}
-
-/** After Finish up could not fill the box. */
-export const typeItYourself = (): string => `Could not fill your prompt box. Type it yourself: ${FINISH_UP_TEXT}`

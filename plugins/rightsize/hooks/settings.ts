@@ -70,6 +70,7 @@ export const SETTINGS = {
   lowerPause: { title: 'Advanced · Lowering pause', options: ['5 prompts', '10 prompts', '15 prompts', '20 prompts'], default: '10 prompts' },
   lowerUnsure: { title: 'Advanced · Try lowering when unsure', options: ['on', 'off'], default: 'on' },
   bigTurn: { title: 'Advanced · Big-turn warning', options: ['off', 'auto', '$1', '$2', '$5'], default: 'off' },
+  overBudget: { title: 'Advanced · Over budget, no answer', options: ['Keep going', 'Finish up'], default: 'Keep going' },
 } as const satisfies Record<string, Spec>
 
 /** Every row but the first six (Mode, Routing, Hand-offs, Changes, Cache, Band) is titled with this prefix, so /config lists those first and the rest as Advanced. */

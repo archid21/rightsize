@@ -150,6 +150,8 @@ test('plugin.json is checked against the table: a missing or unlisted field, or 
   const { ceiling: _, ...short } = defaults()
   expect(manifestGaps(short, set())).toEqual(['ceiling is not declared'])
   expect(manifestGaps({ ...defaults(), extra: 'x' }, set())).toEqual(['extra is not in the table'])
+  // A row an older release stored (Profile before ADR 0021, Ask before changing before Changes) is retired, not a gap.
+  expect(manifestGaps({ ...defaults(), profile: 'Balanced', askFirst: 'on' }, set())).toEqual([])
   expect(manifestGaps(undefined, set()).length, 'nothing declared').toBe(PANE_KEYS.length)
   // The three fixed rows have no pane row: plugin.json need not declare them, and one that reaches the options is not a gap.
   expect(manifestGaps(Object.fromEntries(PANE_KEYS.map(k => [k, SETTINGS[k].default])), set())).toEqual([])

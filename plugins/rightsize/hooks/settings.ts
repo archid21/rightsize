@@ -195,6 +195,9 @@ export function mark(yours: ReadonlySet<SettingKey>, key: SettingKey, set: boole
  * default into the options the module gets, so a missing field is not declared, and an unlisted one is not
  * in the table; a field you did not set must hold the table's default.
  */
+/** Keys settings.json may still hold from an older release: `profile` (before ADR 0021) and `askFirst` (before Changes). */
+const RETIRED_KEYS: ReadonlySet<string> = new Set(['profile', 'askFirst'])
+
 export function manifestGaps(options: Readonly<Record<string, unknown>> | undefined, yours: ReadonlySet<SettingKey>): string[] {
   const out: string[] = []
   for (const k of PANE_KEYS) {
@@ -202,7 +205,8 @@ export function manifestGaps(options: Readonly<Record<string, unknown>> | undefi
     else if (!yours.has(k) && options[k] !== SETTINGS[k].default) out.push(`${k} defaults to ${JSON.stringify(options[k])}, not ${JSON.stringify(SETTINGS[k].default)}`)
   }
   // A fixed row is neither required nor an error: plugin.json no longer declares it, and a value settings.json holds for it may reach the options.
-  for (const k of Object.keys(options ?? {})) if (!isKey(k)) out.push(`${k} is not in the table`)
+  // A row an older release stored and later retired (Profile, ADR 0021; Ask before changing, now Changes) is read for migration, not a gap.
+  for (const k of Object.keys(options ?? {})) if (!isKey(k) && !RETIRED_KEYS.has(k)) out.push(`${k} is not in the table`)
   return out
 }
 

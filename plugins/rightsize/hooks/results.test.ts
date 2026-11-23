@@ -92,3 +92,30 @@ test('results: no changes means no rows; a torn changes file is skipped', () => 
   const text = `${JSON.stringify(change(2))}\n{"at":"2026\n{"x":1}\n`
   expect(parseChanges(text)).toHaveLength(1)
 })
+
+const ADDED = ['changes', 'promptMode', 'cacheMode', 'compactMode', 'lowerUnsure', 'coldTip', 'sizeWarning', 'limitAdvice', 'outputAdvice'] as const
+
+test('results: the rows added in 0.16.3 are tracked, and the retired askFirst is not (P-88)', () => {
+  for (const key of ADDED) expect(isTracked(key), key).toBe(true)
+  expect(isTracked('askFirst')).toBe(false)
+})
+
+test('results: a change to an added row is measured under Did it work?, with the row\'s title (P-88)', () => {
+  const lines = [...spread(19, 14, 4, 1), ...spread(5, 5, 8, 0.5)]
+  const rs = results(lines, [change(5, { key: 'changes', from: 'Auto', to: 'Ask' })], NOW)
+  expect(rs).toHaveLength(1)
+  expect(rs[0]!.verdict).toBe('cheaper')
+  expect(resultRows(rs)[0]).toBe(`Changes: Auto to Ask, ${ago(5).slice(0, 10)}`)
+  for (const key of ADDED) {
+    const row = resultRows(results(lines, [change(5, { key, from: 'on', to: 'off' })], NOW))[0]!
+    expect(row, key).not.toMatch(new RegExp(`^${key}:`))
+  }
+})
+
+test('results: an old askFirst line in changes.jsonl still loads, and is not measured (P-88)', () => {
+  const old: ChangeLine = change(5, { key: 'askFirst', from: 'off', to: 'on' })
+  const text = `${JSON.stringify(old)}\n${JSON.stringify(change(4))}\n`
+  expect(parseChanges(text)).toHaveLength(2)
+  const lines = [...spread(19, 14, 4, 1), ...spread(5, 5, 8, 0.5)]
+  expect(results(lines, parseChanges(text), NOW).map(r => r.change.key)).toEqual(['mode'])
+})

@@ -12,10 +12,14 @@ export type ChangeLine = { at: string; key: string; from: string; to: string }
 /** Claude Code's own setting that the cache-life advice writes (P-16): tracked like a rightsize row, so Did it work? measures the change. */
 export const CACHE_LIFE_KEY = 'promptCacheTtl'
 
-/** Settings that change what rightsize does. Cosmetic rows (band, tips, wording, reports, price check) are not tracked. */
+/**
+ * Settings that change what rightsize does or advises, so Did it work? measures a change to them. Cosmetic rows (band, tips, reports,
+ * price check, cache timer, start suggestions) and the rows that only set a threshold (idle warning, lowering pause, long helpers) are not tracked.
+ * Ask before changing (`askFirst`) was replaced by Changes and is retired: an old line for it still loads and is not measured.
+ */
 export const TRACKED: readonly (SettingKey | typeof CACHE_LIFE_KEY)[] = [
-  'mode', 'routing', 'handOffs', 'askFirst', 'cache', 'floor', 'ceiling', 'lowerRule', 'raiseRule', 'upRule', 'downRule',
-  'useHaiku', 'useFable', 'subagents', 'workflows', 'pacing', 'escalation', 'rater', 'beforeCold', 'promptCacheTtl',
+  'mode', 'routing', 'handOffs', 'changes', 'promptMode', 'cacheMode', 'compactMode', 'cache', 'floor', 'ceiling', 'lowerRule', 'raiseRule', 'upRule', 'downRule',
+  'useHaiku', 'useFable', 'subagents', 'workflows', 'pacing', 'escalation', 'rater', 'lowerUnsure', 'beforeCold', 'coldTip', 'sizeWarning', 'limitAdvice', 'outputAdvice', 'promptCacheTtl',
 ]
 export const isTracked = (key: string): key is SettingKey | typeof CACHE_LIFE_KEY => (TRACKED as readonly string[]).includes(key)
 
@@ -153,9 +157,9 @@ export function results(lines: readonly RunLine[], changes: readonly ChangeLine[
 }
 
 const TITLE: Record<string, string> = {
-  mode: 'Mode', routing: 'Routing', handOffs: 'Hand-offs', askFirst: 'Ask before changing', cache: 'Cache', floor: 'Lowest effort', ceiling: 'Highest effort',
+  mode: 'Mode', routing: 'Routing', handOffs: 'Hand-offs', changes: 'Changes', promptMode: 'Prompt changes', cacheMode: 'Cache changes', compactMode: 'Compact changes', cache: 'Cache', floor: 'Lowest effort', ceiling: 'Highest effort',
   lowerRule: 'Lowering', raiseRule: 'Raising', upRule: 'Stronger model', downRule: 'Cheaper model', useHaiku: 'Use Haiku', useFable: 'Use Fable',
-  subagents: "Claude's subagents", workflows: 'Workflows', pacing: 'Budget pacing', escalation: 'Raise when stuck', rater: 'Rater', lowerPause: 'Lowering pause', lowerUnsure: 'Try lowering when unsure', beforeCold: 'Before the cache goes cold', promptCacheTtl: 'Cache life',
+  subagents: "Claude's subagents", workflows: 'Workflows', pacing: 'Budget pacing', escalation: 'Raise when stuck', rater: 'Rater', lowerPause: 'Lowering pause', lowerUnsure: 'Try lowering when unsure', beforeCold: 'Before the cache goes cold', coldTip: 'Cold-compact tip', sizeWarning: 'Context-size warning', limitAdvice: 'Usage-limit advice', outputAdvice: 'Output suggestion', promptCacheTtl: 'Cache life',
 }
 
 /** A value as the section shows it: Claude Code's cache life in words (5m is 5 minutes), the rest as stored. */

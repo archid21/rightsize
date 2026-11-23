@@ -6330,7 +6330,22 @@ async function lifeInput($: EngineInterface): Promise<OptInput['life']> {
 async function runOptimize($: EngineInterface) {
   const sub = billing === 'subscription'
   const life = await lifeInput($)
-  const r = optimize({ lines: await readRuns($), now: await $.clock.now(), subscription: sub, beforeCold: cfg.beforeCold, lowerRule: cfg.lowerRule, ...(life ? { life } : {}), skipped: await readSkipped($) })
+  const tier = tierOf(mainModel)
+  const r = optimize({
+    lines: await readRuns($),
+    now: await $.clock.now(),
+    subscription: sub,
+    beforeCold: cfg.beforeCold,
+    lowerRule: cfg.lowerRule,
+    useHaiku: cfg.useHaiku,
+    subagents: cfg.subagents,
+    downRule: cfg.downRule,
+    yours,
+    // One keep-warm request on a conversation of this size, on the main model: the price the keep-warm replay uses.
+    ...(tier ? { ping: (context: number) => pingCost(prices[tier], context) } : {}),
+    ...(life ? { life } : {}),
+    skipped: await readSkipped($),
+  })
   optList = r.suggestions
   optPicked = new Set()
   let pane = false

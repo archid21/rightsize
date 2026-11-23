@@ -617,6 +617,29 @@ export function paysCheck(lines: readonly PaysLine[], now: number) {
   return { runs, net, paused: runs >= PAYS_CHECK_RUNS && net < 0 }
 }
 
+/**
+ * The requests "while it pays" sends in one stretch, as it would have run with only `before` in the record: one at each decision
+ * point while the person is still away, until a decision says no, PAYS_MAX or break-even. `gateAt` is where it stopped with the
+ * person still away (the expiry no request covers), undefined when the stretch ended first.
+ */
+export function paysRun(s: Stretch, before: readonly Stretch[], o: { ttl: number; cold: number; ping: number }) {
+  const every = pingEvery(o.ttl)
+  const most = breakEvenPings(o.cold, o.ping)
+  const back = s.ended !== 'never'
+  const alive = (at: number) => (back ? s.gapMs > at : s.gapMs >= at)
+  let sent = 0
+  let gateAt: number | undefined
+  for (let k = 1; alive(k * every); k++) {
+    if (sent < PAYS_MAX && sent < most && paysSend({ stretches: before, k, ttl: o.ttl, cold: o.cold, ping: o.ping }).send) {
+      sent += 1
+      continue
+    }
+    gateAt = k * every
+    break
+  }
+  return { sent, gateAt }
+}
+
 /** What the rule, or the old default, did over a list of stretches: requests sent, what they and any compactions cost, what the returns saved, compactions made, and saved less cost. */
 export type Replay = { requests: number; cost: number; saved: number; compacts: number; net: number }
 type ReplayPrices = { ttl: number; cold: number; ping: number; compact: number; summaryCold: number }
@@ -630,23 +653,11 @@ type ReplayPrices = { ttl: number; cold: number; ping: number; compact: number; 
 export function replayPays(list: readonly Stretch[], o: ReplayPrices): Replay {
   const every = pingEvery(o.ttl)
   const lead = leadMs(o.ttl)
-  const most = breakEvenPings(o.cold, o.ping)
   const r = { requests: 0, cost: 0, saved: 0, compacts: 0 }
   list.forEach((s, i) => {
     const before = list.slice(0, i)
     const back = s.ended !== 'never'
-    const alive = (at: number) => (back ? s.gapMs > at : s.gapMs >= at)
-    let sent = 0
-    let gateAt: number | undefined
-    for (let k = 1; alive(k * every); k++) {
-      const at = k * every
-      if (sent < PAYS_MAX && sent < most && paysSend({ stretches: before, k, ttl: o.ttl, cold: o.cold, ping: o.ping }).send) {
-        sent += 1
-        continue
-      }
-      gateAt = at
-      break
-    }
+    const { sent, gateAt } = paysRun(s, before, o)
     r.requests += sent
     r.cost += sent * o.ping
     const lastRefresh = sent * every

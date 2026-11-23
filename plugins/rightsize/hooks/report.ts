@@ -1368,6 +1368,36 @@ export function loweringNet(lines: readonly RunLine[]): LoweringNet {
   }
 }
 
+export type HandDownKind = 'haiku' | 'any' | 'subagent'
+export type HandDownNet = { turns: number; days: number; stay: number; saved: number; failed: number }
+
+/**
+ * Hand-downs in `lines` (P-89, ADR 0100): `haiku` the hand-off turns that ran on Haiku, `any` every hand-off turn to a cheaper model,
+ * `subagent` Claude's own subagents moved to a cheaper model (the lines that count in Total saved). The turns, the days they fell on,
+ * what staying would have cost (`stay`: `counterfactual` for a turn; for a subagent run what the same work on the parent's model
+ * is estimated to have cost) and what they saved against it (`saved`, as `totals` reads it). A stopped turn is left out.
+ * `failed` counts the turns that showed a failure sign, once each: a turn's last test run failed, its subagent calls were rework
+ * (more than one), a helper of it was struggling or sent back, or the person gave it a 👎, corrected it or undid it (the lines that
+ * name it in `ref`). A subagent run shows one when it was struggling or sent back, or the run that started it drew a person's signal.
+ */
+export function handDownNet(lines: readonly RunLine[], kind: HandDownKind): HandDownNet {
+  const sub = (l: RunLine) => l.kind === 'subagent' && !l.aborted && !l.afterWorkflow && num(l.estimate) > 0
+  const mine = lines.filter(l => (kind === 'subagent' ? sub(l) : isRun(l) && !l.aborted && l.change === 'delegate-down' && delegated(l) && (kind === 'any' || l.route === 'delegate:haiku')))
+  const flagged = new Set<string>()
+  for (const l of lines) if ((l.kind === 'corrected' || l.kind === 'undone' || (l.kind === 'feedback' && l.value === 'down')) && l.ref) flagged.add(l.ref)
+  const bad = (l: RunLine) =>
+    kind === 'subagent'
+      ? l.stall === 'struggling' || l.returned === true || (l.run !== undefined && flagged.has(l.run))
+      : l.tests === 'failed' || num(l.agentCalls) > 1 || (l.helpers ?? []).some(h => h.stall === 'struggling' || h.returned === true) || (l.id !== undefined && flagged.has(l.id))
+  return {
+    turns: mine.length,
+    days: new Set(mine.map(l => l.at.slice(0, 10))).size,
+    stay: mine.reduce((n, l) => n + (kind === 'subagent' ? (num(l.actual) * num(l.parentEstimate)) / num(l.estimate) : counterfactual(l)), 0),
+    saved: totals(mine).saved,
+    failed: mine.filter(bad).length,
+  }
+}
+
 export function keepWarmLine(lines: readonly RunLine[], subscription: boolean): string | undefined {
   const w = keepWarm(lines)
   if (!w) return undefined

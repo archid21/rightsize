@@ -15,7 +15,7 @@ claude plugin marketplace add archid21/rightsize
 claude plugin install rightsize@archid21 --scope user
 ```
 
-Works with a Claude subscription (Pro, Max, Ultra) or an API key · MIT license · **New in 0.16.2:** a simpler band, a cache bar with the clock time, and the session total on the status line ([changelog](CHANGELOG.md)).
+Works with a Claude subscription (Pro, Max, Ultra) or an API key · MIT license · **New in 0.16.3:** one Changes setting (Auto or Ask) with Redo buttons, a band that folds, compacts counted in Total saved, and more `/rightsize optimize` suggestions ([changelog](CHANGELOG.md)).
 
 ## Contents
 

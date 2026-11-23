@@ -2,7 +2,7 @@
 
 Every rightsize feature: how it works and what it gives you.
 
-Current release: 0.14.0
+Current release: 0.16.3
 
 **Since** is the release that added the feature. `Unreleased` means it is on `main` but not in a release yet. Every setting, with its options: [SETTINGS.md](SETTINGS.md). Every rule and number: [HOW-IT-DECIDES.md](HOW-IT-DECIDES.md).
 
@@ -70,7 +70,7 @@ Current release: 0.14.0
 | Feature | How it works | Value | Since |
 |---|---|---|---|
 | Band | A row above the prompt says what rightsize did and what it cost, with buttons to retry at the original effort or run on your model, and a ⋯ menu to change a rule or rate a choice. **Band** sets when it shows. | Every choice is visible and can be undone in one click. | 0.5 |
-| Status line | Shows the model with the effort as a letter: `Sonnet (M)`, `Opus (H↑)` when rightsize raised it, `Sonnet (L auto)` when it picked it. After it, at most one part: `limit ~3:45 PM` when a usage window (5-hour or weekly) is on pace to run out at least 15 minutes before it resets, from its average rate since it started, rounded to 15 minutes; else `$1.84 session` on API billing. The cache stays on the band. | See the model and effort in use, and get warned only when you are on pace to hit your limit. | Unreleased |
+| Status line | Shows the model with the effort as a letter: `Sonnet (M)`, `Opus (H↑)` when rightsize raised it, `Sonnet (L auto)` when it picked it. After it, at most one part: `limit ~3:45 PM` when a usage window (5-hour or weekly) is on pace to run out at least 15 minutes before it resets, from its average rate since it started, rounded to 15 minutes; else `$1.84 session` on API billing. The cache stays on the band. | See the model and effort in use, and get warned only when you are on pace to hit your limit. | 0.16.3 |
 | Cold-compact tip | When the cache goes cold on a big Opus or Fable conversation, whichever way the time before it went (keep warm, an offer, a whatsnext handoff or nothing), and when you reopen a chat that went cold, before you type, the Cache row offers to compact on Sonnet first when that saves at least the Idle warning amount. **Start** puts `/model sonnet` in your prompt box; the tip then puts `/compact`, and after **Next** `/model default`, which puts your usual model back without saving a new default. You send each command. | Your next prompt reads a short summary instead of the whole conversation at full price, for a few presses of Enter. | 0.15 (every path and reopened chats: 0.16.1) |
 | Watch only | **Mode** set to watch only rates and plans every prompt and changes nothing; the band says what it would have done. | See rightsize's calls on your own work before it acts. | 0.8 |
 | Watch only: trial-end row and summary | rightsize saves the date watch only was turned on. After 7 full days, at a turn end, one band row shows the Saving check's would-have-saved range (a share of your cost) with three answers: **Turn on**, **Turn on (Changes: Ask)**, **Keep watching**. It shows once per watch-only period and never holds a prompt. When watch only is turned off, the next turn end shows one summary row with the same range, or "Not enough turns yet to estimate" under 20 rated prompts. | You decide to turn rightsize on from a checked figure for your own work, not a raw estimate. | 0.13 |

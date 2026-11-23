@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.16.3 (unreleased)
+## 0.16.3 (2026-11-23)
 
 - **The Big-turn warning is removed.** The **Big-turn warning** and **Over budget, no answer** rows are gone, with the before-prompt dialog (Run it, Plan first, Lower effort), the during-turn row (Keep going, Finish up), the once-only question after an expensive turn, and the report request drafted after you stop a warned turn. `/rightsize optimize` no longer suggests it. A value an older release stored for either row is ignored and logs no error.
 - **New Changes setting replaces Ask before changing.** Changes is Auto (rightsize acts and says what it did) or Ask (it asks first), Auto by default. A value stored for Ask before changing (off or on) becomes Changes (Auto or Ask) once at the next start, as your own setting; a Changes value you set is never overwritten. Mode (act or watch only) is unchanged. With default settings nothing behaves differently.

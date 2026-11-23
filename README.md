@@ -108,7 +108,7 @@ The same rows, one line each, with buttons below. Screenshots from a real sessio
 |---|---|
 | Smart routing | Routine work on cheaper models, Opus where it counts. **Changes** in `/config` (Auto or Ask) makes it ask first. |
 | Effort control | Lower effort for routine prompts; raised mid-turn only when Claude is stuck. |
-| Cheaper helpers | Big routine jobs (the same edit across many files) go to a Haiku or Sonnet helper. Your main chat writes the brief and checks the result. **Run on your model** on the band undoes one. |
+| Cheaper helpers | Big routine jobs (the same edit across many files) go to a Haiku or Sonnet helper. Your main chat writes the brief and checks the result. **Redo on Opus** (named for your model) on the band undoes one. |
 | Opus reviews | Stronger reviews without switching models yourself. |
 | Keep warm | Keeps a big session's cache warm while you are away, only while your record says it pays. |
 | Usage windows | On Pro, Max and Ultra, saves harder as your weekly or 5-hour window runs low. |
@@ -119,8 +119,8 @@ The same rows, one line each, with buttons below. Screenshots from a real sessio
 |---|---|
 | Cost report | `/rightsize report`: measured savings, spend, and the times rightsize cost more. |
 | Settings suggestions | `/rightsize optimize`: changes priced on your last 30 days; you pick which to apply. |
-| Compact now | Press it when the band warns the context is filling (40 to 90%) or you are near your 5-hour limit. |
-| Wrap up | Press **Wrap up** on the countdown row, or type `wrap up`, to save a handoff note (or compact without whatsnext). |
+| Compact Now | Press it when the band warns the context is filling (40 to 90%) or you are near your 5-hour limit. |
+| Save Handoff | Press **Save Handoff** on the Cache row (or **Wrap up** on a keep-warm row), or type `wrap up`, to save a handoff note (or compact without whatsnext). |
 
 **Works better with [whatsnext](https://github.com/archid21/whatsnext).** rightsize decides when a compact pays; whatsnext decides what to keep, by saving a handoff note first. Without whatsnext, rightsize compacts with its own handoff-style text.
 

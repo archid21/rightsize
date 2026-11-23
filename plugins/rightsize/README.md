@@ -26,7 +26,7 @@ rightsize sends each prompt to the cheapest model and effort that does the job, 
 |---|---|---|
 | Smart routing | Routine work on cheaper models, Opus where it counts | Automatic. **Changes** in `/config` (Auto or Ask) makes it ask first. |
 | Effort control | Lower effort for routine prompts; raised mid-turn only when Claude is stuck | Automatic. The **Lowering** and **Raising** rows set ask, automatic or never. |
-| Cheaper helpers | Big routine edits handled at lower cost | Automatic from Opus or Fable sessions. Press **Run on your model** on the band to undo one. |
+| Cheaper helpers | Big routine edits handled at lower cost | Automatic from Opus or Fable sessions. Press **Redo on Opus** (named for your model) on the band to undo one. |
 | Opus reviews | Stronger reviews without switching models | Automatic. The **Stronger model** row sets ask first or always send. |
 | Watch only | See what rightsize would save before it changes anything | Set **Mode** to watch only, then run `/rightsize report` after a week. |
 | Keep warm | Avoid paying to rewrite a cold cache | Set **Before the cache goes cold**, or pick a time when the band offers it. |

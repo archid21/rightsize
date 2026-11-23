@@ -92,7 +92,7 @@ A band above the prompt says what rightsize did and why, with buttons to undo it
 
 The same rows, one line each, with buttons below. Screenshots from a real session, with captions added.
 
-![rightsize in Claude Code's terminal: a routine edit stays on Sonnet, a review switches to Opus for one turn, and the band shows what each cost](docs/images/rightsize-demo.gif)
+![rightsize in Claude Code's terminal, four scenes: a big routine edit sent to a Haiku helper, routine work at lower effort, the Cache row with Compact Now and Save Handoff, and a review kept on Opus](docs/images/rightsize-demo.gif)
 
 ![Terminal band: Sending this to a Sonnet subagent at medium effort](docs/images/2-hands-off.png)
 

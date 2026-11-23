@@ -1991,7 +1991,7 @@ async function rateWithFallback($: EngineInterface, tier: Tier, level: Level, pr
 
 // ---- Rater check -------------------------------------------------------------
 
-// Every 50th Haiku rating (Rater check sets it; only when Haiku rated: the Rater row picked it, or Sonnet failed), Sonnet rates the same prompt in the background. Where it says a
+// Every 20th Haiku rating (Rater check sets it; only when Haiku rated: the Rater row picked it, or Sonnet failed), Sonnet rates the same prompt in the background. Where it says a
 // model would struggle that Haiku said does the work, Haiku missed (misses.ts). The
 // check never holds up the prompt, and its cost is logged as overhead.
 

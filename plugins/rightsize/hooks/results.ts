@@ -15,7 +15,7 @@ export const CACHE_LIFE_KEY = 'promptCacheTtl'
 /** Settings that change what rightsize does. Cosmetic rows (band, tips, wording, reports, price check) are not tracked. */
 export const TRACKED: readonly (SettingKey | typeof CACHE_LIFE_KEY)[] = [
   'mode', 'routing', 'handOffs', 'askFirst', 'cache', 'floor', 'ceiling', 'lowerRule', 'raiseRule', 'upRule', 'downRule',
-  'useHaiku', 'useFable', 'subagents', 'workflows', 'pacing', 'escalation', 'rater', 'beforeCold', 'promptCacheTtl', 'bigTurn',
+  'useHaiku', 'useFable', 'subagents', 'workflows', 'pacing', 'escalation', 'rater', 'beforeCold', 'promptCacheTtl',
 ]
 export const isTracked = (key: string): key is SettingKey | typeof CACHE_LIFE_KEY => (TRACKED as readonly string[]).includes(key)
 

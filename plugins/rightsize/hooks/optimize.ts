@@ -1,4 +1,3 @@
-import { autoAmount, turnCosts } from './bigturn'
 import { type LifeAdvice, lifeOffer } from './cachelife'
 import { type Ttl, TTL_MS, ttlText } from './cost'
 import { NOT_SET, RULE_LABELS } from './settings'
@@ -28,7 +27,7 @@ export const OPT_SKIP_DAYS = 30
 export const OPT_MIN_PINGS = 5
 
 /** What a suggestion changes: a rightsize row, or the cache life (Claude Code's promptCacheTtl, which rightsize offers and sets). */
-export type OptId = 'beforeCold' | 'bigTurn' | 'lowerRule' | 'promptCacheTtl'
+export type OptId = 'beforeCold' | 'lowerRule' | 'promptCacheTtl'
 
 /**
  * One suggestion: the row's title, the value now and the one suggested; `now` and `after` the last 30 days under each;
@@ -42,7 +41,6 @@ export type OptInput = {
   subscription: boolean
   /** The rows' values now. */
   beforeCold: string
-  bigTurn: string
   /** The Lowering row's value now: "not set" until the person answers it; any other value is theirs, and is not suggested over. */
   lowerRule: string
   /** The cache-life check, when rightsize may set the life (cachelife.ts lifeEligible, and no variable fixes it); undefined otherwise. */
@@ -82,24 +80,6 @@ export function optimize(i: OptInput): OptResult {
       basis: 'Measured from your keep-warm requests and the returns they saved.',
       saving: -warm.net,
     })
-  }
-
-  // Big-turn warning: off, while turns reached the amount auto would warn at. What a warning saves depends on the answer.
-  if (i.bigTurn === 'off' && !hidden('bigTurn')) {
-    const amount = autoAmount(i.lines, i.now)
-    const big = turnCosts(i.lines, i.now).filter(c => c >= amount)
-    if (big.length) {
-      const total = big.reduce((n, c) => n + c, 0)
-      out.push({
-        id: 'bigTurn',
-        title: 'Big-turn warning',
-        from: 'off',
-        to: 'auto',
-        now: 'no warning',
-        after: `would have warned before ${big.length} ${big.length === 1 ? 'turn' : 'turns'} of ${usd(amount)} or more, ${usd(total)} in all`,
-        basis: 'No saving is promised: it depends on what you choose when warned.',
-      })
-    }
   }
 
   // Lowering: the automatic lowerings saved next to nothing (or cost more) over the month, measured from what those turns cost.

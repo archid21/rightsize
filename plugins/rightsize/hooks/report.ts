@@ -78,11 +78,7 @@ export type RunLine = {
   saved?: number
   /** A run line: the turn's cost projected again after its first main-chat requests, from its own pace (P-44): `after` requests, `spent` so far, `projected`. */
   reestimate?: { after: number; spent: number; projected: number }
-  /** A run line: the big-turn warning (P-46), before the prompt and during the turn: the range shown, the amount held against, and the answer (`none`: no answer in time). */
-  bigTurn?: { before?: { lo: number; hi: number; amount: number; answer: string }; during?: { lo: number; hi: number; amount: number; answer: string } }
-  /** A run line: Finish up (P-82): how the over-budget refusal armed and how many tool calls it refused in the turn. */
-  overBudget?: { how: 'finish' | 'no answer'; denied: number }
-  /** A run line: the person lowered the effort at a big-turn warning. Their choice is not an automatic lowering: the misses log leaves the line out. */
+  /** A run line from an older release: the person lowered the effort at the Big-turn warning (since removed). Their choice is not an automatic lowering: the misses log leaves the line out. */
   loweredBy?: 'you'
   /** A run line: what its main-chat requests in fast mode cost, in dollars at fast prices (P-29). On a subscription this is paid from usage credits, not the plan. */
   fast?: number

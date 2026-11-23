@@ -393,42 +393,6 @@ for (const surface of ['desktop', 'terminal'] as const) {
       set: 'high',
       def: 'medium',
     },
-    {
-      key: 'bigTurn',
-      value: '$1',
-      start: { model: 'claude-sonnet-5-5', effort: 'high', stored: { ...NO_COLD } },
-      // A job estimated at about $2.70: with the row on at $1 the prompt is held with the Big turn question, with it off it is not.
-      see: async c => {
-        c.h.rating = '{"level":"high","model":"same","size":"large","type":"feature","read":300000,"write":50000,"steps":40,"reason":"a large feature"}'
-        c.h.answers = { 'Big turn': 'Run it', 'Big-turn warning': 'No thanks' }
-        await c.d.submit('implement the whole thing across the app')
-        return c.h.asked.filter(a => a.header === 'Big turn').length
-      },
-      set: 1,
-      def: 0,
-    },
-    // Over budget, no answer (P-82): no answer to the during-turn Big-turn row does nothing by default; with Finish up the turn's tool calls are refused after the wait.
-    {
-      key: 'overBudget',
-      value: 'Finish up',
-      start: { model: 'claude-sonnet-5-5', effort: 'high', stored: { ...NO_COLD } },
-      setup: h => {
-        h.virtual = true
-        h.stepUsage = { input_tokens: 200, output_tokens: 3000, cache_read_input_tokens: 20_000, cache_creation_input_tokens: 300 }
-      },
-      see: async c => {
-        await c.d.config('bigTurn', '$1')
-        c.h.rating = '{"level":"high","model":"same","size":"small","type":"feature","read":5000,"write":2000,"steps":40,"reason":"long but light"}'
-        c.h.answers = { 'Big turn now': NO_ONE }
-        await c.d.submit('implement the whole thing across the app')
-        for (let i = 0; i < 6; i++) await c.d.step('t1', i)
-        await c.h.advance(31_000)
-        const r = (await c.d.bash('echo hi')) as { deny?: string }
-        return r.deny !== undefined
-      },
-      set: true,
-      def: false,
-    },
     // The four hide rows: each item shows with the row on and never with it off. A cold chat 3 hours after its last turn gets the tip,
     // a conversation at 60% the warning, a 92% window with a big conversation the advice, a quiet turn after a saving the tip.
     {

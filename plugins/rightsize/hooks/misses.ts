@@ -91,7 +91,7 @@ const workedOn = (l: RunLine) => delegateTier(l) ?? (isTier(l.tier) ? l.tier : u
 // What one run line says about the rater, apart from feedback. A test run that failed at the turn's end is a miss on a
 // cheaper route (the objective outcome); one that passed is not read as a hit on its own, since rework may have come first.
 function ofRun(l: RunLine): Outcome | undefined {
-  // A lowering the person chose at a big-turn warning (P-46) says nothing about the rater.
+  // A lowering the person chose at the Big-turn warning (P-46, since removed; older lines) says nothing about the rater.
   // An unsure lowering has its own bucket (unsureOutcomes).
   if (l.aborted || l.loweredBy === 'you' || l.unsureTry || !isTaskType(l.type)) return undefined
   const type = l.type

@@ -121,7 +121,6 @@ The same rows, one line each, with buttons below. Screenshots from a real sessio
 | Settings suggestions | `/rightsize optimize`: changes priced on your last 30 days; you pick which to apply. |
 | Compact now | Press it when the band warns the context is filling (40 to 90%) or you are near your 5-hour limit. |
 | Wrap up | Press **Wrap up** on the countdown row, or type `wrap up`, to save a handoff note (or compact without whatsnext). |
-| Big-turn warning | Off by default. Set **Big-turn warning** under Advanced for a heads-up before an unusually expensive turn. |
 
 **Works better with [whatsnext](https://github.com/archid21/whatsnext).** rightsize decides when a compact pays; whatsnext decides what to keep, by saving a handoff note first. Without whatsnext, rightsize compacts with its own handoff-style text.
 

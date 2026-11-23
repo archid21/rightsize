@@ -69,8 +69,6 @@ export const SETTINGS = {
   tips: { title: 'Advanced · Tips', options: ['on', 'off'], default: 'on' },
   lowerPause: { title: 'Advanced · Lowering pause', options: ['5 prompts', '10 prompts', '15 prompts', '20 prompts'], default: '10 prompts' },
   lowerUnsure: { title: 'Advanced · Try lowering when unsure', options: ['on', 'off'], default: 'on' },
-  bigTurn: { title: 'Advanced · Big-turn warning', options: ['off', 'auto', '$1', '$2', '$5'], default: 'off' },
-  overBudget: { title: 'Advanced · Over budget, no answer', options: ['Keep going', 'Finish up'], default: 'Keep going' },
 } as const satisfies Record<string, Spec>
 
 /** Every row but the first six (Mode, Routing, Hand-offs, Changes, Cache, Band) is titled with this prefix, so /config lists those first and the rest as Advanced. */
@@ -196,8 +194,8 @@ export function mark(yours: ReadonlySet<SettingKey>, key: SettingKey, set: boole
  * default into the options the module gets, so a missing field is not declared, and an unlisted one is not
  * in the table; a field you did not set must hold the table's default.
  */
-/** Keys settings.json may still hold from an older release: `profile` (before ADR 0021) and `askFirst` (before Changes). */
-const RETIRED_KEYS: ReadonlySet<string> = new Set(['profile', 'askFirst'])
+/** Keys settings.json may still hold from an older release: `profile` (before ADR 0021), `askFirst` (before Changes), `bigTurn` and `overBudget` (the Big-turn warning, removed). */
+const RETIRED_KEYS: ReadonlySet<string> = new Set(['profile', 'askFirst', 'bigTurn', 'overBudget'])
 
 export function manifestGaps(options: Readonly<Record<string, unknown>> | undefined, yours: ReadonlySet<SettingKey>): string[] {
   const out: string[] = []

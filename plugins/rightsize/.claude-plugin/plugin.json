@@ -382,29 +382,6 @@
         "on",
         "off"
       ]
-    },
-    "bigTurn": {
-      "type": "string",
-      "title": "Advanced · Big-turn warning",
-      "description": "off (default): no warning. auto: warn when a prompt looks as expensive as your top 1% of turns (your own turns of the last 30 days; $2 until you have 50, never under $1; recomputed weekly). $1, $2, $5: warn at that amount. Before a prompt runs, rightsize holds it for the Question wait with Run it, Plan first and Lower effort; during a turn, the band shows Keep going and Finish up (which refuses the turn's tool calls from then on, so Claude ends with a report); if you stop the turn yourself, a report request is drafted in your prompt box. rightsize learns as you go: early warnings can be false alarms. On a subscription the amounts show as a share of your 5-hour window once runs show the rate. Non-interactive runs (-p, including --max-budget-usd) are left alone.",
-      "default": "off",
-      "options": [
-        "off",
-        "auto",
-        "$1",
-        "$2",
-        "$5"
-      ]
-    },
-    "overBudget": {
-      "type": "string",
-      "title": "Advanced · Over budget, no answer",
-      "description": "What happens when nobody answers the during-turn Big-turn row (Keep going or Finish up). Keep going (default): nothing; the turn runs past the budget. Finish up: after the Question wait, rightsize refuses every tool call of that turn with \"Budget reached: stop here and report what is done and what is left.\", so Claude ends with a report. The refusal ends with the turn or your next prompt. Pressing Finish up on the row does the same at once, whatever this row says.",
-      "default": "Keep going",
-      "options": [
-        "Keep going",
-        "Finish up"
-      ]
     }
   },
   "homepage": "https://aivalue.blog/rightsize",

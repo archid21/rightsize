@@ -9,7 +9,7 @@ const ago = (d: number) => new Date(NOW - d * DAY).toISOString()
 /** 40 rated prompts over 20 days, each costing `actual`. */
 const runs = (actual = 0.1): RunLine[] => Array.from({ length: 40 }, (_, k) => ({ at: ago(k / 2), kind: 'run', session: 's', actual }))
 const pings = (n: number, overhead: number): RunLine[] => Array.from({ length: n }, (_, k) => ({ at: ago(k), kind: 'warm', session: 's', overhead }))
-const base = (x: Partial<OptInput> = {}): OptInput => ({ lines: runs(), now: NOW, subscription: true, beforeCold: 'while it pays', bigTurn: 'auto', lowerRule: 'not set', skipped: {}, ...x })
+const base = (x: Partial<OptInput> = {}): OptInput => ({ lines: runs(), now: NOW, subscription: true, beforeCold: 'while it pays', lowerRule: 'not set', skipped: {}, ...x })
 const ids = (x: Partial<OptInput>) => optimize(base(x)).suggestions.map(s => s.id)
 
 test('not enough use: under 30 rated prompts or 7 days, no suggestions', () => {
@@ -34,16 +34,6 @@ test('keep warm: no suggestion when it paid, with too few requests, or when alre
   expect(ids({ lines: paid })).toEqual([])
   expect(ids({ lines: [...runs(), ...pings(3, 2)] })).toEqual([])
   expect(ids({ lines: [...runs(), ...pings(10, 2)], beforeCold: 'off' })).toEqual([])
-})
-
-test('big-turn warning off with turns at the auto amount: suggest auto, with no saving promised', () => {
-  // Under 50 turns, auto warns at $2: three turns reach it.
-  const lines = [...runs(), { at: ago(1), kind: 'run' as const, session: 's', actual: 2.5 }, { at: ago(2), kind: 'run' as const, session: 's', actual: 3 }, { at: ago(3), kind: 'run' as const, session: 's', actual: 2 }]
-  const s = optimize(base({ lines, bigTurn: 'off' })).suggestions.find(x => x.id === 'bigTurn')
-  expect(s).toMatchObject({ from: 'off', to: 'auto', now: 'no warning', after: 'would have warned before 3 turns of $2.00 or more, $7.50 in all' })
-  expect(s?.saving).toBeUndefined()
-  expect(ids({ bigTurn: 'off' }), 'no turn reached it').toEqual([])
-  expect(ids({ lines, bigTurn: '$2' }), 'already on').toEqual([])
 })
 
 const advice = (fiveMin: number, oneHour: number): LifeAdvice => ({ ok: true, cost: { fiveMin, oneHour, turns: 80, days: 12 }, cheaper: fiveMin < oneHour ? '5m' : '1h', saving: Math.abs(fiveMin - oneHour) })
@@ -113,9 +103,9 @@ test('lowering: not suggested when the Lowering row is set (theirs), or when hid
 
 test('lowering: listed after the other rows it follows, and the pane and the apply path know the row key', () => {
   const lines = [...runs(), ...pings(10, 2), ...lowerings(40, 10, 1, 1.05)]
-  const r = optimize(base({ lines, bigTurn: 'off', life: { advice: advice(9.8, 12.1), current: '1h' } }))
-  expect(r.suggestions.map(s => s.id)).toEqual(['beforeCold', 'bigTurn', 'lowerRule', 'promptCacheTtl'])
-  expect(appliedText([r.suggestions[2]!], [])).toBe('Changed: Lowering → never lower. Did it work? in /rightsize report measures each once there are enough prompts.')
+  const r = optimize(base({ lines, life: { advice: advice(9.8, 12.1), current: '1h' } }))
+  expect(r.suggestions.map(s => s.id)).toEqual(['beforeCold', 'lowerRule', 'promptCacheTtl'])
+  expect(appliedText([r.suggestions[1]!], [])).toBe('Changed: Lowering → never lower. Did it work? in /rightsize report measures each once there are enough prompts.')
 })
 
 test('a suggestion left unpicked hides for 30 days, then shows again', () => {
@@ -126,8 +116,8 @@ test('a suggestion left unpicked hides for 30 days, then shows again', () => {
 
 test('every suggestion is listed, with no cap, and the text says nothing changes until applied', () => {
   const lines = [...runs(), ...pings(10, 2), { at: ago(1), kind: 'run' as const, session: 's', actual: 5 }]
-  const r = optimize(base({ lines, bigTurn: 'off', life: { advice: advice(9.8, 12.1), current: '1h' } }))
-  expect(r.suggestions.map(s => s.id)).toEqual(['beforeCold', 'bigTurn', 'promptCacheTtl'])
+  const r = optimize(base({ lines, life: { advice: advice(9.8, 12.1), current: '1h' } }))
+  expect(r.suggestions.map(s => s.id)).toEqual(['beforeCold', 'promptCacheTtl'])
   const text = optimizeText(r, true, true)
   expect(text.split('\n').slice(0, 2)).toEqual(['Suggestions only: nothing changes until you apply them.', 'Last 30 days, API-equivalent dollars (you pay only your subscription).'])
   expect(text).toContain('☐ Cache life: 1 hour → 5 minutes')

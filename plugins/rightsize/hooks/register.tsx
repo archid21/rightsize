@@ -94,31 +94,6 @@ import {
   reestimate,
   canLowerNow,
 } from './cost'
-import {
-  type BigTurnRow,
-  type OverBudgetRow,
-  BIG_TURN_NO_ANSWER_MS,
-  BIG_TURN_NO_THANKS_MS,
-  FALSE_ALARM_NOTE,
-  KEEP_GOING_ASK_AFTER,
-  OVER_BUDGET_BAND,
-  OVER_BUDGET_REASON,
-  STOPPED_TEXT,
-  STOP_REPORT_TEXT,
-  amountText,
-  autoAmountNow,
-  bigTurnRange,
-  duringRange,
-  duringText,
-  fixedAmount,
-  headsUpText,
-  isBigTurnRow,
-  isOverBudgetRow,
-  optInText,
-  parseStoredAmount,
-  stillLearning,
-  withPlanFirst,
-} from './bigturn'
 import { type FastState, fastGuess, nextFast, speedFromCost, speedSwitchCost, speedSwitchText } from './fast'
 import { type FreshRun, type HandedOff, NO_STEPS, type StepState, actingExp, mergeSteps, medians, parseStepState, STEP_PROVE, typicalShrink } from './steps'
 import { type LearningNote, learningNote } from './learning'
@@ -323,9 +298,6 @@ const qWorkflow: Question<WorkflowMode> = {
 /** Why the rating may be unreliable: the request was cut, the task's last reply was missing, or the rater said it was not sure (P-30). */
 type Unsure = 'cut' | 'missing' | 'rater'
 
-/** One big-turn warning as the run line keeps it: the range shown, the amount it was held against, and the answer. */
-type BigTurnNote = { lo: number; hi: number; amount: number; answer: 'run' | 'plan' | 'lower' | 'keep' | 'finish' | 'none' }
-
 /** One rated prompt, from prompt.submit until its turn completes. */
 type Run = {
   /** Unique to this run: its log line carries it, and 👍 and 👎 name it. */
@@ -398,14 +370,6 @@ type Run = {
   fastCost?: number
   /** The turn's cost projected again from its own pace after REESTIMATE_AFTER main-chat requests (P-44). */
   reestimate?: { after: number; spent: number; projected: number }
-  /** The big-turn warning (P-46): what was warned before the prompt and during the turn, and what the person answered. */
-  bigTurn?: { before?: BigTurnNote; during?: BigTurnNote }
-  /** Over budget (P-82): set when Finish up armed (`finish`: pressed; `no answer`: the Over budget row and the Question wait). While set, every main-chat and helper tool call of this turn is refused; `denied` counts them. It ends with the turn, or at the next prompt (`ended`). */
-  overBudget?: { how: 'finish' | 'no answer'; denied: number; ended?: true }
-  /** The person chose to lower effort at the big-turn warning before the prompt: the run is theirs, not an automatic lowering (the misses log leaves it out). */
-  loweredBy?: 'you'
-  /** The rating or the task's state says no lowering or hand-down on this prompt (an unsure rating, a red test run): no Lower effort button either. */
-  lowerGuard?: true
   /** The rater was not sure and the plan was "lower effort" (P-83): 'lowered' went down one level, 'paused' was left as it was because its unsure bucket was paused. The run line carries both, with the bucket's key. */
   unsureTry?: 'lowered' | 'paused'
   unsureKey?: string
@@ -495,10 +459,6 @@ let limitAdviceOn = true
 let tipsOn = true
 /** What a helper does at 80% of its spend limit while it is making progress (the Long helpers row). */
 let longHelpers: 'ask' | 'continue while making progress' | 'stop at the limit' = 'ask'
-/** Big-turn warning: off, auto (the person's top 1%), or a fixed amount. A row that is not the person's is asked about once the first big turn ends (P-46). */
-let bigTurnRow: BigTurnRow = 'off'
-/** Over budget, no answer (P-82): what no answer to the during-turn Big-turn row does. Keep going is the default; Finish up arms after the Question wait. */
-let overBudgetRow: OverBudgetRow = 'Keep going'
 /** A person is at the prompt (the session start said so). A non-interactive run (-p, which is also the only way to pass --max-budget-usd) is never warned, asked or held. */
 let interactive = true
 /** The main chat's output cost, total cost and requests this session, at list prices (not subagents). Reset at session start and end. */
@@ -1462,11 +1422,6 @@ type BandWhy =
   | { kind: 'limitCompact' }
   | { kind: 'helper'; id: string; w: Watch; cur: Level; to: Level; sign: Struggle; main: string }
   | { kind: 'spend'; id: string; w: Watch }
-  | { kind: 'bigOptIn' }
-  | { kind: 'bigAmount'; top: number }
-  | { kind: 'bigPick' }
-  | { kind: 'bigDuring'; run: Run; lo: number; hi: number; amount: number }
-  | { kind: 'bigStop' }
 
 type BandAsk = {
   q: BandQuestion
@@ -1504,8 +1459,8 @@ async function askBand<V>($: EngineInterface, q: Question<V>, until: BandAsk['un
 
 /** What a folded band's marker calls a question: work at risk, costs more, the cache, or a setting (any kind not listed). */
 export function bandKindOf(kind: string): NonNullable<BandQuestion['kind']> {
-  if (kind === 'stuck' || kind === 'helper' || kind === 'spend' || kind === 'bigDuring') return 'risk'
-  if (kind === 'billing' || kind === 'bigAmount' || kind === 'bigPick' || kind === 'limitCompact') return 'cost'
+  if (kind === 'stuck' || kind === 'helper' || kind === 'spend') return 'risk'
+  if (kind === 'billing' || kind === 'limitCompact') return 'cost'
   if (kind === 'cacheLife' || kind === 'keepWarm') return 'cache'
   return 'setting'
 }
@@ -1563,16 +1518,6 @@ async function bandAnswered($: EngineInterface, why: BandWhy, v: unknown) {
       return answerKeepWarm($, why, v)
     case 'limitCompact':
       return answerLimitCompact($, v)
-    case 'bigOptIn':
-      return answerBigOptIn($, v)
-    case 'bigAmount':
-      return answerBigAmount($, v)
-    case 'bigPick':
-      return answerBigPick($, v)
-    case 'bigDuring':
-      return answerBigDuring($, why, v)
-    case 'bigStop':
-      return answerBigStop($, v)
     case 'helper': {
       const { id, w, cur, to, sign, main } = why
       // Gone back, or done: nothing left to finish or raise.
@@ -1607,15 +1552,6 @@ async function bandUnanswered($: EngineInterface, why: BandWhy) {
       return logUnanswered($, 'Stuck', `kept ${why.cur}`)
     case 'helper':
       return logUnanswered($, 'Stuck', `helper ${why.id} kept at ${why.cur}`)
-    case 'bigOptIn':
-      return logUnanswered($, BIG_OPT_IN_HEADER, `treated as No thanks this time; asked again after a qualifying turn more than 7 days from now`)
-    case 'bigAmount':
-    case 'bigPick':
-      return logUnanswered($, BIG_AMOUNT_HEADER, 'the Big-turn warning row stays off')
-    case 'bigDuring':
-      return logUnanswered($, BIG_DURING_HEADER, why.run.overBudget && !why.run.overBudget.ended ? 'the turn was finished up' : 'the turn goes on, as it was')
-    case 'bigStop':
-      return logUnanswered($, BIG_STOP_HEADER, 'warnings during a turn stay on')
     case 'keepWarm':
       return logUnanswered($, KEEP_WARM_HEADER, 'nothing changes')
     case 'limitCompact':
@@ -1651,307 +1587,15 @@ function logTimeout($: EngineInterface, header: string, did: string) {
   return log($, `no answer in ${questionWait} to ${header}: ${did}`)
 }
 
-// ---- Big-turn warning (P-46, ADR 0075) ------------------------------------------------
-
-// An opt-in warning for an unusually expensive turn. Off by default. While the row is not the person's, the first finished turn
-// that cost more than their top 1% asks once whether to turn it on (the band; nothing is held). With the row on, a prompt whose
-// estimate reaches the amount is held for the Question wait with Run it, Plan first and Lower effort; and a turn whose re-estimate
-// (P-44) reaches it shows a band row with Keep going and Finish up, which holds nothing and never stops the turn. A turn that showed
-// that row and is then stopped by the person gets a report request drafted in the prompt box (never sent).
-// A non-interactive run (-p, the only way to pass --max-budget-usd) has no one to warn: it is left alone.
-
-const BIG_OPT_IN_HEADER = 'Big-turn warning'
-const BIG_AMOUNT_HEADER = 'Big-turn amount'
-const BIG_BEFORE_HEADER = 'Big turn'
-const BIG_DURING_HEADER = 'Big turn now'
-const BIG_STOP_HEADER = 'Warnings during a turn'
-/** The auto amount and when it was computed, `{ value, at }` (at most weekly). */
-const BIG_AMOUNT_STORE = 'bigTurn'
-/** When the opt-in question was last asked and how it ended: `{ at, kind: 'no' | 'none' }`. */
-const BIG_ASKED_STORE = 'bigTurnAsked'
-/** Keep going answers in a row, and whether "Stop the warnings during a turn?" was asked: `{ n, asked }`. */
-const BIG_KEEP_STORE = 'bigTurnKeep'
-/** True once the person stopped the warnings during a turn. */
-const BIG_STOP_STORE = 'bigTurnStopDuring'
-
-/** The units amounts are written in: dollars, or on a subscription a share of the 5-hour window once runs show the rate. */
-async function bigTurnUnits($: EngineInterface) {
-  const subscription = billing === 'subscription'
-  const rates = subscription ? await windowPerDollar($) : undefined
-  return { subscription, ...(rates ? { rates } : {}) }
-}
-
-/** The person's top 1% (auto's amount), from the stored value while it is under a week old; saved when computed again. */
-async function bigTurnAuto($: EngineInterface) {
-  const now = await $.clock.now()
-  const got = autoAmountNow(parseStoredAmount(await $.store.get(BIG_AMOUNT_STORE).catch(() => undefined)), runLog, now)
-  if (got.fresh) await $.store.set(BIG_AMOUNT_STORE, { value: got.value, at: got.at }).catch(() => undefined)
-  return got.value
-}
-
-/** The amount the warning is held against now: null while the row is off. */
-async function bigTurnAmount($: EngineInterface) {
-  if (bigTurnRow === 'off') return null
-  return fixedAmount(bigTurnRow) ?? (await bigTurnAuto($))
-}
-
-/** Someone can be warned: a person is at the prompt, and a surface draws it. */
-async function bigTurnPresent($: EngineInterface) {
-  if (!interactive) return false
-  const surfaces = await $.session.surfaces().catch(() => [])
-  return surfaces.length > 0
-}
-
-/**
- * Lowering this run's main chat one level is allowed now: Routing on, not watch only, the Lowering rule not never, no unsure rating or
- * red test run on the prompt, the main chat doing the work (no hand-off, no switch), and rightsize's own checks for that kind of work on that
- * model (canLowerNow: the floor, a pause, a review). `level` is the effort in force. Never throws.
- */
-async function bigTurnLowerTo(run: Run, level: Level, s: Situation, rule: Lower | undefined): Promise<Level | undefined> {
-  if (!routing || watching || rule === 'never' || run.lowerGuard || run.delegate || run.switchTo) return undefined
-  const can = canLowerNow(run.rating.type, s, floor, { level })
-  return can.ok ? can.to : undefined
-}
-
-// The opt-in question, after a finished turn that cost more than the person's top 1%. Only while the row is not theirs. Never throws.
-async function bigTurnOptIn($: EngineInterface, actual: number, aborted: boolean) {
-  try {
-    if (off || aborted || yours.has('bigTurn') || bigTurnRow !== 'off' || !(actual > 0) || onBand(BIG_OPT_IN_HEADER) || onBand(BIG_AMOUNT_HEADER)) return
-    if (!(await bigTurnPresent($)) || !(await bandCanAsk($))) return
-    const top = await bigTurnAuto($)
-    if (actual < top) return
-    const now = await $.clock.now()
-    const asked = (await $.store.get(BIG_ASKED_STORE).catch(() => undefined)) as { at?: unknown; kind?: unknown } | undefined
-    if (typeof asked?.at === 'number') {
-      const wait = asked.kind === 'no' ? BIG_TURN_NO_THANKS_MS : BIG_TURN_NO_ANSWER_MS
-      if (now - asked.at < wait) return
-    }
-    // Recorded as no answer until it is answered: the band's question that goes unanswered is asked again after a week.
-    await $.store.set(BIG_ASKED_STORE, { at: now, kind: 'none' }).catch(() => undefined)
-    const units = await bigTurnUnits($)
-    await log($, `big-turn question: that turn cost ${money(actual)}, over your top 1% (${money(top)}); asked whether to warn before big prompts`)
-    await askBand($, { header: BIG_OPT_IN_HEADER, question: optInText(actual, units), options: [['Yes', 'yes'], ['No thanks', 'no']], ifNone: 'treated as No thanks this time' }, 'prompt', true, { kind: 'bigOptIn' })
-  } catch {
-    // No question: the row stays off.
-  }
-}
-
-async function answerBigOptIn($: EngineInterface, v: unknown) {
-  if (v === 'no') {
-    await $.store.set(BIG_ASKED_STORE, { at: await $.clock.now(), kind: 'no' }).catch(() => undefined)
-    return log($, 'big-turn question: No thanks; not asked again for 90 days')
-  }
-  if (v !== 'yes') return log($, 'big-turn question: dismissed; treated as No thanks this time')
-  await log($, 'big-turn question: Yes')
-  const top = await bigTurnAuto($)
-  const units = await bigTurnUnits($)
-  await askBand($, { header: BIG_AMOUNT_HEADER, question: `Warn at which amount? ${FALSE_ALARM_NOTE}`, options: [[`Your top 1% (now ${amountText(top, units)}, updates weekly)`, 'auto'], ['Set an amount', 'set']], ifNone: 'the warning stays off' }, 'prompt', true, { kind: 'bigAmount', top })
-}
-
-async function answerBigAmount($: EngineInterface, v: unknown) {
-  if (v === 'auto') {
-    await changeRow($, 'bigTurn', 'auto')
-    return log($, 'big-turn question: Big-turn warning set to auto (your top 1%)')
-  }
-  if (v !== 'set') return log($, 'big-turn question: amount dismissed; the warning stays off')
-  await askBand($, { header: BIG_AMOUNT_HEADER, question: `Warn at: ${FALSE_ALARM_NOTE}`, options: [['$1', '$1'], ['$2', '$2'], ['$5', '$5']], ifNone: 'the warning stays off' }, 'prompt', true, { kind: 'bigPick' })
-}
-
-async function answerBigPick($: EngineInterface, v: unknown) {
-  if (!isBigTurnRow(v) || v === 'off' || v === 'auto') return log($, 'big-turn question: amount dismissed; the warning stays off')
-  await changeRow($, 'bigTurn', v)
-  await log($, `big-turn question: Big-turn warning set to ${v}`)
-}
-
-/**
- * A prompt whose estimate reaches the amount (the row on, a person at the prompt, rated, planned and the run made) is held for the Question wait
- * with Run it, Plan first and Lower effort (only where rightsize's own rules allow it). No answer: Run it. Returns the prompt as it goes on.
- * Lower effort runs this one prompt one level lower, as the person's choice. One log line each for the warning, the answer and a timeout. Never throws.
- */
-async function bigTurnBefore<E extends { text: string }>($: EngineInterface, run: Run, s: Situation, rule: Lower | undefined, out: E): Promise<E> {
-  try {
-    const amount = await bigTurnAmount($)
-    if (amount === null || !(await bigTurnPresent($))) return out
-    const estimate = run.delegate ? (run.takenDelegate ?? run.takenMain) : run.takenMain
-    if (!(estimate >= amount)) return out
-    const model = run.delegate?.tier ?? run.switchTo?.tier ?? run.tier
-    const type = run.rating.type
-    const now = await $.clock.now()
-    const range = bigTurnRange(runLog, type, model, estimate, now)
-    const learning = stillLearning(cal, type, run.delegate ? 'delegate' : 'main', model)
-    const lowerTo = await bigTurnLowerTo(run, run.ranAt, s, rule)
-    const units = await bigTurnUnits($)
-    const q: Question<'run' | 'plan' | 'lower'> = {
-      header: BIG_BEFORE_HEADER,
-      question: headsUpText({ lo: range.lo, hi: range.hi, top: amount, learning }, units),
-      options: [['Run it', 'run'], ['Plan first', 'plan'], ...(lowerTo ? [[`Lower effort (${run.ranAt} to ${lowerTo})`, 'lower'] as const] : [])],
-    }
-    await log($, `big-turn warning before the prompt: estimate ${money(estimate)}, range ${money(range.lo)}-${money(range.hi)} (${range.basis}), amount ${money(amount)}${learning ? ', still learning' : ''}`)
-    const a = await askWithin($, withWait(q, 'it runs as it is'))
-    const note = { lo: round(range.lo), hi: round(range.hi), amount: round(amount) }
-    if (a === TIMED_OUT) {
-      run.bigTurn = { ...run.bigTurn, before: { ...note, answer: 'none' } }
-      await logTimeout($, BIG_BEFORE_HEADER, 'Run it')
-      return out
-    }
-    if (a === 'plan') {
-      run.bigTurn = { ...run.bigTurn, before: { ...note, answer: 'plan' } }
-      await log($, 'big-turn answer: Plan first; the prompt goes on with the plan request after it')
-      const text = withPlanFirst(out.text)
-      // The turn that starts carries this text: the run is bound to it.
-      run.text = text.trim()
-      return { ...out, text }
-    }
-    if (a === 'lower' && lowerTo) {
-      run.bigTurn = { ...run.bigTurn, before: { ...note, answer: 'lower' } }
-      run.loweredBy = 'you'
-      run.auto = false
-      run.level = lowerTo
-      const from = run.ranAt
-      run.ranAt = lowerTo
-      run.rawMain = rawMainCost(run.rating, s, lowerTo)
-      run.takenMain = mainCost(run.rating, s, lowerTo, lowerSwitches(run.rating, s))
-      await log($, `big-turn answer: you chose Lower effort: ${from} to ${lowerTo} for this prompt`)
-      await setBand($, { text: `Effort lowered to ${lowerTo} for this prompt, as you chose (it looked like a big turn).`, acted: true })
-      return out
-    }
-    run.bigTurn = { ...run.bigTurn, before: { ...note, answer: 'run' } }
-    await log($, `big-turn answer: ${a === undefined ? 'dismissed, so' : 'you chose'} Run it`)
-    return out
-  } catch (err) {
-    await log($, `big-turn warning failed: ${err instanceof Error ? err.message : String(err)}`).catch(() => undefined)
-    return out
-  }
-}
-
-/**
- * The turn's re-estimate (P-44) reaches the amount: one band row, Keep going and Finish up. It holds nothing and never
- * stops the turn. At most one a turn. The row says what the turn has spent so far, and how to stop it (Esc, or Stop on the
- * desktop app). Never throws.
- */
-async function bigTurnDuring($: EngineInterface, run: Run, projected: number) {
-  try {
-    if (run.bigTurn?.during || off || manualPause) return
-    const amount = await bigTurnAmount($)
-    if (amount === null || !(projected >= amount) || !(await bigTurnPresent($)) || !(await bandCanAsk($))) return
-    if ((await $.store.get(BIG_STOP_STORE).catch(() => undefined)) === true) return
-    const range = duringRange(projected)
-    const spent = run.mainCost + run.subCost
-    const units = await bigTurnUnits($)
-    run.bigTurn = { ...run.bigTurn, during: { lo: round(range.lo), hi: round(range.hi), amount: round(amount), answer: 'none' } }
-    await log($, `big-turn warning during the turn: projected ${money(projected)}, range ${money(range.lo)}-${money(range.hi)}, ${money(spent)} spent so far, amount ${money(amount)}`)
-    // With the Over budget row at Finish up, no answer arms it after the Question wait: a timer, never a hold on the turn.
-    const byDefault = overBudgetRow === 'Finish up'
-    await askBand($, { header: BIG_DURING_HEADER, question: duringText({ ...range, spent, desktop: await bigTurnDesktop($) }, units), options: [['Keep going', 'keep'], ['Finish up', 'finish']], ...(byDefault ? { ifNone: `Finish up after ${questionWait}` } : {}) }, 'turn', true, { kind: 'bigDuring', run, lo: range.lo, hi: range.hi, amount })
-    if (byDefault) {
-      $.clock.after(QUESTION_WAITS[questionWait], () => {
-        void finishUpUnanswered($, run).catch(err => log($, `over budget failed: ${err instanceof Error ? err.message : String(err)}`))
-      })
-    }
-  } catch {
-    // No warning: the turn goes on.
-  }
-}
-
-/** What the during-turn warning's buttons do. The turn is never stopped. */
-async function answerBigDuring($: EngineInterface, why: Extract<BandWhy, { kind: 'bigDuring' }>, v: unknown) {
-  const { run, lo, hi, amount } = why
-  const noteAnswer = (answer: BigTurnNote['answer']) => {
-    run.bigTurn = { ...run.bigTurn, during: { lo: round(lo), hi: round(hi), amount: round(amount), answer } }
-  }
-  const kept = ((await $.store.get(BIG_KEEP_STORE).catch(() => undefined)) ?? {}) as { n?: unknown; asked?: unknown }
-  const asked = kept.asked === true
-  const n = typeof kept.n === 'number' ? kept.n : 0
-  if (v === 'keep') {
-    noteAnswer('keep')
-    // Keep going after the no-answer Finish up had armed: the person says go on, so the refusals stop.
-    await disarmOverBudget($, run, 'you chose Keep going')
-    const next = n + 1
-    await $.store.set(BIG_KEEP_STORE, { n: next, asked }).catch(() => undefined)
-    await log($, `big-turn answer: Keep going (${next} in a row)`)
-    if (next >= KEEP_GOING_ASK_AFTER && !asked) {
-      await $.store.set(BIG_KEEP_STORE, { n: next, asked: true }).catch(() => undefined)
-      await askBand($, { header: BIG_STOP_HEADER, question: 'Stop the warnings during a turn? The warning before a prompt stays.', options: [['Yes', 'yes'], ['No thanks', 'no']], ifNone: 'they stay on' }, 'prompt', true, { kind: 'bigStop' })
-    }
-    return
-  }
-  if (v === undefined) return
-  // Any other answer breaks the run of Keep goings.
-  await $.store.set(BIG_KEEP_STORE, { n: 0, asked }).catch(() => undefined)
-  if (v === 'finish') {
-    noteAnswer('finish')
-    return bigTurnFinishUp($, run, 'finish')
-  }
-}
-
-async function answerBigStop($: EngineInterface, v: unknown) {
-  if (v === 'yes') {
-    await $.store.set(BIG_STOP_STORE, true).catch(() => undefined)
-    return log($, 'big-turn question: warnings during a turn stopped; the warning before a prompt stays')
-  }
-  await log($, `big-turn question: warnings during a turn stay on (${v === undefined ? 'dismissed' : 'No thanks'})`)
-}
-
-/** Every surface is the desktop app: the row says Stop and Send now where the terminal says Esc and Ctrl+Enter. */
-async function bigTurnDesktop($: EngineInterface) {
-  const surfaces = await $.session.surfaces().catch(() => [])
-  return surfaces.length > 0 && surfaces.every(x => x === 'desktop')
-}
-
 /**
  * Puts `text` in the prompt box for the person to send (a plugin cannot press Enter): an empty box takes it as it is, a draft gets it
  * after a blank line. Never sends it. `refusal` is the engine's reason when the box would not take it.
  */
-async function bigTurnFill($: EngineInterface, text: string) {
+async function fillPrompt($: EngineInterface, text: string) {
   const draft = (await $.prompt.read().catch(() => undefined))?.text ?? ''
   const empty = draft.trim() === ''
   const filled = await $.prompt.fill({ text: empty ? text : `\n\n${text}`, mode: empty ? 'replace' : 'append' }).catch(() => null)
   return { ok: filled?.isFilled === true, ...(filled?.refusal ? { refusal: filled.refusal } : {}) }
-}
-
-/**
- * Finish up (P-82): marks this turn over budget. From then on every tool call of the turn, the main chat's and a helper's (its next call
- * after the one it is in), is refused with OVER_BUDGET_REASON, so Claude ends with a report. Nothing is put in the prompt box and nothing
- * is sent. The mark is on the run: it ends with the turn, or at the next prompt.
- */
-async function bigTurnFinishUp($: EngineInterface, run: Run, how: 'finish' | 'no answer') {
-  if (off || active !== run || run.overBudget) return
-  run.overBudget = { how, denied: 0 }
-  await log($, `over budget: ${how === 'finish' ? 'you pressed Finish up' : `no answer in ${questionWait}, and Over budget, no answer is Finish up`}; every tool call in this turn is refused until it ends or you send a prompt, so Claude reports`)
-  const band = (await $.state.get(BAND).catch(() => undefined))?.value
-  await setBand($, { ...(band ?? {}), text: band?.text ? `${band.text} ${OVER_BUDGET_BAND}` : OVER_BUDGET_BAND, acted: true })
-}
-
-/** The Question wait ran out on the during-turn row with Over budget, no answer at Finish up: arms it, unless the row was answered or the turn ended. */
-async function finishUpUnanswered($: EngineInterface, run: Run) {
-  const during = run.bigTurn?.during
-  if (during?.answer !== 'none') return
-  await bigTurnFinishUp($, run, 'no answer')
-}
-
-/** Lifts the mark (Keep going after it armed by itself, or the person's next prompt). */
-async function disarmOverBudget($: EngineInterface, run: Run, why: string) {
-  const mark = run.overBudget
-  if (!mark || mark.ended) return
-  // The run line still says it armed, and how many calls it refused before.
-  mark.ended = true
-  await log($, `over budget: ended (${why}); ${mark.denied} tool call${mark.denied === 1 ? '' : 's'} refused`)
-}
-
-/**
- * The person stopped a turn that showed the during-turn warning, and had not pressed Finish up: a request for a report is put in the prompt
- * box (never sent), so the stop does not end with nothing. A refused fill is only logged. Never throws.
- */
-async function bigTurnStopped($: EngineInterface, run: Run) {
-  try {
-    const during = run.bigTurn?.during
-    if (!during || during.answer === 'finish') return
-    const filled = await bigTurnFill($, STOP_REPORT_TEXT)
-    await log($, filled.ok ? 'big-turn: you stopped the turn; a report request is in your prompt box, not sent' : `big-turn: you stopped the turn; the prompt box could not be filled${filled.refusal ? ` (${filled.refusal})` : ''}, so no report request was drafted`)
-    if (filled.ok) await setBand($, { text: STOPPED_TEXT, acted: true })
-  } catch {
-    // No draft: the stop stands as it was.
-  }
 }
 
 const RULE_IDS = Object.keys(RULE_KEYS) as (keyof Choices)[]
@@ -1997,8 +1641,6 @@ function writeSetting($: EngineInterface, key: SettingKey, value: string): Promi
     case 'longHelpers': return $.config.set({ key: 'rightsize.longHelpers', value: value })
     case 'lowerPause': return $.config.set({ key: 'rightsize.lowerPause', value: value })
     case 'lowerUnsure': return $.config.set({ key: 'rightsize.lowerUnsure', value: value })
-    case 'bigTurn': return $.config.set({ key: 'rightsize.bigTurn', value: value })
-    case 'overBudget': return $.config.set({ key: 'rightsize.overBudget', value: value })
   }
 }
 
@@ -3267,11 +2909,6 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
       ...(retries > 0 ? { retries } : {}),
       requests: run.requests,
       ...(run.reestimate ? { reestimate: run.reestimate } : {}),
-      // The big-turn warning (P-46): what was warned and answered; `loweredBy` marks effort the person lowered, which is not an automatic lowering.
-      ...(run.bigTurn ? { bigTurn: run.bigTurn } : {}),
-      // Finish up (P-82): how it armed and how many tool calls it refused.
-      ...(run.overBudget ? { overBudget: { how: run.overBudget.how, denied: run.overBudget.denied } } : {}),
-      ...(run.loweredBy ? { loweredBy: run.loweredBy } : {}),
       // Fast mode's part of the main chat's cost (P-29): on a subscription, paid from usage credits.
       ...(run.fastCost ? { fast: round(run.fastCost) } : {}),
       // What the output was made of (P-22): only when the turn's responses reported usage, else the line carries no split.
@@ -3285,8 +2922,6 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
       ...(windows(u?.rateLimits) ? { after: windows(u?.rateLimits) } : {}),
     }
     await appendRun($, line)
-    // The first big turn of a person who has not set the Big-turn warning row: ask once (the band; nothing is held).
-    await bigTurnOptIn($, actual, aborted)
   }
   if (run.delegate && (!delegated || !aborted)) {
     const cost = `${money(actual)}${billing === 'subscription' ? ' API-equivalent' : ''}`
@@ -3307,8 +2942,6 @@ async function finish($: EngineInterface, run: Run, aborted: boolean, durationMs
     const band = (await $.state.get(BAND).catch(() => undefined))?.value
     await setBand($, band?.acted ? { ...band, text: band.text ? `${band.text} ${text}` : text } : { text, acted: true })
   }
-  // A turn that showed the big-turn warning and was stopped: a report request in the prompt box (P-46).
-  if (aborted) await bigTurnStopped($, run)
   await showStatus($)
 }
 
@@ -4093,7 +3726,7 @@ async function drawColdTip($: EngineInterface) {
 async function fillColdTip($: EngineInterface) {
   const t = coldTip
   if (!t || t.step < 1 || t.step > 3) return
-  const filled = await bigTurnFill($, TIP_STEPS[t.step - 1]!)
+  const filled = await fillPrompt($, TIP_STEPS[t.step - 1]!)
   if (!filled.ok) await log($, `cold-compact tip: the prompt box could not be filled${filled.refusal ? ` (${filled.refusal})` : ''}`)
 }
 
@@ -6697,7 +6330,7 @@ async function lifeInput($: EngineInterface): Promise<OptInput['life']> {
 async function runOptimize($: EngineInterface) {
   const sub = billing === 'subscription'
   const life = await lifeInput($)
-  const r = optimize({ lines: await readRuns($), now: await $.clock.now(), subscription: sub, beforeCold: cfg.beforeCold, bigTurn: cfg.bigTurn, lowerRule: cfg.lowerRule, ...(life ? { life } : {}), skipped: await readSkipped($) })
+  const r = optimize({ lines: await readRuns($), now: await $.clock.now(), subscription: sub, beforeCold: cfg.beforeCold, lowerRule: cfg.lowerRule, ...(life ? { life } : {}), skipped: await readSkipped($) })
   optList = r.suggestions
   optPicked = new Set()
   let pane = false
@@ -7451,12 +7084,6 @@ function applyOption(key: SettingKey) {
     case 'lowerUnsure':
       lowerUnsure = v !== 'off'
       return
-    case 'bigTurn':
-      bigTurnRow = isBigTurnRow(v) ? v : 'off'
-      return
-    case 'overBudget':
-      overBudgetRow = isOverBudgetRow(v) ? v : 'Keep going'
-      return
     case 'longHelpers':
       longHelpers = v === 'continue while making progress' || v === 'stop at the limit' ? v : 'ask'
       return
@@ -8133,8 +7760,6 @@ export const register: Register = (on, options) => {
       cancelCold($, 'a prompt was submitted')
       // The band's questions that wait for the next prompt go, unanswered.
       await endBand($, 'prompt')
-      // The person spoke: a turn that Finish up held back works again.
-      if (active) await disarmOverBudget($, active, 'you sent a prompt')
     }
     // The person typed `wrap up` and whatsnext will not answer it here: rightsize compacts instead (P-42).
     if (!off && fromPerson(e) && !e.command && !e.isMeta && isWrapUp(e.text)) {
@@ -8293,8 +7918,6 @@ export const register: Register = (on, options) => {
           await $.state.set({ plugin: 'rightsize', key: 'task' }, { id: run.task, type: r.type, brief: text.slice(0, BRIEF_MAX), prompts: 1 }).catch(() => undefined)
         }
         if (ratedType) run.ratedType = ratedType
-        // An unsure rating or a red test run: no downgrade on this prompt, so no Lower effort at a big-turn warning either.
-        if (noDowngrade || afterRed || ratedUnsure || r.unsure === true || unsure !== undefined) run.lowerGuard = true
         if (r.unsure) run.unsure = 'rater'
         else if (unsure) run.unsure = unsure
         // Only an unsure prompt that was really lowered, or was left because its bucket was paused, belongs to the bucket's window.
@@ -8343,8 +7966,6 @@ export const register: Register = (on, options) => {
         // (Sonnet would only be asked to agree with itself), and does not count toward the 20.
         const spotDue = by === 'haiku' ? await dueCheck($) : false
         if (spotDue) void spotCheck($, sessionId, run.task, s.tier, s.level, prompt, r)
-        // The big-turn warning (P-46): an estimate at the person's amount holds the prompt for the Question wait. Not for a prompt typed into a running turn.
-        if (e.turnId === undefined) out = await bigTurnBefore($, run, s, mine.lower, out)
       } else {
         // No rating, even after a second try: the session stays as it is, the safe route. The log line says so, and carries
         // what the rating calls cost; /rightsize report counts the prompt as not counted, and the cost as overhead.
@@ -8603,8 +8224,6 @@ export const register: Register = (on, options) => {
           const projected = reestimate({ spent: spentSoFar, requests: run.requests, steps: run.rating.steps })
           run.reestimate = { after: REESTIMATE_AFTER, spent: round(spentSoFar), projected: round(projected) }
           await log($, `re-estimate after ${REESTIMATE_AFTER} requests: ${money(spentSoFar)} spent, about ${money(projected)} projected (first estimate ${money(run.delegate ? (run.takenDelegate ?? run.takenMain) : run.takenMain)}, ${run.rating.steps} steps rated)`)
-          // The big-turn warning (P-46) from the re-estimate: a band row, nothing held.
-          await bigTurnDuring($, run, projected)
         }
         if (fastReq) run.fastCost = (run.fastCost ?? 0) + requestCost
         addOutput(run, splitOutput(prices, u.model, u, out.answer, out.toolUses, fastReq), requestCost)
@@ -8614,13 +8233,6 @@ export const register: Register = (on, options) => {
   })
 
   on('tool.call', async ($, e, next) => {
-    // Over budget (P-82): Finish up refuses every tool call of the turn, the main chat's and a helper's, so Claude ends with a report.
-    // A helper's SubagentHandback is the exception, as below: refusing it would lose the report.
-    const over = active?.overBudget
-    if (over && !over.ended && !off && !(e.agentId !== undefined && String(e.tool) === HANDBACK)) {
-      over.denied += 1
-      return { deny: OVER_BUDGET_REASON }
-    }
     // Ultracode's fan-out runs through the Workflow tool, from the main chat or a subagent.
     // Until Workflows is answered, the person is asked: on the band while it runs, paused, or in the dialog before it starts.
     if (String(e.tool) === 'Workflow' && !off) {

@@ -136,9 +136,9 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 
   test(`each question kind maps to a marker kind; an unlisted kind is a setting (${surface})`, async () => {
-    const risk = ['stuck', 'helper', 'spend', 'bigDuring']
-    const cost = ['billing', 'bigAmount', 'bigPick']
-    const setting = ['workflow', 'output', 'watchTrial', 'watchSummary', 'bigOptIn', 'bigStop', 'somethingNew']
+    const risk = ['stuck', 'helper', 'spend']
+    const cost = ['billing', 'limitCompact']
+    const setting = ['workflow', 'output', 'watchTrial', 'watchSummary', 'somethingNew']
     for (const k of risk) expect(bandKindOf(k)).toBe('risk')
     for (const k of cost) expect(bandKindOf(k)).toBe('cost')
     expect(bandKindOf('cacheLife')).toBe('cache')

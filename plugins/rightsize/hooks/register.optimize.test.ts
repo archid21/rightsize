@@ -21,7 +21,7 @@ const mountOpt = (api: unknown) => (api as { ui: { mount: (x: unknown) => Promis
 const heads = async (ui: Mounted) => (await ui.findAll({ type: 'Button' })).map(b => b.text ?? b.props?.label)
 
 const start = async ($: unknown, on: Parameters<TestBody>[1]) => {
-  const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium', stored: { bigTurn: 'off' } })
+  const h = engine(on, { model: 'claude-opus-5-5', effort: 'medium' })
   h.now = NOW
   h.files[RUNS_FILE] = `${LOG}\n`
   const d = drive($, h)
@@ -33,21 +33,20 @@ const changes = (h: ReturnType<typeof engine>) =>
     .filter(([path]) => path.endsWith('changes.jsonl'))
     .flatMap(([, text]) => text.trim().split('\n').filter(Boolean).map(l => JSON.parse(l) as { key: string; from: string; to: string }))
 
-test('optimize lists every suggestion with now and with, opens the checklist, and changes nothing yet', { timeoutMs: 30000, options: { bigTurn: 'off' } }, async ($, on) => {
+test('optimize lists every suggestion with now and with, opens the checklist, and changes nothing yet', { timeoutMs: 30000 }, async ($, on) => {
   const { h, d } = await start($, on)
   const text = (await d.command('optimize')).text ?? ''
   expect(text.split('\n')[0]).toBe('Suggestions only: nothing changes until you apply them.')
   expect(text).toContain('☐ Before the cache goes cold: while it pays → off')
   expect(text).toContain('    Now:  keep warm cost $20.00, saved $5.00  →  net $15.00 more')
-  expect(text).toContain('☐ Big-turn warning: off → auto')
   expect(h.paneOpens.at(-1)).toEqual({ id: 'rightsize-optimize', title: 'rightsize optimize', focus: true, closeOnEscape: true, holdToasts: true })
   expect(changes(h), 'nothing applied').toEqual([])
   const ui = await mountOpt($)
-  expect(await heads(ui)).toEqual(['☐ Before the cache goes cold: while it pays → off', '☐ Big-turn warning: off → auto', 'Apply selected (0)', 'Apply all'])
+  expect(await heads(ui)).toEqual(['☐ Before the cache goes cold: while it pays → off', 'Apply selected (0)', 'Apply all'])
   await ui.unmount()
 })
 
-test('tick one and Apply selected: only that row changes, recorded; the other hides from the next run', { timeoutMs: 30000, options: { bigTurn: 'off' } }, async ($, on) => {
+test('tick one and Apply selected: only that row changes, recorded', { timeoutMs: 30000 }, async ($, on) => {
   const { h, d } = await start($, on)
   await d.command('optimize')
   const ui = await mountOpt($)
@@ -59,11 +58,11 @@ test('tick one and Apply selected: only that row changes, recorded; the other hi
   expect(changes(h).map(c => [c.key, c.to])).toEqual([['beforeCold', 'off']])
   expect(h.paneCloses).toContain('rightsize-optimize')
   expect(h.toasts.at(-1)).toBe('Changed: Before the cache goes cold → off. Did it work? in /rightsize report measures each once there are enough prompts.')
-  // Big-turn warning was left unpicked: not suggested again for 30 days.
+  // Applied: nothing is left to suggest.
   expect((await d.command('optimize')).text).toBe('No changes to suggest. Your settings fit your last 30 days.')
 })
 
-test('Apply selected with nothing ticked changes nothing, hides nothing, and keeps the checklist open', { timeoutMs: 30000, options: { bigTurn: 'off' } }, async ($, on) => {
+test('Apply selected with nothing ticked changes nothing, hides nothing, and keeps the checklist open', { timeoutMs: 30000 }, async ($, on) => {
   const { h, d } = await start($, on)
   await d.command('optimize')
   const ui = await mountOpt($)
@@ -72,10 +71,10 @@ test('Apply selected with nothing ticked changes nothing, hides nothing, and kee
   expect(changes(h)).toEqual([])
   expect(h.paneCloses).not.toContain('rightsize-optimize')
   expect(h.toasts.at(-1)).toBe('Nothing ticked: press Enter on a row to tick it, or use Apply all.')
-  expect((await d.command('optimize')).text, 'still suggested').toContain('☐ Big-turn warning: off → auto')
+  expect((await d.command('optimize')).text, 'still suggested').toContain('☐ Before the cache goes cold: while it pays → off')
 })
 
-test('Apply all applies every suggestion', { timeoutMs: 30000, options: { bigTurn: 'off' } }, async ($, on) => {
+test('Apply all applies every suggestion', { timeoutMs: 30000 }, async ($, on) => {
   const { h, d } = await start($, on)
   await d.command('optimize')
   const ui = await mountOpt($)
@@ -83,7 +82,6 @@ test('Apply all applies every suggestion', { timeoutMs: 30000, options: { bigTur
   await ui.unmount()
   expect(changes(h).map(c => [c.key, c.to])).toEqual([
     ['beforeCold', 'off'],
-    ['bigTurn', 'auto'],
   ])
 })
 

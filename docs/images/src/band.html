@@ -39,8 +39,9 @@ const scenes = {
   sent: `<div class="chat">${task}${said('Done: 41 declarations changed across 9 files; the tests pass.')}</div>${band(row('PROMPT', 'Sent to Sonnet. ~7% of Opus usage ($0.18 vs ~$2.41).', ['Redo on Opus']))}${reply}`,
   lowered: `<div class="chat">${you('What does the <code>--scope</code> flag do in this install command?')}</div>${band(row('PROMPT', 'Effort lowered: high → low. Why: A short answer needs no deep thinking.', ['Redo at high']))}${reply}`,
   raised: `<div class="chat">${you('Fix the failing date parser test.')}${said('Running the tests… 2 failed after the fix.')}</div>${band(row('PROMPT', 'Effort raised mid-turn: low → medium (two fixes in a row left the tests red).'))}${reply}`,
-  warm: `<div class="chat">${said('Done. All 3 steps are finished and committed.')}</div>${band(row('CACHE', 'Goes cold in 55 min (19:10) · coming back after costs about $1.56', ['!Keep warm 8 h', 'Wrap up']))}${reply}`,
-  context: `<div class="chat">${said('The migration is written; next is the backfill.')}</div>${band(row('PROMPT', 'Sent to Haiku. $0.04 vs ~$0.31 on Fable (estimated).', ['Redo on Fable']), row('CACHE', 'Context is 60% full (120K of 200K tokens). A compact now makes every later turn cheaper.', ['!Compact now']))}${reply}`,
+  warm: `<div class="chat">${said('Done. All 3 steps are finished and committed.')}</div>${band(row('CACHE', '▰▰▰▰▰▰▰▰▱▱ until 7:10 PM · ~$1.56 to come back', ['Compact Now', 'Save Handoff']))}${reply}`,
+  context: `<div class="chat">${said('The migration is written; next is the backfill.')}</div>${band(row('PROMPT', 'Sent to Haiku. $0.04 vs ~$0.31 on Fable (estimated).', ['Redo on Fable']), row('CACHE', 'Context is 60% full (120K of 200K tokens). A compact now makes every later turn cheaper.', ['!Compact Now', 'Start fresh']))}${reply}`,
+  limit: `<div class="chat">${said('The refactor is done; the tests pass.')}</div>${band(row('CACHE', 'Near your 5-hour limit, resets 9:40 PM. Compact now to save ~$0.59 after the reset.', ['!Compact Now']))}${reply}`,
 };
 const k = location.hash.slice(1) || 'context';
 document.getElementById('s').innerHTML = scenes[k] + '<div class="cap">Example band in the desktop app. Figures are examples.</div>';

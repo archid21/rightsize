@@ -81,9 +81,11 @@ A band above the prompt says what rightsize did and why, with buttons to undo it
 
 **Cache and context.** Keep the cache warm while you are away, or compact before the conversation gets costly.
 
-![Band: Goes cold in 55 min (19:10) · coming back after costs about $1.56. Buttons: Keep warm 8 h, Wrap up](docs/images/d-warm.png)
+![Band: cache bar, until 7:10 PM · ~$1.56 to come back. Buttons: Compact Now, Save Handoff](docs/images/d-warm.png)
 
-![Band with two rows: Sent to Haiku, $0.04 vs ~$0.31 on Fable; Context is 60% full (120K of 200K tokens), with Redo on Fable and Compact Now buttons](docs/images/d-context.png)
+![Band with two rows: Sent to Haiku, $0.04 vs ~$0.31 on Fable; Context is 60% full (120K of 200K tokens), with Redo on Fable, Compact Now and Start fresh buttons](docs/images/d-context.png)
+
+![Band: Near your 5-hour limit, resets 9:40 PM. Compact now to save ~$0.59 after the reset. Button: Compact Now](docs/images/d-limit.png)
 
 <details>
 <summary>In the terminal</summary>
@@ -95,8 +97,6 @@ The same rows, one line each, with buttons below. Screenshots from a real sessio
 ![Terminal band: Sending this to a Sonnet subagent at medium effort](docs/images/2-hands-off.png)
 
 ![Terminal band: Sent to Sonnet, API-equivalent $0.18 vs about $2.41 (estimated)](docs/images/3-result.png)
-
-![Terminal band: Near your 5-hour limit, resets 21:40, Compact now to save about $0.59 after the reset](docs/images/band-limit-advice.png)
 
 </details>
 
